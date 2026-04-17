@@ -51,6 +51,28 @@ DATASIFT_PASSWORD = os.getenv("DATASIFT_PASSWORD", "")
 SLACK_WEBHOOK_URL = os.getenv("SLACK_WEBHOOK_URL", "")        # Slack/Discord webhook
 ANCESTRY_EMAIL = os.getenv("ANCESTRY_EMAIL", "")              # Ancestry.com login
 ANCESTRY_PASSWORD = os.getenv("ANCESTRY_PASSWORD", "")
+NJLISPENDENS_EMAIL = os.getenv("NJLISPENDENS_EMAIL", "")      # NJ Lis Pendens login
+NJLISPENDENS_PASSWORD = os.getenv("NJLISPENDENS_PASSWORD", "")
+NJ_LP_COUNTIES = ["Essex", "Middlesex", "Somerset", "Union"]  # Default NJ counties
+NJ_LP_COOKIES_FILE = PROJECT_ROOT / "nj_lp_cookies.json"
+
+# Newark Code Enforcement (CKAN — Cloudflare-protected, needs Playwright)
+NEWARK_CKAN_BASE = "https://data.ci.newark.nj.us"
+NEWARK_CE_PACKAGE_ID = "f7853d7a-d544-4006-b8f7-b4b064f4f597"
+NEWARK_CE_VIOLATIONS_ID = "72ab72f0-b437-49cb-ae82-0b4d3860127a"
+NEWARK_CE_INSPECTIONS_ID = "3f1b0cc7-48ab-4cf4-9100-c90f99be98e7"
+NEWARK_CE_COMPLAINTS_ID = "a79bb702-28dc-4998-89e6-bd7f1ece4ea0"
+NEWARK_CE_STATE_FILE = PROJECT_ROOT / "newark_cv_state.json"
+NEWARK_CE_COOKIES_FILE = PROJECT_ROOT / "newark_cv_cookies.json"
+
+# NJ Sheriff Sales (salesweb.civilview.com) — plain HTTP, no auth, no CF
+NJ_CIVILVIEW_BASE = "https://salesweb.civilview.com"
+NJ_CIVILVIEW_COUNTIES = {
+    "Essex": 2,
+    "Middlesex": 73,
+    "Union": 15,
+}
+NJ_SHERIFF_STATE_FILE = PROJECT_ROOT / "nj_sheriff_state.json"
 DROPBOX_APP_KEY = os.getenv("DROPBOX_APP_KEY", "")            # Dropbox OAuth2 app key
 DROPBOX_APP_SECRET = os.getenv("DROPBOX_APP_SECRET", "")
 DROPBOX_REFRESH_TOKEN = os.getenv("DROPBOX_REFRESH_TOKEN", "")

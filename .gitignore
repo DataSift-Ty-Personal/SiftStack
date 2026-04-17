@@ -12,6 +12,10 @@ cookies.json
 datasift_cookies.json
 dropbox_state.json
 photo_state.json
+nj_lp_cookies.json
+nj_sheriff_state.json
+newark_cv_state.json
+newark_cv_cookies.json
 *.tmp
 *.bak
 

@@ -90,6 +90,10 @@ def _preflight_check(mode: str) -> list[str]:
         if not config.TRESTLE_API_KEY:
             failures.append("TRESTLE_API_KEY not set (required for phone validation)")
 
+    if mode == "nj-scrape":
+        if not config.NJLISPENDENS_EMAIL or not config.NJLISPENDENS_PASSWORD:
+            failures.append("NJLISPENDENS_EMAIL / NJLISPENDENS_PASSWORD not set")
+
     # ── Connectivity checks (only for scrape modes) ─────────────────
     if mode in scrape_modes:
         import requests as _requests
@@ -801,6 +805,13 @@ def _run_csv_import(args) -> None:
             if not n.county.strip():
                 n.county = county
 
+    # Override notice_type if provided (for CSVs without notice_type column)
+    notice_type = getattr(args, "notice_type", None)
+    if notice_type:
+        for n in notices:
+            if not n.notice_type.strip():
+                n.notice_type = notice_type.strip().lower()
+
     logging.info("Total: %d records from %d CSV(s)", len(notices), len(csv_paths))
 
     # Build pipeline options
@@ -844,7 +855,9 @@ def _run_csv_import(args) -> None:
         do_enrich = not getattr(args, "no_enrich", False)
         do_skip_trace = not getattr(args, "no_skip_trace", False)
 
-        csv_infos = write_datasift_split_csvs(notices)
+        # List name: CLI override, or let datasift_formatter use NOTICE_TYPE_TO_CATEGORY
+        upload_list_name = getattr(args, "list_name", None) or ""
+        csv_infos = write_datasift_split_csvs(notices, list_name=upload_list_name)
         for info in csv_infos:
             logging.info("DataSift CSV (%s): %s", info["label"], info["path"])
 
@@ -867,10 +880,71 @@ def _run_csv_import(args) -> None:
 
         if upload_result.get("success"):
             logging.info("DataSift upload: %s", upload_result.get("message", "OK"))
+            if do_skip_trace:
+                logging.info(
+                    "After skip trace finishes in DataSift, run phone validation:\n"
+                    "  python src/main.py phone-validate --list-name \"%s\"",
+                    csv_infos[0].get("list_name", "SiftStack"),
+                )
         else:
             logging.error("DataSift upload failed: %s", upload_result.get("message"))
 
     logging.info("Done — %d records exported", len(notices))
+
+
+def _run_nj_sheriff(args) -> None:
+    """Scrape NJ sheriff sales from salesweb.civilview.com for Essex/Middlesex/Union.
+
+    Pulls active sales, writes a CSV via the standard data_formatter path.
+    Does NOT run the full TN enrichment pipeline — these records go straight
+    to CSV for manual review or DataSift upload.
+    """
+    from nj_sheriff_sales import scrape_all as sheriff_scrape_all
+
+    raw_counties = getattr(args, "counties", None)
+    counties = None
+    if raw_counties and raw_counties.lower() != "all":
+        counties = [c.strip() for c in raw_counties.split(",")]
+
+    notices = sheriff_scrape_all(counties=counties)
+    if not notices:
+        logging.warning("No sheriff sales parsed — check site availability")
+        return
+
+    from data_formatter import deduplicate, write_csv
+    notices = deduplicate(notices)
+    csv_path = write_csv(notices)
+    logging.info("Sheriff sales: %d records written to %s", len(notices), csv_path)
+
+
+def _run_nj_scrape(args) -> None:
+    """Run NJ Lis Pendens auto-scrape: login → download → enrich → upload → Slack."""
+    import asyncio
+
+    counties = getattr(args, "nj_counties", None)
+    if counties:
+        counties = [c.strip() for c in counties.split(",")]
+
+    do_upload = getattr(args, "upload_datasift", False)
+    do_slack = getattr(args, "notify_slack", False)
+    headless = not getattr(args, "headed", False)
+
+    result = asyncio.run(
+        __import__("nj_scraper").run_nj_scrape(
+            counties=counties,
+            headless=headless,
+            upload_datasift=do_upload,
+            notify_slack=do_slack,
+        )
+    )
+
+    if result.get("success"):
+        logging.info("NJ scrape complete: %s", result.get("message"))
+        if result.get("output_csv"):
+            logging.info("Output: %s", result["output_csv"])
+    else:
+        logging.error("NJ scrape failed: %s", result.get("message"))
+        sys.exit(1)
 
 
 def _run_phone_validate(args) -> None:
@@ -1017,7 +1091,7 @@ def cli_main() -> None:
         "mode",
         choices=[
             "daily", "historical", "pdf-import", "photo-import", "dropbox-watch",
-            "csv-import", "phone-validate", "manage-sold", "manage-presets",
+            "csv-import", "nj-scrape", "nj-sheriff", "phone-validate", "manage-sold", "manage-presets",
             # New analysis & workflow modes
             "comp", "rehab", "analyze-deal", "market-analysis", "buyer-prospect",
             "deep-prospect", "lead-manage", "setup-sequences", "niche-sequential",
@@ -1160,6 +1234,12 @@ def cli_main() -> None:
         default=None,
         help='County name for CSV import, e.g. "Knox" (sets county for records missing it)',
     )
+    parser.add_argument(
+        "--notice-type",
+        type=str,
+        default=None,
+        help='Default notice type for CSV import records missing it, e.g. "foreclosure"',
+    )
 
     parser.add_argument(
         "--skip-smarty",
@@ -1264,6 +1344,18 @@ def cli_main() -> None:
         action="store_true",
         help="Send run summary to Slack/Discord webhook (requires SLACK_WEBHOOK_URL)",
     )
+    # NJ Lis Pendens arguments
+    parser.add_argument(
+        "--nj-counties",
+        type=str,
+        default=None,
+        help='Comma-separated NJ counties for nj-scrape (default: Essex,Middlesex,Somerset,Union)',
+    )
+    parser.add_argument(
+        "--headed",
+        action="store_true",
+        help="Run browser in headed (visible) mode for nj-scrape debugging",
+    )
     parser.add_argument(
         "--audit-records",
         action="store_true",
@@ -1275,7 +1367,7 @@ def cli_main() -> None:
         "--list-name",
         type=str,
         default=None,
-        help="DataSift list name to export phones from (phone-validate mode)",
+        help="DataSift list name: used as upload list name in csv-import mode (default: derived from CSV filename), or list to export phones from in phone-validate mode",
     )
     parser.add_argument(
         "--preset-folder",
@@ -1681,6 +1773,16 @@ def cli_main() -> None:
     # CSV re-import mode — separate pipeline
     if args.mode == "csv-import":
         _run_csv_import(args)
+        return
+
+    # NJ Lis Pendens auto-scrape
+    if args.mode == "nj-scrape":
+        _run_nj_scrape(args)
+        return
+
+    # NJ Sheriff sales scrape (salesweb.civilview.com)
+    if args.mode == "nj-sheriff":
+        _run_nj_sheriff(args)
         return
 
     # Filter saved searches

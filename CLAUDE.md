@@ -34,6 +34,16 @@ python src/main.py daily --counties Knox          # only Knox county
 python src/main.py daily --types foreclosure,probate  # only specific types
 python src/main.py daily -v                       # verbose/debug logging
 
+# NJ sheriff sales (Essex, Middlesex, Union — salesweb.civilview.com)
+python src/main.py nj-sheriff                     # all 3 counties
+python src/main.py nj-sheriff --counties Essex    # one county only
+
+# NJ Lis Pendens (Essex, Middlesex, Somerset, Union — njlispendens.com, auth)
+python src/main.py nj-scrape                      # all 4 counties, last 7 days
+python src/main.py nj-scrape --nj-counties Essex,Union
+python src/main.py nj-scrape --headed             # visible browser for debugging
+python src/main.py nj-scrape --upload-datasift --notify-slack
+
 # DataSift preset/sequence management
 python src/main.py manage-presets --discover                      # list all presets and sequences
 python src/main.py manage-presets --add-sold-exclusion            # add Sold exclusion to all presets
@@ -75,6 +85,9 @@ All source files are in `src/` and imports assume `src/` is the working director
 - **dropbox_watcher.py** — Cursor-based Dropbox folder polling. Downloads new photos, resolves county + notice_type from folder path (`/Knox/eviction/photo.jpg`), processes through photo_importer, deletes from Dropbox after success. State persisted to `dropbox_state.json` + `photo_state.json`.
 - **report_generator.py** — Generates per-record PDF deep prospecting reports using reportlab. Includes property summary, signing chain with phone tiers, valuation, deceased owner detection. Output to `output/reports/`.
 - **extract_market_finder.py** — Playwright automation to extract ALL ZIP code + neighborhood data from DataSift Market Finder. Handles styled-component dropdowns, pagination (20 rows/page), Beamer popup dismissal. Outputs JSON. See "Market Finder Extraction Patterns" below.
+- **nj_sheriff_sales.py** — Plain-HTTP scraper for salesweb.civilview.com (Essex countyId=2, Middlesex=73, Union=15). One-page HTML table per county, 6 or 7 cells (Middlesex has extra Status column — parse cells right-to-left for structure independence). Address parser splits at last street-suffix token, peels UNIT/APT/# descriptors back into street. No Playwright, no auth, no pagination. Somerset uses a different site and is NOT covered.
+- **nj_newark_code_violations.py** — PARKED. Newark CKAN portal (data.ci.newark.nj.us) returns Cloudflare-passthrough 503 (origin down as of 2026-04-17). Module is complete (Playwright + stealth patches + Open Complaints schema) and ready to reactivate when the portal comes back online.
+- **nj_scraper.py** — NJ Lis Pendens scraper for njlispendens.com (aMember Pro auth; primary NJ source for pre-foreclosure filings across Essex/Middlesex/Somerset/Union). Hybrid HTML+CSV approach because the results page renders street addresses as anti-scrape `<img src="/member/property/graphicaladdress?pid=...">` — only city/state/zip is plain text. Flow: (1) login with `NJLISPENDENS_EMAIL`/`PASSWORD` (cookies cached in `nj_lp_cookies.json`); (2) navigate to `/member/property` with filters as URL params (`County[]=...&date_added=7&per_page=50&cp=N`) — no form-click; (3) paginate HTML, parse each `<div class="mb_div-table">` block for Docket No, File Date, Defendant, Plaintiff, Orig Mortgage, Mortgage Date, Attorney, Attorney Phone, Lot-Block, County, city/state/zip tail, pid; (4) export CSV from same search → 5-col `Name, Address, City, State, Zip`; (5) **join CSV↔HTML by (sorted-token name key + zip)** — HTML uses `Last, First`, CSV uses `First Last`, so the normalizer strips punctuation and sorts tokens (verified 70/70 match). Rich fields packed into `NoticeData.raw_text` as `"Docket: X | Plaintiff: Y | Attorney: Z | Orig Mortgage: $N | Lot-Block: ...").
 - **market_analyzer.py** — ZIP code scoring engine. 6-factor weighted composite (Distress 30%, Value 20%, Equity 15%, Tax Delinquency 15%, Competition 10%, DOM 10%). Grades A/B/C/D, budget allocation across top ZIPs. Reads from scraped notice CSVs in `output/`.
 - **drive_uploader.py** — Google Drive upload via service account. `upload_file()` (generic, returns webViewLink) and `upload_csv()` (CSV-specific, returns file ID).
 
@@ -411,3 +424,10 @@ plugin-name.plugin (ZIP containing):
 │       └── references/
 └── README.md
 ```
+
+## My Defaults
+
+- **Primary counties:** Essex, Middlesex, Somerset, and Union (New Jersey)
+- **Daily summaries:** Send to Slack via `SLACK_WEBHOOK_URL`
+- **Data source:** NJLisPendens — weekly CSV/XLSX file drops, not a scrapable website. Use `csv-import` as the primary data path (no Playwright scraping for this source)
+- **CRM:** DataSift (same upload/enrich/skip-trace pipeline as TN data)
