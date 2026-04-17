@@ -210,8 +210,36 @@ def _split_name(full_name: str) -> tuple[str, str]:
     return _clean_and_split_name(full_name)
 
 
-# Map notice_type → DataSift list name for niche sequential marketing.
-# DataSift auto-creates lists from CSV if they don't exist yet.
+# Map notice_type → short display label for auto-generated week tags.
+NOTICE_TYPE_LABEL = {
+    "foreclosure": "NOD",
+    "lis_pendens": "NOD",
+    "nod": "NOD",
+    "pre_foreclosure": "Pre-Foreclosure",
+    "notice_of_foreclosure": "NOF",
+    "probate": "Probate",
+    "pre_probate": "Pre-Probate",
+    "pre_probate_deceased": "Pre-Probate",
+    "estate_sale": "Estate Sale",
+    "inheritance": "Inheritance",
+    "tax_sale": "Tax Sale",
+    "tax_delinquent": "Tax Delinquent",
+    "tax_default": "Tax Default",
+    "tax_delinquency": "Tax Delinquency",
+    "tax_lien": "Tax Lien",
+    "eviction": "Eviction",
+    "code_violation": "Code Violation",
+    "divorce": "Divorce",
+    "bankruptcy": "Bankruptcy",
+    "judgment": "Judgment",
+    "lien": "Lien",
+    "criminal_felony": "Criminal Felony",
+    "vacant": "Vacant",
+    "utility_shutoff": "Utility Shut-Off",
+    "intrafamily_transfer": "Intrafamily Transfer",
+}
+
+# Legacy mapping — kept for backward compatibility with TN pipeline.
 NOTICE_TYPE_TO_LIST = {
     "foreclosure": "Foreclosure",
     "probate": "Probate",
@@ -220,6 +248,54 @@ NOTICE_TYPE_TO_LIST = {
     "eviction": "Eviction",
     "code_violation": "Code Violation",
     "divorce": "Divorce",
+}
+
+
+def auto_week_tag(notice_type: str) -> str:
+    """Generate a week-based tag from notice_type.
+
+    Returns e.g. 'NOD Week 16 2026' or 'Probate Week 16 2026'.
+    """
+    now = datetime.now()
+    week = now.isocalendar()[1]
+    year = now.year
+    label = NOTICE_TYPE_LABEL.get(notice_type, notice_type.title())
+    return f"{label} Week {week} {year}"
+
+
+# Map notice_type → stable DataSift list category name.
+# These must match the exact list names in DataSift.
+NOTICE_TYPE_TO_CATEGORY = {
+    # Pre-foreclosure / lis pendens
+    "foreclosure": "Notice of Default (Lis Pendens)",
+    "lis_pendens": "Notice of Default (Lis Pendens)",
+    "nod": "Notice of Default (Lis Pendens)",
+    "pre_foreclosure": "Pre-Foreclosures - Lis Pendens",
+    "notice_of_foreclosure": "Pre-Foreclosures - Notice of Foreclosure",
+    # Probate / estate
+    "probate": "Probate",
+    "pre_probate": "Pre-Probate",
+    "pre_probate_deceased": "Pre-Probate/Deceased",
+    "estate_sale": "Estate Sales",
+    "inheritance": "Inheritance",
+    # Tax
+    "tax_sale": "Auction",
+    "tax_delinquent": "Tax Delinquent",
+    "tax_default": "Tax Default",
+    "tax_delinquency": "Tax Delinquency",
+    "tax_lien": "Federal Tax Liens",
+    # Court / legal
+    "eviction": "Eviction",
+    "code_violation": "Code Enforcement",
+    "divorce": "Divorce",
+    "bankruptcy": "Bankruptcy",
+    "judgment": "Judgments",
+    "lien": "Liens",
+    "criminal_felony": "Criminal Felony",
+    # Property status
+    "vacant": "Vacant",
+    "utility_shutoff": "Utility Shut-Off",
+    "intrafamily_transfer": "Intrafamily Transfers",
 }
 
 
@@ -236,6 +312,10 @@ def _build_tags(notice: NoticeData) -> str:
     - has_auction if auction date is upcoming
     """
     tags = ["Courthouse Data"]
+
+    # Week-based batch tag (e.g. "NOD Week 16 2026")
+    if notice.notice_type:
+        tags.append(auto_week_tag(notice.notice_type))
 
     # Notice type
     if notice.notice_type:
@@ -330,6 +410,19 @@ def _build_tags(notice: NoticeData) -> str:
     # Photo import tag (source_url starts with "photo:")
     if notice.source_url and notice.source_url.startswith("photo:"):
         tags.append("photo_import")
+
+    # Zero-contact detection — flag records with no phone or email data
+    has_phone = any([
+        notice.primary_phone, notice.mobile_1, notice.mobile_2,
+        notice.mobile_3, notice.mobile_4, notice.mobile_5,
+        notice.landline_1, notice.landline_2, notice.landline_3,
+    ])
+    has_email = any([
+        notice.email_1, notice.email_2, notice.email_3,
+        notice.email_4, notice.email_5,
+    ])
+    if not has_phone and not has_email:
+        tags.append("needs_deep_prospecting")
 
     return ",".join(tags)
 
@@ -534,6 +627,13 @@ def _build_property_section(notice: NoticeData) -> str:
     if notice.source_url:
         parts.append(f"Source: {notice.source_url}")
 
+    # Include structured metadata from raw_text (e.g. NJ LP: "Docket: X |
+    # Plaintiff: Y | Attorney: Z | Orig Mortgage: $N"). Only include if the
+    # text is short enough to be structured — TN free-text notice bodies
+    # can be thousands of chars and would drown the Notes field.
+    if notice.raw_text and len(notice.raw_text) < 500 and "|" in notice.raw_text:
+        parts.append(notice.raw_text.strip())
+
     return " | ".join(parts)
 
 
@@ -668,20 +768,23 @@ def _validate_row(row: dict) -> tuple[bool, list[str]]:
     return (len(issues) == 0, issues)
 
 
-def _build_row(notice: NoticeData, notes_override: str | None = None) -> dict:
+def _build_row(notice: NoticeData, notes_override: str | None = None, list_name_override: str = "") -> dict:
     """Build a single CSV row dict for a NoticeData record.
 
     Args:
         notice: The notice to format.
         notes_override: If provided, use this as the Notes value instead of
             calling _build_notes(). Used by write_datasift_split_csvs().
+        list_name_override: If provided, use this as the Lists value instead
+            of the NOTICE_TYPE_TO_LIST lookup. Used for csv-import mode where
+            the list name comes from the source filename.
 
     Returns:
         Dict keyed by DATASIFT_COLUMNS headers.
     """
     contact = _get_contact_info(notice)
     tags = _build_tags(notice)
-    list_name = NOTICE_TYPE_TO_LIST.get(notice.notice_type, "")
+    list_name = list_name_override or NOTICE_TYPE_TO_CATEGORY.get(notice.notice_type, "") or NOTICE_TYPE_TO_LIST.get(notice.notice_type, "")
     notes = notes_override if notes_override is not None else _build_notes(notice)
 
     # Conditionally map auction_date to the right built-in field
@@ -704,7 +807,7 @@ def _build_row(notice: NoticeData, notes_override: str | None = None) -> dict:
         # ── Core auto-mapped ──
         "Property Street Address": notice.address,
         "Property City": notice.city,
-        "Property State": notice.state or "TN",
+        "Property State": notice.state or "",
         "Property ZIP Code": notice.zip,
         "Owner First Name": contact["first"],
         "Owner Last Name": contact["last"],
@@ -786,12 +889,14 @@ def _build_row(notice: NoticeData, notes_override: str | None = None) -> dict:
 def write_datasift_csv(
     notices: list[NoticeData],
     filename: str | None = None,
+    list_name: str = "",
 ) -> Path:
     """Write notices to a DataSift-formatted CSV file.
 
     Args:
         notices: List of enriched NoticeData objects.
         filename: Optional filename override.
+        list_name: Optional list name override for the Lists column.
 
     Returns:
         Path to the written CSV file.
@@ -810,7 +915,7 @@ def write_datasift_csv(
         writer.writeheader()
 
         for notice in notices:
-            row = _build_row(notice)
+            row = _build_row(notice, list_name_override=list_name)
             is_complete, issues = _validate_row(row)
             if not is_complete:
                 incomplete += 1
@@ -833,6 +938,7 @@ def write_datasift_csv(
 def write_datasift_split_csvs(
     notices: list[NoticeData],
     date_str: str | None = None,
+    list_name: str = "",
 ) -> list[dict]:
     """Generate separate DM and Heir Map CSVs for two-upload Message Board flow.
 
@@ -845,6 +951,8 @@ def write_datasift_split_csvs(
     Args:
         notices: List of enriched NoticeData objects.
         date_str: Optional date string for filenames/list names (default: today).
+        list_name: Optional list name override. When provided, used as the Lists
+            column value and as the base for DM/Heir list names in results.
 
     Returns:
         List of dicts: [{"path": Path, "label": str, "list_name": str}, ...]
@@ -865,7 +973,7 @@ def write_datasift_split_csvs(
         writer = csv.DictWriter(f, fieldnames=DATASIFT_COLUMNS)
         writer.writeheader()
         for notice in notices:
-            row = _build_row(notice, notes_override=_build_dm_notes(notice))
+            row = _build_row(notice, notes_override=_build_dm_notes(notice), list_name_override=list_name)
             is_complete, issues = _validate_row(row)
             if not is_complete:
                 incomplete += 1
@@ -884,7 +992,7 @@ def write_datasift_split_csvs(
     results.append({
         "path": dm_path,
         "label": "DMs",
-        "list_name": f"SiftStack {date_str} - DMs",
+        "list_name": f"{list_name} - DMs" if list_name else f"SiftStack {date_str} - DMs",
     })
 
     # CSV 2: Heirs — only deceased with heir data
@@ -900,7 +1008,7 @@ def write_datasift_split_csvs(
             writer = csv.DictWriter(f, fieldnames=DATASIFT_COLUMNS)
             writer.writeheader()
             for notice in deceased_with_heirs:
-                row = _build_row(notice, notes_override=_build_heir_notes(notice))
+                row = _build_row(notice, notes_override=_build_heir_notes(notice), list_name_override=list_name)
                 writer.writerow(row)
                 heir_written += 1
 
@@ -908,7 +1016,7 @@ def write_datasift_split_csvs(
         results.append({
             "path": heir_path,
             "label": "Heirs",
-            "list_name": f"SiftStack {date_str} - Heirs",
+            "list_name": f"{list_name} - Heirs" if list_name else f"SiftStack {date_str} - Heirs",
         })
     else:
         logger.info("No deceased records with heir data — skipping Heirs CSV")
