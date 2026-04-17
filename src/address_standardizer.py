@@ -125,12 +125,14 @@ def standardize_addresses(
             metadata = candidate.metadata
             analysis = candidate.analysis
 
-            # Safety: reject non-TN results (bad match on out-of-state address)
-            if components and components.state_abbreviation and components.state_abbreviation != "TN":
+            # Safety: reject state mismatches (bad geocode match to wrong state)
+            expected_state = notice.state.strip().upper() if notice.state.strip() else None
+            if components and components.state_abbreviation and expected_state and components.state_abbreviation != expected_state:
                 logger.warning(
-                    "Smarty returned %s for '%s' -- keeping original",
+                    "Smarty returned %s for '%s' (expected %s) -- keeping original",
                     components.state_abbreviation,
                     notice.address,
+                    expected_state,
                 )
                 failed += 1
                 continue
@@ -158,6 +160,8 @@ def standardize_addresses(
                     notice.longitude = str(metadata.longitude)
                 if metadata.rdi:
                     notice.rdi = metadata.rdi
+                if metadata.county_name and not notice.county.strip():
+                    notice.county = metadata.county_name
 
             # Populate analysis fields
             if analysis:
@@ -318,7 +322,8 @@ def retry_with_geocoded_city(
             metadata = candidate.metadata
             analysis = candidate.analysis
 
-            if components and components.state_abbreviation and components.state_abbreviation != "TN":
+            expected_state = notice.state.strip().upper() if notice.state.strip() else None
+            if components and components.state_abbreviation and expected_state and components.state_abbreviation != expected_state:
                 failed += 1
                 continue
 
@@ -340,6 +345,8 @@ def retry_with_geocoded_city(
                     notice.longitude = str(metadata.longitude)
                 if metadata.rdi:
                     notice.rdi = metadata.rdi
+                if metadata.county_name and not notice.county.strip():
+                    notice.county = metadata.county_name
             if analysis:
                 if analysis.dpv_match_code:
                     notice.dpv_match_code = analysis.dpv_match_code

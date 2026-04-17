@@ -439,28 +439,71 @@ async def upload_csv(
         await page.wait_for_timeout(1000)
         return True
 
-    # Map Tags column: find "Tags" card on left, drag to "Tags" target on right
+    async def _drag_column_coords(pg, src, tgt):
+        """Drag from src {x,y} to tgt {x,y} using slow mouse moves."""
+        await pg.mouse.move(src["x"], src["y"])
+        await pg.wait_for_timeout(500)
+        await pg.mouse.down()
+        await pg.wait_for_timeout(500)
+        steps = 20
+        for i in range(1, steps + 1):
+            frac = i / steps
+            await pg.mouse.move(
+                src["x"] + (tgt["x"] - src["x"]) * frac,
+                src["y"] + (tgt["y"] - src["y"]) * frac,
+            )
+            await pg.wait_for_timeout(50)
+        await pg.wait_for_timeout(500)
+        await pg.mouse.up()
+        await pg.wait_for_timeout(1000)
+        return True
+
+    # Map unmapped columns via JS-based element discovery + slow mouse drag.
+    # DataSift's styled-component wizard has unmapped CSV columns on the left
+    # and target field slots on the right. Generic Playwright locators fail
+    # because multiple elements contain the same text — use JS to find elements
+    # by bounding box position (left panel < 450px, right panel > 450px).
     for col_name in ["Tags", "Lists"]:
         try:
-            # Source: unmapped column card on the left (contains column name + sample data)
-            source = page.locator(f'div:has-text("{col_name}") >> visible=true').first
-            # Target: mapping slot on the right side (search for it)
-            # Right-side targets have the field name — search within right panel area
-            target = page.locator(f'text="{col_name}"').last
-            if await source.count() > 0 and await target.count() > 0:
-                src_box = await source.bounding_box()
-                tgt_box = await target.bounding_box()
-                # Ensure source is on left (<600px) and target is on right (>600px)
-                if src_box and tgt_box and src_box["x"] < 600 and tgt_box["x"] > 600:
-                    if await _drag_column(source, target):
-                        logger.info("Mapped column: %s", col_name)
-                        await page.wait_for_timeout(1000)
-                    else:
-                        logger.warning("Drag failed for column: %s", col_name)
+            positions = await page.evaluate("""(colName) => {
+                const allEls = document.querySelectorAll('div, span, p');
+                let source = null;  // leftmost element containing exact column name
+                let target = null;  // rightmost element containing exact column name
+                for (const el of allEls) {
+                    const text = el.textContent.trim();
+                    // Match elements whose direct text (not children) matches
+                    const directText = Array.from(el.childNodes)
+                        .filter(n => n.nodeType === 3)
+                        .map(n => n.textContent.trim())
+                        .join(' ');
+                    const isMatch = directText === colName || text === colName;
+                    if (!isMatch) continue;
+                    const rect = el.getBoundingClientRect();
+                    if (rect.width === 0 || rect.height === 0) continue;
+                    if (rect.x < 450 && (!source || rect.width < source.w)) {
+                        source = {x: rect.x + rect.width/2, y: rect.y + rect.height/2,
+                                  w: rect.width, h: rect.height};
+                    }
+                    if (rect.x > 450 && (!target || rect.width < target.w)) {
+                        target = {x: rect.x + rect.width/2, y: rect.y + rect.height/2,
+                                  w: rect.width, h: rect.height};
+                    }
+                }
+                return {source, target};
+            }""", col_name)
+
+            src = positions.get("source")
+            tgt = positions.get("target")
+            if src and tgt:
+                if await _drag_column_coords(page, src, tgt):
+                    logger.info("Mapped column: %s", col_name)
+                    await page.wait_for_timeout(1000)
                 else:
-                    logger.debug("Column %s: no valid source/target positions", col_name)
+                    logger.warning("Drag failed for column: %s", col_name)
             else:
-                logger.debug("Column %s: source or target not found", col_name)
+                logger.debug("Column %s: source=%s target=%s", col_name,
+                             "found" if src else "missing",
+                             "found" if tgt else "missing")
         except Exception as e:
             logger.warning("Column mapping %s failed: %s", col_name, e)
 

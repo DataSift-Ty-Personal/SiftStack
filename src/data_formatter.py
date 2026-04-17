@@ -324,6 +324,7 @@ def write_csv_by_type(notices: list[NoticeData]) -> list[Path]:
 # CSV column → NoticeData field name (where Sift columns differ from field names)
 CSV_TO_FIELD = {
     "full_name": "owner_name",
+    "name": "owner_name",
     "Date Added": "date_added",
     "Owner Street": "owner_street",
     "Owner City": "owner_city",
@@ -380,7 +381,7 @@ def read_csv(path: str | Path) -> list[NoticeData]:
         for row in reader:
             mapped: dict[str, str] = {}
             for csv_col, raw_value in row.items():
-                field = CSV_TO_FIELD.get(csv_col, csv_col)
+                field = CSV_TO_FIELD.get(csv_col) or CSV_TO_FIELD.get(csv_col.lower()) or csv_col.lower()
                 if field in _NOTICE_FIELDS:
                     val: str = raw_value if raw_value is not None else ""
                     if field in _DATE_FIELDS:

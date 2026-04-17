@@ -146,7 +146,11 @@ def _fetch_property(address: str, city: str, state: str, zip_code: str,
             # OpenWeb Ninja wraps response in {"status": "OK", "data": {...}}
             if body.get("status") == "OK" and body.get("data"):
                 return body["data"]
-            logger.debug("Zillow: empty/error response for '%s': %s", full_address, body.get("status"))
+            if body.get("status") == "OK":
+                # API responded OK but no property data — property not in Zillow database
+                logger.debug("Zillow: property not found for '%s' (OK but no data)", full_address)
+                return {}
+            logger.warning("Zillow: non-OK status '%s' for '%s'", body.get("status"), full_address)
             return None
         except requests.Timeout:
             logger.warning("Zillow timeout for '%s' (attempt %d/%d)", full_address, attempt, MAX_RETRIES)
@@ -295,8 +299,8 @@ def enrich_properties(
     )
 
     enriched = 0
-    failed = 0
-    skipped = len(notices) - len(eligible)
+    not_found = 0
+    api_errors = 0
     equity_values: list[float] = []
 
     for idx, (orig_idx, notice) in enumerate(eligible):
@@ -310,7 +314,13 @@ def enrich_properties(
         )
 
         if data is None:
-            failed += 1
+            # Actual API error (timeout, 5xx, non-OK status)
+            api_errors += 1
+            continue
+
+        if not data:
+            # Empty dict — API said OK but property not in Zillow database
+            not_found += 1
             continue
 
         success = _apply_property_data(notice, data)
@@ -322,12 +332,12 @@ def enrich_properties(
                 except ValueError:
                     pass
         else:
-            failed += 1
+            not_found += 1
 
         if (idx + 1) % 10 == 0:
             logger.info(
-                "Zillow enrichment progress: %d/%d (enriched=%d, failed=%d)",
-                idx + 1, len(eligible), enriched, failed,
+                "Zillow enrichment progress: %d/%d (enriched=%d, not_found=%d, errors=%d)",
+                idx + 1, len(eligible), enriched, not_found, api_errors,
             )
 
     avg_equity = ""
@@ -335,8 +345,8 @@ def enrich_properties(
         avg = sum(equity_values) / len(equity_values)
         avg_equity = f", avg equity=${avg:,.0f}"
     logger.info(
-        "Zillow enrichment complete: %d enriched, %d failed, %d skipped%s",
-        enriched, failed, skipped, avg_equity,
+        "Zillow enrichment: %d enriched, %d not in Zillow, %d API errors (%d total)%s",
+        enriched, not_found, api_errors, len(eligible), avg_equity,
     )
 
     return notices
