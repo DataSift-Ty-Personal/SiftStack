@@ -43,7 +43,7 @@ SCHEDULE_CRON_UTC = "0 10 * * 3"
 @app.function(
     image=image,
     secrets=[secrets],
-    timeout=1800,  # 30 min max
+    timeout=3600,  # 60 min max — combined run is slower than any single scraper
     retries=modal.Retries(
         max_retries=2,
         initial_delay=60.0,
@@ -51,8 +51,147 @@ SCHEDULE_CRON_UTC = "0 10 * * 3"
     ),
     schedule=modal.Cron(SCHEDULE_CRON_UTC),
 )
+async def nj_weekly_all():
+    """Scheduled combined NJ scrape — runs every Wednesday 6 AM ET.
+
+    Fans out all 3 NJ scrapers in parallel (NJLP pre-foreclosure, Middlesex
+    surrogate probate, Somerset sheriff-sale PDFs), merges their results,
+    runs them through a single enrichment pipeline pass, writes one
+    combined CSV, and uploads one DataSift file. This replaces 3 separate
+    Wednesday cron jobs so there's a single point of observation and the
+    enrichment step isn't paid for 3 times.
+
+    Per-source failures don't cascade — each scraper is wrapped so a bad
+    run (e.g. Somerset Akamai block) still lets the others ship.
+    """
+    import asyncio
+    import logging
+    import os
+    import sys
+    from datetime import datetime
+
+    sys.path.insert(0, "/app/src")
+    os.chdir("/app")
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    )
+    logger = logging.getLogger("modal_nj_weekly_all")
+
+    from nj_scraper import scrape_nj_lp_notices
+    from nj_middlesex_probate import scrape_middlesex_probates
+    from nj_somerset_sheriff import scrape_somerset_notices
+
+    async def _safe(coro, label):
+        try:
+            notices = await coro
+            logger.info("%s: %d notices", label, len(notices))
+            return label, notices, None
+        except Exception as e:
+            logger.error("%s failed: %s", label, e)
+            return label, [], str(e)
+
+    logger.info("Starting combined weekly scrape via Modal...")
+    results = await asyncio.gather(
+        _safe(scrape_nj_lp_notices(counties=["Essex", "Middlesex", "Somerset", "Union"]), "NJLP"),
+        _safe(scrape_middlesex_probates(days_back=30), "Middlesex Probate"),
+        _safe(scrape_somerset_notices(include_bankruptcy=True, max_records=0), "Somerset Sheriff"),
+    )
+    per_source = {label: notices for label, notices, _ in results}
+    errors = [(label, err) for label, _, err in results if err]
+    combined = []
+    for _, notices, _ in results:
+        combined.extend(notices)
+
+    if not combined:
+        msg = "All 3 scrapers returned 0 records"
+        if errors:
+            msg += f" (errors: {errors})"
+        logger.error(msg)
+        _notify_failure(msg)
+        raise RuntimeError(msg)
+
+    logger.info("Combined scrape: %d total (NJLP=%d, Probate=%d, Somerset=%d)",
+                len(combined),
+                len(per_source.get("NJLP", [])),
+                len(per_source.get("Middlesex Probate", [])),
+                len(per_source.get("Somerset Sheriff", [])))
+
+    # Single enrichment pass across all 3 sources' notices
+    from enrichment_pipeline import PipelineOptions, run_enrichment_pipeline
+    opts = PipelineOptions(
+        skip_filter_sold=False,
+        skip_tax=True,
+        skip_obituary=True,
+        skip_ancestry=True,
+        skip_dm_address=True,
+        skip_heir_verification=True,
+        skip_parcel_lookup=True,
+        source_label="NJ Weekly All (NJLP + Middlesex Probate + Somerset Sheriff)",
+    )
+    enriched = run_enrichment_pipeline(combined, opts)
+
+    # One combined CSV
+    from data_formatter import write_csv
+    ts = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+    csv_path = write_csv(enriched, f"nj_weekly_all_{ts}.csv")
+
+    # One DataSift upload
+    upload_info = None
+    try:
+        import config
+        if config.DATASIFT_EMAIL and config.DATASIFT_PASSWORD:
+            from datasift_formatter import write_datasift_split_csvs
+            from datasift_uploader import upload_to_datasift
+            csv_infos = write_datasift_split_csvs(enriched, list_name="")
+            if csv_infos:
+                upload_info = await upload_to_datasift(
+                    csv_infos[0]["path"], enrich=True, skip_trace=True,
+                )
+                logger.info("DataSift upload: %s", upload_info.get("message", "OK"))
+    except Exception as e:
+        logger.warning("DataSift upload failed: %s", e)
+
+    # One Slack summary covering all 3 sources
+    try:
+        import config
+        if config.SLACK_WEBHOOK_URL:
+            from slack_notifier import _send_webhook
+            lines = ["*NJ Weekly All — combined Wednesday run*"]
+            for label in ("NJLP", "Middlesex Probate", "Somerset Sheriff"):
+                lines.append(f"  {label}: {len(per_source.get(label, []))} records")
+            if errors:
+                lines.append(f"  errors: {errors}")
+            lines.append(f"Enriched total: {len(enriched)}")
+            lines.append(f"Output: {csv_path.name}")
+            if upload_info and upload_info.get("success"):
+                lines.append("DataSift: uploaded + enrich + skip trace started")
+            _send_webhook("\n".join(lines))
+    except Exception as e:
+        logger.warning("Slack notification failed: %s", e)
+
+    return {
+        "success": True,
+        "total": len(enriched),
+        "per_source": {k: len(v) for k, v in per_source.items()},
+        "errors": errors,
+        "output_csv": str(csv_path),
+    }
+
+
+@app.function(
+    image=image,
+    secrets=[secrets],
+    timeout=1800,  # 30 min max
+    retries=modal.Retries(
+        max_retries=2,
+        initial_delay=60.0,
+        backoff_coefficient=2.0,
+    ),
+)
 async def nj_weekly_scrape():
-    """Scheduled NJ Lis Pendens scrape — runs every Wednesday 6 AM ET."""
+    """On-demand NJ Lis Pendens scrape (cron moved to nj_weekly_all)."""
     import asyncio
     import logging
     import os
@@ -124,10 +263,9 @@ def _notify_failure(error_msg: str):
         initial_delay=60.0,
         backoff_coefficient=2.0,
     ),
-    schedule=modal.Cron(SCHEDULE_CRON_UTC),
 )
 async def nj_weekly_probate_scrape():
-    """Scheduled Middlesex surrogate probate scrape — runs every Wednesday 6 AM ET.
+    """On-demand Middlesex surrogate probate scrape (cron moved to nj_weekly_all).
 
     30-day lookback on decedent death dates; each day's matches have their
     detail pages scraped for executor/PR + decedent mailing address.
@@ -179,10 +317,9 @@ async def nj_weekly_probate_scrape():
         initial_delay=60.0,
         backoff_coefficient=2.0,
     ),
-    schedule=modal.Cron(SCHEDULE_CRON_UTC),
 )
 async def nj_weekly_somerset_sheriff():
-    """Scheduled Somerset County sheriff-sale scrape — runs every Wednesday 6 AM ET.
+    """On-demand Somerset County sheriff-sale scrape (cron moved to nj_weekly_all).
 
     Pulls all active + bankruptcy-hold sales from somersetcountynj.gov,
     downloads each sale's PDF, parses docket/plaintiff/address/block-lot/

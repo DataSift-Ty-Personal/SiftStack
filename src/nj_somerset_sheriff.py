@@ -440,6 +440,66 @@ async def scrape_somerset_sheriff_sales(
     return records
 
 
+async def scrape_somerset_notices(
+    include_bankruptcy: bool = True,
+    max_records: int = 0,
+    headless: bool = True,
+) -> list:
+    """Scrape-only entry point: returns a list of NoticeData instances
+    (not dicts) matching the rest of the SiftStack pipeline.
+
+    Used by the combined Wednesday cron (modal_app.nj_weekly_all). The
+    older `scrape_somerset_sheriff_sales` returns list[dict]; this wrapper
+    converts each dict into a NoticeData so all three scrapers can feed a
+    single enrichment pass.
+    """
+    from datetime import datetime as _dt
+    from notice_parser import NoticeData
+
+    records = await scrape_somerset_sheriff_sales(
+        include_bankruptcy=include_bankruptcy,
+        max_records=max_records,
+        headless=headless,
+    )
+
+    notices: list = []
+    for r in records:
+        auction_iso = ""
+        raw_date = r.get("sale_date", "")
+        if raw_date and raw_date != "00/00/00":
+            try:
+                auction_iso = _dt.strptime(raw_date, "%m/%d/%y").strftime("%Y-%m-%d")
+            except ValueError:
+                pass
+
+        raw_bits: list[str] = []
+        if r.get("docket_number"): raw_bits.append(f"Docket: {r['docket_number']}")
+        if r.get("plaintiff"): raw_bits.append(f"Plaintiff: {r['plaintiff']}")
+        if r.get("judgment_amount"): raw_bits.append(f"Judgment: ${r['judgment_amount']}")
+        if r.get("upset_bid"): raw_bits.append(f"Upset: ${r['upset_bid']}")
+        if r.get("block") and r.get("lot"):
+            raw_bits.append(f"Block-Lot: {r['block']}-{r['lot']}")
+        if r.get("nearest_cross_street"):
+            raw_bits.append(f"Cross St: {r['nearest_cross_street']}")
+        if r.get("owner_occupied"): raw_bits.append("Owner Occupied")
+        if r.get("status"): raw_bits.append(f"Status: {r['status']}")
+
+        notices.append(NoticeData(
+            date_added=_dt.now().strftime("%Y-%m-%d"),
+            auction_date=auction_iso,
+            address=r.get("property_address", ""),
+            city=r.get("city", ""),
+            state=r.get("state", "NJ"),
+            zip=r.get("zip_code", ""),
+            owner_name=r.get("defendants", ""),
+            notice_type="foreclosure",
+            county="Somerset",
+            source_url=r.get("pdf_url", ""),
+            raw_text=" | ".join(raw_bits),
+        ))
+    return notices
+
+
 def to_notice_data(records: list[dict]) -> list[dict]:
     """
     Convert SomersetSheriffSale records to NoticeData-compatible dicts

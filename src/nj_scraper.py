@@ -402,6 +402,36 @@ async def scrape_search_results(
     return notices
 
 
+async def scrape_nj_lp_notices(
+    counties: list[str] | None = None,
+    date_added: str = DATE_ADDED_WEEK,
+    headless: bool = True,
+) -> list[NoticeData]:
+    """Scrape-only entry point: login → scrape → join → return NoticeData list.
+
+    No enrichment, no DataSift, no Slack. Used by the combined Wednesday cron
+    (modal_app.nj_weekly_all) which runs all 3 NJ scrapers in parallel and
+    then feeds their combined output through a single enrichment pipeline.
+    """
+    counties = counties or config.NJ_LP_COUNTIES
+    async with async_playwright() as pw:
+        browser = await pw.chromium.launch(headless=headless)
+        context = await browser.new_context(
+            viewport={"width": 1400, "height": 900},
+            accept_downloads=True,
+        )
+        await _load_cookies(context)
+        page = await context.new_page()
+        if not await login(page):
+            logger.error("NJ LP login failed — returning empty")
+            await browser.close()
+            return []
+        notices = await scrape_search_results(page, counties=counties, date_added=date_added)
+        await _save_cookies(page)
+        await browser.close()
+    return notices
+
+
 async def run_nj_scrape(
     counties: list[str] | None = None,
     date_added: str = DATE_ADDED_WEEK,
