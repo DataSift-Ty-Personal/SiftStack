@@ -141,6 +141,14 @@ def _fetch_property(address: str, city: str, state: str, zip_code: str,
                 logger.warning("Zillow rate limit hit -- waiting 10s (attempt %d)", attempt)
                 time.sleep(10)
                 continue
+            if resp.status_code == 401:
+                # Auth error is permanent for this session — don't burn the retry
+                # budget. The pipeline-level counter will track how many records
+                # this affected; caller gets one warning per affected record.
+                logger.warning(
+                    "Zillow 401 Unauthorized — OPENWEBNINJA_API_KEY invalid or expired (affects all enrichment)"
+                )
+                return None
             resp.raise_for_status()
             body = resp.json()
             # OpenWeb Ninja wraps response in {"status": "OK", "data": {...}}

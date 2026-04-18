@@ -947,6 +947,37 @@ def _run_nj_scrape(args) -> None:
         sys.exit(1)
 
 
+def _run_nj_probate(args) -> None:
+    """Scrape Middlesex County NJ surrogate probate filings (Bluestone portal).
+
+    Iterates day-by-day through --days-back Death Dates (default 30) and
+    grabs each case's detail page for executor name + decedent mailing address.
+    """
+    import asyncio
+
+    days_back = getattr(args, "days_back", None) or 30
+    headless = not getattr(args, "headed", False)
+    do_upload = getattr(args, "upload_datasift", False)
+    do_slack = getattr(args, "notify_slack", False)
+
+    result = asyncio.run(
+        __import__("nj_middlesex_probate").run_middlesex_probate_scrape(
+            days_back=days_back,
+            headless=headless,
+            upload_datasift=do_upload,
+            notify_slack=do_slack,
+        )
+    )
+
+    if result.get("success"):
+        logging.info("NJ probate scrape complete: %s", result.get("message"))
+        if result.get("output_csv"):
+            logging.info("Output: %s", result["output_csv"])
+    else:
+        logging.error("NJ probate scrape failed: %s", result.get("message"))
+        sys.exit(1)
+
+
 def _run_phone_validate(args) -> None:
     """Run phone validation via Trestle API with DataSift export/upload."""
     import json as _json
@@ -1091,7 +1122,7 @@ def cli_main() -> None:
         "mode",
         choices=[
             "daily", "historical", "pdf-import", "photo-import", "dropbox-watch",
-            "csv-import", "nj-scrape", "nj-sheriff", "phone-validate", "manage-sold", "manage-presets",
+            "csv-import", "nj-scrape", "nj-sheriff", "nj-probate", "phone-validate", "manage-sold", "manage-presets",
             # New analysis & workflow modes
             "comp", "rehab", "analyze-deal", "market-analysis", "buyer-prospect",
             "deep-prospect", "lead-manage", "setup-sequences", "niche-sequential",
@@ -1355,6 +1386,12 @@ def cli_main() -> None:
         "--headed",
         action="store_true",
         help="Run browser in headed (visible) mode for nj-scrape debugging",
+    )
+    parser.add_argument(
+        "--days-back",
+        type=int,
+        default=None,
+        help="Lookback window in days for nj-probate (default: 30)",
     )
     parser.add_argument(
         "--audit-records",
@@ -1783,6 +1820,11 @@ def cli_main() -> None:
     # NJ Sheriff sales scrape (salesweb.civilview.com)
     if args.mode == "nj-sheriff":
         _run_nj_sheriff(args)
+        return
+
+    # Middlesex NJ surrogate probate scrape (Bluestone portal)
+    if args.mode == "nj-probate":
+        _run_nj_probate(args)
         return
 
     # Filter saved searches

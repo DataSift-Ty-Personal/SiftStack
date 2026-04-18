@@ -118,6 +118,92 @@ def _notify_failure(error_msg: str):
 @app.function(
     image=image,
     secrets=[secrets],
+    timeout=1800,  # 30 min max
+    retries=modal.Retries(
+        max_retries=2,
+        initial_delay=60.0,
+        backoff_coefficient=2.0,
+    ),
+    schedule=modal.Cron(SCHEDULE_CRON_UTC),
+)
+async def nj_weekly_probate_scrape():
+    """Scheduled Middlesex surrogate probate scrape — runs every Wednesday 6 AM ET.
+
+    30-day lookback on decedent death dates; each day's matches have their
+    detail pages scraped for executor/PR + decedent mailing address.
+    """
+    import logging
+    import os
+    import sys
+
+    sys.path.insert(0, "/app/src")
+    os.chdir("/app")
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    )
+    logger = logging.getLogger("modal_nj_probate")
+
+    from nj_middlesex_probate import run_middlesex_probate_scrape
+
+    logger.info("Starting Middlesex probate weekly scrape via Modal...")
+
+    try:
+        result = await run_middlesex_probate_scrape(
+            days_back=30,
+            headless=True,
+            upload_datasift=True,
+            notify_slack=True,
+        )
+        if result.get("success"):
+            logger.info("Probate scrape complete: %s", result.get("message"))
+            return result
+        else:
+            msg = result.get("message", "Unknown error")
+            logger.error("Probate scrape failed: %s", msg)
+            _notify_failure(f"Middlesex probate: {msg}")
+            raise RuntimeError(f"Probate scrape failed: {msg}")
+    except Exception as e:
+        logger.error("Probate scrape exception: %s", e)
+        _notify_failure(f"Middlesex probate exception: {e}")
+        raise
+
+
+@app.function(
+    image=image,
+    secrets=[secrets],
+    timeout=1800,
+)
+async def nj_probate_manual(days_back: int = 30):
+    """On-demand Middlesex probate scrape."""
+    import logging
+    import os
+    import sys
+
+    sys.path.insert(0, "/app/src")
+    os.chdir("/app")
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    )
+
+    from nj_middlesex_probate import run_middlesex_probate_scrape
+
+    result = await run_middlesex_probate_scrape(
+        days_back=days_back,
+        headless=True,
+        upload_datasift=True,
+        notify_slack=True,
+    )
+    print(f"Result: {result}")
+    return result
+
+
+@app.function(
+    image=image,
+    secrets=[secrets],
     timeout=1800,
 )
 async def nj_scrape_manual(counties: list[str] | None = None):
