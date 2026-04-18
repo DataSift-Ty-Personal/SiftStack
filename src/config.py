@@ -73,6 +73,11 @@ NJ_CIVILVIEW_COUNTIES = {
     "Union": 15,
 }
 NJ_SHERIFF_STATE_FILE = PROJECT_ROOT / "nj_sheriff_state.json"
+
+# Cross-run dedup index for local CLI runs. Modal has its own Volume-backed
+# path (/tracking/processed_ids.json) — this local file is used when the
+# same scrapers run from the command line outside Modal.
+LOCAL_TRACKING_FILE = PROJECT_ROOT / "tracking" / "processed_ids.json"
 DROPBOX_APP_KEY = os.getenv("DROPBOX_APP_KEY", "")            # Dropbox OAuth2 app key
 DROPBOX_APP_SECRET = os.getenv("DROPBOX_APP_SECRET", "")
 DROPBOX_REFRESH_TOKEN = os.getenv("DROPBOX_REFRESH_TOKEN", "")

@@ -869,6 +869,7 @@ def _run_nj_sheriff(args) -> None:
     to CSV for manual review or DataSift upload.
     """
     from nj_sheriff_sales import scrape_all as sheriff_scrape_all
+    from dedup_tracker import load_tracking, save_tracking, filter_new
 
     raw_counties = getattr(args, "counties", None)
     counties = None
@@ -880,10 +881,30 @@ def _run_nj_sheriff(args) -> None:
         logging.warning("No sheriff sales parsed — check site availability")
         return
 
+    # Cross-run dedup: drop records we've already processed in a prior run.
+    # Same tracking file is shared with Modal when civilview runs via the
+    # weekly cron (Modal writes to /tracking/ in a Volume; local CLI uses
+    # config.LOCAL_TRACKING_FILE).
+    tracking = load_tracking(config.LOCAL_TRACKING_FILE)
+    new_notices, skipped = filter_new(notices, "civilview_sheriff", tracking)
+    logging.info(
+        "CivilView sheriff dedup: %d new / %d skipped (already processed)",
+        len(new_notices), skipped,
+    )
+
+    if not new_notices:
+        save_tracking(tracking, config.LOCAL_TRACKING_FILE)
+        logging.info("No new CivilView sheriff records this run")
+        return
+
     from data_formatter import deduplicate, write_csv
-    notices = deduplicate(notices)
-    csv_path = write_csv(notices)
-    logging.info("Sheriff sales: %d records written to %s", len(notices), csv_path)
+    new_notices = deduplicate(new_notices)
+    csv_path = write_csv(new_notices)
+
+    # Only persist tracking after the CSV write succeeds — if write fails
+    # we'd rather re-process next run than lose records.
+    save_tracking(tracking, config.LOCAL_TRACKING_FILE)
+    logging.info("Sheriff sales: %d new records written to %s", len(new_notices), csv_path)
 
 
 def _run_nj_somerset_sheriff(args) -> None:

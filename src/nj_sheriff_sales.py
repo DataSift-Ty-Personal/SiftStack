@@ -266,6 +266,17 @@ def scrape_county(county: str) -> list[NoticeData]:
     return notices
 
 
+async def scrape_civilview_notices(counties: list[str] | None = None) -> list[NoticeData]:
+    """Async wrapper around scrape_all for modal_app.py fan-out.
+
+    CivilView is plain blocking HTTP (requests), so we push it to a thread
+    so nj_weekly_all can gather() all scrapers in parallel without blocking
+    the event loop.
+    """
+    import asyncio
+    return await asyncio.to_thread(scrape_all, counties)
+
+
 def scrape_all(counties: list[str] | None = None) -> list[NoticeData]:
     """Scrape sheriff sales across configured counties.
 

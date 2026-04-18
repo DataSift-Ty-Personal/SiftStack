@@ -1,10 +1,11 @@
 """Cross-run deduplication for NJ scrapers.
 
 Stores a JSON index of already-processed record IDs per source, keyed by:
-  - `njlp`     — NJ Lis Pendens docket number (F-NNNNNN-YY)
-  - `probate`  — Middlesex surrogate case (docket) number
-  - `somerset` — Somerset County sheriff-sale number (5-digit)
-  - `tax_sale` — RealAuction cert composite: {subdomain}{adv_number}{tax_year}
+  - `njlp`              — NJ Lis Pendens docket number (F-NNNNNN-YY)
+  - `probate`           — Middlesex surrogate case (docket) number
+  - `somerset`          — Somerset County sheriff-sale number (5-digit)
+  - `tax_sale`          — RealAuction cert composite: {subdomain}{adv_number}{tax_year}
+  - `civilview_sheriff` — salesweb.civilview.com Sheriff# (Essex/Middlesex/Union)
 
 Used by modal_app.py to skip records already uploaded to DataSift in
 a previous run, so the Wednesday cron only enriches + uploads new
@@ -22,7 +23,7 @@ from notice_parser import NoticeData
 
 logger = logging.getLogger(__name__)
 
-_SOURCES = ("njlp", "probate", "somerset", "tax_sale")
+_SOURCES = ("njlp", "probate", "somerset", "tax_sale", "civilview_sheriff")
 
 
 def _empty_tracking() -> dict:
@@ -61,6 +62,11 @@ _PROBATE_PK_RE = re.compile(r"Q_PK_ID=(\d+)")
 _TAX_SALE_ADV_RE = re.compile(r"ADV:\s*([^\s|]+)")
 _TAX_SALE_SUBDOMAIN_RE = re.compile(r"Subdomain:\s*([^\s|]+)")
 _TAX_SALE_YEAR_RE = re.compile(r"Tax Year:\s*(\d{4})")
+# CivilView: "Sheriff# F-24001837" or "Sheriff# CH-25001605" etc. Prefix is
+# stable per-court and the digits carry the year + sequence.
+_CIVILVIEW_SHERIFF_RE = re.compile(r"Sheriff#\s*([A-Z]+[-‐–]?\d+)", re.IGNORECASE)
+# URL fallback: /Sales/SaleDetails?PropertyId=NNN — unique per county-year.
+_CIVILVIEW_PROPERTY_ID_RE = re.compile(r"PropertyId=(\d+)")
 
 
 def extract_id(notice: NoticeData, source: str) -> str | None:
@@ -95,6 +101,14 @@ def extract_id(notice: NoticeData, source: str) -> str | None:
             return None
         year = yr.group(1) if yr else ""
         return f"{sub.group(1)}-{adv.group(1)}-{year}"
+    if source == "civilview_sheriff":
+        # Prefer Sheriff# (stable across re-listings); fall back to the
+        # numeric PropertyId in source_url if the raw_text is thin.
+        m = _CIVILVIEW_SHERIFF_RE.search(raw)
+        if m:
+            return m.group(1).upper().replace("‐", "-").replace("–", "-")
+        m = _CIVILVIEW_PROPERTY_ID_RE.search(url)
+        return m.group(1) if m else None
     return None
 
 
