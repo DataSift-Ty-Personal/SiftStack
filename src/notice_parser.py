@@ -32,7 +32,7 @@ class NoticeData:
     auction_date: str = ""     # Scheduled sale/auction date (YYYY-MM-DD)
     address: str = ""
     city: str = ""
-    state: str = "TN"
+    state: str = "NJ"
     zip: str = ""
     owner_name: str = ""
     notice_type: str = ""      # foreclosure | tax_sale | tax_lien | probate

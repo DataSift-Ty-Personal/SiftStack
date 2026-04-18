@@ -16,8 +16,6 @@ from pathlib import Path
 import config
 from config import (
     LOG_DIR,
-    NOTICE_TYPES,
-    OUTPUT_DIR,
     SAVED_SEARCHES,
     SavedSearch,
 )
@@ -34,7 +32,12 @@ def _filter_searches(
     counties: list[str] | None,
     types: list[str] | None,
 ) -> list[SavedSearch]:
-    """Filter SAVED_SEARCHES by county and/or notice type."""
+    """Filter SAVED_SEARCHES by county and/or notice type.
+
+    Used by the Apify actor_main entrypoint (dormant — daily/historical
+    CLI modes have been removed since the primary data source is now
+    NJLisPendens + Modal, not tnpublicnotice.com).
+    """
     searches = list(SAVED_SEARCHES)
 
     if counties:
@@ -59,15 +62,8 @@ def _preflight_check(mode: str) -> list[str]:
     failures: list[str] = []
 
     # ── Credential checks (mode-dependent) ──────────────────────────
-    scrape_modes = {"daily", "historical"}
-    enrichment_modes = scrape_modes | {"pdf-import", "photo-import", "dropbox-watch", "csv-import"}
+    enrichment_modes = {"pdf-import", "photo-import", "dropbox-watch", "csv-import"}
     datasift_modes = {"manage-presets", "manage-sold", "phone-validate"}
-
-    if mode in scrape_modes:
-        if not config.TNPN_EMAIL or not config.TNPN_PASSWORD:
-            failures.append("TNPN_EMAIL / TNPN_PASSWORD not set (required for scraping)")
-        if not config.CAPTCHA_API_KEY:
-            failures.append("CAPTCHA_API_KEY not set (CAPTCHA solving will fail)")
 
     if mode in enrichment_modes:
         # These are warnings, not blockers — pipeline degrades gracefully
@@ -94,36 +90,9 @@ def _preflight_check(mode: str) -> list[str]:
         if not config.NJLISPENDENS_EMAIL or not config.NJLISPENDENS_PASSWORD:
             failures.append("NJLISPENDENS_EMAIL / NJLISPENDENS_PASSWORD not set")
 
-    # ── Connectivity checks (only for scrape modes) ─────────────────
-    if mode in scrape_modes:
-        import requests as _requests
-        try:
-            resp = _requests.head(config.BASE_URL, timeout=10, allow_redirects=True)
-            if resp.status_code >= 500:
-                failures.append(f"tnpublicnotice.com returned {resp.status_code} — site may be down")
-        except Exception as e:
-            failures.append(f"Cannot reach tnpublicnotice.com: {e}")
-
-    # ── 2Captcha balance check ──────────────────────────────────────
-    if mode in scrape_modes and config.CAPTCHA_API_KEY:
-        import requests as _requests
-        try:
-            resp = _requests.get(
-                f"https://2captcha.com/res.php?key={config.CAPTCHA_API_KEY}&action=getbalance",
-                timeout=10,
-            )
-            balance_text = resp.text.strip()
-            try:
-                balance = float(balance_text)
-                if balance < 0.50:
-                    failures.append(f"2Captcha balance too low: ${balance:.2f} (need at least $0.50)")
-                else:
-                    logger.info("Preflight: 2Captcha balance: $%.2f", balance)
-            except ValueError:
-                if "ERROR" in balance_text:
-                    failures.append(f"2Captcha API key invalid: {balance_text}")
-        except Exception as e:
-            logger.warning("Preflight: Could not check 2Captcha balance: %s", e)
+    # (connectivity + 2Captcha balance checks removed along with the
+    #  daily/historical CLI modes — they only ran for tnpublicnotice.com
+    #  scraping. NJ scrapers use their own site-specific health checks.)
 
     return failures
 
@@ -1228,7 +1197,7 @@ def cli_main() -> None:
     parser.add_argument(
         "mode",
         choices=[
-            "daily", "historical", "pdf-import", "photo-import", "dropbox-watch",
+            "pdf-import", "photo-import", "dropbox-watch",
             "csv-import", "nj-scrape", "nj-sheriff", "nj-somerset-sheriff", "nj-probate", "nj-tax-sale", "phone-validate", "manage-sold", "manage-presets",
             # New analysis & workflow modes
             "comp", "rehab", "analyze-deal", "market-analysis", "buyer-prospect",
@@ -1236,8 +1205,9 @@ def cli_main() -> None:
             "playbook",
         ],
         help=(
-            "daily/historical = scrape notices; pdf-import/photo-import = import from files; "
+            "pdf-import/photo-import = import from files; "
             "dropbox-watch = poll Dropbox; csv-import = re-enrich CSV; "
+            "nj-scrape/nj-sheriff/nj-somerset-sheriff/nj-probate/nj-tax-sale = NJ data sources; "
             "phone-validate = Trestle scoring; manage-sold/manage-presets = DataSift ops; "
             "comp = comparable sales ARV; rehab = rehab cost estimate; "
             "analyze-deal = full deal analysis; market-analysis = zip code scoring; "
@@ -1976,36 +1946,11 @@ def cli_main() -> None:
         _run_nj_tax_sale(args)
         return
 
-    # Filter saved searches
-    counties = None
-    if args.counties and args.counties.lower() != "all":
-        counties = [c.strip() for c in args.counties.split(",")]
-
-    types = None
-    if args.types and args.types.lower() != "all":
-        types = [t.strip() for t in args.types.split(",")]
-
-    searches = _filter_searches(counties, types)
-    if not searches:
-        logging.error("No saved searches match the given --counties / --types filters")
-        sys.exit(1)
-
-    logging.info(
-        "Running %d saved searches: %s",
-        len(searches),
-        ", ".join(s.saved_search_name for s in searches),
-    )
-
-    try:
-        _run_scrape_pipeline(args, searches)
-    except Exception as e:
-        logging.exception("Pipeline failed with unhandled error")
-        try:
-            from slack_notifier import notify_error
-            notify_error("Pipeline (top-level)", e, context=f"mode={args.mode}")
-        except Exception:
-            pass
-        sys.exit(1)
+    # All other modes (comp/rehab/deal-analyzer/etc.) return via their
+    # own early-return branches earlier in this function. Reaching here
+    # means the mode wasn't dispatched — fall through and exit cleanly.
+    logging.error("Mode %r not wired into cli_main", args.mode)
+    sys.exit(1)
 
 
 def _run_scrape_pipeline(args, searches) -> None:
