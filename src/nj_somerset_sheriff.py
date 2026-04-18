@@ -473,6 +473,8 @@ async def scrape_somerset_notices(
                 pass
 
         raw_bits: list[str] = []
+        # Sale# first so dedup_tracker.extract_id can parse it reliably
+        if r.get("sale_number"): raw_bits.append(f"Sale#: {r['sale_number']}")
         if r.get("docket_number"): raw_bits.append(f"Docket: {r['docket_number']}")
         if r.get("plaintiff"): raw_bits.append(f"Plaintiff: {r['plaintiff']}")
         if r.get("judgment_amount"): raw_bits.append(f"Judgment: ${r['judgment_amount']}")
@@ -492,7 +494,7 @@ async def scrape_somerset_notices(
             state=r.get("state", "NJ"),
             zip=r.get("zip_code", ""),
             owner_name=r.get("defendants", ""),
-            notice_type="foreclosure",
+            notice_type="sheriff_sale",
             county="Somerset",
             source_url=r.get("pdf_url", ""),
             raw_text=" | ".join(raw_bits),

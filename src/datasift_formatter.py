@@ -217,6 +217,7 @@ NOTICE_TYPE_LABEL = {
     "nod": "NOD",
     "pre_foreclosure": "Pre-Foreclosure",
     "notice_of_foreclosure": "NOF",
+    "sheriff_sale": "Sheriff Sale",
     "probate": "Probate",
     "pre_probate": "Pre-Probate",
     "pre_probate_deceased": "Pre-Probate",
@@ -242,6 +243,7 @@ NOTICE_TYPE_LABEL = {
 # Legacy mapping — kept for backward compatibility with TN pipeline.
 NOTICE_TYPE_TO_LIST = {
     "foreclosure": "Foreclosure",
+    "sheriff_sale": "Sheriff Sale",
     "probate": "Probate",
     "tax_sale": "Tax Sale",
     "tax_delinquent": "Tax Delinquent",
@@ -272,6 +274,8 @@ NOTICE_TYPE_TO_CATEGORY = {
     "nod": "Notice of Default (Lis Pendens)",
     "pre_foreclosure": "Pre-Foreclosures - Lis Pendens",
     "notice_of_foreclosure": "Pre-Foreclosures - Notice of Foreclosure",
+    # Sheriff sale (distinct from NJLP pre-foreclosure — a sale has been scheduled)
+    "sheriff_sale": "Sheriff Sale",
     # Probate / estate
     "probate": "Probate",
     "pre_probate": "Pre-Probate",

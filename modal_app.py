@@ -33,6 +33,14 @@ image = (
 
 secrets = modal.Secret.from_name("siftstack-secrets")
 
+# Persistent cross-run state — dedup index of processed record IDs so a
+# weekly cron + any ad-hoc manual run only enrich/upload new filings.
+tracking_volume = modal.Volume.from_name(
+    "siftstack-tracking", create_if_missing=True,
+)
+TRACKING_MOUNT = "/tracking"
+TRACKING_FILE = f"{TRACKING_MOUNT}/processed_ids.json"
+
 SCHEDULE_CRON = "0 6 * * 3"  # Every Wednesday at 6 AM (UTC — adjusted below)
 
 # Modal cron uses UTC. 6 AM Eastern = 10 AM UTC (EDT) or 11 AM UTC (EST).
@@ -50,6 +58,7 @@ SCHEDULE_CRON_UTC = "0 10 * * 3"
         backoff_coefficient=2.0,
     ),
     schedule=modal.Cron(SCHEDULE_CRON_UTC),
+    volumes={TRACKING_MOUNT: tracking_volume},
 )
 async def nj_weekly_all():
     """Scheduled combined NJ scrape — runs every Wednesday 6 AM ET.
@@ -100,11 +109,8 @@ async def nj_weekly_all():
     )
     per_source = {label: notices for label, notices, _ in results}
     errors = [(label, err) for label, _, err in results if err]
-    combined = []
-    for _, notices, _ in results:
-        combined.extend(notices)
 
-    if not combined:
+    if not any(per_source.values()):
         msg = "All 3 scrapers returned 0 records"
         if errors:
             msg += f" (errors: {errors})"
@@ -112,13 +118,58 @@ async def nj_weekly_all():
         _notify_failure(msg)
         raise RuntimeError(msg)
 
-    logger.info("Combined scrape: %d total (NJLP=%d, Probate=%d, Somerset=%d)",
-                len(combined),
+    logger.info("Raw scrape: NJLP=%d, Probate=%d, Somerset=%d",
                 len(per_source.get("NJLP", [])),
                 len(per_source.get("Middlesex Probate", [])),
                 len(per_source.get("Somerset Sheriff", [])))
 
-    # Single enrichment pass across all 3 sources' notices
+    # Cross-run dedup: skip records we've already processed in a prior run.
+    # Tracking lives in a Modal Volume so it survives container restarts.
+    from dedup_tracker import load_tracking, save_tracking, filter_new
+    await tracking_volume.reload.aio()  # pull latest committed state
+    tracking = load_tracking(TRACKING_FILE)
+
+    new_lp, skipped_lp = filter_new(per_source.get("NJLP", []), "njlp", tracking)
+    new_probate, skipped_probate = filter_new(per_source.get("Middlesex Probate", []), "probate", tracking)
+    new_somerset, skipped_somerset = filter_new(per_source.get("Somerset Sheriff", []), "somerset", tracking)
+
+    logger.info("Dedup: NJLP %d new / %d skipped, Probate %d new / %d skipped, Somerset %d new / %d skipped",
+                len(new_lp), skipped_lp,
+                len(new_probate), skipped_probate,
+                len(new_somerset), skipped_somerset)
+
+    combined = new_lp + new_probate + new_somerset
+    skipped_counts = {
+        "NJLP": skipped_lp,
+        "Middlesex Probate": skipped_probate,
+        "Somerset Sheriff": skipped_somerset,
+    }
+    new_counts = {
+        "NJLP": len(new_lp),
+        "Middlesex Probate": len(new_probate),
+        "Somerset Sheriff": len(new_somerset),
+    }
+
+    if not combined:
+        # Everything was already seen — save tracking (no-op in practice
+        # since nothing changed) and notify that it was a clean quiet week.
+        save_tracking(tracking, TRACKING_FILE)
+        await tracking_volume.commit.aio()
+        msg = (f"All {skipped_lp + skipped_probate + skipped_somerset} records were "
+               f"previously processed — nothing new to enrich or upload")
+        logger.info(msg)
+        try:
+            import config
+            if config.SLACK_WEBHOOK_URL:
+                from slack_notifier import _send_webhook
+                _send_webhook(
+                    "*NJ Weekly All — no new records this week*\n" + msg
+                )
+        except Exception:
+            pass
+        return {"success": True, "total": 0, "skipped": skipped_counts, "new": new_counts, "errors": errors}
+
+    # Single enrichment pass across all 3 sources' new notices
     from enrichment_pipeline import PipelineOptions, run_enrichment_pipeline
     opts = PipelineOptions(
         skip_filter_sold=False,
@@ -153,14 +204,24 @@ async def nj_weekly_all():
     except Exception as e:
         logger.warning("DataSift upload failed: %s", e)
 
-    # One Slack summary covering all 3 sources
+    # Persist tracking only after enrichment+upload succeed — if they blow
+    # up we'd rather redo the dedup work next week than lose records.
+    save_tracking(tracking, TRACKING_FILE)
+    await tracking_volume.commit.aio()
+    logger.info("Tracking saved: %d NJLP / %d probate / %d somerset total IDs",
+                len(tracking.get("njlp", {})),
+                len(tracking.get("probate", {})),
+                len(tracking.get("somerset", {})))
+
+    # One Slack summary covering all 3 sources + new-vs-skipped breakdown
     try:
         import config
         if config.SLACK_WEBHOOK_URL:
             from slack_notifier import _send_webhook
             lines = ["*NJ Weekly All — combined Wednesday run*"]
             for label in ("NJLP", "Middlesex Probate", "Somerset Sheriff"):
-                lines.append(f"  {label}: {len(per_source.get(label, []))} records")
+                n, s = new_counts.get(label, 0), skipped_counts.get(label, 0)
+                lines.append(f"  {label}: {n} new / {s} skipped (already processed)")
             if errors:
                 lines.append(f"  errors: {errors}")
             lines.append(f"Enriched total: {len(enriched)}")
@@ -174,7 +235,8 @@ async def nj_weekly_all():
     return {
         "success": True,
         "total": len(enriched),
-        "per_source": {k: len(v) for k, v in per_source.items()},
+        "new": new_counts,
+        "skipped": skipped_counts,
         "errors": errors,
         "output_csv": str(csv_path),
     }
@@ -360,12 +422,18 @@ async def nj_weekly_somerset_sheriff():
     image=image,
     secrets=[secrets],
     timeout=1800,
+    volumes={TRACKING_MOUNT: tracking_volume},
 )
 async def nj_somerset_sheriff_manual(
     include_bankruptcy: bool = True,
     max_records: int = 0,
 ):
-    """On-demand Somerset sheriff-sale scrape."""
+    """On-demand Somerset sheriff-sale scrape with cross-run dedup.
+
+    Converts scraper dicts into NoticeData, then filters against the
+    shared tracking Volume — re-running with the same --max-records
+    produces 0 new + N skipped on the second invocation.
+    """
     import logging
     import os
     import sys
@@ -377,16 +445,32 @@ async def nj_somerset_sheriff_manual(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
+    logger = logging.getLogger("modal_nj_somerset_sheriff_manual")
 
-    from nj_somerset_sheriff import scrape_somerset_sheriff_sales
+    from nj_somerset_sheriff import scrape_somerset_notices
+    from dedup_tracker import load_tracking, save_tracking, filter_new
 
-    records = await scrape_somerset_sheriff_sales(
+    notices = await scrape_somerset_notices(
         include_bankruptcy=include_bankruptcy,
         max_records=max_records,
         headless=True,
     )
-    print(f"Somerset sheriff: {len(records)} records")
-    return {"records": len(records)}
+    logger.info("Scraped %d Somerset notices", len(notices))
+
+    await tracking_volume.reload.aio()
+    tracking = load_tracking(TRACKING_FILE)
+    new_notices, skipped = filter_new(notices, "somerset", tracking)
+    logger.info("Dedup: %d new / %d skipped", len(new_notices), skipped)
+
+    save_tracking(tracking, TRACKING_FILE)
+    await tracking_volume.commit.aio()
+
+    print(f"Somerset sheriff: scraped={len(notices)} new={len(new_notices)} skipped={skipped}")
+    return {
+        "scraped": len(notices),
+        "new": len(new_notices),
+        "skipped": skipped,
+    }
 
 
 @app.function(
