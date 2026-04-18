@@ -283,7 +283,7 @@ NOTICE_TYPE_TO_CATEGORY = {
     "estate_sale": "Estate Sales",
     "inheritance": "Inheritance",
     # Tax
-    "tax_sale": "Auction",
+    "tax_sale": "Tax Sale",
     "tax_delinquent": "Tax Delinquent",
     "tax_default": "Tax Default",
     "tax_delinquency": "Tax Delinquency",

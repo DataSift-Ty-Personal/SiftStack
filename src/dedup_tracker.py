@@ -4,6 +4,7 @@ Stores a JSON index of already-processed record IDs per source, keyed by:
   - `njlp`     — NJ Lis Pendens docket number (F-NNNNNN-YY)
   - `probate`  — Middlesex surrogate case (docket) number
   - `somerset` — Somerset County sheriff-sale number (5-digit)
+  - `tax_sale` — RealAuction cert composite: {subdomain}{adv_number}{tax_year}
 
 Used by modal_app.py to skip records already uploaded to DataSift in
 a previous run, so the Wednesday cron only enriches + uploads new
@@ -21,7 +22,7 @@ from notice_parser import NoticeData
 
 logger = logging.getLogger(__name__)
 
-_SOURCES = ("njlp", "probate", "somerset")
+_SOURCES = ("njlp", "probate", "somerset", "tax_sale")
 
 
 def _empty_tracking() -> dict:
@@ -57,6 +58,9 @@ _NJLP_DOCKET_RE = re.compile(r"Docket:\s*(F[-‐–]\d{6}[-‐–]\d{2})", re.IG
 _PROBATE_DOCKET_RE = re.compile(r"Docket:\s*(\d{5,})")
 _SOMERSET_SALE_RE = re.compile(r"Sale#:\s*(\d{4,})")
 _PROBATE_PK_RE = re.compile(r"Q_PK_ID=(\d+)")
+_TAX_SALE_ADV_RE = re.compile(r"ADV:\s*([^\s|]+)")
+_TAX_SALE_SUBDOMAIN_RE = re.compile(r"Subdomain:\s*([^\s|]+)")
+_TAX_SALE_YEAR_RE = re.compile(r"Tax Year:\s*(\d{4})")
 
 
 def extract_id(notice: NoticeData, source: str) -> str | None:
@@ -80,6 +84,17 @@ def extract_id(notice: NoticeData, source: str) -> str | None:
     if source == "somerset":
         m = _SOMERSET_SALE_RE.search(raw)
         return m.group(1) if m else None
+    if source == "tax_sale":
+        # Composite key: {subdomain}{adv_number}{tax_year}
+        # ADV# is unique per sale cycle; subdomain and year disambiguate
+        # across municipalities and years (same ADV# reused annually).
+        sub = _TAX_SALE_SUBDOMAIN_RE.search(raw)
+        adv = _TAX_SALE_ADV_RE.search(raw)
+        yr = _TAX_SALE_YEAR_RE.search(raw)
+        if not (sub and adv):
+            return None
+        year = yr.group(1) if yr else ""
+        return f"{sub.group(1)}-{adv.group(1)}-{year}"
     return None
 
 

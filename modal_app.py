@@ -91,6 +91,7 @@ async def nj_weekly_all():
     from nj_scraper import scrape_nj_lp_notices
     from nj_middlesex_probate import scrape_middlesex_probates
     from nj_somerset_sheriff import scrape_somerset_notices
+    from nj_tax_sale_monitor import scrape_nj_tax_sale_notices
 
     async def _safe(coro, label):
         try:
@@ -106,22 +107,27 @@ async def nj_weekly_all():
         _safe(scrape_nj_lp_notices(counties=["Essex", "Middlesex", "Somerset", "Union"]), "NJLP"),
         _safe(scrape_middlesex_probates(days_back=30), "Middlesex Probate"),
         _safe(scrape_somerset_notices(include_bankruptcy=True, max_records=0), "Somerset Sheriff"),
+        _safe(scrape_nj_tax_sale_notices(
+            counties=["Middlesex", "Essex", "Somerset", "Union"],
+            fetch_details=True,
+        ), "Tax Sale"),
     )
     per_source = {label: notices for label, notices, _ in results}
     errors = [(label, err) for label, _, err in results if err]
 
     if not any(per_source.values()):
-        msg = "All 3 scrapers returned 0 records"
+        msg = "All 4 scrapers returned 0 records"
         if errors:
             msg += f" (errors: {errors})"
         logger.error(msg)
         _notify_failure(msg)
         raise RuntimeError(msg)
 
-    logger.info("Raw scrape: NJLP=%d, Probate=%d, Somerset=%d",
+    logger.info("Raw scrape: NJLP=%d, Probate=%d, Somerset=%d, TaxSale=%d",
                 len(per_source.get("NJLP", [])),
                 len(per_source.get("Middlesex Probate", [])),
-                len(per_source.get("Somerset Sheriff", [])))
+                len(per_source.get("Somerset Sheriff", [])),
+                len(per_source.get("Tax Sale", [])))
 
     # Cross-run dedup: skip records we've already processed in a prior run.
     # Tracking lives in a Modal Volume so it survives container restarts.
@@ -132,22 +138,29 @@ async def nj_weekly_all():
     new_lp, skipped_lp = filter_new(per_source.get("NJLP", []), "njlp", tracking)
     new_probate, skipped_probate = filter_new(per_source.get("Middlesex Probate", []), "probate", tracking)
     new_somerset, skipped_somerset = filter_new(per_source.get("Somerset Sheriff", []), "somerset", tracking)
+    new_taxsale, skipped_taxsale = filter_new(per_source.get("Tax Sale", []), "tax_sale", tracking)
 
-    logger.info("Dedup: NJLP %d new / %d skipped, Probate %d new / %d skipped, Somerset %d new / %d skipped",
-                len(new_lp), skipped_lp,
-                len(new_probate), skipped_probate,
-                len(new_somerset), skipped_somerset)
+    logger.info(
+        "Dedup: NJLP %d new / %d skipped, Probate %d new / %d skipped, "
+        "Somerset %d new / %d skipped, TaxSale %d new / %d skipped",
+        len(new_lp), skipped_lp,
+        len(new_probate), skipped_probate,
+        len(new_somerset), skipped_somerset,
+        len(new_taxsale), skipped_taxsale,
+    )
 
-    combined = new_lp + new_probate + new_somerset
+    combined = new_lp + new_probate + new_somerset + new_taxsale
     skipped_counts = {
         "NJLP": skipped_lp,
         "Middlesex Probate": skipped_probate,
         "Somerset Sheriff": skipped_somerset,
+        "Tax Sale": skipped_taxsale,
     }
     new_counts = {
         "NJLP": len(new_lp),
         "Middlesex Probate": len(new_probate),
         "Somerset Sheriff": len(new_somerset),
+        "Tax Sale": len(new_taxsale),
     }
 
     if not combined:
@@ -155,7 +168,7 @@ async def nj_weekly_all():
         # since nothing changed) and notify that it was a clean quiet week.
         save_tracking(tracking, TRACKING_FILE)
         await tracking_volume.commit.aio()
-        msg = (f"All {skipped_lp + skipped_probate + skipped_somerset} records were "
+        msg = (f"All {skipped_lp + skipped_probate + skipped_somerset + skipped_taxsale} records were "
                f"previously processed — nothing new to enrich or upload")
         logger.info(msg)
         try:
@@ -179,7 +192,7 @@ async def nj_weekly_all():
         skip_dm_address=True,
         skip_heir_verification=True,
         skip_parcel_lookup=True,
-        source_label="NJ Weekly All (NJLP + Middlesex Probate + Somerset Sheriff)",
+        source_label="NJ Weekly All (NJLP + Middlesex Probate + Somerset Sheriff + Tax Sale)",
     )
     enriched = run_enrichment_pipeline(combined, opts)
 
@@ -208,10 +221,11 @@ async def nj_weekly_all():
     # up we'd rather redo the dedup work next week than lose records.
     save_tracking(tracking, TRACKING_FILE)
     await tracking_volume.commit.aio()
-    logger.info("Tracking saved: %d NJLP / %d probate / %d somerset total IDs",
+    logger.info("Tracking saved: %d NJLP / %d probate / %d somerset / %d tax_sale total IDs",
                 len(tracking.get("njlp", {})),
                 len(tracking.get("probate", {})),
-                len(tracking.get("somerset", {})))
+                len(tracking.get("somerset", {})),
+                len(tracking.get("tax_sale", {})))
 
     # One Slack summary covering all 3 sources + new-vs-skipped breakdown
     try:
@@ -219,7 +233,7 @@ async def nj_weekly_all():
         if config.SLACK_WEBHOOK_URL:
             from slack_notifier import _send_webhook
             lines = ["*NJ Weekly All — combined Wednesday run*"]
-            for label in ("NJLP", "Middlesex Probate", "Somerset Sheriff"):
+            for label in ("NJLP", "Middlesex Probate", "Somerset Sheriff", "Tax Sale"):
                 n, s = new_counts.get(label, 0), skipped_counts.get(label, 0)
                 lines.append(f"  {label}: {n} new / {s} skipped (already processed)")
             if errors:
