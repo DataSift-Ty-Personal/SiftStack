@@ -6,6 +6,7 @@ google-api-python-client>=2.0.0
 google-auth>=2.0.0
 anthropic>=0.40.0
 pdfminer.six>=20221105
+pdfplumber>=0.11.0
 smartystreets-python-sdk>=4.11.0
 beautifulsoup4>=4.12.0
 ddgs>=9.0.0

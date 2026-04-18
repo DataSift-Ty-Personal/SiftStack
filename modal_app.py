@@ -173,6 +173,88 @@ async def nj_weekly_probate_scrape():
 @app.function(
     image=image,
     secrets=[secrets],
+    timeout=1800,  # 30 min max
+    retries=modal.Retries(
+        max_retries=2,
+        initial_delay=60.0,
+        backoff_coefficient=2.0,
+    ),
+    schedule=modal.Cron(SCHEDULE_CRON_UTC),
+)
+async def nj_weekly_somerset_sheriff():
+    """Scheduled Somerset County sheriff-sale scrape — runs every Wednesday 6 AM ET.
+
+    Pulls all active + bankruptcy-hold sales from somersetcountynj.gov,
+    downloads each sale's PDF, parses docket/plaintiff/address/block-lot/
+    judgment, writes a NoticeData CSV to /app/output.
+    """
+    import logging
+    import os
+    import sys
+
+    sys.path.insert(0, "/app/src")
+    os.chdir("/app")
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    )
+    logger = logging.getLogger("modal_nj_somerset_sheriff")
+
+    from nj_somerset_sheriff import scrape_somerset_sheriff_sales
+
+    logger.info("Starting Somerset sheriff-sale weekly scrape via Modal...")
+
+    try:
+        records = await scrape_somerset_sheriff_sales(
+            include_bankruptcy=True,
+            max_records=0,
+            headless=True,
+        )
+        logger.info("Somerset sheriff scrape complete: %d records", len(records))
+        return {"success": True, "records": len(records)}
+    except Exception as e:
+        logger.error("Somerset sheriff scrape exception: %s", e)
+        _notify_failure(f"Somerset sheriff: {e}")
+        raise
+
+
+@app.function(
+    image=image,
+    secrets=[secrets],
+    timeout=1800,
+)
+async def nj_somerset_sheriff_manual(
+    include_bankruptcy: bool = True,
+    max_records: int = 0,
+):
+    """On-demand Somerset sheriff-sale scrape."""
+    import logging
+    import os
+    import sys
+
+    sys.path.insert(0, "/app/src")
+    os.chdir("/app")
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    )
+
+    from nj_somerset_sheriff import scrape_somerset_sheriff_sales
+
+    records = await scrape_somerset_sheriff_sales(
+        include_bankruptcy=include_bankruptcy,
+        max_records=max_records,
+        headless=True,
+    )
+    print(f"Somerset sheriff: {len(records)} records")
+    return {"records": len(records)}
+
+
+@app.function(
+    image=image,
+    secrets=[secrets],
     timeout=1800,
 )
 async def nj_probate_manual(days_back: int = 30):

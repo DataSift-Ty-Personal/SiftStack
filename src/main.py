@@ -917,6 +917,76 @@ def _run_nj_sheriff(args) -> None:
     logging.info("Sheriff sales: %d records written to %s", len(notices), csv_path)
 
 
+def _run_nj_somerset_sheriff(args) -> None:
+    """Scrape Somerset County NJ sheriff sales from somersetcountynj.gov.
+
+    Unlike the salesweb.civilview.com scraper, Somerset publishes sales as
+    PDF advertisements linked from a single HTML page. Scraper parses the
+    landing page for Sale# links, downloads each PDF, and extracts docket
+    number / plaintiff / defendants / property address / block-lot /
+    judgment amount via regex against the extracted text.
+    """
+    import asyncio
+    from datetime import datetime as _dt
+    from nj_somerset_sheriff import scrape_somerset_sheriff_sales
+    from notice_parser import NoticeData
+
+    include_bankruptcy = not getattr(args, "no_bankruptcy", False)
+    max_records = getattr(args, "max_records", None) or 0
+    headless = not getattr(args, "visible", False)
+
+    records = asyncio.run(scrape_somerset_sheriff_sales(
+        include_bankruptcy=include_bankruptcy,
+        max_records=max_records,
+        headless=headless,
+    ))
+    if not records:
+        logging.warning("No Somerset sheriff sales parsed — check site availability")
+        return
+
+    notices = []
+    for r in records:
+        # Convert MM/DD/YY sale date → YYYY-MM-DD; skip "00/00/00" bankruptcy holds
+        auction_iso = ""
+        raw_date = r.get("sale_date", "")
+        if raw_date and raw_date != "00/00/00":
+            try:
+                auction_iso = _dt.strptime(raw_date, "%m/%d/%y").strftime("%Y-%m-%d")
+            except ValueError:
+                pass
+
+        raw_bits: list[str] = []
+        if r.get("docket_number"): raw_bits.append(f"Docket: {r['docket_number']}")
+        if r.get("plaintiff"): raw_bits.append(f"Plaintiff: {r['plaintiff']}")
+        if r.get("judgment_amount"): raw_bits.append(f"Judgment: ${r['judgment_amount']}")
+        if r.get("upset_bid"): raw_bits.append(f"Upset: ${r['upset_bid']}")
+        if r.get("block") and r.get("lot"):
+            raw_bits.append(f"Block-Lot: {r['block']}-{r['lot']}")
+        if r.get("nearest_cross_street"):
+            raw_bits.append(f"Cross St: {r['nearest_cross_street']}")
+        if r.get("owner_occupied"): raw_bits.append("Owner Occupied")
+        if r.get("status"): raw_bits.append(f"Status: {r['status']}")
+
+        notices.append(NoticeData(
+            date_added=_dt.now().strftime("%Y-%m-%d"),
+            auction_date=auction_iso,
+            address=r.get("property_address", ""),
+            city=r.get("city", ""),
+            state=r.get("state", "NJ"),
+            zip=r.get("zip_code", ""),
+            owner_name=r.get("defendants", ""),
+            notice_type="foreclosure",
+            county="Somerset",
+            source_url=r.get("pdf_url", ""),
+            raw_text=" | ".join(raw_bits),
+        ))
+
+    from data_formatter import deduplicate, write_csv
+    notices = deduplicate(notices)
+    csv_path = write_csv(notices)
+    logging.info("Somerset sheriff sales: %d records written to %s", len(notices), csv_path)
+
+
 def _run_nj_scrape(args) -> None:
     """Run NJ Lis Pendens auto-scrape: login → download → enrich → upload → Slack."""
     import asyncio
@@ -1122,7 +1192,7 @@ def cli_main() -> None:
         "mode",
         choices=[
             "daily", "historical", "pdf-import", "photo-import", "dropbox-watch",
-            "csv-import", "nj-scrape", "nj-sheriff", "nj-probate", "phone-validate", "manage-sold", "manage-presets",
+            "csv-import", "nj-scrape", "nj-sheriff", "nj-somerset-sheriff", "nj-probate", "phone-validate", "manage-sold", "manage-presets",
             # New analysis & workflow modes
             "comp", "rehab", "analyze-deal", "market-analysis", "buyer-prospect",
             "deep-prospect", "lead-manage", "setup-sequences", "niche-sequential",
@@ -1393,6 +1463,25 @@ def cli_main() -> None:
         default=None,
         help="Lookback window in days for nj-probate (default: 30)",
     )
+
+    # Somerset sheriff-sale arguments (PDF-based scraper)
+    parser.add_argument(
+        "--no-bankruptcy",
+        action="store_true",
+        help="Exclude bankruptcy-hold sales from nj-somerset-sheriff output",
+    )
+    parser.add_argument(
+        "--max-records",
+        type=int,
+        default=None,
+        help="Cap on records to scrape for nj-somerset-sheriff (0/None = all)",
+    )
+    parser.add_argument(
+        "--visible",
+        action="store_true",
+        help="Run browser in visible (headed) mode for nj-somerset-sheriff debugging",
+    )
+
     parser.add_argument(
         "--audit-records",
         action="store_true",
@@ -1820,6 +1909,11 @@ def cli_main() -> None:
     # NJ Sheriff sales scrape (salesweb.civilview.com)
     if args.mode == "nj-sheriff":
         _run_nj_sheriff(args)
+        return
+
+    # Somerset NJ sheriff sales scrape (somersetcountynj.gov, PDF-based)
+    if args.mode == "nj-somerset-sheriff":
+        _run_nj_somerset_sheriff(args)
         return
 
     # Middlesex NJ surrogate probate scrape (Bluestone portal)
