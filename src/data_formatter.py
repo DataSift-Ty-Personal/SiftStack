@@ -319,6 +319,45 @@ def write_csv_by_type(notices: list[NoticeData]) -> list[Path]:
     return paths
 
 
+def write_csv_by_list(
+    notices: list[NoticeData],
+    prefix: str = "",
+) -> list[tuple[str, Path, int]]:
+    """Write one CSV per DataSift list (grouped by NOTICE_TYPE_TO_CATEGORY).
+
+    Records with the same DataSift list name are co-located (e.g. Somerset
+    sheriff_sale + CivilView sheriff_sale both land in the "Sheriff Sale"
+    CSV since they both map to the same list). Records whose notice_type
+    isn't in the map go into an "Unmapped" bucket.
+
+    Args:
+        notices: enriched NoticeData records.
+        prefix: optional filename prefix (e.g. "held" for paused-type runs).
+
+    Returns:
+        List of (list_name, csv_path, record_count) tuples, sorted by list_name.
+    """
+    from datasift_formatter import NOTICE_TYPE_TO_CATEGORY
+
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+    groups: dict[str, list[NoticeData]] = {}
+    for n in notices:
+        nt = (n.notice_type or "").lower()
+        list_name = NOTICE_TYPE_TO_CATEGORY.get(nt, "Unmapped")
+        groups.setdefault(list_name, []).append(n)
+
+    results: list[tuple[str, Path, int]] = []
+    for list_name, group in sorted(groups.items()):
+        # Slugify the list name for the filename — drop parens, replace
+        # spaces + special chars with underscores.
+        slug = re.sub(r"[^A-Za-z0-9]+", "_", list_name).strip("_")
+        stem = f"{prefix}_{slug}" if prefix else slug
+        filename = f"{stem}_{timestamp}.csv"
+        path = write_csv(group, filename)
+        results.append((list_name, path, len(group)))
+    return results
+
+
 # ── CSV Re-Import ────────────────────────────────────────────────────────────
 
 # CSV column → NoticeData field name (where Sift columns differ from field names)

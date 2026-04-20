@@ -205,7 +205,7 @@ async def nj_weekly_all():
     enriched = run_enrichment_pipeline(combined, opts)
 
     # One combined CSV (all records, including paused types — for manual review)
-    from data_formatter import write_csv
+    from data_formatter import write_csv, write_csv_by_list
     ts = datetime.now().strftime("%Y-%m-%d_%H%M%S")
     csv_path = write_csv(enriched, f"nj_weekly_all_{ts}.csv")
 
@@ -231,6 +231,36 @@ async def nj_weekly_all():
         )
     else:
         held_csv_path = None
+
+    # Per-list CSVs — one file per DataSift list category (Probate,
+    # Sheriff Sale, Notice of Default (Lis Pendens), Tax Sale, etc.).
+    # upload_ready records + held_back records are split independently so
+    # each review stream stays separate.
+    by_list_ready = write_csv_by_list(upload_ready, prefix="upload_ready") if upload_ready else []
+    by_list_held = write_csv_by_list(held_back, prefix="HELD") if held_back else []
+    logger.info(
+        "Per-list CSVs: %d upload-ready lists, %d held-back lists",
+        len(by_list_ready), len(by_list_held),
+    )
+
+    # Upload every per-list CSV to Dropbox so Slack can include share links
+    # — the webhook can't attach files directly, only text.
+    dbx_links: dict[str, str] = {}  # csv filename -> share URL
+    try:
+        from dropbox_uploader import upload_batch
+        to_upload: list[tuple] = []
+        date_folder = datetime.now().strftime("%Y-%m-%d")
+        for list_name, path, _count in by_list_ready + by_list_held:
+            dest = f"/SiftStack/{date_folder}/{path.name}"
+            to_upload.append((path, dest))
+        if to_upload:
+            results = upload_batch(to_upload)
+            for local_path, url in results:
+                if url:
+                    dbx_links[local_path.name] = url
+            logger.info("Dropbox: %d/%d per-list CSVs uploaded", len(dbx_links), len(to_upload))
+    except Exception as e:
+        logger.warning("Dropbox per-list upload failed: %s", e)
 
     # One DataSift upload — only the non-paused records.
     upload_info = None
@@ -272,13 +302,28 @@ async def nj_weekly_all():
             if errors:
                 lines.append(f"  errors: {errors}")
             lines.append(f"Enriched total: {len(enriched)}")
-            lines.append(f"Output: {csv_path.name}")
-            if paused_counts:
-                held_str = ", ".join(f"{nt}={c}" for nt, c in sorted(paused_counts.items()))
-                lines.append(f":pause_button: Held back from DataSift (paused types): {held_str}")
-                if held_csv_path:
-                    lines.append(f"  Review CSV: {held_csv_path.name}")
+            lines.append(f"Combined CSV: {csv_path.name}")
+
+            # Per-list CSV share links — upload-ready stream
+            if by_list_ready:
+                lines.append("")
+                lines.append("*Upload-ready CSVs (by DataSift list):*")
+                for list_name, path, count in by_list_ready:
+                    url = dbx_links.get(path.name)
+                    link = f" — <{url}|Download>" if url else ""
+                    lines.append(f"  • {list_name}: {count} records{link}")
+
+            # Per-list CSV share links — held-back stream (needs cleaning)
+            if by_list_held:
+                lines.append("")
+                lines.append(":pause_button: *Held for cleaning (not auto-uploaded):*")
+                for list_name, path, count in by_list_held:
+                    url = dbx_links.get(path.name)
+                    link = f" — <{url}|Download>" if url else ""
+                    lines.append(f"  • {list_name}: {count} records{link}")
+
             if upload_info and upload_info.get("success"):
+                lines.append("")
                 lines.append(f"DataSift: uploaded {len(upload_ready)} + enrich + skip trace started")
             elif not upload_ready:
                 lines.append("DataSift: nothing uploaded (all records paused)")
