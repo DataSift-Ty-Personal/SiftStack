@@ -78,6 +78,18 @@ NJ_SHERIFF_STATE_FILE = PROJECT_ROOT / "nj_sheriff_state.json"
 # path (/tracking/processed_ids.json) — this local file is used when the
 # same scrapers run from the command line outside Modal.
 LOCAL_TRACKING_FILE = PROJECT_ROOT / "tracking" / "processed_ids.json"
+
+# Comma-separated notice_types that are paused from DataSift upload.
+# Records of these types still get scraped, enriched, and written to the
+# combined CSV — but are held back from the auto-upload so they can be
+# manually cleaned (e.g. probate ownership verification) before ingestion.
+# Set the env var to "" (empty) to re-enable all uploads. Default pauses
+# probate until we add ownership verification against NJ MOD-IV.
+SIFTSTACK_UPLOAD_PAUSED_TYPES = {
+    t.strip().lower()
+    for t in os.getenv("SIFTSTACK_UPLOAD_PAUSED_TYPES", "probate").split(",")
+    if t.strip()
+}
 DROPBOX_APP_KEY = os.getenv("DROPBOX_APP_KEY", "")            # Dropbox OAuth2 app key
 DROPBOX_APP_SECRET = os.getenv("DROPBOX_APP_SECRET", "")
 DROPBOX_REFRESH_TOKEN = os.getenv("DROPBOX_REFRESH_TOKEN", "")

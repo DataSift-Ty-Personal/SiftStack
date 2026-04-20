@@ -204,19 +204,43 @@ async def nj_weekly_all():
     )
     enriched = run_enrichment_pipeline(combined, opts)
 
-    # One combined CSV
+    # One combined CSV (all records, including paused types — for manual review)
     from data_formatter import write_csv
     ts = datetime.now().strftime("%Y-%m-%d_%H%M%S")
     csv_path = write_csv(enriched, f"nj_weekly_all_{ts}.csv")
 
-    # One DataSift upload
+    # Split off paused notice_types before DataSift upload. Paused records
+    # still get enriched and saved to CSV — they just don't auto-upload,
+    # so they can be manually cleaned (e.g. probate ownership verification)
+    # before being ingested into DataSift.
+    import config
+    paused = config.SIFTSTACK_UPLOAD_PAUSED_TYPES
+    upload_ready = [n for n in enriched if (n.notice_type or "").lower() not in paused]
+    held_back = [n for n in enriched if (n.notice_type or "").lower() in paused]
+    paused_counts: dict[str, int] = {}
+    for n in held_back:
+        nt = (n.notice_type or "unknown").lower()
+        paused_counts[nt] = paused_counts.get(nt, 0) + 1
+
+    if held_back:
+        # Write a separate CSV of just the held-back records for manual cleaning.
+        held_csv_path = write_csv(held_back, f"nj_weekly_all_{ts}_HELD_FOR_CLEANING.csv")
+        logger.info(
+            "Held back %d records from DataSift upload (paused types=%s): %s",
+            len(held_back), sorted(paused), held_csv_path.name,
+        )
+    else:
+        held_csv_path = None
+
+    # One DataSift upload — only the non-paused records.
     upload_info = None
     try:
-        import config
-        if config.DATASIFT_EMAIL and config.DATASIFT_PASSWORD:
+        if not upload_ready:
+            logger.info("No upload-ready records after applying paused types %s", sorted(paused))
+        elif config.DATASIFT_EMAIL and config.DATASIFT_PASSWORD:
             from datasift_formatter import write_datasift_split_csvs
             from datasift_uploader import upload_to_datasift
-            csv_infos = write_datasift_split_csvs(enriched, list_name="")
+            csv_infos = write_datasift_split_csvs(upload_ready, list_name="")
             if csv_infos:
                 upload_info = await upload_to_datasift(
                     csv_infos[0]["path"], enrich=True, skip_trace=True,
@@ -249,8 +273,15 @@ async def nj_weekly_all():
                 lines.append(f"  errors: {errors}")
             lines.append(f"Enriched total: {len(enriched)}")
             lines.append(f"Output: {csv_path.name}")
+            if paused_counts:
+                held_str = ", ".join(f"{nt}={c}" for nt, c in sorted(paused_counts.items()))
+                lines.append(f":pause_button: Held back from DataSift (paused types): {held_str}")
+                if held_csv_path:
+                    lines.append(f"  Review CSV: {held_csv_path.name}")
             if upload_info and upload_info.get("success"):
-                lines.append("DataSift: uploaded + enrich + skip trace started")
+                lines.append(f"DataSift: uploaded {len(upload_ready)} + enrich + skip trace started")
+            elif not upload_ready:
+                lines.append("DataSift: nothing uploaded (all records paused)")
             _send_webhook("\n".join(lines))
     except Exception as e:
         logger.warning("Slack notification failed: %s", e)

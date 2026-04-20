@@ -308,6 +308,8 @@ def _build_tags(notice: NoticeData) -> str:
 
     Tags include:
     - Courthouse Data (all records — for niche sequential filter presets)
+    - siftstack_auto (every record from this pipeline — future cleanup filter)
+    - run_YYYY-MM-DD (batch identifier so a single run can be isolated later)
     - notice_type (foreclosure, tax_sale, probate, tax_delinquent)
     - county (knox, blount)
     - YYYY-MM date tag
@@ -315,7 +317,10 @@ def _build_tags(notice: NoticeData) -> str:
     - DM confidence level (for deceased records)
     - has_auction if auction date is upcoming
     """
-    tags = ["Courthouse Data"]
+    tags = ["Courthouse Data", "siftstack_auto"]
+
+    # Batch identifier — lets you filter all records from a single pipeline run.
+    tags.append(f"run_{datetime.now().strftime('%Y-%m-%d')}")
 
     # Week-based batch tag (e.g. "NOD Week 16 2026")
     if notice.notice_type:
