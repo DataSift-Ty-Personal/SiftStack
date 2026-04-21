@@ -78,6 +78,7 @@ async def nj_weekly_all():
     import os
     import sys
     from datetime import datetime
+    from pathlib import Path
 
     sys.path.insert(0, "/app/src")
     os.chdir("/app")
@@ -243,24 +244,46 @@ async def nj_weekly_all():
         len(by_list_ready), len(by_list_held),
     )
 
-    # Upload every per-list CSV to Dropbox so Slack can include share links
-    # — the webhook can't attach files directly, only text.
+    # Persist per-list CSVs to the Modal Volume so they survive container
+    # shutdown and can be fetched with `modal volume get siftstack-tracking
+    # output/{date}/...`. This is the zero-config path — no Dropbox/Drive
+    # credentials required.
+    date_folder = datetime.now().strftime("%Y-%m-%d")
+    volume_out_dir = Path(f"{TRACKING_MOUNT}/output/{date_folder}")
+    volume_out_dir.mkdir(parents=True, exist_ok=True)
+    volume_paths: list[tuple[str, str, int]] = []  # (list_name, volume_relpath, count)
+    for list_name, src_path, count in by_list_ready + by_list_held:
+        dst = volume_out_dir / src_path.name
+        try:
+            dst.write_bytes(src_path.read_bytes())
+            rel = dst.relative_to(TRACKING_MOUNT).as_posix()
+            volume_paths.append((list_name, rel, count))
+        except Exception as e:
+            logger.warning("Failed to copy %s to volume: %s", src_path.name, e)
+    if volume_paths:
+        logger.info("Per-list CSVs persisted to volume: %d files", len(volume_paths))
+
+    # Optional: also upload to Dropbox if credentials are configured.
+    # Without Dropbox creds this is a silent no-op — Slack will fall back
+    # to volume paths.
     dbx_links: dict[str, str] = {}  # csv filename -> share URL
-    try:
-        from dropbox_uploader import upload_batch
-        to_upload: list[tuple] = []
-        date_folder = datetime.now().strftime("%Y-%m-%d")
-        for list_name, path, _count in by_list_ready + by_list_held:
-            dest = f"/SiftStack/{date_folder}/{path.name}"
-            to_upload.append((path, dest))
-        if to_upload:
-            results = upload_batch(to_upload)
-            for local_path, url in results:
-                if url:
-                    dbx_links[local_path.name] = url
-            logger.info("Dropbox: %d/%d per-list CSVs uploaded", len(dbx_links), len(to_upload))
-    except Exception as e:
-        logger.warning("Dropbox per-list upload failed: %s", e)
+    if config.DROPBOX_REFRESH_TOKEN or os.environ.get("DROPBOX_ACCESS_TOKEN"):
+        try:
+            from dropbox_uploader import upload_batch
+            to_upload: list[tuple] = []
+            for list_name, path, _count in by_list_ready + by_list_held:
+                dest = f"/SiftStack/{date_folder}/{path.name}"
+                to_upload.append((path, dest))
+            if to_upload:
+                results = upload_batch(to_upload)
+                for local_path, url in results:
+                    if url:
+                        dbx_links[local_path.name] = url
+                logger.info("Dropbox: %d/%d per-list CSVs uploaded", len(dbx_links), len(to_upload))
+        except Exception as e:
+            logger.warning("Dropbox per-list upload failed: %s", e)
+    else:
+        logger.info("Dropbox creds not set — skipping cloud upload, use `modal volume get` instead")
 
     # One DataSift upload — only the non-paused records.
     upload_info = None
@@ -304,23 +327,44 @@ async def nj_weekly_all():
             lines.append(f"Enriched total: {len(enriched)}")
             lines.append(f"Combined CSV: {csv_path.name}")
 
+            # Build a {filename: volume_relpath} lookup so Slack can fall
+            # back to `modal volume get` instructions when Dropbox isn't set.
+            vol_rel_by_name = {
+                Path(rel).name: rel for _l, rel, _c in volume_paths
+            }
+
+            def _link_suffix(filename: str) -> str:
+                # Prefer Dropbox link when configured; otherwise point at
+                # the volume path (user pulls it via `modal volume get`).
+                url = dbx_links.get(filename)
+                if url:
+                    return f" — <{url}|Download>"
+                rel = vol_rel_by_name.get(filename)
+                if rel:
+                    return f" — `{rel}`"
+                return ""
+
             # Per-list CSV share links — upload-ready stream
             if by_list_ready:
                 lines.append("")
                 lines.append("*Upload-ready CSVs (by DataSift list):*")
                 for list_name, path, count in by_list_ready:
-                    url = dbx_links.get(path.name)
-                    link = f" — <{url}|Download>" if url else ""
-                    lines.append(f"  • {list_name}: {count} records{link}")
+                    lines.append(f"  • {list_name}: {count} records{_link_suffix(path.name)}")
 
             # Per-list CSV share links — held-back stream (needs cleaning)
             if by_list_held:
                 lines.append("")
                 lines.append(":pause_button: *Held for cleaning (not auto-uploaded):*")
                 for list_name, path, count in by_list_held:
-                    url = dbx_links.get(path.name)
-                    link = f" — <{url}|Download>" if url else ""
-                    lines.append(f"  • {list_name}: {count} records{link}")
+                    lines.append(f"  • {list_name}: {count} records{_link_suffix(path.name)}")
+
+            # Retrieval hint when running without a cloud-sync destination.
+            if volume_paths and not dbx_links:
+                lines.append("")
+                lines.append(
+                    f"To download: `modal volume get siftstack-tracking "
+                    f"output/{date_folder}/ ./` (pulls all CSVs for this run)"
+                )
 
             if upload_info and upload_info.get("success"):
                 lines.append("")

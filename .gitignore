@@ -16,8 +16,15 @@ nj_lp_cookies.json
 nj_sheriff_state.json
 newark_cv_state.json
 newark_cv_cookies.json
+tracking/
 *.tmp
 *.bak
+
+# Dev screenshots (DataSift UI captures from local debugging)
+datasift_*.png
+
+# Working files (local drafts & weekly NOD lists)
+NOD Week*
 
 # Output (generated data)
 output/
