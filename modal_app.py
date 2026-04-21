@@ -313,65 +313,70 @@ async def nj_weekly_all():
                 len(tracking.get("tax_sale", {})),
                 len(tracking.get("civilview_sheriff", {})))
 
-    # One Slack summary covering all 3 sources + new-vs-skipped breakdown
+    # Build summary text, post it, then attach per-list CSVs as threaded
+    # replies. When SLACK_BOT_TOKEN + SLACK_CHANNEL_ID are set the summary
+    # goes via chat.postMessage (returns thread_ts so files thread under
+    # it); otherwise we fall back to the webhook (summary only, no files).
     try:
         import config
-        if config.SLACK_WEBHOOK_URL:
-            from slack_notifier import _send_webhook
-            lines = ["*NJ Weekly All — combined Wednesday run*"]
-            for label in ("NJLP", "Middlesex Probate", "Somerset Sheriff", "Tax Sale", "CivilView Sheriff"):
-                n, s = new_counts.get(label, 0), skipped_counts.get(label, 0)
-                lines.append(f"  {label}: {n} new / {s} skipped (already processed)")
-            if errors:
-                lines.append(f"  errors: {errors}")
-            lines.append(f"Enriched total: {len(enriched)}")
-            lines.append(f"Combined CSV: {csv_path.name}")
+        lines = ["*NJ Weekly All — combined Wednesday run*"]
+        for label in ("NJLP", "Middlesex Probate", "Somerset Sheriff", "Tax Sale", "CivilView Sheriff"):
+            n, s = new_counts.get(label, 0), skipped_counts.get(label, 0)
+            lines.append(f"  {label}: {n} new / {s} skipped (already processed)")
+        if errors:
+            lines.append(f"  errors: {errors}")
+        lines.append(f"Enriched total: {len(enriched)}")
+        lines.append(f"Combined CSV: {csv_path.name}")
 
-            # Build a {filename: volume_relpath} lookup so Slack can fall
-            # back to `modal volume get` instructions when Dropbox isn't set.
-            vol_rel_by_name = {
-                Path(rel).name: rel for _l, rel, _c in volume_paths
-            }
+        # Per-list breakdown — the actual CSVs attach as thread replies
+        # when bot token is configured, so these lines are just a roster.
+        if by_list_ready:
+            lines.append("")
+            lines.append("*Upload-ready CSVs (by DataSift list):*")
+            for list_name, _p, count in by_list_ready:
+                lines.append(f"  • {list_name}: {count} records")
+        if by_list_held:
+            lines.append("")
+            lines.append(":pause_button: *Held for cleaning (not auto-uploaded):*")
+            for list_name, _p, count in by_list_held:
+                lines.append(f"  • {list_name}: {count} records")
 
-            def _link_suffix(filename: str) -> str:
-                # Prefer Dropbox link when configured; otherwise point at
-                # the volume path (user pulls it via `modal volume get`).
-                url = dbx_links.get(filename)
-                if url:
-                    return f" — <{url}|Download>"
-                rel = vol_rel_by_name.get(filename)
-                if rel:
-                    return f" — `{rel}`"
-                return ""
+        if upload_info and upload_info.get("success"):
+            lines.append("")
+            lines.append(f"DataSift: uploaded {len(upload_ready)} + enrich + skip trace started")
+        elif not upload_ready:
+            lines.append("DataSift: nothing uploaded (all records paused)")
 
-            # Per-list CSV share links — upload-ready stream
-            if by_list_ready:
-                lines.append("")
-                lines.append("*Upload-ready CSVs (by DataSift list):*")
-                for list_name, path, count in by_list_ready:
-                    lines.append(f"  • {list_name}: {count} records{_link_suffix(path.name)}")
+        summary_text = "\n".join(lines)
 
-            # Per-list CSV share links — held-back stream (needs cleaning)
-            if by_list_held:
-                lines.append("")
-                lines.append(":pause_button: *Held for cleaning (not auto-uploaded):*")
-                for list_name, path, count in by_list_held:
-                    lines.append(f"  • {list_name}: {count} records{_link_suffix(path.name)}")
+        # Post summary and (if bot token set) grab thread_ts for file replies.
+        thread_ts = None
+        if os.environ.get("SLACK_BOT_TOKEN") or config.SLACK_WEBHOOK_URL:
+            from slack_uploader import post_summary_and_get_ts, upload_weekly_csvs
+            thread_ts = post_summary_and_get_ts(
+                webhook_url=config.SLACK_WEBHOOK_URL,
+                summary_text=summary_text,
+            )
 
-            # Retrieval hint when running without a cloud-sync destination.
-            if volume_paths and not dbx_links:
-                lines.append("")
-                lines.append(
-                    f"To download: `modal volume get siftstack-tracking "
-                    f"output/{date_folder}/ ./` (pulls all CSVs for this run)"
+            # Attach per-list CSVs as thread replies (bot token required —
+            # if it's not set, upload_weekly_csvs will log the error per-file
+            # and we'll still have the summary).
+            if os.environ.get("SLACK_BOT_TOKEN") and os.environ.get("SLACK_CHANNEL_ID"):
+                csv_paths = {name: str(p) for name, p, _c in by_list_ready}
+                held_paths = {name: str(p) for name, p, _c in by_list_held}
+                upload_weekly_csvs(
+                    csv_paths=csv_paths,
+                    held_paths=held_paths,
+                    run_summary=summary_text,
+                    thread_ts=thread_ts,
                 )
-
-            if upload_info and upload_info.get("success"):
-                lines.append("")
-                lines.append(f"DataSift: uploaded {len(upload_ready)} + enrich + skip trace started")
-            elif not upload_ready:
-                lines.append("DataSift: nothing uploaded (all records paused)")
-            _send_webhook("\n".join(lines))
+            else:
+                logger.info(
+                    "SLACK_BOT_TOKEN/SLACK_CHANNEL_ID not set — "
+                    "files not attached; use `modal volume get siftstack-tracking "
+                    "output/%s/ ./` to pull CSVs",
+                    date_folder,
+                )
     except Exception as e:
         logger.warning("Slack notification failed: %s", e)
 
