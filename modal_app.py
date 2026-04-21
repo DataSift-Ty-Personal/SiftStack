@@ -581,10 +581,16 @@ async def nj_somerset_sheriff_manual(
     Converts scraper dicts into NoticeData, then filters against the
     shared tracking Volume — re-running with the same --max-records
     produces 0 new + N skipped on the second invocation.
+
+    Also writes per-list CSVs and posts them to Slack as threaded
+    replies (when SLACK_BOT_TOKEN is configured). Smallest live scraper
+    — used as the smoke test for the Slack upload wiring.
     """
     import logging
     import os
     import sys
+    from datetime import datetime
+    from pathlib import Path
 
     sys.path.insert(0, "/app/src")
     os.chdir("/app")
@@ -612,6 +618,42 @@ async def nj_somerset_sheriff_manual(
 
     save_tracking(tracking, TRACKING_FILE)
     await tracking_volume.commit.aio()
+
+    # Per-list CSV + Slack upload — exercises the wiring end-to-end.
+    if new_notices:
+        from data_formatter import write_csv_by_list
+        date_folder = datetime.now().strftime("%Y-%m-%d")
+        volume_out_dir = Path(f"{TRACKING_MOUNT}/output/{date_folder}")
+        volume_out_dir.mkdir(parents=True, exist_ok=True)
+        by_list = write_csv_by_list(new_notices, prefix="upload_ready")
+        for _l, src, _c in by_list:
+            try:
+                (volume_out_dir / src.name).write_bytes(src.read_bytes())
+            except Exception as e:
+                logger.warning("Failed to copy %s to volume: %s", src.name, e)
+        await tracking_volume.commit.aio()
+
+        summary_text = (
+            f"*Somerset Sheriff (manual test)*\n"
+            f"Scraped {len(notices)} / New {len(new_notices)} / "
+            f"Skipped {skipped}"
+        )
+        try:
+            import config
+            from slack_uploader import post_summary_and_get_ts, upload_weekly_csvs
+            thread_ts = post_summary_and_get_ts(
+                webhook_url=config.SLACK_WEBHOOK_URL,
+                summary_text=summary_text,
+            )
+            if os.environ.get("SLACK_BOT_TOKEN") and os.environ.get("SLACK_CHANNEL_ID"):
+                upload_weekly_csvs(
+                    csv_paths={name: str(p) for name, p, _ in by_list},
+                    held_paths={},
+                    run_summary=summary_text,
+                    thread_ts=thread_ts,
+                )
+        except Exception as e:
+            logger.warning("Slack post/upload failed: %s", e)
 
     print(f"Somerset sheriff: scraped={len(notices)} new={len(new_notices)} skipped={skipped}")
     return {
