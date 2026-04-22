@@ -25,6 +25,11 @@ CAPTCHA_FAILED_PRUNE_DAYS = 14
 COOKIES_FILE = PROJECT_ROOT / "cookies.json"
 DROPBOX_STATE_FILE = PROJECT_ROOT / "dropbox_state.json"
 PHOTO_STATE_FILE = PROJECT_ROOT / "photo_state.json"
+# KCOJ dockets recur the same case on multiple days (probate estates can have
+# motion hours, settlement reviews, etc. for months or years). Cross-run dedup
+# by case_number keeps DataSift uploads from duplicating on the daily Apify run.
+KCOJ_SEEN_CASES_FILE = PROJECT_ROOT / "kcoj_seen_cases.json"
+KCOJ_SEEN_CASES_PRUNE_DAYS = 90
 
 # ── Dropbox Watcher ────────────────────────────────────────────────────
 DROPBOX_POLL_INTERVAL = int(os.getenv("DROPBOX_POLL_INTERVAL", "900"))  # seconds (default 15 min)
@@ -102,23 +107,38 @@ TESSERACT_PSM_PDF = 3    # fully automatic — best for PDF tax sale tables
 TESSERACT_PSM_PHOTO = 4  # assume single column of variable-size text — best for terminal screen photos
 
 # ── Notice Types ───────────────────────────────────────────────────────
-NOTICE_TYPES = ["foreclosure", "probate"]
+NOTICE_TYPES = ["foreclosure", "probate", "lis_pendens"]
 
 
 @dataclass
 class SavedSearch:
-    """Represents a saved search on tnpublicnotice.com."""
+    """Represents a saved search — one of the configured data-source portals."""
     county: str
-    notice_type: str  # One of NOTICE_TYPES
-    saved_search_name: str  # Exact name in the Saved Searches dropdown
+    notice_type: str        # One of NOTICE_TYPES
+    saved_search_name: str  # Exact dropdown name (TNPN) or descriptive label (JCD, KCOJ)
+    source: str = "tnpn"    # "tnpn" = TN Public Notice | "jcd" = Jefferson County Deeds | "kcoj" = Kentucky Court of Justice dockets
+    # KCOJ-specific: "District" or "Circuit". Jefferson County KY probate is District Court class P.
+    kcoj_division: str = ""
 
 
 # ── Saved Searches ─────────────────────────────────────────────────────
-# These names must match exactly what appears in the dropdown on the site.
+# TNPN entries: saved_search_name must match exactly what appears in the dropdown.
+# JCD entries:  saved_search_name is a descriptive label; source="jcd" routes to
+#               jefferson_deeds_scraper instead of the Playwright-based scraper.
+# KCOJ entries: saved_search_name is a descriptive label; source="kcoj" routes to
+#               kcoj_scraper. Set kcoj_division="District" or "Circuit".
 SAVED_SEARCHES: list[SavedSearch] = [
     SavedSearch("Knox", "foreclosure", "Foreclosure V2 Knox"),
     SavedSearch("Blount", "foreclosure", "Foreclosure V2 Blount"),
+    SavedSearch("Jefferson", "lis_pendens", "LIS PENDENS Jefferson County", source="jcd"),
+    SavedSearch(
+        "Jefferson", "probate", "Jefferson KY District Probate",
+        source="kcoj", kcoj_division="District",
+    ),
 ]
+
+# ── Jefferson County Deeds (Louisville, KY) ────────────────────────────
+JCD_BASE_URL = "https://search.jeffersondeeds.com"
 
 # ── Entity Detection ──────────────────────────────────────────────────
 # Business entity patterns — shared across obituary_enricher, tax_enricher,

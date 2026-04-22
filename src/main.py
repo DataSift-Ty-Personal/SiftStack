@@ -51,10 +51,12 @@ def _filter_searches(
 # ── Preflight health checks ─────────────────────────────────────────
 
 
-def _preflight_check(mode: str) -> list[str]:
+def _preflight_check(mode: str, active_searches: list | None = None) -> list[str]:
     """Verify required API keys and service connectivity before running.
 
     Returns a list of failure descriptions. Empty list = all checks passed.
+    active_searches: the filtered search list for this run. If None, all
+                     SAVED_SEARCHES are used (conservative — may over-require creds).
     """
     failures: list[str] = []
 
@@ -64,10 +66,16 @@ def _preflight_check(mode: str) -> list[str]:
     datasift_modes = {"manage-presets", "manage-sold", "phone-validate"}
 
     if mode in scrape_modes:
-        if not config.TNPN_EMAIL or not config.TNPN_PASSWORD:
-            failures.append("TNPN_EMAIL / TNPN_PASSWORD not set (required for scraping)")
-        if not config.CAPTCHA_API_KEY:
-            failures.append("CAPTCHA_API_KEY not set (CAPTCHA solving will fail)")
+        # Only TNPN searches require TNPN creds + 2Captcha.
+        # JCD (Jefferson County Deeds) uses plain HTTP; KCOJ (Kentucky Court of
+        # Justice dockets) uses Playwright but needs no login/CAPTCHA.
+        searches_to_check = active_searches if active_searches is not None else list(config.SAVED_SEARCHES)
+        has_tnpn = any(getattr(s, "source", "tnpn") == "tnpn" for s in searches_to_check)
+        if has_tnpn:
+            if not config.TNPN_EMAIL or not config.TNPN_PASSWORD:
+                failures.append("TNPN_EMAIL / TNPN_PASSWORD not set (required for scraping)")
+            if not config.CAPTCHA_API_KEY:
+                failures.append("CAPTCHA_API_KEY not set (CAPTCHA solving will fail)")
 
     if mode in enrichment_modes:
         # These are warnings, not blockers — pipeline degrades gracefully
@@ -90,8 +98,14 @@ def _preflight_check(mode: str) -> list[str]:
         if not config.TRESTLE_API_KEY:
             failures.append("TRESTLE_API_KEY not set (required for phone validation)")
 
-    # ── Connectivity checks (only for scrape modes) ─────────────────
-    if mode in scrape_modes:
+    # ── Connectivity checks (only for TNPN scrape modes) ────────────
+    # Reuse `has_tnpn` from the credential block above. Only run if that block
+    # executed (i.e., mode is a scrape mode); otherwise fall back to False.
+    has_tnpn = mode in scrape_modes and any(
+        getattr(s, "source", "tnpn") == "tnpn"
+        for s in (active_searches if active_searches is not None else list(config.SAVED_SEARCHES))
+    )
+    if mode in scrape_modes and has_tnpn:
         import requests as _requests
         try:
             resp = _requests.head(config.BASE_URL, timeout=10, allow_redirects=True)
@@ -101,7 +115,7 @@ def _preflight_check(mode: str) -> list[str]:
             failures.append(f"Cannot reach tnpublicnotice.com: {e}")
 
     # ── 2Captcha balance check ──────────────────────────────────────
-    if mode in scrape_modes and config.CAPTCHA_API_KEY:
+    if mode in scrape_modes and has_tnpn and config.CAPTCHA_API_KEY:
         import requests as _requests
         try:
             resp = _requests.get(
@@ -311,6 +325,13 @@ async def actor_main() -> None:
             seen_ids = await kvs.get_value("seen_notice_ids") or {}
             Actor.log.info("Loaded %d previously-seen notice IDs from KVS", len(seen_ids))
 
+            # ── Load KCOJ seen-case cache from KVS (independent from TNPN seen_ids) ──
+            # KCOJ dockets recur probate cases across many days; without this,
+            # the daily scheduled Apify run would resend every still-open case
+            # to DataSift every morning.
+            kcoj_seen_cases = await kvs.get_value("kcoj_seen_cases") or {}
+            Actor.log.info("Loaded %d previously-seen KCOJ case numbers from KVS", len(kcoj_seen_cases))
+
             async def persist_seen_ids(ids: dict) -> None:
                 """Mid-run persistence — if a later search crashes, progress is kept."""
                 try:
@@ -322,6 +343,12 @@ async def actor_main() -> None:
                 except Exception as e:
                     Actor.log.warning("Failed to persist seen_notice_ids to KVS: %s", e)
 
+            async def persist_kcoj_seen_cases(cases: dict) -> None:
+                try:
+                    await kvs.set_value("kcoj_seen_cases", cases)
+                except Exception as e:
+                    Actor.log.warning("Failed to persist kcoj_seen_cases to KVS: %s", e)
+
             # ── Scrape ────────────────────────────────────────────────
             notices = await scrape_all(
                 mode=mode, searches=searches, proxy_url=proxy_url, on_batch=push_batch,
@@ -329,7 +356,9 @@ async def actor_main() -> None:
                 llm_api_key=config.ANTHROPIC_API_KEY or None,
                 start_page=start_page,
                 seen_ids=seen_ids,
+                kcoj_seen_cases=kcoj_seen_cases,
                 on_search_complete=persist_seen_ids,
+                on_kcoj_search_complete=persist_kcoj_seen_cases,
             )
             # Handle async probate lookup before pipeline (requires await)
             probate_notices = [n for n in notices if n.notice_type == "probate" and n.decedent_name and not n.address]
@@ -547,12 +576,13 @@ async def actor_main() -> None:
                 except Exception as e:
                     Actor.log.warning("Slack notification failed: %s", e)
 
-            # ── Save last_run_date + seen_notice_ids to Apify KVS for next run ─────
+            # ── Save last_run_date + seen_notice_ids + kcoj_seen_cases to KVS ─────
             await kvs.set_value("last_run_date", datetime.now().strftime("%Y-%m-%d"))
             await kvs.set_value("seen_notice_ids", seen_ids)
+            await kvs.set_value("kcoj_seen_cases", kcoj_seen_cases)
             Actor.log.info(
-                "Saved last_run_date + %d seen_notice_ids to KVS for next daily run",
-                len(seen_ids),
+                "Saved last_run_date + %d seen_notice_ids + %d kcoj_seen_cases to KVS for next run",
+                len(seen_ids), len(kcoj_seen_cases),
             )
 
             Actor.log.info("Done — %d notices exported (%.1f min)", total, elapsed_min)
@@ -1455,7 +1485,9 @@ def cli_main() -> None:
     setup_logging(args.verbose)
 
     # ── Preflight health checks ──────────────────────────────────────
-    preflight_failures = _preflight_check(args.mode)
+    _counties = [c.strip() for c in args.counties.split(",")] if args.counties else None
+    _types = [t.strip() for t in args.types.split(",")] if getattr(args, "types", None) else None
+    preflight_failures = _preflight_check(args.mode, active_searches=_filter_searches(_counties, _types))
     if preflight_failures:
         for f in preflight_failures:
             logging.error("Preflight FAILED: %s", f)
@@ -1884,6 +1916,14 @@ def _run_scrape_pipeline(args, searches) -> None:
                 logging.info("  Skip trace: %s", upload_result["skip_trace_result"].get("message", ""))
         else:
             logging.error("DataSift upload failed: %s", upload_result.get("message"))
+
+        # Phonebook CSV — write whenever any record has Tracerfy phone data.
+        # Gives DataSift phones for records its own skip trace provider skips.
+        records_with_phones = [n for n in notices if n.primary_phone or n.mobile_1 or n.landline_1]
+        if records_with_phones:
+            from datasift_phonebook_formatter import write_phonebook_csv
+            pb_path = write_phonebook_csv(notices)
+            logging.info("Phonebook CSV (%d records): %s", len(records_with_phones), pb_path)
 
     # Slack/Discord notification
     if getattr(args, "notify_slack", False):

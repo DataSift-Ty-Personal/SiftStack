@@ -15,12 +15,16 @@ to leave the address empty than to grab a courthouse, auction location, or
 instrument number by mistake.
 """
 
+from __future__ import annotations
+
 import logging
 import re
 from dataclasses import dataclass
 from datetime import datetime
+from typing import TYPE_CHECKING
 
-from playwright.async_api import Page
+if TYPE_CHECKING:
+    from playwright.async_api import Page
 
 logger = logging.getLogger(__name__)
 
@@ -132,6 +136,8 @@ class NoticeData:
     email_5: str = ""
     # Pipeline metadata (set by enrichment_pipeline)
     run_id: str = ""                   # Unique pipeline run identifier for data lineage
+    # Court case metadata (populated by court docket scrapers — e.g. KCOJ, Jefferson Deeds)
+    case_number: str = ""              # Court case number (e.g. "26-P-001544" for KY probate)
 
 
 # ── Known TN cities in Knox & Blount counties ─────────────────────────

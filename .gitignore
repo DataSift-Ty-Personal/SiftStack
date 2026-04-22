@@ -7,6 +7,7 @@ input_foreclosure_daily.json
 last_run.json
 seen_ids.json
 captcha_failed_ids.json
+kcoj_seen_cases.json
 .ancestry_page_loads.json
 cookies.json
 datasift_cookies.json
