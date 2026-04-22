@@ -77,6 +77,10 @@ class NoticeData:
     owner_deceased: str = ""                # "yes" or "" — confirmed via obituary search
     date_of_death: str = ""                 # YYYY-MM-DD from obituary
     obituary_url: str = ""                  # URL of confirmed obituary
+    age_at_death: str = ""                  # Integer age at death extracted from obit
+    obituary_snippet: str = ""              # First ~500 chars of fetched obit text (for Notes)
+    obit_survivors_json: str = ""           # JSON array of all named survivors from obit
+    preceded_in_death: str = ""             # Comma-separated names who predeceased (from obit)
     decision_maker_name: str = ""           # Heir/executor full name
     decision_maker_relationship: str = ""   # "spouse", "son", "daughter", "executor", etc.
     # Deep prospecting — ranked decision-makers (flat columns)

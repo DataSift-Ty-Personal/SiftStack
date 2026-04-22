@@ -2044,6 +2044,35 @@ def _apply_obituary_match(
     notice.obituary_url = url
     notice.obituary_source_type = source_type
 
+    # Age at death — LLM already extracts this as an int (0 = not found)
+    age = parsed.get("age_at_death")
+    if age and int(age) > 0:
+        notice.age_at_death = str(int(age))
+
+    # Obit snippet — Phase A stashes raw obit text on parsed["_raw_obituary_text"]
+    # before _apply runs. Keep first 500 chars, stripped and single-spaced, so
+    # Notes gets a readable excerpt without bloating the DataSift record.
+    raw_obit = parsed.get("_raw_obituary_text") or ""
+    if raw_obit:
+        compact = " ".join(raw_obit.split())[:500]
+        notice.obituary_snippet = compact
+
+    # Full survivors list (name, relationship, city) — stored as JSON so the
+    # formatter can render all named family members, not just the DM pick.
+    survivors = parsed.get("survivors") or []
+    if survivors:
+        try:
+            notice.obit_survivors_json = json.dumps(survivors, ensure_ascii=False)
+        except (TypeError, ValueError):
+            pass
+
+    # Predeceased — flat comma-separated list so it slots into Notes easily.
+    predeceased = parsed.get("preceded_in_death") or []
+    if predeceased:
+        notice.preceded_in_death = ", ".join(
+            str(p) for p in predeceased if p
+        )
+
     if ranked_dms:
         # Deep prospecting: apply top 3 ranked decision-makers
         if len(ranked_dms) >= 1:

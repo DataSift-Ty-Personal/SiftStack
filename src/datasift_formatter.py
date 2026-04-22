@@ -646,6 +646,38 @@ def _build_property_section(notice: NoticeData) -> str:
     return " | ".join(parts)
 
 
+def _build_obit_survivors_section(notice: NoticeData) -> str:
+    """Render the full obit-extracted survivor list as a compact section.
+
+    Distinct from the heir map (which only exists after heir verification).
+    This is the raw `survivors` array the LLM pulls from the obituary —
+    every named family member with relationship + city (when available).
+    """
+    if not notice.obit_survivors_json:
+        return ""
+    try:
+        survivors = json.loads(notice.obit_survivors_json)
+    except (json.JSONDecodeError, TypeError):
+        return ""
+    if not survivors:
+        return ""
+
+    lines = [f"=== SURVIVORS ({len(survivors)} named in obituary) ==="]
+    # Cap at 15 to keep the Notes field from ballooning on huge families.
+    for s in survivors[:15]:
+        name = (s.get("name") or "").strip() or "?"
+        rel = (s.get("relationship") or "").strip() or "family_member"
+        city = (s.get("city") or "").strip()
+        entry = f"{name} ({rel})"
+        if city:
+            entry += f" — {city}"
+        lines.append(entry)
+    remaining = len(survivors) - 15
+    if remaining > 0:
+        lines.append(f"(+{remaining} more)")
+    return "\n".join(lines)
+
+
 def _build_notes(notice: NoticeData) -> str:
     """Build a structured notes string for DataSift records.
 
@@ -660,7 +692,12 @@ def _build_notes(notice: NoticeData) -> str:
         if notice.decedent_name:
             deceased_parts.append(f"Decedent: {notice.decedent_name}")
         if notice.date_of_death:
-            deceased_parts.append(f"Died: {_format_date(notice.date_of_death)}")
+            died_str = f"Died: {_format_date(notice.date_of_death)}"
+            if notice.age_at_death:
+                died_str += f" (age {notice.age_at_death})"
+            deceased_parts.append(died_str)
+        elif notice.age_at_death:
+            deceased_parts.append(f"Age at death: {notice.age_at_death}")
         if notice.obituary_url:
             deceased_parts.append(f"Obituary: {notice.obituary_url}")
 
@@ -677,17 +714,35 @@ def _build_notes(notice: NoticeData) -> str:
                 body += f"\n{confidence_line}" if body else confidence_line
             sections.append(f"{header}\n{body}")
 
-        # Section 2: Decision makers
+        # Section 2: Obituary excerpt (first ~500 chars) + predeceased list.
+        # Only renders when we actually have an obit snippet — probate_preset
+        # matches (court record, no obit fetch) skip this.
+        obit_lines = []
+        if notice.obituary_snippet:
+            obit_lines.append(notice.obituary_snippet)
+        if notice.preceded_in_death:
+            obit_lines.append(f"Predeceased by: {notice.preceded_in_death}")
+        if obit_lines:
+            sections.append("=== OBITUARY ===\n" + "\n".join(obit_lines))
+
+        # Section 3: Full survivors list from the obit, regardless of which
+        # one became DM — gives deal negotiators the extended-family picture
+        # even when heir verification is skipped.
+        survivors_section = _build_obit_survivors_section(notice)
+        if survivors_section:
+            sections.append(survivors_section)
+
+        # Section 4: Decision makers
         dm_section = _build_dm_section(notice)
         if dm_section:
             sections.append(dm_section)
 
-        # Section 3: Heir map
+        # Section 5: Heir map (only populated when heir verification runs)
         heir_section = _build_heir_summary(notice)
         if heir_section:
             sections.append(heir_section)
 
-        # Section 4: Property/notice details
+        # Section 6: Property/notice details
         prop_section = _build_property_section(notice)
         if prop_section:
             sections.append(f"=== PROPERTY ===\n{prop_section}")
@@ -705,19 +760,25 @@ def _build_dm_notes(notice: NoticeData) -> str:
     """Build Notes for CSV 1: deceased owner header + DM breakdown + property.
 
     For living records, returns the simple property section.
-    Used by write_datasift_split_csvs() for the DMs upload.
+    Used by write_datasift_split_csvs() for the DMs upload — this is the
+    Notes content the Modal weekly run ships to DataSift.
     """
     if notice.owner_deceased != "yes":
         return _build_property_section(notice)
 
     sections = []
 
-    # Deceased owner header
+    # Deceased owner header — age + DOD + obit URL
     deceased_parts = []
     if notice.decedent_name:
         deceased_parts.append(f"Decedent: {notice.decedent_name}")
     if notice.date_of_death:
-        deceased_parts.append(f"Died: {_format_date(notice.date_of_death)}")
+        died_str = f"Died: {_format_date(notice.date_of_death)}"
+        if notice.age_at_death:
+            died_str += f" (age {notice.age_at_death})"
+        deceased_parts.append(died_str)
+    elif notice.age_at_death:
+        deceased_parts.append(f"Age at death: {notice.age_at_death}")
     if notice.obituary_url:
         deceased_parts.append(f"Obituary: {notice.obituary_url}")
 
@@ -733,6 +794,21 @@ def _build_dm_notes(notice: NoticeData) -> str:
         if confidence_line:
             body += f"\n{confidence_line}" if body else confidence_line
         sections.append(f"{header}\n{body}")
+
+    # Obit excerpt + predeceased (skipped on probate_preset matches — those
+    # don't go through Firecrawl so there's no snippet text)
+    obit_lines = []
+    if notice.obituary_snippet:
+        obit_lines.append(notice.obituary_snippet)
+    if notice.preceded_in_death:
+        obit_lines.append(f"Predeceased by: {notice.preceded_in_death}")
+    if obit_lines:
+        sections.append("=== OBITUARY ===\n" + "\n".join(obit_lines))
+
+    # Full obit survivors list (beyond the picked DM)
+    survivors_section = _build_obit_survivors_section(notice)
+    if survivors_section:
+        sections.append(survivors_section)
 
     # Decision makers
     dm_section = _build_dm_section(notice)
