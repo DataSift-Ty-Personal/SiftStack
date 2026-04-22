@@ -116,7 +116,46 @@ async def _try_login_once(page: Page, email: str, password: str) -> bool:
     await submit.first.click()
     await page.wait_for_timeout(4000)
 
-    return await _is_logged_in(page)
+    ok = await _is_logged_in(page)
+    if not ok:
+        # Surface what aMember told us so we can distinguish between bad
+        # credentials, rate-limit lockout, and a server-side internal error.
+        try:
+            post_url = page.url
+            # aMember surfaces errors in .am-error, .alert-danger, .error, or a
+            # generic "Incorrect login/password" body string.
+            error_text = ""
+            for sel in (".am-error", ".alert-danger", ".am-message", ".error"):
+                try:
+                    loc = page.locator(sel).first
+                    if await loc.count() > 0:
+                        error_text = (await loc.inner_text())[:200].strip()
+                        if error_text:
+                            break
+                except Exception:
+                    continue
+            if not error_text:
+                # Fall back to grabbing a snippet of visible body text.
+                try:
+                    body_text = await page.locator("body").inner_text()
+                    # Common aMember failure phrases
+                    for phrase in (
+                        "Incorrect login", "Invalid login", "password",
+                        "internal error", "SyntaxError", "locked", "disabled",
+                    ):
+                        idx = body_text.lower().find(phrase.lower())
+                        if idx >= 0:
+                            error_text = body_text[max(0, idx - 20):idx + 180].strip()
+                            break
+                except Exception:
+                    pass
+            logger.warning(
+                "NJ LP login failed — post_url=%s, error=%r",
+                post_url, error_text or "(no visible error message)",
+            )
+        except Exception as e:
+            logger.warning("NJ LP login failed (couldn't capture error: %s)", e)
+    return ok
 
 
 async def login(page: Page, email: str = "", password: str = "") -> bool:
