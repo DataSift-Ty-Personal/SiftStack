@@ -394,12 +394,16 @@ async def run_middlesex_probate_scrape(
         result["message"] = f"No probates found in last {days_back} days"
         return result
 
-    # NJ probates: we have the executor (DM) directly from the court record, so
-    # skip obituary/heir-verification (those are for TN where we don't get PR).
+    # NJ probates: we have the executor (DM) directly from the court record.
+    # Obit search runs anyway — the probate_preset path inside obituary_enricher
+    # detects (notice_type=probate + decedent_name + owner_name) and uses the
+    # court-named executor as DM without overriding from an obit match. This
+    # keeps data safe while still surfacing additional obit URLs / heir hints
+    # for deeper prospecting.
     opts = PipelineOptions(
         skip_filter_sold=False,
         skip_tax=True,
-        skip_obituary=True,
+        skip_obituary=False,
         skip_ancestry=True,
         skip_dm_address=True,           # executor address needs Tracerfy; leave off by default
         skip_heir_verification=True,

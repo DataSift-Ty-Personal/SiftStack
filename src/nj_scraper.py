@@ -519,13 +519,16 @@ async def run_nj_scrape(
     logger.info("NJ LP scraped: %d notices across %s",
                 len(notices), result["counties"])
 
-    # Enrichment: NJ records have no parcel/tax/obituary upstream data, so
-    # skip those (they'd fail silently or burn API credits on no-op lookups).
+    # Enrichment: NJ records have no parcel/tax upstream data, so skip those
+    # (they'd fail silently or burn API credits on no-op lookups). Obit is
+    # now ON so we catch deceased defendants whose estates haven't filed
+    # probate yet — the probate_preset path inside obituary_enricher keeps
+    # us safe from overriding court-named executors on probate records.
     from enrichment_pipeline import PipelineOptions
     opts = PipelineOptions(
         skip_filter_sold=False,
         skip_tax=True,
-        skip_obituary=True,
+        skip_obituary=False,
         skip_ancestry=True,
         skip_dm_address=True,
         skip_heir_verification=True,

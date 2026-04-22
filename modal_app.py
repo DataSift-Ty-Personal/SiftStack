@@ -51,7 +51,7 @@ SCHEDULE_CRON_UTC = "0 10 * * 3"
 @app.function(
     image=image,
     secrets=[secrets],
-    timeout=3600,  # 60 min max — combined run is slower than any single scraper
+    timeout=18000,  # 5 hr — obituary search on ~300 records adds 3-5hr to the run
     retries=modal.Retries(
         max_retries=2,
         initial_delay=60.0,
@@ -196,7 +196,12 @@ async def nj_weekly_all():
     opts = PipelineOptions(
         skip_filter_sold=False,
         skip_tax=True,
-        skip_obituary=True,
+        # Obit search runs on all records going forward — catches deceased
+        # foreclosure defendants / sheriff-sale owners that the court scrapers
+        # don't flag. Probate records route through the probate_preset path
+        # inside obituary_enricher which uses the court-named executor
+        # directly (never overrides with a wrong obit match).
+        skip_obituary=False,
         skip_ancestry=True,
         skip_dm_address=True,
         skip_heir_verification=True,
@@ -393,7 +398,7 @@ async def nj_weekly_all():
 @app.function(
     image=image,
     secrets=[secrets],
-    timeout=1800,  # 30 min max
+    timeout=7200,  # 2 hr — NJLP volume × obit search on each defendant
     retries=modal.Retries(
         max_retries=2,
         initial_delay=60.0,
