@@ -24,7 +24,7 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 
 import config
-from notice_parser import NoticeData
+from models import NoticeData
 
 logger = logging.getLogger(__name__)
 

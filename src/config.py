@@ -35,9 +35,9 @@ OUTPUT_DIR.mkdir(exist_ok=True)
 LOG_DIR.mkdir(exist_ok=True)
 
 # ── Credentials ────────────────────────────────────────────────────────
-TNPN_EMAIL = os.getenv("TNPN_EMAIL", "")
-TNPN_PASSWORD = os.getenv("TNPN_PASSWORD", "")
-CAPTCHA_API_KEY = os.getenv("CAPTCHA_API_KEY", "")  # 2Captcha API key
+# RealAuction (Franklin County foreclosure — free account required)
+REALAUCTION_EMAIL = os.getenv("REALAUCTION_EMAIL", "")
+REALAUCTION_PASSWORD = os.getenv("REALAUCTION_PASSWORD", "")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")  # Claude Haiku for LLM parsing
 SMARTY_AUTH_ID = os.getenv("SMARTY_AUTH_ID", "")        # Smarty address standardization
 SMARTY_AUTH_TOKEN = os.getenv("SMARTY_AUTH_TOKEN", "")
@@ -64,32 +64,6 @@ OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")       # OpenRouter API 
 OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "qwen/qwen-2.5-72b-instruct")
 OPENROUTER_BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
 
-# ── Site URLs ──────────────────────────────────────────────────────────
-BASE_URL = "https://www.tnpublicnotice.com"
-LOGIN_URL = f"{BASE_URL}/authenticate.aspx"
-SMART_SEARCH_URL = f"{BASE_URL}/Smartsearch/Default.aspx"
-
-# ── ASP.NET Selectors ─────────────────────────────────────────────────
-# Login form
-SEL_LOGIN_EMAIL = "#ctl00_ContentPlaceHolder1_AuthenticateIPA1_txtEmailAddress"
-SEL_LOGIN_PASSWORD = "#ctl00_ContentPlaceHolder1_AuthenticateIPA1_txtPassword"
-SEL_LOGIN_SUBMIT = "#ctl00_ContentPlaceHolder1_AuthenticateIPA1_btnAuth"
-
-# Smart Search dashboard
-SEL_SAVED_SEARCHES_DROPDOWN = "#ctl00_ContentPlaceHolder1_as1_ddlSavedSearches"
-SEL_PER_PAGE_DROPDOWN = 'select[name$="ddlPerPage"]'
-
-# Search results (authenticated grid)
-SEL_RESULTS_GRID = "#ctl00_ContentPlaceHolder1_WSExtendedGrid1_GridView1"
-SEL_VIEW_BUTTON_PATTERN = "input[name$='btnView']"
-SEL_NEXT_PAGE_BUTTON = "input[title='Next page']"
-SEL_PAGE_INFO = "td:has-text('Page ')"
-
-# Notice detail page
-SEL_CAPTCHA_IFRAME = "iframe[src*='recaptcha']"
-SEL_VIEW_NOTICE_BUTTON = "#ctl00_ContentPlaceHolder1_PublicNoticeDetailsBody1_btnViewNotice"
-RECAPTCHA_SITEKEY = "6LdtSg8sAAAAADTdRyZxJ2R2sS82pKALNMvMqSyL"
-
 # ── Rate Limiting ──────────────────────────────────────────────────────
 REQUEST_DELAY_MIN = 2.0  # seconds between requests
 REQUEST_DELAY_MAX = 3.0
@@ -104,25 +78,46 @@ TESSERACT_PSM_PHOTO = 4  # assume single column of variable-size text — best f
 # ── Notice Types ───────────────────────────────────────────────────────
 NOTICE_TYPES = ["foreclosure", "probate"]
 
+# ── Ohio Counties ──────────────────────────────────────────────────────
+OH_COUNTIES = ["Franklin", "Montgomery", "Greene"]
+
 
 @dataclass
-class SavedSearch:
-    """Represents a saved search on tnpublicnotice.com."""
+class ScraperSource:
+    """Registry entry for an Ohio county notice source.
+
+    Each entry maps (county, notice_type) -> the scraper module that pulls
+    notices from that county's portal. Scraper modules live in src/scrapers/
+    and expose an async `scrape(since_date, **kwargs) -> list[NoticeData]`.
+    """
     county: str
-    notice_type: str  # One of NOTICE_TYPES
-    saved_search_name: str  # Exact name in the Saved Searches dropdown
+    notice_type: str       # One of NOTICE_TYPES
+    module: str            # Python module path, e.g. "scrapers.oh_montgomery_probate"
+    needs_account: bool = False
+    notes: str = ""
 
 
-# ── Saved Searches ─────────────────────────────────────────────────────
-# These names must match exactly what appears in the dropdown on the site.
-SAVED_SEARCHES: list[SavedSearch] = [
-    SavedSearch("Knox", "foreclosure", "Foreclosure V2 Knox"),
-    SavedSearch("Blount", "foreclosure", "Foreclosure V2 Blount"),
+# ── Ohio Scraper Registry ──────────────────────────────────────────────
+# Populated during Phase 2+ as each scraper comes online.
+SCRAPER_SOURCES: list[ScraperSource] = [
+    # Phase 3 (Montgomery probate — first end-to-end proof)
+    # ScraperSource("Montgomery", "probate", "scrapers.oh_montgomery_probate"),
+    # Phase 4
+    # ScraperSource("Montgomery", "foreclosure", "scrapers.oh_montgomery_foreclosure"),
+    # ScraperSource("Greene", "probate", "scrapers.oh_greene_probate"),
+    # ScraperSource("Greene", "foreclosure", "scrapers.oh_greene_foreclosure"),
+    # ScraperSource("Franklin", "probate", "scrapers.oh_franklin_probate"),
+    # ScraperSource("Franklin", "foreclosure", "scrapers.oh_franklin_foreclosure", needs_account=True,
+    #               notes="RealAuction — requires REALAUCTION_EMAIL/PASSWORD"),
 ]
 
+# Legacy aliases — keep older imports working until all call sites migrate to ScraperSource.
+SavedSearch = ScraperSource
+SAVED_SEARCHES: list = []
+
 # ── Entity Detection ──────────────────────────────────────────────────
-# Business entity patterns — shared across obituary_enricher, tax_enricher,
-# and enrichment_pipeline for entity filtering.
+# Business entity patterns — shared across obituary_enricher and
+# enrichment_pipeline for entity filtering.
 BUSINESS_RE = re.compile(
     r"\b(?:LLC|L\.L\.C|INC|CORP|CORPORATION|COMPANY|CO\b|LTD|LP|L\.P|"
     r"PARTNERSHIP|ASSOCIATION|ASSOC|BANK|CREDIT UNION|CHURCH|MINISTRIES|"

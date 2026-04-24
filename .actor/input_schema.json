@@ -2,7 +2,7 @@
     "title": "SiftStack Input",
     "type": "object",
     "schemaVersion": 1,
-    "required": ["mode", "tn_username", "tn_password", "captcha_api_key"],
+    "required": ["mode"],
     "properties": {
         "mode": {
             "title": "Scrape Mode",
@@ -15,7 +15,7 @@
         "counties": {
             "title": "Counties",
             "type": "array",
-            "description": "Counties to scrape. Leave empty for all (Knox + Blount).",
+            "description": "Counties to scrape. Leave empty for all (Franklin, Montgomery, Greene).",
             "items": { "type": "string" },
             "default": [],
             "editor": "stringList"
@@ -43,24 +43,17 @@
             "minimum": 1,
             "editor": "number"
         },
-        "tn_username": {
-            "title": "tnpublicnotice.com Email",
+        "realauction_email": {
+            "title": "RealAuction Email",
             "type": "string",
-            "description": "Login email for tnpublicnotice.com Smart Search",
+            "description": "Free-account email for franklin.sheriffsaleauction.ohio.gov — required for Franklin County foreclosure scraping only. Other OH sources (Montgomery, Greene, all probate) need no account.",
             "editor": "textfield",
             "isSecret": true
         },
-        "tn_password": {
-            "title": "tnpublicnotice.com Password",
+        "realauction_password": {
+            "title": "RealAuction Password",
             "type": "string",
-            "description": "Login password for tnpublicnotice.com",
-            "editor": "textfield",
-            "isSecret": true
-        },
-        "captcha_api_key": {
-            "title": "2Captcha API Key",
-            "type": "string",
-            "description": "API key from 2captcha.com for reCAPTCHA solving",
+            "description": "Password for RealAuction (Franklin County foreclosure). Optional if you're not scraping Franklin foreclosures.",
             "editor": "textfield",
             "isSecret": true
         },

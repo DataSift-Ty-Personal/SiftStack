@@ -4,7 +4,7 @@ Calculates MAO (Maximum Allowable Offer), ROI projections, holding costs,
 selling costs, and financing scenarios for flip/wholesale/hold strategies.
 
 Usage:
-  python src/main.py analyze-deal --address "123 Main St, Knoxville, TN 37918"
+  python src/main.py analyze-deal --address "123 Main St, Columbus, OH 43201"
   python src/main.py analyze-deal --address "123 Main St" --purchase-price 150000 --rehab-tier 2
 """
 
@@ -37,7 +37,7 @@ DEFAULT_INSURANCE_MONTHLY = 150.0
 DEFAULT_UTILITIES_MONTHLY = 200.0
 DEFAULT_AGENT_COMMISSION = 0.06    # 6% (3% buyer + 3% seller)
 DEFAULT_CLOSING_COSTS_PCT = 0.025  # 2.5% of sale price
-DEFAULT_TRANSFER_TAX_PCT = 0.0037  # TN transfer tax: $0.37 per $100
+DEFAULT_TRANSFER_TAX_PCT = 0.0040  # OH conveyance fee: $1/$1000 state + up to $3/$1000 county permissive (Franklin/Montgomery/Greene all levy $3/$1000)
 DEFAULT_WHOLESALE_FEE = 10000.0
 DEFAULT_FLIP_RULE = 0.75           # 75% Rule: MAO = ARV × 0.75 - rehab
 DEFAULT_WHOLESALE_RULE = 0.70      # 70% Rule for wholesale
@@ -166,10 +166,10 @@ def _calc_monthly_payment(principal: float, annual_rate: float, months: int) -> 
 
 def _estimate_monthly_rent(arv: float, sqft: int, bedrooms: int) -> float:
     """Estimate monthly rent based on 1% rule and property characteristics."""
-    # 1% rule as baseline (conservative for Knoxville)
-    rent_pct_rule = arv * 0.008  # 0.8% for Knoxville (below 1% rule)
+    # 1% rule as baseline (conservative for Columbus/Dayton metro)
+    rent_pct_rule = arv * 0.0085  # 0.85% typical for Columbus SFH (slightly below 1% rule)
     # Sqft-based estimate
-    rent_sqft = sqft * 0.75 if sqft else 0  # ~$0.75/sqft for Knoxville
+    rent_sqft = sqft * 1.00 if sqft else 0  # ~$1.00/sqft for Columbus; Dayton ~$0.85; Xenia ~$0.80
     # Bedroom-based estimate
     rent_bed = 600 + (bedrooms * 200)  # base $600 + $200/bed
     # Average the estimates

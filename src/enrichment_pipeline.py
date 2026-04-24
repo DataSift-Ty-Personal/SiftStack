@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 import config
-from notice_parser import NoticeData
+from models import NoticeData
 
 logger = logging.getLogger(__name__)
 

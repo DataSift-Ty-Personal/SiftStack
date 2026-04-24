@@ -18,7 +18,7 @@ from typing import Any
 
 import config
 import llm_client
-from notice_parser import NoticeData
+from models import NoticeData
 
 logger = logging.getLogger(__name__)
 

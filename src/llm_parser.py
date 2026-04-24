@@ -1,7 +1,7 @@
 """LLM-based notice parser using Claude Haiku as fallback for regex failures.
 
-When the regex parser in notice_parser.py fails to extract address or owner_name,
-this module sends the raw notice text to Claude Haiku for structured extraction.
+When per-source regex parsers fail to extract address or owner_name, this module
+sends the raw notice text to Claude Haiku for structured extraction.
 """
 
 import logging
@@ -14,17 +14,17 @@ MODEL = "claude-haiku-4-5-20251001"
 MAX_TOKENS = 256
 
 SYSTEM_PROMPT = (
-    "You extract structured data from Tennessee legal notices. "
+    "You extract structured data from Ohio legal notices. "
     "Return ONLY valid JSON with no markdown formatting, no code fences, no explanation."
 )
 
 USER_PROMPT_TEMPLATE = """\
-Extract the following fields from this {notice_type} legal notice published in {county} County, Tennessee.
+Extract the following fields from this {notice_type} legal notice published in {county} County, Ohio.
 
 Return ONLY a JSON object with these exact keys:
 - "address": the property street address (e.g. "123 Main St"). NOT the courthouse, auction location, or trustee office address.
 - "city": the city where the property is located
-- "state": always "TN"
+- "state": always "OH"
 - "zip": the 5-digit zip code of the property
 - "owner_name": the property owner, borrower, or grantor name(s). For foreclosures this is who executed the deed of trust. Use ALL CAPS as written in the notice.
 - "auction_date": the scheduled sale/auction date in YYYY-MM-DD format. This is the date the property will be sold at auction, NOT the publication date of the notice.
@@ -35,7 +35,7 @@ Notice text:
 {raw_text}"""
 
 PROBATE_PROMPT_TEMPLATE = """\
-Extract the following fields from this probate "Notice to Creditors" published in {county} County, Tennessee.
+Extract the following fields from this probate "Notice to Creditors" published in {county} County, Ohio.
 
 Return ONLY a JSON object with these exact keys:
 - "decedent_name": the deceased person's full name (from "Estate of [NAME]"). Use ALL CAPS as written.
@@ -55,7 +55,7 @@ Notice text:
 {raw_text}"""
 
 EVICTION_PROMPT_TEMPLATE = """\
-Extract the following fields from this eviction notice / detainer warrant from {county} County, Tennessee.
+Extract the following fields from this eviction notice / detainer warrant from {county} County, Ohio.
 
 The PLAINTIFF is the landlord (property owner) — this is who we want to contact.
 The DEFENDANT is the tenant being evicted.
@@ -64,7 +64,7 @@ Return ONLY a JSON object with these exact keys:
 - "owner_name": the PLAINTIFF name (landlord/property owner). Use ALL CAPS as written.
 - "address": the rental property street address where the eviction is occurring
 - "city": the city where the property is located
-- "state": always "TN"
+- "state": always "OH"
 - "zip": the 5-digit zip code of the property
 - "case_number": the court case number
 - "filing_date": the filing date in YYYY-MM-DD format
@@ -76,13 +76,13 @@ Notice text:
 {raw_text}"""
 
 CODE_VIOLATION_PROMPT_TEMPLATE = """\
-Extract the following fields from this code violation notice from {county} County, Tennessee.
+Extract the following fields from this code violation notice from {county} County, Ohio.
 
 Return ONLY a JSON object with these exact keys:
 - "owner_name": the property owner name. Use ALL CAPS as written.
 - "address": the property street address where the violation exists
 - "city": the city where the property is located
-- "state": always "TN"
+- "state": always "OH"
 - "zip": the 5-digit zip code of the property
 - "parcel_id": the parcel ID / tax map number if shown
 - "violation_type": brief description of the violation (e.g. "overgrown lot", "condemned structure")
@@ -94,14 +94,14 @@ Notice text:
 {raw_text}"""
 
 DIVORCE_PROMPT_TEMPLATE = """\
-Extract the following fields from this divorce filing / complaint from {county} County, Tennessee.
+Extract the following fields from this divorce filing / complaint from {county} County, Ohio.
 
 Return ONLY a JSON object with these exact keys:
 - "owner_name": the PETITIONER name (person filing for divorce). Use ALL CAPS as written.
 - "spouse_name": the RESPONDENT name (other party). Use ALL CAPS as written.
 - "address": the marital home / property address if listed (may be on property schedule page)
 - "city": the city where the property is located
-- "state": always "TN"
+- "state": always "OH"
 - "zip": the 5-digit zip code of the property
 - "case_number": the court case number
 
@@ -111,7 +111,7 @@ Notice text:
 {raw_text}"""
 
 AUTO_DETECT_PROMPT_TEMPLATE = """\
-Classify this legal document from {county} County, Tennessee into one of these categories:
+Classify this legal document from {county} County, Ohio into one of these categories:
 - "foreclosure" — trustee sale, deed of trust, notice of default
 - "tax_sale" — delinquent property tax auction
 - "tax_delinquent" — unpaid property taxes, no auction yet

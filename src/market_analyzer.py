@@ -6,11 +6,11 @@ Scores each zip by distress density, property values, equity, and competition.
 Data sources:
   - Our own scraped notice data (aggregated by zip)
   - Zillow API (property values via OpenWeb Ninja)
-  - Knox County Tax API (delinquency density)
+  - County Auditor APIs (delinquency density — Phase 4+)
 
 Usage:
-  python src/main.py market-analysis --counties Knox,Blount
-  python src/main.py market-analysis --counties Knox --zip-codes 37918,37919,37920
+  python src/main.py market-analysis --counties Franklin,Montgomery,Greene
+  python src/main.py market-analysis --counties Franklin --zip-codes 43201,43202,43203
 """
 
 import csv
@@ -32,18 +32,31 @@ import config
 
 logger = logging.getLogger(__name__)
 
-# ── Knox/Blount county zip codes ──────────────────────────────────────
-KNOX_ZIPS = [
-    "37901", "37902", "37909", "37912", "37914", "37915", "37916", "37917",
-    "37918", "37919", "37920", "37921", "37922", "37923", "37924", "37931",
-    "37932", "37934", "37938",
+# ── Ohio county zip codes ─────────────────────────────────────────────
+# Franklin County (Columbus metro)
+FRANKLIN_ZIPS = [
+    "43201", "43202", "43203", "43204", "43205", "43206", "43207", "43209",
+    "43210", "43211", "43212", "43213", "43214", "43215", "43219", "43220",
+    "43221", "43222", "43223", "43224", "43227", "43228", "43229", "43230",
+    "43231", "43232", "43235", "43016", "43017", "43026", "43054", "43065",
+    "43081", "43085", "43109", "43119", "43123", "43125", "43147",
 ]
-BLOUNT_ZIPS = [
-    "37801", "37803", "37804", "37853", "37882", "37886",
+# Montgomery County (Dayton metro)
+MONTGOMERY_ZIPS = [
+    "45342", "45402", "45403", "45404", "45405", "45406", "45409", "45410",
+    "45414", "45415", "45416", "45417", "45418", "45419", "45420", "45424",
+    "45426", "45428", "45429", "45430", "45432", "45439", "45440", "45449",
+    "45458", "45459",
+]
+# Greene County (Xenia / Fairborn / Beavercreek)
+GREENE_ZIPS = [
+    "45301", "45305", "45314", "45324", "45335", "45385", "45387", "45431",
+    "45434",
 ]
 COUNTY_ZIPS = {
-    "knox": KNOX_ZIPS,
-    "blount": BLOUNT_ZIPS,
+    "franklin": FRANKLIN_ZIPS,
+    "montgomery": MONTGOMERY_ZIPS,
+    "greene": GREENE_ZIPS,
 }
 
 # ── Scoring weights ───────────────────────────────────────────────────
@@ -435,7 +448,7 @@ def run_market_analysis(counties: list[str] | None = None,
 
     Returns dict with report data and output path.
     """
-    counties = counties or ["Knox", "Blount"]
+    counties = counties or ["Franklin", "Montgomery", "Greene"]
     county_str = ", ".join(counties)
     logger.info("Starting market analysis for: %s", county_str)
 

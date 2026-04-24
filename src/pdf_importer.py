@@ -14,7 +14,7 @@ from pathlib import Path
 import pypdfium2 as pdfium
 from PIL import Image
 
-from notice_parser import NoticeData
+from models import NoticeData
 from image_utils import fix_rotation, ocr_page
 
 logger = logging.getLogger(__name__)

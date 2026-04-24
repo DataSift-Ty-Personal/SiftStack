@@ -22,7 +22,15 @@ from config import (
     SavedSearch,
 )
 from data_formatter import deduplicate, write_csv, write_csv_by_type
-from scraper import scrape_all
+
+
+async def scrape_all(*args, **kwargs):
+    """Stub — OH portal scrapers are registered in src/scrapers/ (Phase 2+)."""
+    raise NotImplementedError(
+        "No scrapers are registered yet. OH portal scrapers (Franklin/Montgomery/Greene "
+        "× foreclosure/probate) land in src/scrapers/ during Phase 2. "
+        "Until then, use 'pdf-import', 'photo-import', or 'csv-import' modes."
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -64,10 +72,9 @@ def _preflight_check(mode: str) -> list[str]:
     datasift_modes = {"manage-presets", "manage-sold", "phone-validate"}
 
     if mode in scrape_modes:
-        if not config.TNPN_EMAIL or not config.TNPN_PASSWORD:
-            failures.append("TNPN_EMAIL / TNPN_PASSWORD not set (required for scraping)")
-        if not config.CAPTCHA_API_KEY:
-            failures.append("CAPTCHA_API_KEY not set (CAPTCHA solving will fail)")
+        # OH scrapers (Franklin/Montgomery/Greene) land in src/scrapers/ during Phase 2+.
+        # Credentials for RealAuction-backed sources will be checked there.
+        pass
 
     if mode in enrichment_modes:
         # These are warnings, not blockers — pipeline degrades gracefully
@@ -90,37 +97,7 @@ def _preflight_check(mode: str) -> list[str]:
         if not config.TRESTLE_API_KEY:
             failures.append("TRESTLE_API_KEY not set (required for phone validation)")
 
-    # ── Connectivity checks (only for scrape modes) ─────────────────
-    if mode in scrape_modes:
-        import requests as _requests
-        try:
-            resp = _requests.head(config.BASE_URL, timeout=10, allow_redirects=True)
-            if resp.status_code >= 500:
-                failures.append(f"tnpublicnotice.com returned {resp.status_code} — site may be down")
-        except Exception as e:
-            failures.append(f"Cannot reach tnpublicnotice.com: {e}")
-
-    # ── 2Captcha balance check ──────────────────────────────────────
-    if mode in scrape_modes and config.CAPTCHA_API_KEY:
-        import requests as _requests
-        try:
-            resp = _requests.get(
-                f"https://2captcha.com/res.php?key={config.CAPTCHA_API_KEY}&action=getbalance",
-                timeout=10,
-            )
-            balance_text = resp.text.strip()
-            try:
-                balance = float(balance_text)
-                if balance < 0.50:
-                    failures.append(f"2Captcha balance too low: ${balance:.2f} (need at least $0.50)")
-                else:
-                    logger.info("Preflight: 2Captcha balance: $%.2f", balance)
-            except ValueError:
-                if "ERROR" in balance_text:
-                    failures.append(f"2Captcha API key invalid: {balance_text}")
-        except Exception as e:
-            logger.warning("Preflight: Could not check 2Captcha balance: %s", e)
-
+    # Per-source connectivity checks live inside each scraper module (Phase 2+).
     return failures
 
 
@@ -149,9 +126,8 @@ async def actor_main() -> None:
         # Set both config.* AND os.environ so downstream modules that read
         # from either source (e.g., datasift_uploader uses os.environ) pick them up.
         _cred_map = {
-            "TNPN_EMAIL": actor_input.get("tn_username", ""),
-            "TNPN_PASSWORD": actor_input.get("tn_password", ""),
-            "CAPTCHA_API_KEY": actor_input.get("captcha_api_key", ""),
+            "REALAUCTION_EMAIL": actor_input.get("realauction_email", ""),
+            "REALAUCTION_PASSWORD": actor_input.get("realauction_password", ""),
             "ANTHROPIC_API_KEY": actor_input.get("anthropic_api_key", ""),
             "SMARTY_AUTH_ID": actor_input.get("smarty_auth_id", ""),
             "SMARTY_AUTH_TOKEN": actor_input.get("smarty_auth_token", ""),
@@ -186,18 +162,8 @@ async def actor_main() -> None:
         include_commercial = actor_input.get("include_commercial", False)
         include_entities = actor_input.get("include_entities", False)
 
-        # Validate
-        if not config.TNPN_EMAIL or not config.TNPN_PASSWORD:
-            Actor.log.error("tn_username and tn_password are required")
-            try:
-                from slack_notifier import notify_preflight_failure
-                notify_preflight_failure(["TNPN credentials missing"])
-            except Exception:
-                pass
-            await Actor.fail(status_message="Missing SiftStack credentials")
-            return
-        if not config.CAPTCHA_API_KEY:
-            Actor.log.warning("captcha_api_key not set — CAPTCHA solving will fail")
+        # Per-source credential validation happens inside each scraper module.
+        # Franklin foreclosure needs REALAUCTION_*; other OH sources need no account.
 
         # Filter searches
         searches = _filter_searches(counties, types)
@@ -207,9 +173,9 @@ async def actor_main() -> None:
             return
 
         Actor.log.info(
-            "Running %d saved searches: %s",
+            "Running %d OH scraper sources: %s",
             len(searches),
-            ", ".join(s.saved_search_name for s in searches),
+            ", ".join(f"{s.county}/{s.notice_type}" for s in searches),
         )
 
         # Set up residential proxy if requested
@@ -1698,9 +1664,9 @@ def cli_main() -> None:
         sys.exit(1)
 
     logging.info(
-        "Running %d saved searches: %s",
+        "Running %d OH scraper sources: %s",
         len(searches),
-        ", ".join(s.saved_search_name for s in searches),
+        ", ".join(f"{s.county}/{s.notice_type}" for s in searches),
     )
 
     try:

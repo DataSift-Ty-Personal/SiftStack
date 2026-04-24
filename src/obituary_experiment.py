@@ -27,7 +27,7 @@ from pathlib import Path
 # Add src/ to path for imports
 sys.path.insert(0, os.path.dirname(__file__))
 
-from notice_parser import NoticeData
+from models import NoticeData
 from obituary_enricher import enrich_obituary_data
 
 logger = logging.getLogger(__name__)

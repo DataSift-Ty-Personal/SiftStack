@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 
 from config import OUTPUT_DIR
-from notice_parser import NoticeData
+from models import NoticeData
 
 logger = logging.getLogger(__name__)
 

@@ -29,8 +29,7 @@ VALID_NOTICE_TYPES = {
     "eviction", "code_violation", "divorce",
 }
 # Counties are not restricted — any county folder name in Dropbox is accepted.
-# Previously hardcoded to Knox/Blount; now supports any market.
-KNOWN_COUNTIES = {"knox", "blount"}  # Known counties (used for info logging only)
+KNOWN_COUNTIES = {"franklin", "montgomery", "greene"}  # Known OH counties (info logging only)
 VALID_EXTENSIONS = {".jpg", ".jpeg", ".png"}
 
 
@@ -81,7 +80,7 @@ def _parse_folder_path(file_path: str, root_folder: str = "") -> tuple[str, str]
     type_raw = parts[1].lower().replace("-", "_").replace(" ", "_")
 
     if county_raw not in KNOWN_COUNTIES:
-        logger.info("New county detected in Dropbox path: %s (not in default Knox/Blount)", parts[0])
+        logger.info("New county detected in Dropbox path: %s (not in default Franklin/Montgomery/Greene)", parts[0])
 
     if type_raw not in VALID_NOTICE_TYPES:
         logger.debug("Unrecognized notice type in path: %s", parts[1])
@@ -209,7 +208,7 @@ def poll_once(
     logger.info("Dropbox poll: %d new photos to process", len(downloads))
 
     # Download to temp directory
-    tmp_dir = Path(tempfile.mkdtemp(prefix="tnpn_photos_"))
+    tmp_dir = Path(tempfile.mkdtemp(prefix="ohpn_photos_"))
     results = []
 
     for item in downloads:
@@ -288,7 +287,7 @@ def run_watcher(
                 logger.info("Processing %d photos: %s / %s", len(group_items), county, notice_type)
 
                 # Create temp folder with just this group's photos
-                group_dir = Path(tempfile.mkdtemp(prefix=f"tnpn_{county}_{notice_type}_"))
+                group_dir = Path(tempfile.mkdtemp(prefix=f"ohpn_{county}_{notice_type}_"))
                 for item in group_items:
                     if "local_path" in item and item["local_path"].exists():
                         shutil.copy2(item["local_path"], group_dir / item["filename"])

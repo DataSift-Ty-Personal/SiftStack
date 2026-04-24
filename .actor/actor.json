@@ -1,6 +1,6 @@
 {
     "actorSpecification": 1,
-    "name": "tn-public-notice-scraper",
+    "name": "oh-public-notice-scraper",
     "title": "SiftStack — REI Operations Platform",
     "description": "Full-stack real estate investing operations platform. Data acquisition (web scrape, PDF, courthouse photos), enrichment (Smarty, Zillow, tax, obituary, skip trace), deal analysis (comps, rehab, MAO), CRM automation (DataSift sequences, niche sequential), and lead management.",
     "version": "1.0",

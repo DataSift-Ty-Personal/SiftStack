@@ -16,7 +16,7 @@ from PIL import Image, ImageOps
 
 import config
 from image_utils import ocr_page
-from notice_parser import NoticeData
+from models import NoticeData
 
 logger = logging.getLogger(__name__)
 

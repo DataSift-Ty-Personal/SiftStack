@@ -15,7 +15,7 @@ from dotenv import load_dotenv
 load_dotenv()
 sys.path.insert(0, "src")
 
-from notice_parser import NoticeData
+from models import NoticeData
 from tracerfy_skip_tracer import batch_skip_trace
 from datasift_formatter import DATASIFT_COLUMNS, _build_row
 

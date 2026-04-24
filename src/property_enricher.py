@@ -14,7 +14,7 @@ from datetime import date, datetime
 
 import requests
 
-from notice_parser import NoticeData
+from models import NoticeData
 
 logger = logging.getLogger(__name__)
 
