@@ -101,7 +101,7 @@ class ScraperSource:
 # Populated during Phase 2+ as each scraper comes online.
 SCRAPER_SOURCES: list[ScraperSource] = [
     # Phase 3 (Montgomery probate — first end-to-end proof)
-    # ScraperSource("Montgomery", "probate", "scrapers.oh_montgomery_probate"),
+    ScraperSource("Montgomery", "probate", "scrapers.oh_montgomery_probate"),
     # Phase 4
     # ScraperSource("Montgomery", "foreclosure", "scrapers.oh_montgomery_foreclosure"),
     # ScraperSource("Greene", "probate", "scrapers.oh_greene_probate"),
