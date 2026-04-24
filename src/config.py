@@ -103,9 +103,9 @@ SCRAPER_SOURCES: list[ScraperSource] = [
     # Phase 3 (Montgomery probate — first end-to-end proof)
     ScraperSource("Montgomery", "probate", "scrapers.oh_montgomery_probate"),
     # Phase 4
-    # ScraperSource("Montgomery", "foreclosure", "scrapers.oh_montgomery_foreclosure"),
+    ScraperSource("Montgomery", "foreclosure", "scrapers.oh_montgomery_foreclosure"),
     # ScraperSource("Greene", "probate", "scrapers.oh_greene_probate"),
-    # ScraperSource("Greene", "foreclosure", "scrapers.oh_greene_foreclosure"),
+    ScraperSource("Greene", "foreclosure", "scrapers.oh_greene_foreclosure"),
     # ScraperSource("Franklin", "probate", "scrapers.oh_franklin_probate"),
     # ScraperSource("Franklin", "foreclosure", "scrapers.oh_franklin_foreclosure", needs_account=True,
     #               notes="RealAuction — requires REALAUCTION_EMAIL/PASSWORD"),
