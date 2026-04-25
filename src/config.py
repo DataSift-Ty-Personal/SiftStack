@@ -100,15 +100,15 @@ class ScraperSource:
 # ── Ohio Scraper Registry ──────────────────────────────────────────────
 # Populated during Phase 2+ as each scraper comes online.
 SCRAPER_SOURCES: list[ScraperSource] = [
-    # Phase 3 (Montgomery probate — first end-to-end proof)
+    # Phase 3
     ScraperSource("Montgomery", "probate", "scrapers.oh_montgomery_probate"),
     # Phase 4
     ScraperSource("Montgomery", "foreclosure", "scrapers.oh_montgomery_foreclosure"),
-    # ScraperSource("Greene", "probate", "scrapers.oh_greene_probate"),
+    # ScraperSource("Greene", "probate", "scrapers.oh_greene_probate"),  # TODO: agent quota killed — re-spawn
     ScraperSource("Greene", "foreclosure", "scrapers.oh_greene_foreclosure"),
-    # ScraperSource("Franklin", "probate", "scrapers.oh_franklin_probate"),
-    # ScraperSource("Franklin", "foreclosure", "scrapers.oh_franklin_foreclosure", needs_account=True,
-    #               notes="RealAuction — requires REALAUCTION_EMAIL/PASSWORD"),
+    ScraperSource("Franklin", "probate", "scrapers.oh_franklin_probate"),
+    ScraperSource("Franklin", "foreclosure", "scrapers.oh_franklin_foreclosure", needs_account=True,
+                  notes="RealAuction — requires REALAUCTION_EMAIL/PASSWORD"),
 ]
 
 # Legacy aliases — keep older imports working until all call sites migrate to ScraperSource.
