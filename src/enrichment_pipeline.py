@@ -352,24 +352,27 @@ def run_enrichment_pipeline(
         return notices
 
     # ── Step 3c: Probate Property Lookup ────────────────────────────
-    # For probate records without a property address, search Knox Tax API
-    # by the decedent's name to find their property.
+    # For probate records without a property address (the common case —
+    # OH probate court records don't include the decedent's property),
+    # search the county Auditor by the decedent's name to find their
+    # parcel. See src/probate_property_lookup.py for the 3-tier waterfall.
     probate_no_addr = [
         n for n in notices
         if n.notice_type == "probate"
         and not n.address.strip()
         and n.decedent_name.strip()
-        and n.county.lower() == "knox"
+        and n.county.lower() in {"franklin", "montgomery", "greene"}
     ]
     if probate_no_addr:
         logger.info("── Step 3c: Probate Property Lookup (%d candidates) ──", len(probate_no_addr))
         try:
-            from tax_enricher import _probate_property_lookup
-            _probate_property_lookup(probate_no_addr)
+            import asyncio as _asyncio
+            from probate_property_lookup import lookup_decedent_properties
+            _asyncio.run(lookup_decedent_properties(probate_no_addr))
             found = sum(1 for n in probate_no_addr if n.address.strip())
             logger.info("  Property address found: %d/%d", found, len(probate_no_addr))
-        except ImportError:
-            logger.warning("  _probate_property_lookup not available — skipping")
+        except ImportError as e:
+            logger.warning("  probate_property_lookup unavailable — skipping: %s", e)
         except Exception as e:
             logger.warning("  Probate property lookup failed: %s", e)
 
