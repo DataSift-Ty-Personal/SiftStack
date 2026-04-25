@@ -331,21 +331,16 @@ def _parse_datalet(html: str) -> dict:
         if not label or not value:
             continue
         if label == "city/village" and not out["city"]:
-            # Pass the auditor's city/village label through largely as-is.
+            # Pass the auditor's city/village label through verbatim.
             # Tyler stores values like "COLUMBUS CITY", "GROVE CITY",
-            # "WHITEHALL", "WORTHINGTON", "REYNOLDSBURG CITY". A naive
-            # ".strip(' CITY')" would mangle "Grove City" (a real
-            # municipality), so we only drop trailing " CITY" /
-            # " VILLAGE" suffixes that follow a single-word base — i.e.
-            # "COLUMBUS CITY" -> "COLUMBUS", but "GROVE CITY" stays.
-            cleaned = value.strip()
-            tokens = cleaned.split()
-            if (
-                len(tokens) == 2
-                and tokens[1].upper() in {"CITY", "VILLAGE", "TOWNSHIP", "TWP"}
-            ):
-                cleaned = tokens[0]
-            out["city"] = cleaned
+            # "WHITEHALL", "WORTHINGTON CITY". The trailing " CITY" /
+            # " VILLAGE" is part of the auditor's tax-district label and
+            # NOT reliably strippable — "Grove City" is a real
+            # municipality, so a naive ".rstrip(' CITY')" would mangle
+            # it. Downstream Smarty address standardization in the
+            # SiftStack enrichment pipeline normalizes municipality
+            # names, so we leave the raw value here.
+            out["city"] = value.strip()
         elif label == "zip code" and not out["zip"]:
             m = re.search(r"\d{5}(?:-\d{4})?", value)
             if m:
