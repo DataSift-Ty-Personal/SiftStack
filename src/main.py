@@ -18,21 +18,53 @@ from config import (
     LOG_DIR,
     NOTICE_TYPES,
     OUTPUT_DIR,
-    SAVED_SEARCHES,
-    SavedSearch,
+    SCRAPER_SOURCES,
+    ScraperSource,
 )
 from data_formatter import deduplicate, write_csv, write_csv_by_type
-
-
-async def scrape_all(*args, **kwargs):
-    """Stub — OH portal scrapers are registered in src/scrapers/ (Phase 2+)."""
-    raise NotImplementedError(
-        "No scrapers are registered yet. OH portal scrapers (Franklin/Montgomery/Greene "
-        "× foreclosure/probate) land in src/scrapers/ during Phase 2. "
-        "Until then, use 'pdf-import', 'photo-import', or 'csv-import' modes."
-    )
+from models import NoticeData
 
 logger = logging.getLogger(__name__)
+
+
+# ── Registry dispatch ─────────────────────────────────────────────────
+
+
+async def scrape_all(
+    sources: list[ScraperSource],
+    since_date=None,
+    **_kwargs,
+) -> list[NoticeData]:
+    """Iterate the OH scraper registry and collect NoticeData from each.
+
+    Each ScraperSource entry's `module` is dynamically imported, its
+    `Scraper` class instantiated, credentials checked, and `scrape()`
+    awaited. Failures in one source don't block others.
+    """
+    from scrapers.base import load_scraper
+
+    all_notices: list[NoticeData] = []
+    for source in sources:
+        scraper = load_scraper(source.module)
+
+        # Credential preflight per source
+        missing = [v for v in scraper.required_credentials() if not getattr(config, v, "")]
+        if missing:
+            logger.warning(
+                "[%s] %s — skipping: missing credentials (%s). %s",
+                source.county, source.notice_type, ", ".join(missing), source.notes,
+            )
+            continue
+
+        try:
+            logger.info("[%s] %s — scraping from %s ...", source.county, source.notice_type, scraper.source_url)
+            notices = await scraper.scrape(since_date=since_date)
+            logger.info("[%s] %s — got %d records", source.county, source.notice_type, len(notices))
+            all_notices.extend(notices)
+        except Exception as e:
+            logger.exception("[%s] %s — scrape failed: %s", source.county, source.notice_type, e)
+
+    return all_notices
 
 
 # ── Shared helpers ────────────────────────────────────────────────────
@@ -41,19 +73,19 @@ logger = logging.getLogger(__name__)
 def _filter_searches(
     counties: list[str] | None,
     types: list[str] | None,
-) -> list[SavedSearch]:
-    """Filter SAVED_SEARCHES by county and/or notice type."""
-    searches = list(SAVED_SEARCHES)
+) -> list[ScraperSource]:
+    """Filter SCRAPER_SOURCES by county and/or notice type."""
+    sources = list(SCRAPER_SOURCES)
 
     if counties:
         county_set = {c.lower() for c in counties}
-        searches = [s for s in searches if s.county.lower() in county_set]
+        sources = [s for s in sources if s.county.lower() in county_set]
 
     if types:
         type_set = {t.lower() for t in types}
-        searches = [s for s in searches if s.notice_type.lower() in type_set]
+        sources = [s for s in sources if s.notice_type.lower() in type_set]
 
-    return searches
+    return sources
 
 
 # ── Preflight health checks ─────────────────────────────────────────
@@ -178,18 +210,9 @@ async def actor_main() -> None:
             ", ".join(f"{s.county}/{s.notice_type}" for s in searches),
         )
 
-        # Set up residential proxy if requested
-        proxy_url: str | None = None
-        use_proxy = actor_input.get("use_residential_proxy", True)
-        if use_proxy:
-            try:
-                proxy_config = await Actor.create_proxy_configuration(
-                    groups=["RESIDENTIAL"]
-                )
-                proxy_url = await proxy_config.new_url()
-                Actor.log.info("Residential proxy configured")
-            except Exception:
-                Actor.log.warning("Could not configure residential proxy — running without proxy")
+        # Per-county OH portal scrapers handle their own networking — no
+        # centralized Apify residential proxy is wired in today. If a portal
+        # starts blocking by IP, the affected scraper can request one itself.
 
         # Track seen notice IDs for incremental dedup
         seen_ids: set[str] = set()
@@ -289,14 +312,19 @@ async def actor_main() -> None:
                     Actor.log.warning("Failed to persist seen_notice_ids to KVS: %s", e)
 
             # ── Scrape ────────────────────────────────────────────────
-            notices = await scrape_all(
-                mode=mode, searches=searches, proxy_url=proxy_url, on_batch=push_batch,
-                since_date_override=since_date_override or None,
-                llm_api_key=config.ANTHROPIC_API_KEY or None,
-                start_page=start_page,
-                seen_ids=seen_ids,
-                on_search_complete=persist_seen_ids,
-            )
+            # Resolve since_date from explicit override or mode default.
+            since_date = None
+            if since_date_override:
+                from datetime import date as _date
+                since_date = _date.fromisoformat(since_date_override)
+            elif mode == "daily":
+                from datetime import date as _date, timedelta as _td
+                since_date = _date.today() - _td(days=7)
+            elif mode == "historical":
+                from datetime import date as _date, timedelta as _td
+                since_date = _date.today() - _td(days=365)
+
+            notices = await scrape_all(sources=searches, since_date=since_date)
             # Handle async probate lookup before pipeline (requires await)
             probate_notices = [n for n in notices if n.notice_type == "probate" and n.decedent_name and not n.address]
             if probate_notices:
@@ -1683,13 +1711,22 @@ def cli_main() -> None:
 
 def _run_scrape_pipeline(args, searches) -> None:
     """Run the daily/historical scrape → enrich → export → upload pipeline."""
-    # Scrape
-    notices = asyncio.run(scrape_all(
-        mode=args.mode, searches=searches,
-        llm_api_key=config.ANTHROPIC_API_KEY or None,
-        since_date_override=args.since,
-        max_notices=args.max_notices,
-    ))
+    # Resolve since_date from --since (YYYY-MM-DD) or fall back to mode default.
+    since_date = None
+    if getattr(args, "since", None):
+        from datetime import date as _date
+        since_date = _date.fromisoformat(args.since)
+    elif args.mode == "daily":
+        from datetime import date as _date, timedelta as _td
+        # Each scraper's default lookback (typically 7 days). Setting
+        # explicitly here keeps daily runs deterministic.
+        since_date = _date.today() - _td(days=7)
+    elif args.mode == "historical":
+        from datetime import date as _date, timedelta as _td
+        since_date = _date.today() - _td(days=365)
+
+    # Scrape — dispatch to the OH registry
+    notices = asyncio.run(scrape_all(sources=searches, since_date=since_date))
     # Handle async probate lookup before pipeline (requires asyncio.run)
     probate_notices = [n for n in notices if n.notice_type == "probate" and n.decedent_name and not n.address]
     if probate_notices:
