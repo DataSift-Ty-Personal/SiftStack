@@ -104,7 +104,10 @@ SCRAPER_SOURCES: list[ScraperSource] = [
     ScraperSource("Montgomery", "probate", "scrapers.oh_montgomery_probate"),
     # Phase 4
     ScraperSource("Montgomery", "foreclosure", "scrapers.oh_montgomery_foreclosure"),
-    # ScraperSource("Greene", "probate", "scrapers.oh_greene_probate"),  # TODO: agent quota killed — re-spawn
+    ScraperSource("Greene", "probate", "scrapers.oh_greene_probate",
+                  notes="JWorks — public Case Search is currently disabled "
+                        "(portal licenseEnabled=false). Scraper probes the "
+                        "license flag and returns [] until court re-enables."),
     ScraperSource("Greene", "foreclosure", "scrapers.oh_greene_foreclosure"),
     ScraperSource("Franklin", "probate", "scrapers.oh_franklin_probate"),
     ScraperSource("Franklin", "foreclosure", "scrapers.oh_franklin_foreclosure", needs_account=True,
