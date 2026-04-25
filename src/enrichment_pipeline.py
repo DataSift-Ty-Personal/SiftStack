@@ -98,19 +98,25 @@ def _filter_vacant_land(notices: list[NoticeData]) -> list[NoticeData]:
 
     Vacant land parcels (e.g., "0 Andersonville Pike", "0000 Old Rd",
     or just "Andersonville Pike") are not actionable for marketing.
+
+    Probate records are exempt: court filings don't include the decedent's
+    property address — it gets resolved later in Step 4 (Probate Property
+    Lookup) via County Auditor. Filtering empty-address probates here would
+    drop every probate record before lookup runs.
     """
 
-    def _has_house_number(addr: str) -> bool:
-        addr = addr.strip()
+    def _is_keepable(n: NoticeData) -> bool:
+        addr = n.address.strip()
         if not addr:
-            return False
+            # Probate: pre-lookup, allow through. Other types: filter.
+            return n.notice_type == "probate"
         m = re.match(r"^(\d+)", addr)
         if not m:
             return False
         return int(m.group(1)) > 0
 
     before = len(notices)
-    result = [n for n in notices if _has_house_number(n.address)]
+    result = [n for n in notices if _is_keepable(n)]
     removed = before - len(result)
     if removed:
         logger.info("  Removed %d vacant land records (no house number)", removed)
