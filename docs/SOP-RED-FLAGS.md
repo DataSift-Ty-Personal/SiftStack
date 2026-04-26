@@ -321,6 +321,27 @@ Each red flag below has 4 parts:
 
 ---
 
+## 12. Tax Sale records have no preset / no automation
+
+**Symptom:** Records sitting in "Tax Sale" list (40+/week from Montgomery) but no `FTM_TaxSale_*` preset exists, so the niche sequential cadence isn't picking them up.
+
+**What it means:** Montgomery's foreclosure portal serves both mortgage foreclosures (sheriff sales) AND treasurer's tax sales on the same page. The scraper correctly classifies them as `tax_sale`, tags them `ftm-ts`, and routes them to the "Tax Sale" DataSift list. But Mike's preset structure was built around `FTM_LP_*` / `FTM_SS_*` / `FTM_Probate_*` only — there's no Tax Sale equivalent yet.
+
+**Diagnostic:**
+1. In DataSift, filter records by tag `ftm-ts` — confirm count matches the daily Slack summary's "tax_sale" line
+2. Open one record — verify it has the right tags (`ftm`, `ftm-ts`, `montgomery`, etc.) and is in the "Tax Sale" list
+
+**Fix:** Mike creates 3 new filter presets (~5 min each):
+- `FTM_TaxSale_Mont` (filter: list=Tax Sale + tag ftm-ts + tag montgomery + County=Montgomery)
+- `FTM_TaxSale_Franklin` (same but franklin/Franklin)
+- `FTM_TaxSale_Greene` (same but greene/Greene — currently 0 records, but ready when Greene starts producing)
+
+Or alternatively — if tax sales are operationally identical to sheriff sales for our acquisition workflow — Mike adds tax_sale records to the existing `FTM_SS_*` presets by updating the tag filter from `ftm-ss` to `ftm-ss OR ftm-ts`. **Tradeoff:** simpler operationally but loses analytical separation between tax-foreclosure and mortgage-foreclosure deal economics.
+
+**Fix owner:** Mike (DataSift preset configuration).
+
+---
+
 ## When you genuinely don't know what's wrong
 
 The ONE-COMMAND diagnostic dump:

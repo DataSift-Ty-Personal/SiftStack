@@ -82,7 +82,7 @@ The **most important sequence to know:** "Sold Property Cleanup" (in Transaction
 Mike's lists include:
 - **Foreclosure** — sheriff sale records (active)
 - **Probate** — estate filings (active)
-- **Tax Sale** — tax foreclosures (40 records as of yesterday — let Aaron know if you want a workflow for these)
+- **Tax Sale** — tax foreclosures (40 records/week from Montgomery sheriff portal, which serves both mortgage foreclosures AND treasurer's tax sales on the same page). **Action item:** Mike to create 3 new presets `FTM_TaxSale_Mont`, `FTM_TaxSale_Franklin`, `FTM_TaxSale_Greene` mirroring the Probate/SS structure but filtering on tag `ftm-ts` instead of `ftm-ss`/`ftm-probate`. Until then, search records by tag `ftm-ts` to find them.
 - **SiftStack 2026-04-25 - DMs** — yesterday's autonomous run upload (decision-makers)
 - **SiftStack 2026-04-25 - Heirs** — yesterday's run, secondary heir contacts
 - Plus older bulk lists, named lists, etc.
