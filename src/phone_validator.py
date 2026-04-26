@@ -38,11 +38,12 @@ logger = logging.getLogger(__name__)
 # ── Tier Configuration ────────────────────────────────────────────────────
 
 DEFAULT_TIERS = {
-    "Dial First":  (81, 100),
-    "Dial Second": (61, 80),
-    "Dial Third":  (41, 60),
-    "Dial Fourth": (21, 40),
-    "Drop":        (0, 20),
+    "Dial Now":    (95, 100),  # Tier 0 — sub-band of Dial First; "dial first of the firsts"
+    "Dial First":  (81, 94),   # Tier 1 — high confidence
+    "Dial Second": (61, 80),   # Tier 2 — solid
+    "Dial Third":  (41, 60),   # Tier 3 — try if no response from 1+2
+    "Dial Fourth": (21, 40),   # Tier 4 — mail-only band
+    "Drop":        (0, 20),    # Tier 5 — junk / litigator risk
 }
 
 COST_PER_PHONE = 0.015  # Trestle phone_intel pricing

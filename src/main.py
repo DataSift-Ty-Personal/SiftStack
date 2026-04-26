@@ -1899,6 +1899,20 @@ def _run_scrape_pipeline(args, searches) -> None:
         logging.info("--audit-records: Not yet implemented. "
                       "Will check DataSift Incomplete tab via Playwright in a future build.")
 
+    # Append daily summary CSV for multi-day trend tracking (Mike's Friday review)
+    try:
+        import time as _t
+        from daily_summary import append_daily_summary
+        append_daily_summary(
+            notices=notices,
+            run_id=getattr(args, "run_id", "") or f"cli_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+            duration_seconds=getattr(args, "_pipeline_start", _t.time()) and (_t.time() - getattr(args, "_pipeline_start", _t.time())) or 0,
+            tracerfy_stats=tracerfy_stats,
+            tiers_map=tiers_map,
+        )
+    except Exception as e:
+        logging.warning("Daily summary append failed (non-fatal): %s", e)
+
     logging.info("Done — %d notices exported", len(notices))
 
 
