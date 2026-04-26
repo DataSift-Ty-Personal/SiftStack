@@ -54,6 +54,10 @@ ANCESTRY_PASSWORD = os.getenv("ANCESTRY_PASSWORD", "")
 DROPBOX_APP_KEY = os.getenv("DROPBOX_APP_KEY", "")            # Dropbox OAuth2 app key
 DROPBOX_APP_SECRET = os.getenv("DROPBOX_APP_SECRET", "")
 DROPBOX_REFRESH_TOKEN = os.getenv("DROPBOX_REFRESH_TOKEN", "")
+# 2Captcha — reCAPTCHA v3 solver for portals that require it (e.g.
+# Montgomery County PRO Lis Pendens search). Optional; scrapers that
+# need it gate their dispatch on this env var being set.
+CAPTCHA_API_KEY = os.getenv("CAPTCHA_API_KEY", "")
 
 # ── LLM Backend ──────────────────────────────────────────────────────
 LLM_BACKEND = os.getenv("LLM_BACKEND", "anthropic")           # "anthropic", "ollama", or "openrouter"
@@ -104,6 +108,11 @@ SCRAPER_SOURCES: list[ScraperSource] = [
     ScraperSource("Montgomery", "probate", "scrapers.oh_montgomery_probate"),
     # Phase 4
     ScraperSource("Montgomery", "foreclosure", "scrapers.oh_montgomery_foreclosure"),
+    ScraperSource("Montgomery", "lis_pendens", "scrapers.oh_montgomery_lis_pendens",
+                  needs_account=True,
+                  notes="PRO Common Pleas — requires CAPTCHA_API_KEY (2Captcha) for "
+                        "reCAPTCHA v3 bypass. Earliest signal in the foreclosure "
+                        "lifecycle (4-12 weeks before sheriff sale)."),
     ScraperSource("Greene", "probate", "scrapers.oh_greene_probate",
                   notes="JWorks — public Case Search is currently disabled "
                         "(portal licenseEnabled=false). Scraper probes the "
