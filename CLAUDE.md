@@ -341,6 +341,27 @@ python src/extract_market_finder.py --state "Ohio" --county "Franklin,Montgomery
 # Output: JSON file in output/market_finder_{state}_{county}_{timestamp}.json
 ```
 
+### Statewide County Ranking (niche-sequential expansion)
+
+For deciding which OH counties to expand scrapers into beyond Franklin/Montgomery/Greene, two scripts compose the workflow:
+
+```bash
+# 1. Resilient batch extraction — top 20 OH counties by population, skips fresh extracts (<7d old)
+PYTHONPATH=src python -m run_oh_extraction --headless
+# Logs to output/oh_extraction_run_<ts>.log; one bad county doesn't kill the run.
+
+# 2. Apply 3-axis scoring rubric, output ranked CSV + console table
+PYTHONPATH=src python -m score_oh_counties
+# Tunables: --inv-threshold 5  --ab-min 150000  --ab-max 600000
+```
+
+**Rubric:** `score = inv_density × ab_class_pct × portal_reuse`
+- `inv_density` — sum of `total_inv_trans_6mo` across zips clearing per-zip threshold (default ≥5)
+- `ab_class_pct` — share of qualifying zips with `median_home_value` in A/B band (default $150k–$600k)
+- `portal_reuse` — split foreclosure vs probate; 1.0 = template exists (RealAuction), 0.7 = same platform family, 0.3 = unknown/custom. Edit `PORTAL_REUSE` dict in `score_oh_counties.py` as recon completes for each new county.
+
+Output: `output/oh_county_scores_<ts>.csv` ranked by `combined_score`. Use `foreclosure_score` to pick RealAuction expansion targets (cheap to scale via subdomain template); use `probate_score` to pick which probate portals justify a custom build.
+
 ## Apify Deployment & Daily Cadence
 
 SiftStack runs as an **Apify Actor** in the cloud. When `APIFY_IS_AT_HOME` or `APIFY_TOKEN` is set, `main.py` uses the Actor SDK instead of CLI args.

@@ -10,10 +10,16 @@ captcha_failed_ids.json
 .ancestry_page_loads.json
 cookies.json
 datasift_cookies.json
+realauction_cookies.json
 dropbox_state.json
 photo_state.json
 *.tmp
 *.bak
+
+# Debug screenshots from agent runs (DataSift UI exploration, Market Finder)
+datasift_*.png
+debug_*.png
+screenshot_*.png
 
 # Output (generated data)
 output/

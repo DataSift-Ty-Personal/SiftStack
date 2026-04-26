@@ -126,6 +126,8 @@ SCRAPER_SOURCES: list[ScraperSource] = [
     ScraperSource("Franklin", "probate", "scrapers.oh_franklin_probate"),
     ScraperSource("Franklin", "foreclosure", "scrapers.oh_franklin_foreclosure", needs_account=True,
                   notes="RealAuction — requires REALAUCTION_EMAIL/PASSWORD"),
+    ScraperSource("Franklin", "lis_pendens", "scrapers.oh_franklin_lis_pendens",
+                  notes="Common Pleas CIO — CV-FORECLOSURES filings (4-12 weeks pre-sheriff-sale)"),
 ]
 
 # Legacy aliases — keep older imports working until all call sites migrate to ScraperSource.

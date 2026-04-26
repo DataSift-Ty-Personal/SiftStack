@@ -214,6 +214,7 @@ def _split_name(full_name: str) -> tuple[str, str]:
 # DataSift auto-creates lists from CSV if they don't exist yet.
 NOTICE_TYPE_TO_LIST = {
     "foreclosure": "Foreclosure",
+    "lis_pendens": "Lis Pendens",
     "probate": "Probate",
     "tax_sale": "Tax Sale",
     "tax_delinquent": "Tax Delinquent",
@@ -250,9 +251,10 @@ def _build_tags(notice: NoticeData) -> str:
         # foreclosure → ftm-ss (Sheriff Sales), tax_sale → ftm-ts,
         # probate → ftm-probate, tax_delinquent / future lis pendens → ftm-lp
         ftm_type_map = {
-            "foreclosure": "ftm-ss",
+            "foreclosure": "ftm-ss",          # sheriff sale (post-judgment)
+            "lis_pendens": "ftm-lp",          # foreclosure case filing (pre-judgment)
             "tax_sale": "ftm-ts",
-            "tax_delinquent": "ftm-lp",
+            "tax_delinquent": "ftm-lp",       # legacy alias — kept for backward-compat
             "probate": "ftm-probate",
             "eviction": "ftm-eviction",
             "code_violation": "ftm-cv",
