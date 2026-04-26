@@ -109,6 +109,11 @@ SCRAPER_SOURCES: list[ScraperSource] = [
                         "(portal licenseEnabled=false). Scraper probes the "
                         "license flag and returns [] until court re-enables."),
     ScraperSource("Greene", "foreclosure", "scrapers.oh_greene_foreclosure"),
+    ScraperSource("Greene", "lis_pendens", "scrapers.oh_greene_lis_pendens",
+                  notes="JWorks eServices — public Case Search disabled "
+                        "(portal licenseEnabled=false, same gating as Greene "
+                        "probate). Sentinel scraper probes the flag and "
+                        "returns [] until court re-enables."),
     ScraperSource("Franklin", "probate", "scrapers.oh_franklin_probate"),
     ScraperSource("Franklin", "foreclosure", "scrapers.oh_franklin_foreclosure", needs_account=True,
                   notes="RealAuction — requires REALAUCTION_EMAIL/PASSWORD"),
