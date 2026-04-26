@@ -227,9 +227,12 @@ def _build_tags(notice: NoticeData) -> str:
     """Build comma-separated tags string for DataSift upload.
 
     Tags include:
-    - Courthouse Data (all records — for niche sequential filter presets)
+    - Courthouse Data (all records — generic niche-sequential trigger)
+    - ftm (First To Market — every courthouse-direct record)
+    - ftm-{type} (ftm-probate, ftm-ss, ftm-ts, ftm-lp) — drives Mike's
+      type-and-county-specific FTM_* presets in DataSift
     - notice_type (foreclosure, tax_sale, probate, tax_delinquent)
-    - county (knox, blount)
+    - county (franklin, montgomery, greene)
     - YYYY-MM date tag
     - deceased/living status
     - DM confidence level (for deceased records)
@@ -237,9 +240,27 @@ def _build_tags(notice: NoticeData) -> str:
     """
     tags = ["Courthouse Data"]
 
+    # First-to-market generic tag — every courthouse-direct record
+    tags.append("ftm")
+
     # Notice type
     if notice.notice_type:
         tags.append(notice.notice_type)
+        # Type-specific FTM tag for Mike's FTM_<type>_<county> presets.
+        # foreclosure → ftm-ss (Sheriff Sales), tax_sale → ftm-ts,
+        # probate → ftm-probate, tax_delinquent / future lis pendens → ftm-lp
+        ftm_type_map = {
+            "foreclosure": "ftm-ss",
+            "tax_sale": "ftm-ts",
+            "tax_delinquent": "ftm-lp",
+            "probate": "ftm-probate",
+            "eviction": "ftm-eviction",
+            "code_violation": "ftm-cv",
+            "divorce": "ftm-divorce",
+        }
+        ftm_type_tag = ftm_type_map.get(notice.notice_type)
+        if ftm_type_tag:
+            tags.append(ftm_type_tag)
 
     # County
     if notice.county:
