@@ -23,9 +23,9 @@
         "types": {
             "title": "Notice Types",
             "type": "array",
-            "description": "Notice types to scrape. Currently only foreclosure is supported.",
+            "description": "Notice types to scrape. Leave empty for all (probate + foreclosure + lis_pendens). Supported: probate, foreclosure, lis_pendens, tax_sale.",
             "items": { "type": "string" },
-            "default": ["foreclosure"],
+            "default": [],
             "editor": "stringList"
         },
         "since_date": {
