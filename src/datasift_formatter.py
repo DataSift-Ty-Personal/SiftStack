@@ -672,20 +672,40 @@ def _validate_row(row: dict) -> tuple[bool, list[str]]:
     """Check a row dict for DataSift completeness.
 
     DataSift marks records incomplete when missing owner first/last name,
-    mailing address, or property address.
+    mailing address, or property address. Entity-owned records that haven't
+    yet been resolved to a real person are categorized as `entity_unresolved`
+    (a known shortfall, not a parser bug — they need entity research to find
+    the human behind the LLC/trust).
 
     Returns:
         (is_complete, issues) — True if record will be "clean" in DataSift.
+        Entity-unresolved records return False with the dedicated
+        `entity_unresolved` issue so they can be surfaced separately from
+        true parsing failures.
     """
     issues = []
-    if not row.get("Owner First Name"):
-        issues.append("no_first_name")
-    if not row.get("Owner Last Name"):
-        issues.append("no_last_name")
+
+    has_first = bool(row.get("Owner First Name"))
+    has_last = bool(row.get("Owner Last Name"))
+    if not has_first or not has_last:
+        # Distinguish entity records from real person-name parser failures.
+        # An entity record will have the entity-owned tag and an empty name.
+        tags = (row.get("Tags", "") or "").split(",")
+        tags = {t.strip() for t in tags}
+        if "entity_owned" in tags and "entity_researched" not in tags:
+            # LLC/trust without resolved person — known shortfall, not a parser bug
+            issues.append("entity_unresolved")
+        else:
+            if not has_first:
+                issues.append("no_first_name")
+            if not has_last:
+                issues.append("no_last_name")
+
     if not row.get("Property Street Address"):
         issues.append("no_property_address")
     if not row.get("Mailing Street Address"):
         issues.append("no_mailing_address")
+
     return (len(issues) == 0, issues)
 
 

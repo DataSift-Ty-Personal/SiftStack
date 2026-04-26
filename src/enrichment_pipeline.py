@@ -14,7 +14,7 @@ and all enrichment steps in a fixed canonical order.
 import logging
 import re
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 
 import config
@@ -34,7 +34,10 @@ class PipelineOptions:
     skip_filter_sold: bool = True  # only CSV re-import sets False
     skip_vacant_filter: bool = False
     skip_entity_filter: bool = False
-    skip_entity_research: bool = True   # opt-in via --research-entities
+    skip_entity_research: bool = False   # ON by default — recovers LLC/trust-owned
+                                         # records by finding the registered agent /
+                                         # member / trustee. Cost: ~$0.10-0.20 per
+                                         # entity. Use --skip-entity-research to opt out.
     skip_commercial_filter: bool = False
     skip_parcel_lookup: bool = False
     skip_tax: bool = False
@@ -377,47 +380,21 @@ def run_enrichment_pipeline(
             logger.warning("  Probate property lookup failed: %s", e)
 
     # ── Step 4: Parcel Address Lookup ────────────────────────────────
-    if not opts.skip_parcel_lookup and not opts.skip_tax:
-        candidates = [
-            n
-            for n in notices
-            if n.parcel_id.strip() and n.county.lower() == "knox"
-        ]
-        if candidates:
-            logger.info(
-                "── Step 4: Parcel Address Lookup (%d candidates) ──",
-                len(candidates),
-            )
-            try:
-                from tax_enricher import lookup_parcel_addresses
-
-                lookup_parcel_addresses(notices)
-            except ImportError:
-                logger.warning("  tax_enricher not available — skipping")
-            except Exception as e:
-                logger.warning("  Parcel address lookup failed: %s", e)
-        else:
-            logger.info("── Step 4: Parcel Address Lookup (no candidates) ──")
-    elif opts.skip_parcel_lookup:
-        logger.info("── Step 4: Parcel Address Lookup (skipped) ──")
+    # OH Auditor lookup in Step 3c (probate_property_lookup) already populates
+    # address + parcel_id for probate records. Foreclosure/tax sale records
+    # already have addresses from the source scrapers. No additional parcel
+    # lookup needed — keeping this slot reserved for future enrichment.
+    logger.info("── Step 4: Parcel Address Lookup (handled by Step 3c for OH) ──")
 
     # ── Step 5: Tax Delinquency ──────────────────────────────────────
-    if not opts.skip_tax and not opts.has_tax:
-        logger.info("── Step 5: Tax Delinquency Enrichment ──")
-        try:
-            from tax_enricher import enrich_tax_delinquency
-
-            enrich_tax_delinquency(notices)
-            enriched = sum(1 for n in notices if n.tax_delinquent_years)
-            logger.info("  Tax-delinquent: %d/%d", enriched, len(notices))
-        except ImportError:
-            logger.warning("  tax_enricher not available — skipping")
-        except Exception as e:
-            logger.warning("  Tax enrichment failed: %s", e)
-    elif opts.has_tax:
+    # TODO: wire OH County Auditor delinquency endpoints (Franklin/Montgomery/
+    # Greene each have one). For now, records are tagged tax_delinquent only
+    # if the source scraper sets it (Montgomery sheriff portal mixes them with
+    # foreclosures; that classification carries through).
+    if opts.has_tax:
         logger.info("── Step 5: Tax Delinquency (preserved — data already present) ──")
-    elif opts.skip_tax:
-        logger.info("── Step 5: Tax Delinquency (skipped) ──")
+    else:
+        logger.info("── Step 5: Tax Delinquency (skipped — OH Auditor delinquency endpoints not yet wired) ──")
 
     # ── Step 6: Smarty Address Standardization ───────────────────────
     if not opts.skip_smarty and not opts.has_smarty:
