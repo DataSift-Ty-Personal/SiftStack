@@ -1,0 +1,13 @@
+[project]
+name = "siftstack"
+version = "1.0.0"
+description = "Full-stack real estate investing operations platform — Ohio courthouse data → DataSift CRM"
+requires-python = ">=3.12"
+# Top-level dependency list lives in requirements.txt for Apify Docker layer caching.
+# This file exists primarily so Apify CLI's package auto-discovery picks the
+# right entrypoint without falling through to the multi-package error mode.
+
+[tool.apify]
+# Tells Apify CLI which Python package contains __main__.py
+# (resolves "Multiple Python packages found" error from `apify run`)
+entrypoint = "src"
