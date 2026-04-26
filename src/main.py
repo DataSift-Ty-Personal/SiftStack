@@ -160,6 +160,7 @@ async def actor_main() -> None:
         _cred_map = {
             "REALAUCTION_EMAIL": actor_input.get("realauction_email", ""),
             "REALAUCTION_PASSWORD": actor_input.get("realauction_password", ""),
+            "CAPTCHA_API_KEY": actor_input.get("captcha_api_key", ""),
             "ANTHROPIC_API_KEY": actor_input.get("anthropic_api_key", ""),
             "SMARTY_AUTH_ID": actor_input.get("smarty_auth_id", ""),
             "SMARTY_AUTH_TOKEN": actor_input.get("smarty_auth_token", ""),

@@ -57,6 +57,13 @@
             "editor": "textfield",
             "isSecret": true
         },
+        "captcha_api_key": {
+            "title": "2Captcha API Key",
+            "type": "string",
+            "description": "API key from 2captcha.com for solving reCAPTCHA v3 on Montgomery Lis Pendens portal (pro.mcohio.org). Without this, Montgomery LP scraper returns 0 records (skips gracefully). ~$2.99/1000 solves.",
+            "editor": "textfield",
+            "isSecret": true
+        },
         "use_residential_proxy": {
             "title": "Use Residential Proxy",
             "type": "boolean",
