@@ -224,3 +224,4 @@ Realistic call pace: **40-60 calls/day** = ~3 hrs of dial time at 3-4 min/call a
 - [SOP-DAILY-OPERATIONS.md](SOP-DAILY-OPERATIONS.md) — Mike's morning playbook
 - [SOP-LEAD-QUALIFICATION.md](SOP-LEAD-QUALIFICATION.md) — When to escalate
 - [SOP-DATASIFT-NAVIGATION.md](SOP-DATASIFT-NAVIGATION.md) — Where to find these fields in DataSift UI
+- [SOP-REDEMPTION-WINDOW.md](SOP-REDEMPTION-WINDOW.md) — Redemption-window niche scripts (Day 1/2/5/10/14 SMS + ISA opener) — use these for any record carrying `redemption_open` or `redemption_closing` tags

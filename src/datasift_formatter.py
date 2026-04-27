@@ -104,6 +104,15 @@ DATASIFT_COLUMNS = [
     "Entity Type",
     "Entity Contact",
     "Entity Contact Role",
+    # ── Redemption window (foreclosure post-sale, ORC §2329.33) ──
+    # Populated by redemption_watcher.py from Common Pleas docket events.
+    # Drives the FTM_RW_* niche-sequential preset for the 7-30 day window
+    # between sheriff sale and court confirmation, when the homeowner can
+    # still legally redeem the property.
+    "Sheriff Sale Held Date",
+    "Confirmation Hearing Date",
+    "Redemption Window Status",
+    "Redemption Days Remaining",
 ]
 
 
@@ -264,6 +273,13 @@ def _build_tags(notice: NoticeData) -> str:
         if ftm_type_tag:
             tags.append(ftm_type_tag)
 
+        # Redemption-window override: if a foreclosure record has an active
+        # redemption window, retag it with ftm-rw to route into Mike's
+        # FTM_RW_* preset (aggressive 14-day cadence). The base ftm-ss tag
+        # remains so the record stays visible in standard foreclosure presets.
+        if notice.redemption_window_status in ("open", "closing"):
+            tags.append("ftm-rw")
+
     # County
     if notice.county:
         tags.append(notice.county.lower())
@@ -302,6 +318,15 @@ def _build_tags(notice: NoticeData) -> str:
                 tags.append("tax_delinquent")
         except (ValueError, TypeError):
             pass
+
+    # Redemption window state (foreclosure post-sale only)
+    if notice.redemption_window_status == "open":
+        tags.append("redemption_open")
+    elif notice.redemption_window_status == "closing":
+        tags.append("redemption_closing")
+        tags.append("redemption_open")  # also include open so general filters catch it
+    elif notice.redemption_window_status == "closed":
+        tags.append("redemption_closed")
 
     # Deep prospecting tags
     if notice.decision_maker_status == "verified_living":
@@ -823,6 +848,11 @@ def _build_row(notice: NoticeData, notes_override: str | None = None) -> dict:
         "Entity Type": notice.entity_type,
         "Entity Contact": notice.entity_person_name,
         "Entity Contact Role": notice.entity_person_role,
+        # ── Redemption window ──
+        "Sheriff Sale Held Date": _format_date(notice.sheriff_sale_held_date),
+        "Confirmation Hearing Date": _format_date(notice.confirmation_hearing_date),
+        "Redemption Window Status": notice.redemption_window_status,
+        "Redemption Days Remaining": notice.redemption_window_days_remaining,
     }
 
 

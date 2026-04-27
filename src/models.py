@@ -50,8 +50,19 @@ class NoticeData:
     owner_zip: str = ""            # PR/contact mailing zip
     # County assessor / tax fields
     parcel_id: str = ""                # County assessor parcel ID
+    case_number: str = ""              # Court case number (e.g. "24CV003703") — primary join key
+                                       # for cross-source dedup (RealAuction <> Common Pleas
+                                       # lis pendens) and for redemption_watcher updates.
+                                       # Always normalized: uppercase, no spaces, no parens.
     tax_delinquent_amount: str = ""    # Total delinquent tax owed ($)
     tax_delinquent_years: str = ""     # Number of years delinquent
+    # Redemption-window tracking (foreclosure post-sale, ORC §2329.33)
+    # Populated by redemption_watcher.py — runs DAILY against active foreclosure
+    # records, watches Common Pleas dockets for sale-held + confirmation events.
+    sheriff_sale_held_date: str = ""        # Date the sheriff sale actually occurred (YYYY-MM-DD)
+    confirmation_hearing_date: str = ""     # Date court confirms sale (YYYY-MM-DD); after this, redemption right is gone
+    redemption_window_status: str = ""      # "open" | "closing" (≤14 days to confirmation) | "closed" | ""
+    redemption_window_days_remaining: str = ""  # Integer days until confirmation; "" if not applicable
     # Deceased owner detection
     deceased_indicator: str = ""       # "life_estate", "personal_rep", "trustee", "care_of", "et_al", or ""
     tax_owner_name: str = ""           # Raw owner name from county tax API

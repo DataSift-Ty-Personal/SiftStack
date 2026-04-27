@@ -114,78 +114,40 @@ Steady-state mail program:
 
 ---
 
-## Vendor decision matrix
+## Vendor decision
 
-Three direct mail vendors REI investors typically use. Pick one based on volume:
+**Use OpenLetter** (DataSift's native integrated mail house). It's the right choice for SiftStack from Day 1, not a future migration step:
+
+- **Native DataSift integration** — sequences trigger mail directly from records; no CSV export/upload friction
+- **Variable substitution from DataSift custom fields** — Sheriff Sale Held Date, Confirmation Hearing Date, Decedent Name, etc. populate automatically
+- **Tracking flows back into DataSift activity** — response calls, returned mail, opt-outs all log against the record
+- **Cadence automation** — Day-N triggers fire from the sequence, no manual reupload
+- **A/B variants** — supported within a single cadence for testing message variants
+
+The earlier plan to start with YellowLetters.com (CSV upload) and migrate later was inferior — OpenLetter is already inside Sift, no migration needed. **All mail templates and cadences live in [SOP-MAIL-TEMPLATES.md](SOP-MAIL-TEMPLATES.md).**
+
+(For reference only — the alternatives we considered before OpenLetter became the chosen path:)
 
 | Vendor | Cost/piece | Min order | Handwritten? | API integration | Best for |
 |---|---|---|---|---|---|
-| **YellowLetters.com** | $1.65-1.95 | 50 | Yes (real ink) | CSV upload only | <500/month volume |
-| **OpenLetterMarketing** | $1.45-1.75 | 100 | Yes (font sim) | API + CSV | 500-2000/month |
-| **Click2Mail** | $0.85-1.15 | 1 | No (printed) | Full REST API | High volume, automated |
-
-**Recommendation for SiftStack:** Start with **YellowLetters.com** in Week 3 (CSV upload, handwritten letters, low minimum). Migrate to **OpenLetterMarketing** at Week 5 when volume justifies (faster turnaround + API for full automation).
+| **OpenLetter (chosen)** | per DataSift contract | per contract | Yes (varies by template) | Native DataSift integration | All SiftStack volume |
+| YellowLetters.com | $1.65-1.95 | 50 | Yes (real ink) | CSV upload only | (deferred) |
+| Click2Mail | $0.85-1.15 | 1 | No (printed) | Full REST API | (deferred — high volume) |
 
 ---
 
-## The mail piece (template)
+## Mail templates and cadences
 
-**Format:** Handwritten yellow legal-pad style letter, blue ink, #10 envelope, real stamp (not metered).
+All mail templates and per-distress cadences (probate, foreclosure lis pendens, foreclosure sheriff sale, redemption window) live in **[SOP-MAIL-TEMPLATES.md](SOP-MAIL-TEMPLATES.md)**.
 
-### Probate version
+That doc is the source of truth for:
+- Per-distress cadence design (which piece fires on which day)
+- Full template body text (copy-paste into OpenLetter)
+- DataSift custom-field → OpenLetter variable mapping
+- Stop-mail triggers (status changes, returned mail, opt-outs)
+- A/B variant testing patterns
 
-```
-{{date}}
-
-Dear {{first_name}},
-
-I hope this finds you well. My name is Aaron and I run a small
-home-buying business here in {{county}} County, Ohio. I'm reaching
-out because I saw the probate filing for {{decedent_name}} —
-first off, my deepest condolences.
-
-I noticed the estate includes a property at {{property_address}}.
-I know dealing with the home during probate is one more thing on
-top of an already difficult time. If you'd ever consider selling
-to a local cash buyer — no agent fees, no repairs needed, no
-showings — I'd love the chance to make you a fair offer.
-
-If now isn't the right time, I completely understand. Just keep
-my number for whenever you're ready.
-
-{{Aaron's signature}}
-
-Aaron Leddy
-Wright Home Offer
-{{phone}}  |  {{email}}
-```
-
-### Foreclosure version
-
-```
-{{date}}
-
-Dear {{first_name}},
-
-I'm Aaron with Wright Home Offer, a local cash buyer in {{county}}
-County, Ohio. I'm reaching out because I noticed your property
-at {{property_address}} is scheduled for sheriff sale on
-{{auction_date}}.
-
-I want you to know there ARE still options. If you sell to me
-before the sale, you walk away with cash AND keep the foreclosure
-off your credit report. I close in 7-10 days, pay all closing
-costs, and you don't lift a finger to fix anything.
-
-If that interests you, call or text me at {{phone}}. If not, I
-wish you the best with the bank.
-
-{{Aaron's signature}}
-
-Aaron Leddy
-Wright Home Offer
-{{phone}}  |  {{email}}
-```
+This doc (SOP-DIRECT-MAIL-PLAN) stays focused on economics: spend ramp, mailability filters, ROI math, response-rate targets, vendor decision.
 
 ---
 
@@ -234,3 +196,4 @@ Pause the mail program if any of these hit:
 - [SOP-LEAD-QUALIFICATION.md](SOP-LEAD-QUALIFICATION.md) — qualification gating BEFORE mail
 - [SOP-WEEKLY-REVIEW.md](SOP-WEEKLY-REVIEW.md) — weekly review picks up mail metrics
 - [SOP-CALL-SCRIPTS.md](SOP-CALL-SCRIPTS.md) — script for inbound calls from mail responders
+- [SOP-REDEMPTION-WINDOW.md](SOP-REDEMPTION-WINDOW.md) — redemption-window mail piece (Phase 2 only; FedEx 2-day for `redemption_closing` records, NOT standard mail)

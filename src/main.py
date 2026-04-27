@@ -338,6 +338,34 @@ async def actor_main() -> None:
                 except Exception as e:
                     Actor.log.warning("Property lookup failed: %s -- continuing without lookups", e)
 
+            # ── Cross-run state merge + redemption watch ──────────────────
+            # notice_state.py persists every record across runs and carries
+            # forward enrichment fields. Records re-seen on later days skip
+            # expensive enrichment (Smarty/Zillow/obituary/Tracerfy) since
+            # the pipeline's own field-set guards short-circuit when fields
+            # are pre-populated from cached state.
+            apify_notice_state_stats = None
+            try:
+                from notice_state import merge_with_today
+                notices, apify_notice_state_stats = merge_with_today(notices)
+                Actor.log.info(
+                    "Dedup state: %d scraped, %d NEW, %d updated, %d carried forward, %d aged out, %d total active",
+                    apify_notice_state_stats["today_scraped"], apify_notice_state_stats["new"],
+                    apify_notice_state_stats["updated"], apify_notice_state_stats["carried_forward"],
+                    apify_notice_state_stats["aged_out"], apify_notice_state_stats["total_active"],
+                )
+            except Exception as e:
+                Actor.log.warning("Notice state merge failed: %s -- continuing without dedup", e)
+
+            try:
+                from redemption_watcher import run_redemption_watch
+                run_redemption_watch(notices)
+                # Re-save state so redemption updates from watcher persist
+                from notice_state import merge_with_today as _merge
+                notices, _ = _merge(notices)
+            except Exception as e:
+                Actor.log.warning("Redemption watch failed: %s -- continuing without redemption updates", e)
+
             # ── Enrichment ────────────────────────────────────────────
             from enrichment_pipeline import PipelineOptions, run_enrichment_pipeline
 
@@ -356,22 +384,31 @@ async def actor_main() -> None:
 
             total = len(notices)
 
-            # ── Tracerfy Skip Trace (DP candidates only) ────────────
-            # Only run Tracerfy on records that need deep prospecting
-            # (deceased owners, heir maps, decision makers). Basic records
-            # get skip traced for free inside DataSift's unlimited plan.
+            # ── Tracerfy Skip Trace (all records without cached phones) ──
+            # Run Tracerfy on every record that DOESN'T already have phone
+            # data carried forward from prior runs. The notice_state cache
+            # ensures we only pay for skip trace on truly NEW records — once
+            # a record's phones are cached, future runs skip it.
+            #
+            # This expansion (vs the prior DP-candidates-only behavior)
+            # ensures every record's phones flow into Trestle for tier
+            # scoring, which is what the data pyramid + ISA call channel
+            # depends on.
             tracerfy_stats = None
             if do_tracerfy and config.TRACERFY_API_KEY:
-                dp_for_tracerfy = [
+                tracerfy_targets = [
                     n for n in notices
-                    if n.owner_deceased == "yes" or n.heir_map_json or n.decision_maker_name
+                    if not (n.primary_phone or n.mobile_1 or n.landline_1)
                 ]
-                if dp_for_tracerfy:
-                    Actor.log.info("Running Tracerfy on %d DP candidates (%d basic records skipped)...",
-                                   len(dp_for_tracerfy), total - len(dp_for_tracerfy))
+                cached_count = total - len(tracerfy_targets)
+                if tracerfy_targets:
+                    Actor.log.info(
+                        "Running Tracerfy on %d records (%d cached from prior runs, skipped)...",
+                        len(tracerfy_targets), cached_count,
+                    )
                     try:
                         from tracerfy_skip_tracer import batch_skip_trace
-                        tracerfy_stats = batch_skip_trace(dp_for_tracerfy)
+                        tracerfy_stats = batch_skip_trace(tracerfy_targets)
                         Actor.log.info(
                             "Tracerfy: %d/%d matched, %d phones, %d emails, $%.2f",
                             tracerfy_stats["matched"], tracerfy_stats["submitted"],
@@ -381,7 +418,7 @@ async def actor_main() -> None:
                     except Exception as e:
                         Actor.log.warning("Tracerfy skip trace failed: %s — continuing", e)
                 else:
-                    Actor.log.info("No DP candidates — Tracerfy skipped (0 deceased/DM records)")
+                    Actor.log.info("All %d records have cached phones — Tracerfy skipped (full dedup hit)", total)
             elif do_tracerfy:
                 Actor.log.info("Tracerfy skipped — no API key configured")
 
@@ -395,15 +432,25 @@ async def actor_main() -> None:
                 if n.owner_deceased == "yes" or n.heir_map_json or n.decision_maker_name
             ]
 
-            # Score every phone (DM #1 + all heirs) with Trestle before rendering,
-            # so signing-chain phones get tier badges — not just DM #1's.
+            # Score every phone with Trestle (all records, not just DP).
+            # The dedup cache means cached records' phones are already tier-
+            # scored from prior runs (Trestle scores carry forward via the
+            # primary_phone/mobile_*/landline_* fields). Only records with
+            # NEW phones from today's Tracerfy run hit the Trestle API.
+            #
+            # Coverage expansion: every foreclosure / lis pendens / probate
+            # record now gets phone tier scoring, not just DP candidates.
+            # This is what feeds the ISA-call channel's Tier 0–3 priority.
             phone_tiers: dict = {}
-            if dp_candidates and config.TRESTLE_API_KEY:
+            phone_tier_targets = [n for n in notices if n.primary_phone or n.mobile_1 or n.landline_1]
+            if phone_tier_targets and config.TRESTLE_API_KEY:
                 try:
                     from phone_validator import score_record_phones
-                    phone_tiers = score_record_phones(dp_candidates, config.TRESTLE_API_KEY)
-                    Actor.log.info("Trestle scored %d unique phones across DP candidates",
-                                   len(phone_tiers))
+                    phone_tiers = score_record_phones(phone_tier_targets, config.TRESTLE_API_KEY)
+                    Actor.log.info(
+                        "Trestle scored %d unique phones across %d records (DP + bulk)",
+                        len(phone_tiers), len(phone_tier_targets),
+                    )
                 except Exception as e:
                     Actor.log.warning("Per-record Trestle scoring failed: %s — continuing", e)
 
@@ -1213,6 +1260,11 @@ def cli_main() -> None:
         help="Skip Tracerfy batch skip trace (phones + emails) before DataSift upload",
     )
     parser.add_argument(
+        "--skip-redemption-watch",
+        action="store_true",
+        help="Skip Common Pleas docket check for redemption-window status on foreclosure records",
+    )
+    parser.add_argument(
         "--llm-backend",
         choices=["anthropic", "ollama", "openrouter"],
         default=os.getenv("LLM_BACKEND", "anthropic"),
@@ -1739,6 +1791,40 @@ def _run_scrape_pipeline(args, searches) -> None:
             logging.warning("property_lookup module not found -- skipping property lookup")
         except Exception as e:
             logging.warning("Property lookup failed: %s -- continuing without lookups", e)
+
+    # ── Cross-run state merge + redemption watch ───────────────────────
+    # notice_state.py persists every record we've ever scraped (across all
+    # distress types) and carries forward enrichment fields between runs.
+    # Effects:
+    #  - Records already enriched skip Smarty/Zillow/obituary on re-scrape
+    #    (the pipeline's existing "is field already set?" guards naturally
+    #    short-circuit when fields are pre-populated from cached state)
+    #  - Foreclosure records persist long enough for the redemption watcher
+    #    to track them through the post-auction window
+    #  - Slack summary reports new vs carried-forward counts
+    notice_state_stats: dict | None = None
+    try:
+        from notice_state import merge_with_today
+        notices, notice_state_stats = merge_with_today(notices)
+        logging.info(
+            "Dedup state: %d scraped, %d NEW, %d updated, %d carried forward, %d aged out, %d total active",
+            notice_state_stats["today_scraped"], notice_state_stats["new"],
+            notice_state_stats["updated"], notice_state_stats["carried_forward"],
+            notice_state_stats["aged_out"], notice_state_stats["total_active"],
+        )
+    except Exception as e:
+        logging.warning("Notice state merge failed: %s -- continuing without dedup", e)
+
+    if not getattr(args, "skip_redemption_watch", False):
+        try:
+            from redemption_watcher import run_redemption_watch
+            # Watcher runs against the merged set (today's + carried forward)
+            run_redemption_watch(notices)
+            # Re-save state so redemption updates from the watcher persist
+            from notice_state import merge_with_today as _merge
+            notices, _ = _merge(notices)
+        except Exception as e:
+            logging.warning("Redemption watch failed: %s -- continuing without redemption updates", e)
 
     # Run unified enrichment pipeline
     from enrichment_pipeline import PipelineOptions, run_enrichment_pipeline

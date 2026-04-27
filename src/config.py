@@ -128,6 +128,18 @@ SCRAPER_SOURCES: list[ScraperSource] = [
                   notes="RealAuction — requires REALAUCTION_EMAIL/PASSWORD"),
     ScraperSource("Franklin", "lis_pendens", "scrapers.oh_franklin_lis_pendens",
                   notes="Common Pleas CIO — CV-FORECLOSURES filings (4-12 weeks pre-sheriff-sale)"),
+    # RealAuction expansion (additive — runs alongside CF/ASP scrapers above;
+    # data dedups downstream on parcel_id + case_number).
+    ScraperSource("Montgomery", "foreclosure", "scrapers.oh_montgomery_realauction",
+                  needs_account=True,
+                  notes="RealAuction (montgomery.sheriffsaleauction.ohio.gov) — "
+                        "alternate auction-stage source; runs alongside ColdFusion go.mcohio.org. "
+                        "Requires REALAUCTION_EMAIL/PASSWORD."),
+    ScraperSource("Greene", "foreclosure", "scrapers.oh_greene_realauction",
+                  needs_account=True,
+                  notes="RealAuction (greene.sheriffsaleauction.ohio.gov) — "
+                        "alternate auction-stage source; runs alongside ASP.NET apps.greenecountyohio.gov. "
+                        "Requires REALAUCTION_EMAIL/PASSWORD."),
 ]
 
 # Legacy aliases — keep older imports working until all call sites migrate to ScraperSource.

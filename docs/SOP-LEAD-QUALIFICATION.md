@@ -179,3 +179,4 @@ If still stuck after checking the SOPs → ping Aaron in Slack with the question
 - [SOP-DAILY-OPERATIONS.md](SOP-DAILY-OPERATIONS.md)
 - [SOP-CALL-SCRIPTS.md](SOP-CALL-SCRIPTS.md)
 - [SOP-WEEKLY-REVIEW.md](SOP-WEEKLY-REVIEW.md)
+- [SOP-REDEMPTION-WINDOW.md](SOP-REDEMPTION-WINDOW.md) — redemption-window leads auto-bump on Timeline + Pain pillars; same-day escalation triggers are different from standard records

@@ -380,7 +380,9 @@ If tags wrong:                If NoticeData wrong:
 
 - [SOP-DAILY-OPERATIONS.md](SOP-DAILY-OPERATIONS.md) — Mike's morning playbook
 - [SOP-RED-FLAGS.md](SOP-RED-FLAGS.md) — Diagnostics when things go wrong
+- [SOP-REDEMPTION-WINDOW.md](SOP-REDEMPTION-WINDOW.md) — redemption-window niche; new tags `ftm-rw` / `redemption_open` / `redemption_closing` / `redemption_closed` and custom fields Sheriff Sale Held Date, Confirmation Hearing Date, Redemption Window Status, Redemption Days Remaining
 - [CLAUDE.md](../CLAUDE.md) — Full operational reference
 - `src/datasift_formatter.py` — canonical tag-building logic (`_build_tags()` at line 226)
 - `src/niche_sequential.py` — canonical preset definitions (PRESETS list at line 41)
 - `src/sequence_templates.py` — canonical 26 TCA sequence templates
+- `src/redemption_watcher.py` — daily code that drives redemption tags + custom fields

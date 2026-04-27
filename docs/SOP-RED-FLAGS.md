@@ -342,6 +342,42 @@ Or alternatively — if tax sales are operationally identical to sheriff sales f
 
 ---
 
+## 13. FTM_RW_* preset is empty for >2 days during foreclosure season
+
+**Symptom:** No records appearing in `FTM_RW_OH_Redemption_Open` or `FTM_RW_OH_Redemption_Closing` for 2+ consecutive days. Foreclosure auctions are happening (visible in `FTM_SS_*` presets), so redemption windows SHOULD be opening.
+
+**What it means:** The redemption_watcher.py module is silently failing — most likely causes:
+1. **Franklin CIO portal change** — they tweaked the docket layout and the regex no longer matches. Watcher runs cleanly, returns 0 events per case.
+2. **Court terminology drift** — a new docket-event phrasing not covered by `_SALE_HELD_RE` / `_CONFIRMATION_HEARING_RE` / `_SALE_CONFIRMED_RE`.
+3. **Disclaimer accept failed** — CIO session can't be seeded; all case detail fetches return blank. Will log `"Franklin redemption watch: failed to seed CIO session"`.
+4. **CAPTCHA_API_KEY exhausted** (Montgomery only) — 2Captcha balance hit zero. Watcher logs `"Montgomery redemption watch: CAPTCHA_API_KEY not set"` even though it IS set, because the solver call fails.
+5. **None of the records in today's scrape have `case_number` populated** — RealAuction stopped exposing the Case # field, or scraper regex broke. Check a sample foreclosure record's `case_number` field via DataSift export.
+
+**Diagnostic:**
+
+```bash
+# Run watcher directly against a known-active redemption case and watch the logs:
+PYTHONPATH=src python -m redemption_watcher --case "Franklin:24CV003703" -v
+
+# Output should show one of:
+# - sale_held + hearing dates → working
+# - "no sale held" → docket parsing broken OR case is pre-auction
+# - "CIO session" warning → portal session broken
+# - silent return → regex doesn't match new event phrasing
+```
+
+Also check the daily log for `"Redemption watch done — windows: open=X, closing=Y, closed=Z"`. If all three are 0 across 2+ days but `FTM_SS_*` has records, that's the smoking gun.
+
+**Fix:**
+- Portal change: update regexes in `src/redemption_watcher.py` (`_SALE_HELD_RE`, `_CONFIRMATION_HEARING_RE`, `_SALE_CONFIRMED_RE`)
+- 2Captcha exhausted: top up at https://2captcha.com/enterpage
+- Disclaimer broken: re-test `_accept_franklin_disclaimer` against live CIO
+- case_number missing on scrapes: check Franklin RealAuction's `Case #` field parser
+
+**Fix owner:** Aaron (code fix). Mike pings if symptom persists 2+ days.
+
+---
+
 ## When you genuinely don't know what's wrong
 
 The ONE-COMMAND diagnostic dump:
