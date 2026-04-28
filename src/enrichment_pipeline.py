@@ -11,6 +11,8 @@ run_enrichment_pipeline(). The pipeline handles dedup, filtering,
 and all enrichment steps in a fixed canonical order.
 """
 
+import asyncio
+import concurrent.futures
 import logging
 import re
 import uuid
@@ -21,6 +23,38 @@ import config
 from models import NoticeData
 
 logger = logging.getLogger(__name__)
+
+
+def _run_async(coro):
+    """Execute a coroutine from inside a sync function — works in both
+    contexts (CLI sync mode AND Apify Actor async mode).
+
+    The pipeline's `run_enrichment_pipeline` is sync but must invoke async
+    helpers like `lookup_decedent_properties`. CLI mode has no running
+    loop, so `asyncio.run(coro)` works directly. Apify mode runs inside
+    `Actor.main()` which IS a running loop — calling `asyncio.run` there
+    raises `RuntimeError: asyncio.run() cannot be called from a running
+    event loop`.
+
+    The fix: detect a running loop. If present, dispatch the coroutine to
+    a worker thread that owns its own loop. The calling thread blocks on
+    the future. If no running loop, use `asyncio.run` directly.
+
+    Why this matters operationally:
+      Without this helper, every Apify daily run silently dropped probate
+      records (they failed validation because property_lookup never ran).
+      Symptom: probate counts in the Slack daily report were near zero
+      even though probate scrapers found ~50-100 records.
+    """
+    try:
+        asyncio.get_running_loop()
+        # We're inside a running loop — run the coroutine in a worker
+        # thread that owns its own loop, blocking until it completes.
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            return executor.submit(asyncio.run, coro).result()
+    except RuntimeError:
+        # No running loop — safe to call asyncio.run directly.
+        return asyncio.run(coro)
 
 
 # ── Configuration ────────────────────────────────────────────────────
@@ -369,9 +403,8 @@ def run_enrichment_pipeline(
     if probate_no_addr:
         logger.info("── Step 3c: Probate Property Lookup (%d candidates) ──", len(probate_no_addr))
         try:
-            import asyncio as _asyncio
             from probate_property_lookup import lookup_decedent_properties
-            _asyncio.run(lookup_decedent_properties(probate_no_addr))
+            _run_async(lookup_decedent_properties(probate_no_addr))
             found = sum(1 for n in probate_no_addr if n.address.strip())
             logger.info("  Property address found: %d/%d", found, len(probate_no_addr))
         except ImportError as e:
