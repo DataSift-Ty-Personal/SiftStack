@@ -507,6 +507,26 @@ async def actor_main() -> None:
             elif drive_folder_id:
                 Actor.log.warning("google_drive_folder_id set but google_service_account_key missing — skipping Drive upload")
 
+            # ── Upload-skip optimization ───────────────────────────────
+            # Filter to records that actually changed (or are new) since
+            # last upload. The fingerprint compares enrichment fields +
+            # redemption status + tag-source fields. Records identical to
+            # last upload skip — no point re-pushing unchanged data.
+            # Periodic re-upload (every 30 days) prevents DataSift drift.
+            datasift_upload_records = notices
+            datasift_skip_count = 0
+            try:
+                from notice_state import filter_records_needing_upload
+                to_upload, to_skip = filter_records_needing_upload(notices)
+                datasift_upload_records = to_upload
+                datasift_skip_count = len(to_skip)
+                Actor.log.info(
+                    "DataSift upload filter: %d records to upload, %d unchanged (skipped)",
+                    len(to_upload), len(to_skip),
+                )
+            except Exception as e:
+                Actor.log.warning("Upload filter failed: %s — uploading all records", e)
+
             # ── DataSift CSVs → KVS (manual upload) ─────────────────
             # Generate DataSift-formatted CSVs and save to Apify KVS
             # for manual download + upload to DataSift (more reliable than
@@ -515,7 +535,7 @@ async def actor_main() -> None:
             try:
                 from datasift_formatter import write_datasift_split_csvs
 
-                csv_infos = write_datasift_split_csvs(notices)
+                csv_infos = write_datasift_split_csvs(datasift_upload_records)
                 kvs = await Actor.open_key_value_store()
                 for info in csv_infos:
                     key = f"datasift_{info['label'].lower().replace(' ', '_')}.csv"
@@ -528,6 +548,15 @@ async def actor_main() -> None:
                     Actor.log.info("DataSift CSV (%s) saved to KVS: %s", info["label"], key)
             except Exception as e:
                 Actor.log.error("DataSift CSV generation failed: %s", e)
+
+            # Mark uploaded records in state so future runs can skip them
+            # if unchanged. Wrapped in try so a state-write failure doesn't
+            # break the rest of the run.
+            try:
+                from notice_state import mark_records_uploaded
+                mark_records_uploaded(datasift_upload_records)
+            except Exception as e:
+                Actor.log.warning("Failed to mark records uploaded in state: %s", e)
 
             # ── Slack Notification ────────────────────────────────────
             elapsed_min = (_time() - pipeline_start) / 60
@@ -596,6 +625,33 @@ async def actor_main() -> None:
                 "Saved last_run_date + %d seen_notice_ids to KVS for next daily run",
                 len(seen_ids),
             )
+
+            # ── Master ledger CSVs → Google Drive ──────────────────────
+            # Three CSVs: active records, daily summary, aged-out archive.
+            # Aaron + Mike open these in Drive (auto-renders as Sheets) for
+            # cross-reference + audit. Skipped silently if Drive credentials
+            # not configured.
+            try:
+                from master_ledger import update_ledger_csvs
+                ledger_links = update_ledger_csvs(
+                    records=notices,
+                    run_stats=apify_notice_state_stats,
+                    run_meta={
+                        "run_date": datetime.now().strftime("%Y-%m-%d"),
+                        "build_version": "1.0.5",
+                        "run_duration_min": round(elapsed_min, 1),
+                        "cost": sum(cost_breakdown.values()) if cost_breakdown else 0,
+                        "slack_fired": bool(do_notify_slack and config.SLACK_WEBHOOK_URL),
+                    },
+                    drive_folder_id=drive_folder_id,
+                    service_account_key_b64=drive_key_b64,
+                    upload_count=len(datasift_upload_records),
+                    skip_count=datasift_skip_count,
+                )
+                if ledger_links:
+                    Actor.log.info("Master ledger updated: %d files on Drive", len(ledger_links))
+            except Exception as e:
+                Actor.log.warning("Master ledger update failed: %s", e)
 
             Actor.log.info("Done — %d notices exported (%.1f min)", total, elapsed_min)
 

@@ -79,6 +79,59 @@ def upload_file(
         return None
 
 
+def upsert_file(
+    file_path: Path,
+    folder_id: str,
+    service_account_key_b64: str,
+    filename: str,
+    mimetype: str | None = None,
+) -> str | None:
+    """Upsert a file to Drive — update existing if name matches, else create.
+
+    Used by master_ledger.py and any other "single document that updates each
+    run" pattern. Drive keeps the same file ID across updates so the URL is
+    stable (Mike can bookmark it once).
+
+    Returns the Drive webViewLink on success, None on failure.
+    """
+    try:
+        service = _build_service(service_account_key_b64)
+        file_path = Path(file_path)
+        if not mimetype:
+            mimetype = MIME_MAP.get(file_path.suffix.lower(), "application/octet-stream")
+
+        # Look for existing file by name in the target folder
+        query = (
+            f"name = '{filename}' and "
+            f"'{folder_id}' in parents and "
+            "trashed = false"
+        )
+        existing = service.files().list(
+            q=query, fields="files(id, webViewLink)", pageSize=1,
+        ).execute().get("files", [])
+
+        media = MediaFileUpload(str(file_path), mimetype=mimetype)
+
+        if existing:
+            file_id = existing[0]["id"]
+            file = service.files().update(
+                fileId=file_id, media_body=media, fields="id, webViewLink",
+            ).execute()
+            logger.info("Updated %s on Drive: %s", filename, file.get("webViewLink"))
+        else:
+            file_metadata = {"name": filename, "parents": [folder_id]}
+            file = service.files().create(
+                body=file_metadata, media_body=media, fields="id, webViewLink",
+            ).execute()
+            logger.info("Created %s on Drive: %s", filename, file.get("webViewLink"))
+
+        return file.get("webViewLink", "")
+
+    except Exception:
+        logger.exception("Drive upsert failed for %s", filename)
+        return None
+
+
 def upload_csv(
     csv_path: Path,
     folder_id: str,

@@ -146,6 +146,124 @@ def load_state() -> dict[str, dict]:
     return state
 
 
+def filter_records_needing_upload(
+    records: list[NoticeData],
+    redirty_after_days: int = 30,
+) -> tuple[list[NoticeData], list[NoticeData]]:
+    """Split records into (needs_upload, can_skip) based on cached state.
+
+    A record needs upload if:
+      - It's NEW (no canonical key in state, OR state has no last_uploaded marker)
+      - Its enrichment "fingerprint" changed since last upload
+      - It hasn't been re-uploaded in `redirty_after_days` days (prevents
+        DataSift from "forgetting" records — we periodically refresh)
+
+    A record can skip upload if all of:
+      - State has a last_uploaded date
+      - Today's record fingerprint matches cached fingerprint
+      - last_uploaded is within `redirty_after_days`
+
+    Used by main.py daily flow: only upload records that actually changed.
+    DataSift dedups on its end too, but skipping upstream cuts daily run
+    time + makes the Slack "uploaded" count actually meaningful.
+    """
+    state = load_state()
+    needs_upload: list[NoticeData] = []
+    can_skip: list[NoticeData] = []
+    today = date.today()
+
+    for r in records:
+        key = compute_record_key(r)
+        if not key:
+            # No usable key → conservative: always upload
+            needs_upload.append(r)
+            continue
+
+        entry = state.get(key)
+        if entry is None:
+            # First time seeing this — must upload
+            needs_upload.append(r)
+            continue
+
+        last_uploaded = _parse_iso(entry.get("last_uploaded_date", ""))
+        cached_fingerprint = entry.get("upload_fingerprint", "")
+        today_fingerprint = _compute_upload_fingerprint(r)
+
+        if last_uploaded is None:
+            needs_upload.append(r)
+            continue
+        if cached_fingerprint != today_fingerprint:
+            needs_upload.append(r)
+            continue
+        if (today - last_uploaded).days >= redirty_after_days:
+            needs_upload.append(r)
+            continue
+
+        # All checks pass — safe to skip this record's upload
+        can_skip.append(r)
+
+    return needs_upload, can_skip
+
+
+def mark_records_uploaded(records: list[NoticeData]) -> None:
+    """Record that these records were just uploaded to DataSift.
+
+    Updates each record's state entry with last_uploaded_date + the current
+    upload fingerprint. Future runs use this to decide if upload can be
+    skipped.
+    """
+    state = load_state()
+    today_iso = date.today().isoformat()
+    updated = 0
+    for r in records:
+        key = compute_record_key(r)
+        if not key or key not in state:
+            continue
+        state[key]["last_uploaded_date"] = today_iso
+        state[key]["upload_fingerprint"] = _compute_upload_fingerprint(r)
+        updated += 1
+    if updated:
+        _write_state(state)
+        logger.info("Marked %d records as uploaded (state updated)", updated)
+
+
+def _compute_upload_fingerprint(r: NoticeData) -> str:
+    """Hash of the fields whose change should trigger a re-upload to DataSift.
+
+    Includes: tags-source fields (notice_type, status flags, redemption status,
+    owner_deceased, decision-maker fields), value fields (estimated_value,
+    equity_percent, mailable), phone summary (count of populated phones).
+
+    Stable + short — produces the same hash for identical-looking records,
+    different hash when anything material changed.
+    """
+    import hashlib
+
+    sig_parts = [
+        r.notice_type or "",
+        r.county or "",
+        r.address or "",
+        r.owner_name or "",
+        r.decedent_name or "",
+        r.owner_deceased or "",
+        r.decision_maker_name or "",
+        r.decision_maker_relationship or "",
+        r.dm_confidence or "",
+        r.redemption_window_status or "",
+        r.sheriff_sale_held_date or "",
+        r.confirmation_hearing_date or "",
+        r.auction_date or "",
+        r.estimated_value or "",
+        r.equity_percent or "",
+        r.mailable or "",
+        # Phone presence (count, not values — phones get re-skip-traced
+        # periodically and we don't want to flag re-upload for that alone)
+        str(sum(1 for p in (r.primary_phone, r.mobile_1, r.mobile_2, r.mobile_3,
+                            r.mobile_4, r.mobile_5, r.landline_1, r.landline_2, r.landline_3) if p)),
+    ]
+    return hashlib.sha1("|".join(sig_parts).encode("utf-8")).hexdigest()[:16]
+
+
 def merge_with_today(today_records: list[NoticeData]) -> tuple[list[NoticeData], dict]:
     """Merge today's scrape with persisted state.
 
