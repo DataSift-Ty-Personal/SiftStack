@@ -21,6 +21,18 @@ A **sequence** = automated cadence triggered when a record enters the preset. Ea
 
 Sequences fire automatically. Mike doesn't manually push them — he builds them once and the system fires touches per record per the timeline.
 
+### The two layers (read this once, then refer back)
+
+There are TWO sequence layers running in parallel for every record:
+
+1. **`Mail_On_Entry`** (global, fires Day 0) — sends ONE first-touch mail piece to every new mailable record, regardless of which preset they're in. Branches on `Notice Type` to pick Probate-1 / SS-1 / LP-1 / RW-1. Tags `mail_entry_sent` after firing. See [MIKE-MAIL-ENTRY-SETUP.md](MIKE-MAIL-ENTRY-SETUP.md) for the build.
+
+2. **Preset cadences** (per-preset: `FTM_Probate_Cadence`, `FTM_SS_Cadence`, `FTM_LP_Cadence`, `FTM_RW_Cadence`) — the existing sequences that handle Day 1 SMS, Day 1/2/3 ISA call, Day 30/60/90 follow-up mail, etc.
+
+**The Day 1 mail step in EACH preset cadence is gated** — it only fires if the record does NOT have `mail_entry_sent` tag. This prevents duplicate sends. If a record hits `Mail_On_Entry`, the preset's Day 1 mail step skips. If a record somehow misses `Mail_On_Entry` (mailable=no, missing DPV, etc.), the preset cadence fires the Day 1 mail as a backup.
+
+Bottom line: every mailable record gets exactly ONE Day 0 mail piece, then the preset cadence picks up at Day 30 onwards.
+
 ---
 
 ## Universal stop-cadence rules (apply to ALL sequences)
@@ -72,9 +84,10 @@ Build 3 presets (one per county):
 |---|---|---|---|
 | 0 | DialForce | Bulk dial (already happens — no preset action needed) | n/a |
 | 0 | SMS | Send Probate Day-1 SMS via Mike's tool | status changed |
+| 0 | OpenLetter (`Mail_On_Entry`) | Probate-1 yellow letter — fires from global Mail_On_Entry sequence; tags `mail_entry_sent` | mailable, DPV=Y |
 | 1 | ISA | Schedule call (Trestle Tier 0–3 phones only) | status changed |
 | 2 | SMS | Send Probate Day-2 SMS | status changed |
-| 3 | OpenLetter | Send Probate-1 mail (yellow letter) | status changed |
+| 3 | OpenLetter (preset cadence) | Send Probate-1 mail — BACKUP only, fires only if record does NOT have `mail_entry_sent` (catches records that bypassed Mail_On_Entry) | status changed AND NOT mail_entry_sent |
 | 3 | ISA | Second call attempt | status changed |
 | 5 | SMS | Send Probate Day-3 SMS final | status changed |
 | 7 | ISA | Third call attempt | status changed |
@@ -122,7 +135,8 @@ For records caught at the Common Pleas foreclosure case-filing stage. Long runwa
 |---|---|---|---|
 | 0 | DialForce | Bulk dial | n/a |
 | 0 | SMS | Foreclosure Day-1 SMS (per [SOP-CALL-SCRIPTS](SOP-CALL-SCRIPTS.md)) | status changed |
-| 1 | OpenLetter | Send LP-1 mail | status changed |
+| 0 | OpenLetter (`Mail_On_Entry`) | LP-1 yellow letter — fires from global Mail_On_Entry sequence; tags `mail_entry_sent` | mailable, DPV=Y |
+| 1 | OpenLetter (preset cadence) | LP-1 BACKUP only, fires only if record does NOT have `mail_entry_sent` | NOT mail_entry_sent |
 | 1 | ISA | Live call attempt | status changed |
 | 2 | SMS | Foreclosure Day-2 SMS | status changed |
 | 3 | SMS | Foreclosure Day-3 SMS | status changed |
@@ -171,7 +185,8 @@ For records where the auction is scheduled. Cadence compresses to days, not week
 |---|---|---|---|
 | 0 | DialForce | Bulk dial | n/a |
 | 0 | SMS | Foreclosure Day-1 SMS | status changed |
-| 1 | OpenLetter | Send SS-1 mail (yellow letter) | status changed |
+| 0 | OpenLetter (`Mail_On_Entry`) | SS-1 yellow letter — fires from global Mail_On_Entry sequence; tags `mail_entry_sent` | mailable, DPV=Y |
+| 1 | OpenLetter (preset cadence) | SS-1 BACKUP only, fires only if record does NOT have `mail_entry_sent` | NOT mail_entry_sent |
 | 1 | ISA | Live call | status changed |
 | 2 | SMS | Foreclosure Day-2 SMS | status changed |
 | 3 | SMS | Foreclosure Day-3 SMS (urgency) | status changed |
@@ -230,7 +245,8 @@ The cadence is identical across both presets — what differs is the mail vendor
 | 0 | DialForce | Bulk dial | already happens |
 | 0 | SMS | Redemption Day-1 SMS | per [SOP-REDEMPTION-WINDOW](SOP-REDEMPTION-WINDOW.md) |
 | 0 | ISA | Live call attempt | Trestle Tier 0–3 phones |
-| 1 | OpenLetter | Send RW-1 mail (standard OR FedEx based on closing tag) | template branches automatically |
+| 0 | OpenLetter (`Mail_On_Entry`) | RW-1 — standard mail OR FedEx 2-day if `redemption_closing` tag present; tags `mail_entry_sent` | mailable, DPV=Y |
+| 1 | OpenLetter (preset cadence) | RW-1 BACKUP only, fires only if record does NOT have `mail_entry_sent` | NOT mail_entry_sent |
 | 2 | SMS | Redemption Day-2 SMS | reinforce legal right |
 | 3 | ISA | Second call | |
 | 5 | SMS | Redemption Day-5 SMS | window-narrowing message |
@@ -286,11 +302,12 @@ Per [SOP-MAIL-TEMPLATES.md](SOP-MAIL-TEMPLATES.md):
 - [ ] SS-1, SS-2, SS-3 (3 templates)
 - [ ] RW-1 (1 template, but 2 shipping triggers — standard vs FedEx)
 
-### 3 — Sequence builds (~30 min)
-- [ ] `FTM_Probate_Cadence` (link to Probate preset)
-- [ ] `FTM_LP_Cadence` (link to LP preset)
-- [ ] `FTM_SS_Cadence` (link to SS preset)
-- [ ] `FTM_RW_Cadence` (link to BOTH RW presets — DataSift sequences can attach to multiple presets)
+### 3 — Sequence builds (~45 min total)
+- [ ] **`Mail_On_Entry`** (global, not preset-attached) — builds per [MIKE-MAIL-ENTRY-SETUP.md](MIKE-MAIL-ENTRY-SETUP.md). Branches on `Notice Type` to send Probate-1 / SS-1 / LP-1 / RW-1. Tags `mail_entry_sent` after firing.
+- [ ] `FTM_Probate_Cadence` (link to Probate preset) — Day 1 mail step gated on `NOT mail_entry_sent`
+- [ ] `FTM_LP_Cadence` (link to LP preset) — Day 1 mail step gated on `NOT mail_entry_sent`
+- [ ] `FTM_SS_Cadence` (link to SS preset) — Day 1 mail step gated on `NOT mail_entry_sent`
+- [ ] `FTM_RW_Cadence` (link to BOTH RW presets) — Day 1 mail step gated on `NOT mail_entry_sent`
 - [ ] `FTM_RW_Cadence_Compressed` (manual trigger fallback, see RW section above)
 
 ### 4 — SMS template setup (~15 min)

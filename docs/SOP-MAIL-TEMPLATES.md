@@ -2,7 +2,15 @@
 
 **Audience:** Aaron (template owner), Mike (DataSift sequence operator), future ISA.
 **Purpose:** Canonical library of direct-mail templates and cadences for each distress type. Loaded into OpenLetter (DataSift's native integrated mail house) so cadences fire automatically from DataSift sequences without CSV upload friction.
-**Companion docs:** [SOP-DIRECT-MAIL-PLAN.md](SOP-DIRECT-MAIL-PLAN.md) (economics + ramp plan), [SOP-REDEMPTION-WINDOW.md](SOP-REDEMPTION-WINDOW.md) (full redemption niche operational guide), [SOP-CALL-SCRIPTS.md](SOP-CALL-SCRIPTS.md) (SMS + phone scripts that pair with the mail).
+**Companion docs:** [SOP-DIRECT-MAIL-PLAN.md](SOP-DIRECT-MAIL-PLAN.md) (economics + ramp plan), [SOP-REDEMPTION-WINDOW.md](SOP-REDEMPTION-WINDOW.md) (full redemption niche operational guide), [SOP-CALL-SCRIPTS.md](SOP-CALL-SCRIPTS.md) (SMS + phone scripts that pair with the mail), [MIKE-MAIL-ENTRY-SETUP.md](MIKE-MAIL-ENTRY-SETUP.md) (build sheet for the new Mail_On_Entry sequence).
+
+> **Active model (2026-04-29):** Entry-mail-first. Every new mailable record gets ONE first-touch piece on Day 0 via the global `Mail_On_Entry` sequence — captures the first-to-market window before nurture cadences kick in. Existing preset cadences (FTM_Probate_Cadence, FTM_SS_Cadence, etc.) handle Day 30 / 60 / 90+ follow-up. No preset sub-tiering required. See [MIKE-MAIL-ENTRY-SETUP.md](MIKE-MAIL-ENTRY-SETUP.md) for the build sheet.
+
+> **Template status (2026-04-29):**
+> - ✅ **Probate-1, Probate-2, Probate-3, Probate-4** — bodies finalized (below)
+> - ✅ **RW-1** — body finalized (below)
+> - ⏳ **SS-1, SS-2, SS-3** — Aaron is writing final foreclosure mail copy. Drafts below are placeholders to be replaced. Mike can build the `Mail_On_Entry` sequence with placeholder text and swap the body when final copy lands.
+> - ⏳ **LP-1, LP-2, LP-3, LP-4** — Same status as SS templates. Drafts below are placeholders.
 
 ---
 
@@ -54,18 +62,34 @@ OpenLetter likely accepts `{{variable_name}}` mustache-style. **Verify exact syn
 
 ---
 
+## How the cadence model works (entry mail + preset follow-up)
+
+Every record gets a single first-touch piece on Day 0 via the global `Mail_On_Entry` sequence. After that, the preset-specific cadence (FTM_Probate_Cadence etc.) takes over for follow-up touches at Day 30 / 60 / 90+.
+
+| Day | Source of mail step | What fires |
+|---|---|---|
+| 0 (record uploads) | `Mail_On_Entry` (global) | Probate-1 / SS-1 / LP-1 / RW-1 — branched on Notice Type |
+| 1–14 | Preset cadence | SMS + ISA call (NO mail — Day 1 mail step gated by `mail_entry_sent` tag) |
+| 30 | Preset cadence | Probate-2 / SS-2 / LP-2 |
+| 60 | Preset cadence | Probate-3 / SS-3 / LP-3 |
+| 90+ | Preset cadence | Quarterly nurture (Probate-4 / LP-4) |
+
+The Day 1 mail step in each preset cadence has a `NOT mail_entry_sent` filter so it never double-sends. Records that somehow miss `Mail_On_Entry` (mailable=no, missing DPV, etc.) still get their Day 1 mail from the preset cadence as a backup.
+
+---
+
 ## Probate cadence
 
 **Targeting:** records in `FTM_Probate_*` preset (Franklin / Montgomery / Greene), `mailable=yes`, decision_maker_status=verified_living.
 
-**Cadence:** 4 mail pieces over ~6 months, then quarterly nurture.
+**Cadence:** 4 mail pieces over ~6 months, then quarterly nurture. Probate-1 fires on Day 0 via `Mail_On_Entry`; Probate-2/3/4 fire from the preset cadence sequence.
 
 | Piece | Trigger | Format | Tone |
 |---|---|---|---|
-| **Probate-1** | Day 0 (record enters FTM_Probate preset) | Yellow letter | Empathy + soft offer |
-| **Probate-2** | Day 30 if status still New/Contacted | Yellow letter | Practical — vacant property burden |
-| **Probate-3** | Day 60 if no engagement | Yellow letter | Final direct outreach |
-| **Probate-4 (nurture)** | Day 120, then every 90 days | Yellow letter | Standing offer; estates often take 6-18 months to resolve |
+| **Probate-1** | Day 0 (record uploads — fired by `Mail_On_Entry`) | Yellow letter | Empathy + soft offer |
+| **Probate-2** | Day 30 if status still New/Contacted (preset cadence) | Yellow letter | Practical — vacant property burden |
+| **Probate-3** | Day 60 if no engagement (preset cadence) | Yellow letter | Final direct outreach |
+| **Probate-4 (nurture)** | Day 120, then every 90 days (preset cadence) | Yellow letter | Standing offer; estates often take 6-18 months to resolve |
 
 ### Probate-1 (Day 0 — empathy + introduction)
 
@@ -170,12 +194,14 @@ Foreclosure has TWO upstream stages — lis pendens (case filed, 4-12 weeks pre-
 
 For records caught at the Common Pleas Court filing stage. Long runway = nurture-style cadence with progressive urgency as the case moves toward sale.
 
+> **Aaron is writing final body copy for LP-1 through LP-4.** Drafts below are placeholders. Mike: build the cadence structure and use placeholder bodies until Aaron sends final copy.
+
 | Piece | Trigger | Format | Tone |
 |---|---|---|---|
-| **LP-1** | Day 0 (record enters FTM_LP preset) | Yellow letter | Acknowledge filing, options |
-| **LP-2** | Day 30 if status New/Contacted | Yellow letter | Mortgage modification / sale comparison |
-| **LP-3** | Day 60 | Standard letter | Concrete deal mechanics |
-| **LP-4** | Day 90 if record still active and no auction date | Standard letter | Final pre-auction outreach |
+| **LP-1** | Day 0 (record uploads — fired by `Mail_On_Entry`) | Yellow letter | Acknowledge filing, options |
+| **LP-2** | Day 30 if status New/Contacted (preset cadence) | Yellow letter | Mortgage modification / sale comparison |
+| **LP-3** | Day 60 (preset cadence) | Standard letter | Concrete deal mechanics |
+| **LP-4** | Day 90 if record still active and no auction date (preset cadence) | Standard letter | Final pre-auction outreach |
 
 #### LP-1 (Day 0 — acknowledge, soft options)
 
@@ -288,11 +314,13 @@ Wright Home Offer
 
 For records caught at the auction-listing stage. Auction is 4-8 weeks out at first listing — tight but workable. Cadence compresses to days, not weeks.
 
+> **Aaron is writing final body copy for SS-1 through SS-3.** Drafts below are placeholders. Mike: build the cadence structure and use placeholder bodies until Aaron sends final copy.
+
 | Piece | Trigger | Format | Tone |
 |---|---|---|---|
-| **SS-1** | Day 0 (record enters FTM_SS preset) | Yellow letter | Sale notice acknowledge, options |
-| **SS-2** | Day 7 if no engagement | Standard letter | Concrete offer + close timeline |
-| **SS-3** | 7 days before auction date | Postcard or standard letter | Final urgency |
+| **SS-1** | Day 0 (record uploads — fired by `Mail_On_Entry`) | Yellow letter | Sale notice acknowledge, options |
+| **SS-2** | Day 7 if no engagement (preset cadence) | Standard letter | Concrete offer + close timeline |
+| **SS-3** | 7 days before auction date (preset cadence) | Postcard or standard letter | Final urgency |
 
 #### SS-1 (Day 0 — sale notice, options)
 

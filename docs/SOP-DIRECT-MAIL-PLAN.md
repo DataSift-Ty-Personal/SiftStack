@@ -149,6 +149,17 @@ That doc is the source of truth for:
 
 This doc (SOP-DIRECT-MAIL-PLAN) stays focused on economics: spend ramp, mailability filters, ROI math, response-rate targets, vendor decision.
 
+> **Active model (2026-04-29):** Entry-mail-first via global `Mail_On_Entry` sequence. Every mailable record gets ONE first-touch mail piece on Day 0 (captures first-to-market window — Tyler/REISift teaching). Preset cadences handle Day 30 / 60 / 90+ follow-ups on records that don't convert. See [MIKE-MAIL-ENTRY-SETUP.md](MIKE-MAIL-ENTRY-SETUP.md) for build instructions. Spend math below revised to fit this model.
+
+### Revised spend math (entry-mail-first model)
+
+At steady state (~Day 7+ post-dedup):
+- Entry mail: ~50 NEW records/day × 22 weekdays × $1.75 = **~$1,925/month**
+- Preset cadence follow-up (Day 30 / 60 / 120 mail on non-converted records): ~300–500 pieces/month × $1.50 = **~$450–750/month**
+- **Total: ~$2,375–2,675/month** — fits the $3k Phase 1 budget
+
+Trade-off vs the original "mail only top-tier records" model: same total spend, BUT every mailable record gets a first-to-market touch automatically. Higher response rate from Day 0 timing offsets not-targeting-only-top-tier. Sub-tier presets remain a Phase 2 option if data later shows clear motivation gradient worth segmenting on.
+
 ---
 
 ## Tracking & ROI math
