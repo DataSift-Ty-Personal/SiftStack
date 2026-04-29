@@ -49,6 +49,7 @@ TRESTLE_API_KEY = os.getenv("TRESTLE_API_KEY", "")            # Trestle phone va
 DATASIFT_EMAIL = os.getenv("DATASIFT_EMAIL", "")              # DataSift.ai login
 DATASIFT_PASSWORD = os.getenv("DATASIFT_PASSWORD", "")
 SLACK_WEBHOOK_URL = os.getenv("SLACK_WEBHOOK_URL", "")        # Slack/Discord webhook
+GSHEET_WEBHOOK_URL = os.getenv("GSHEET_WEBHOOK_URL", "")      # Apps Script web-app URL for daily summary append
 ANCESTRY_EMAIL = os.getenv("ANCESTRY_EMAIL", "")              # Ancestry.com login
 ANCESTRY_PASSWORD = os.getenv("ANCESTRY_PASSWORD", "")
 DROPBOX_APP_KEY = os.getenv("DROPBOX_APP_KEY", "")            # Dropbox OAuth2 app key

@@ -162,6 +162,13 @@
             "editor": "textfield",
             "isSecret": true
         },
+        "gsheet_webhook_url": {
+            "title": "Google Sheet Apps Script URL",
+            "type": "string",
+            "description": "Apps Script web-app URL for appending daily summary rows to the SiftStack Daily Tracker sheet. Get from scripts/gsheet_apps_script.js setup. Optional — local CSV is canonical.",
+            "editor": "textfield",
+            "isSecret": true
+        },
         "upload_datasift": {
             "title": "Upload to DataSift",
             "type": "boolean",

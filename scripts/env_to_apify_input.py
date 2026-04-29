@@ -47,6 +47,7 @@ ENV_TO_INPUT = {
     "datasift_password": ("DATASIFT_PASSWORD", ""),
     # Notifications
     "slack_webhook_url": ("SLACK_WEBHOOK_URL", ""),
+    "gsheet_webhook_url": ("GSHEET_WEBHOOK_URL", ""),
     # Optional Google Drive backup
     "google_drive_folder_id": ("GOOGLE_DRIVE_FOLDER_ID", ""),
     "google_service_account_key": ("GOOGLE_SERVICE_ACCOUNT_KEY", ""),

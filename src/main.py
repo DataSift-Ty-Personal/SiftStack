@@ -171,6 +171,7 @@ async def actor_main() -> None:
             "DATASIFT_EMAIL": actor_input.get("datasift_email", ""),
             "DATASIFT_PASSWORD": actor_input.get("datasift_password", ""),
             "SLACK_WEBHOOK_URL": actor_input.get("slack_webhook_url", ""),
+            "GSHEET_WEBHOOK_URL": actor_input.get("gsheet_webhook_url", ""),
             "TRESTLE_API_KEY": actor_input.get("trestle_api_key", ""),
         }
         for key, val in _cred_map.items():
@@ -2042,17 +2043,30 @@ def _run_scrape_pipeline(args, searches) -> None:
         logging.info("--audit-records: Not yet implemented. "
                       "Will check DataSift Incomplete tab via Playwright in a future build.")
 
-    # Append daily summary CSV for multi-day trend tracking (Mike's Friday review)
+    # Append daily summary CSV for multi-day trend tracking (Mike's Friday review).
+    # Also POST same summary to the Google Sheet webhook for at-a-glance browsing.
     try:
         import time as _t
-        from daily_summary import append_daily_summary
+        from daily_summary import append_daily_summary, build_summary
+        run_id = getattr(args, "run_id", "") or f"cli_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        duration_seconds = getattr(args, "_pipeline_start", _t.time()) and (_t.time() - getattr(args, "_pipeline_start", _t.time())) or 0
         append_daily_summary(
             notices=notices,
-            run_id=getattr(args, "run_id", "") or f"cli_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
-            duration_seconds=getattr(args, "_pipeline_start", _t.time()) and (_t.time() - getattr(args, "_pipeline_start", _t.time())) or 0,
+            run_id=run_id,
+            duration_seconds=duration_seconds,
             tracerfy_stats=tracerfy_stats,
             tiers_map=tiers_map,
         )
+        # Mirror to Google Sheet (non-fatal — local CSV is canonical)
+        try:
+            from gsheet_writer import append_summary_to_gsheet
+            summary = build_summary(
+                notices, run_id, duration_seconds,
+                tracerfy_stats=tracerfy_stats, tiers_map=tiers_map,
+            )
+            append_summary_to_gsheet(summary)
+        except Exception as e:
+            logging.warning("Google Sheet append failed (non-fatal): %s", e)
     except Exception as e:
         logging.warning("Daily summary append failed (non-fatal): %s", e)
 
