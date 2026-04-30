@@ -953,6 +953,7 @@ def _run_csv_import(args) -> None:
                     csv_infos,
                     enrich=do_enrich,
                     skip_trace=do_skip_trace,
+                    notices=notices,
                 )
             )
         else:
@@ -961,6 +962,7 @@ def _run_csv_import(args) -> None:
                     csv_infos[0]["path"],
                     enrich=do_enrich,
                     skip_trace=do_skip_trace,
+                    notices=notices,
                 )
             )
 
@@ -2011,6 +2013,7 @@ def _run_scrape_pipeline(args, searches) -> None:
                     csv_infos,
                     enrich=do_enrich,
                     skip_trace=do_skip_trace,
+                    notices=notices,
                 )
             )
         else:
@@ -2020,6 +2023,7 @@ def _run_scrape_pipeline(args, searches) -> None:
                     csv_infos[0]["path"],
                     enrich=do_enrich,
                     skip_trace=do_skip_trace,
+                    notices=notices,
                 )
             )
 
