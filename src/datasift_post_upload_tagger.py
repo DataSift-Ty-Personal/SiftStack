@@ -314,64 +314,121 @@ async def _bulk_add_to_list(page: Page, target_list: str) -> bool:
     return False
 
 
+async def _read_filtered_count(page: Page) -> int | None:
+    """Read the visible record count after filters are applied.
+
+    DataSift renders a count near the top of Records like "Records (47)" or
+    "47 records". Returns None if the count couldn't be parsed — caller
+    should treat that as "unverified" rather than zero.
+    """
+    import re as _re
+    candidates = [
+        '[class*="RecordsCount"]',
+        '[class*="ResultsCount"]',
+        '[class*="TotalCount"]',
+        'h1, h2, h3',
+    ]
+    for sel in candidates:
+        loc = page.locator(sel)
+        count = await loc.count()
+        for i in range(min(count, 5)):
+            try:
+                txt = (await loc.nth(i).inner_text()).strip()
+            except Exception:
+                continue
+            m = _re.search(r"(\d{1,6})", txt)
+            if m and ("record" in txt.lower() or "result" in txt.lower() or "(" in txt):
+                try:
+                    return int(m.group(1))
+                except ValueError:
+                    continue
+    return None
+
+
 async def apply_tags_and_lists_to_uploaded_records(
     page: Page,
     wrapper_list_name: str,
     notices: list[NoticeData],
-    hard_timeout_seconds: int = 1200,
+    hard_timeout_seconds: int = 1500,
 ) -> dict:
-    """For each notice_type in notices, bulk-apply tags + add to notice-type list.
+    """For each (notice_type, county) in notices, bulk-apply tags + add to list.
 
-    v2 (2026-05-01) — radically simplified to fit inside the daily run budget:
-      * Iterates per notice_type only (4-5 groups vs prior 12 county×type groups).
-        County is already on each record as a custom field; Mike's presets filter
-        on County via custom field, so per-county tag is unnecessary.
-      * Adds only essential tags: `ftm`, `ftm-{type}`. Drops month tag,
-        deceased/living, county tag — none of these drive any preset.
-      * Hard wall-clock timeout (default 20 min). Aborts the whole tagger if it
-        can't finish in time. Caller continues to enrichment/Slack regardless.
-      * Failure mode is loud but non-fatal: log warning, return partial result.
+    v3 (2026-05-01) — restores county tag (v2 wrongly dropped it; Mike's
+    FTM_*_County presets filter on county tag) + adds per-group verification.
 
-    Pre-v2 (2026-04-30): tagger took 5-6 hours and timed out the daily Apify
-    run at the 6h ceiling. 12 groups × ~25 min UI overhead each. New v2
-    target: ~3 min × 4 groups = ~12 min.
+      * Iterates per (notice_type, county) — up to 12 groups (4 types × 3
+        counties). Each group ~2-3 min, total ~30 min for full daily batch.
+      * Tags applied per group: `ftm`, `ftm-{type}`, `{county-lower}`. Notice
+        type also adds the record to its notice-type list (Probate /
+        Foreclosure / Lis Pendens) — once per type, not once per (type,county).
+      * Per-group verification: reads the visible filtered-record count BEFORE
+        bulk-tagging. If 0 (or unreadable), logs LOUD warning and skips the
+        bulk-tag for that group — prevents silent "tagged nothing" failures.
+      * Hard wall-clock timeout (default 25 min). Aborts remaining groups if
+        we run past budget. Result includes `timed_out=True`.
+      * Failure mode is loud but non-fatal: log warning, return partial result
+        so caller can post per-group breakdown to Slack.
+
+    Why county tag matters: Mike's presets filter on `Tag IS ftm-probate AND
+    Tag IS franklin` etc. Without the county tag, records show in 0 presets.
+    This is the routing bug that broke daily SMS cadences.
 
     Args:
         page: Logged-in Playwright Page (already past upload).
         wrapper_list_name: The dated wrapper list to filter by.
-        notices: NoticeData records — used to determine notice_type groups present.
-        hard_timeout_seconds: Abort the tagger after this many seconds (default 1200).
+        notices: NoticeData records — drives which (type, county) groups run.
+        hard_timeout_seconds: Abort after this many seconds (default 1500 = 25 min).
 
     Returns:
-        Dict with per-group results, success flag, and timing info.
+        Dict shape:
+          {
+            "success": bool,
+            "timed_out": bool (optional),
+            "elapsed_seconds": float,
+            "message": str,
+            "groups": [
+              {"notice_type", "county", "expected_records", "filtered_count",
+               "tags_added", "list_added", "verified": bool, "error" (optional)}
+            ],
+            "lists_applied": set of notice_types we added to their list,
+          }
     """
     import time as _time
 
-    result: dict = {"success": True, "groups": [], "message": "", "elapsed_seconds": 0}
+    result: dict = {
+        "success": True,
+        "groups": [],
+        "message": "",
+        "elapsed_seconds": 0,
+        "lists_applied": [],
+    }
     start = _time.monotonic()
 
     if not notices:
         result["message"] = "No notices to tag"
         return result
 
-    # Group records by notice_type ONLY (county is in the custom field, not needed for tags)
-    type_counts: dict[str, int] = defaultdict(int)
+    # Group by (notice_type, county) — restores per-county routing.
+    group_counts: dict[tuple[str, str], int] = defaultdict(int)
     for n in notices:
         nt = (n.notice_type or "").strip().lower()
-        if nt:
-            type_counts[nt] += 1
+        county = (n.county or "").strip().lower()
+        if nt and county:
+            group_counts[(nt, county)] += 1
 
     logger.info(
-        "Post-upload tagging v2: %d notice_type groups across %d records in %s "
+        "Post-upload tagging v3: %d (type, county) groups across %d records in %s "
         "(hard timeout: %ds)",
-        len(type_counts), len(notices), wrapper_list_name, hard_timeout_seconds,
+        len(group_counts), len(notices), wrapper_list_name, hard_timeout_seconds,
     )
 
     # Navigate to Records once
     await page.goto("https://app.reisift.io/records/properties", wait_until="domcontentloaded")
     await page.wait_for_timeout(3000)
 
-    for notice_type, count in sorted(type_counts.items()):
+    lists_applied: set[str] = set()  # only add-to-list once per notice_type
+
+    for (notice_type, county), count in sorted(group_counts.items()):
         elapsed = _time.monotonic() - start
         if elapsed > hard_timeout_seconds:
             logger.warning(
@@ -385,64 +442,103 @@ async def apply_tags_and_lists_to_uploaded_records(
         ftm_tag = NOTICE_TYPE_TO_FTM_TAG.get(notice_type)
         target_list = NOTICE_TYPE_TO_LIST_NAME.get(notice_type)
 
-        logger.info("── Group: %s (%d records) ──", notice_type, count)
+        logger.info("── Group: %s / %s (%d records) ──", notice_type, county, count)
+        group_result: dict = {
+            "notice_type": notice_type,
+            "county": county,
+            "expected_records": count,
+            "filtered_count": None,
+            "tags_added": 0,
+            "list_added": False,
+            "verified": False,
+        }
 
         try:
             # 1. Reset filters + open panel
             await _clear_filters(page)
             opened = await _open_filter_panel(page)
             if not opened:
-                logger.warning("Could not open filter panel for %s — skipping", notice_type)
+                logger.warning("Could not open filter panel for %s/%s — skipping", notice_type, county)
+                group_result["error"] = "filter_panel_unopenable"
+                result["groups"].append(group_result)
                 continue
 
-            # 2. Filter by wrapper list AND Notice Type only (NO county filter)
+            # 2. Filter by wrapper list AND Notice Type AND County
             await _add_filter_block(page, "All Lists (AND)")
             await _set_list_filter_value(page, wrapper_list_name)
             await _add_filter_block(page, "Notice Type")
             await _set_text_filter_value(page, notice_type, "Notice Type")
+            await _add_filter_block(page, "County")
+            await _set_text_filter_value(page, county, "County")
             await _apply_filters(page)
-            await _screenshot(page, f"tagger_v2_filtered_{notice_type}")
+            await _screenshot(page, f"tagger_v3_filtered_{notice_type}_{county}")
 
-            # 3. Select all matching records
+            # 3. VERIFY filtered count > 0 before doing anything destructive
+            filtered = await _read_filtered_count(page)
+            group_result["filtered_count"] = filtered
+            if filtered == 0:
+                logger.warning(
+                    "❌ %s/%s — filter returned 0 records (expected %d). Filters didn't apply. Skipping bulk-tag.",
+                    notice_type, county, count,
+                )
+                group_result["error"] = "filter_returned_zero"
+                result["success"] = False
+                result["groups"].append(group_result)
+                continue
+            if filtered is not None and filtered != count:
+                logger.warning(
+                    "⚠ %s/%s — filtered count %d != expected %d (proceeding anyway)",
+                    notice_type, county, filtered, count,
+                )
+            group_result["verified"] = filtered is not None and filtered > 0
+
+            # 4. Select all matching records
             await _select_all_records(page)
             await page.wait_for_timeout(1500)
 
-            # 4. Open Manage and bulk-add MINIMAL tag set
+            # 5. Open Manage and bulk-add tag set (with county!)
             if not await _open_manage_menu(page):
-                logger.warning("Could not open Manage menu for %s — skipping", notice_type)
+                logger.warning("Could not open Manage menu for %s/%s — skipping", notice_type, county)
+                group_result["error"] = "manage_menu_unopenable"
+                result["groups"].append(group_result)
                 continue
 
             tags_to_add = ["ftm"]
             if ftm_tag:
                 tags_to_add.append(ftm_tag)
+            tags_to_add.append(county)  # restored: drives FTM_*_County preset filters
             added = await _bulk_add_tags(page, tags_to_add)
+            group_result["tags_added"] = added
             await page.wait_for_timeout(1500)
 
-            # 5. Add to notice-type list
-            list_added = False
-            if target_list:
+            # 6. Add to notice-type list (only once per type — first county hit)
+            if target_list and notice_type not in lists_applied:
                 await _open_manage_menu(page)
-                list_added = await _bulk_add_to_list(page, target_list)
+                if await _bulk_add_to_list(page, target_list):
+                    group_result["list_added"] = True
+                    lists_applied.add(notice_type)
 
-            result["groups"].append({
-                "notice_type": notice_type,
-                "records": count,
-                "tags_added": added,
-                "list_added": list_added,
-                "target_list": target_list,
-            })
+            result["groups"].append(group_result)
 
         except Exception as e:
-            logger.warning("Tagging failed for %s: %s", notice_type, e)
-            result["groups"].append({
-                "notice_type": notice_type,
-                "records": count,
-                "error": str(e),
-            })
+            logger.warning("Tagging failed for %s/%s: %s", notice_type, county, e)
+            group_result["error"] = str(e)
+            result["groups"].append(group_result)
+            result["success"] = False
 
+    result["lists_applied"] = sorted(lists_applied)
     result["elapsed_seconds"] = round(_time.monotonic() - start, 1)
-    result["message"] = (
-        f"Post-upload tagging v2: {len(result['groups'])} groups in {result['elapsed_seconds']}s"
-    )
+
+    # Summary message highlights any group that failed verification
+    failed = [g for g in result["groups"] if g.get("error") or not g.get("verified")]
+    if failed:
+        result["message"] = (
+            f"Post-upload tagging v3: {len(result['groups'])} groups, "
+            f"{len(failed)} failed/unverified in {result['elapsed_seconds']}s"
+        )
+    else:
+        result["message"] = (
+            f"Post-upload tagging v3: {len(result['groups'])} groups OK in {result['elapsed_seconds']}s"
+        )
     logger.info(result["message"])
     return result

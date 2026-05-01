@@ -128,6 +128,71 @@ def notify_preflight_failure(
     return _send_webhook("\n".join(lines), webhook_url)
 
 
+def notify_tagger_result(
+    tag_result: dict,
+    *,
+    webhook_url: str | None = None,
+) -> bool:
+    """Post a per-(notice_type, county) breakdown of post-upload tagging.
+
+    Designed for the v3 tagger (datasift_post_upload_tagger.py). Each group
+    in tag_result["groups"] reports filter verification + tags/list applied.
+    Failures are listed FIRST and emphatically — we don't want them buried.
+
+    Returns True if a webhook was sent.
+    """
+    groups = tag_result.get("groups") or []
+    if not groups:
+        return False
+
+    failed = [g for g in groups if g.get("error") or not g.get("verified")]
+    ok = [g for g in groups if not g.get("error") and g.get("verified")]
+    timed_out = tag_result.get("timed_out", False)
+
+    if failed or timed_out:
+        header = ":x: *DataSift routing — verification FAILED*"
+    else:
+        header = ":white_check_mark: *DataSift routing — all groups tagged + verified*"
+
+    lines = [header]
+    if timed_out:
+        lines.append("*Tagger timed out — some groups skipped:*")
+
+    if failed:
+        lines.append("*Failed / unverified groups:*")
+        for g in failed:
+            nt = g.get("notice_type", "?")
+            cty = g.get("county", "?")
+            exp = g.get("expected_records", "?")
+            got = g.get("filtered_count")
+            err = g.get("error", "")
+            line = f"  ❌ {nt}/{cty} — expected {exp}, filtered count {got}"
+            if err:
+                line += f" ({err})"
+            lines.append(line)
+
+    if ok:
+        lines.append("*Tagged + verified:*")
+        for g in ok:
+            nt = g.get("notice_type", "?")
+            cty = g.get("county", "?")
+            exp = g.get("expected_records", "?")
+            got = g.get("filtered_count", "?")
+            tags = g.get("tags_added", 0)
+            list_added = " + list" if g.get("list_added") else ""
+            lines.append(f"  ✅ {nt}/{cty} — {got}/{exp} records, {tags} tags{list_added}")
+
+    elapsed = tag_result.get("elapsed_seconds", 0)
+    lines.append(f"_Elapsed: {elapsed:.0f}s_")
+
+    if failed or timed_out:
+        lines.append(
+            "_Mike: bulk-tag the failed groups manually via Records → Filter → Manage → Add Tag._"
+        )
+
+    return _send_webhook("\n".join(lines), webhook_url)
+
+
 def _count_by_field(notices: list[NoticeData], field: str) -> dict[str, int]:
     """Count notices grouped by a field value."""
     counts: dict[str, int] = {}

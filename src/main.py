@@ -528,6 +528,24 @@ async def actor_main() -> None:
             except Exception as e:
                 Actor.log.warning("Upload filter failed: %s — uploading all records", e)
 
+            # ── Persistent address-set dedup (Apify KV-backed) ────────
+            # Filters out records whose address has been uploaded in any
+            # prior Apify run. This is the cross-run guard that the local
+            # notice_state file can't provide (Apify wipes the filesystem
+            # between runs). Catches the "Sold record re-uploaded" failure
+            # mode by virtue of the address already being in the set.
+            try:
+                from datasift_dedup import filter_already_uploaded, append_uploaded
+                fresh, dupes = await filter_already_uploaded(datasift_upload_records)
+                if dupes:
+                    Actor.log.info(
+                        "Persistent dedup: dropped %d already-uploaded addresses (Sold/worked records)",
+                        len(dupes),
+                    )
+                datasift_upload_records = fresh
+            except Exception as e:
+                Actor.log.warning("Persistent dedup failed: %s — uploading all", e)
+
             # ── DataSift CSVs → KVS (manual upload) ─────────────────
             # Generate DataSift-formatted CSVs and save to Apify KVS
             # for manual download + upload to DataSift (more reliable than
@@ -558,6 +576,14 @@ async def actor_main() -> None:
                 mark_records_uploaded(datasift_upload_records)
             except Exception as e:
                 Actor.log.warning("Failed to mark records uploaded in state: %s", e)
+
+            # Persist freshly-uploaded addresses to KV-backed dedup set so
+            # tomorrow's run skips them.
+            try:
+                added = await append_uploaded(datasift_upload_records)
+                Actor.log.info("Persistent dedup: appended %d addresses for next run", added)
+            except Exception as e:
+                Actor.log.warning("Persistent dedup append failed: %s", e)
 
             # ── Slack Notification ────────────────────────────────────
             elapsed_min = (_time() - pipeline_start) / 60
@@ -939,9 +965,22 @@ def _run_csv_import(args) -> None:
     if getattr(args, "upload_datasift", False):
         from datasift_formatter import write_datasift_split_csvs
         from datasift_uploader import upload_datasift_split, upload_to_datasift
+        from datasift_dedup import filter_already_uploaded, append_uploaded
 
         do_enrich = not getattr(args, "no_enrich", False)
         do_skip_trace = not getattr(args, "no_skip_trace", False)
+
+        # Pre-upload dedup against persisted address set
+        try:
+            fresh, dupes = asyncio.run(filter_already_uploaded(notices))
+            if dupes:
+                logging.info(
+                    "Persistent dedup: dropped %d already-uploaded addresses",
+                    len(dupes),
+                )
+            notices = fresh
+        except Exception as e:
+            logging.warning("Persistent dedup failed: %s — uploading all", e)
 
         csv_infos = write_datasift_split_csvs(notices)
         for info in csv_infos:
@@ -968,6 +1007,17 @@ def _run_csv_import(args) -> None:
 
         if upload_result.get("success"):
             logging.info("DataSift upload: %s", upload_result.get("message", "OK"))
+            try:
+                added = asyncio.run(append_uploaded(notices))
+                logging.info("Persistent dedup: appended %d addresses for next run", added)
+            except Exception as e:
+                logging.warning("Persistent dedup append failed: %s", e)
+            if upload_result.get("tag_result"):
+                try:
+                    from slack_notifier import notify_tagger_result
+                    notify_tagger_result(upload_result["tag_result"])
+                except Exception as e:
+                    logging.warning("Tagger Slack notification failed: %s", e)
         else:
             logging.error("DataSift upload failed: %s", upload_result.get("message"))
 
@@ -1998,9 +2048,23 @@ def _run_scrape_pipeline(args, searches) -> None:
     if getattr(args, "upload_datasift", False):
         from datasift_formatter import write_datasift_csv, write_datasift_split_csvs
         from datasift_uploader import upload_to_datasift, upload_datasift_split
+        from datasift_dedup import filter_already_uploaded, append_uploaded
 
         do_enrich = not getattr(args, "no_enrich", False)
         do_skip_trace = not getattr(args, "no_skip_trace", False)
+
+        # Pre-upload dedup against persisted address set (cross-run, survives
+        # Apify filesystem wipes via KV store; falls back to local JSON for CLI).
+        try:
+            fresh, dupes = asyncio.run(filter_already_uploaded(notices))
+            if dupes:
+                logging.info(
+                    "Persistent dedup: dropped %d already-uploaded addresses",
+                    len(dupes),
+                )
+            notices = fresh
+        except Exception as e:
+            logging.warning("Persistent dedup failed: %s — uploading all", e)
 
         # Use split flow (separate DM + Heir Map Message Board entries)
         csv_infos = write_datasift_split_csvs(notices)
@@ -2033,6 +2097,20 @@ def _run_scrape_pipeline(args, searches) -> None:
                 logging.info("  Enrich: %s", upload_result["enrich_result"].get("message", ""))
             if upload_result.get("skip_trace_result"):
                 logging.info("  Skip trace: %s", upload_result["skip_trace_result"].get("message", ""))
+            try:
+                added = asyncio.run(append_uploaded(notices))
+                logging.info("Persistent dedup: appended %d addresses for next run", added)
+            except Exception as e:
+                logging.warning("Persistent dedup append failed: %s", e)
+            # Per-group routing breakdown to Slack — green if every (type,county)
+            # group passed verification, red if any failed so Mike knows which
+            # buckets to bulk-tag manually.
+            if upload_result.get("tag_result"):
+                try:
+                    from slack_notifier import notify_tagger_result
+                    notify_tagger_result(upload_result["tag_result"])
+                except Exception as e:
+                    logging.warning("Tagger Slack notification failed: %s", e)
         else:
             logging.error("DataSift upload failed: %s", upload_result.get("message"))
 
