@@ -41,6 +41,10 @@ logger = logging.getLogger(__name__)
 
 KV_STORE_KEY = "uploaded_addresses"
 LOCAL_FALLBACK_PATH = Path("output") / "uploaded_addresses.json"
+# Bootstrap seed: ships with the repo so day-1 Apify runs (where the KV store
+# is empty) still have a baseline dedup set. After the first successful run,
+# the KV store is populated and the seed is no longer consulted.
+SEED_PATH = Path(__file__).resolve().parent / "data" / "seed_uploaded_addresses.json"
 
 _PUNCT_RE = re.compile(r"[.,;:#]")
 _WS_RE = re.compile(r"\s+")
@@ -68,19 +72,40 @@ def _is_apify() -> bool:
     return bool(os.environ.get("APIFY_IS_AT_HOME") or os.environ.get("APIFY_TOKEN"))
 
 
+def _load_seed() -> set[str]:
+    """Load the bundled seed file (one-time bootstrap baseline)."""
+    if not SEED_PATH.exists():
+        return set()
+    try:
+        with SEED_PATH.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, list):
+            return set(data)
+        if isinstance(data, dict):
+            return set(data.keys())
+    except Exception as e:
+        logger.warning("Seed file load failed: %s", e)
+    return set()
+
+
 async def _load_from_apify() -> set[str]:
     try:
         from apify import Actor
         kvs = await Actor.open_key_value_store()
         stored = await kvs.get_value(KV_STORE_KEY)
-        if isinstance(stored, list):
+        if isinstance(stored, list) and stored:
             return set(stored)
-        if isinstance(stored, dict):
+        if isinstance(stored, dict) and stored:
             return set(stored.keys())
-        return set()
+        # KV empty — fall back to seed (first-run bootstrap)
+        seed = _load_seed()
+        if seed:
+            logger.info("Apify KV %s empty — bootstrapped from seed (%d addresses)",
+                        KV_STORE_KEY, len(seed))
+        return seed
     except Exception as e:
         logger.warning("Apify KV load failed for %s: %s — starting with empty set", KV_STORE_KEY, e)
-        return set()
+        return _load_seed()
 
 
 async def _save_to_apify(addresses: set[str]) -> None:
@@ -95,17 +120,18 @@ async def _save_to_apify(addresses: set[str]) -> None:
 
 def _load_from_local() -> set[str]:
     if not LOCAL_FALLBACK_PATH.exists():
-        return set()
+        # No local file yet — bootstrap from seed
+        return _load_seed()
     try:
         with LOCAL_FALLBACK_PATH.open("r", encoding="utf-8") as f:
             data = json.load(f)
-        if isinstance(data, list):
+        if isinstance(data, list) and data:
             return set(data)
-        if isinstance(data, dict):
+        if isinstance(data, dict) and data:
             return set(data.keys())
     except Exception as e:
-        logger.warning("Local dedup load failed: %s — starting with empty set", e)
-    return set()
+        logger.warning("Local dedup load failed: %s — falling back to seed", e)
+    return _load_seed()
 
 
 def _save_to_local(addresses: set[str]) -> None:
