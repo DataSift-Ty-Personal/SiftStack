@@ -23,7 +23,7 @@
 //   {"status":"ok","message":"SiftStack webhook endpoint live. POST JSON to append a row."}
 // That confirms it's reachable.
 
-const SHEET_ID = '1TbKDwHiZ7iyNIhMsl7jqPAEAWcZ_igvRMPGbcyKOrN0';
+const SHEET_ID = '1N3kTGEUbLyqUHiivTs_DkXtuAt0wAkpG4t___9VvwcM';
 const SUMMARY_TAB = 'Daily Summary';     // one row per daily run
 const LEDGER_TAB = 'Master Ledger';      // one row per scraped record (rolling)
 
