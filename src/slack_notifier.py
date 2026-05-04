@@ -250,7 +250,6 @@ def build_summary(
 
     deceased = [n for n in notices if n.owner_deceased == "yes"]
     deceased_count = len(deceased)
-    high_conf = sum(1 for n in deceased if n.dm_confidence == "high")
     med_conf = sum(1 for n in deceased if n.dm_confidence == "medium")
     low_conf = sum(1 for n in deceased if n.dm_confidence == "low")
     estate = sum(
@@ -279,18 +278,48 @@ def build_summary(
 
     lines.append("")
 
-    # Deceased owners
+    # Deceased owners — actionable per-record breakdown
     if deceased_count > 0:
         pct = round(deceased_count / total * 100) if total else 0
-        lines.append(f"*Deceased owners found:* {deceased_count} ({pct}%)")
-        lines.append(f"  High confidence DM: {high_conf}")
-        lines.append(f"  Medium confidence: {med_conf}")
-        if low_conf:
-            lines.append(f"  Low confidence: {low_conf}")
-        if estate:
-            lines.append(f"  Estate fallback: {estate}")
+        lines.append(f"*Deep prospecting:* {deceased_count} deceased owners ({pct}%)")
+
+        # HIGH confidence — handwritten letter + ISA call within 24h
+        high_records = [n for n in deceased if n.dm_confidence == "high"]
+        if high_records:
+            lines.append(f"")
+            lines.append(f":fire: *{len(high_records)} HIGH confidence — handwritten letter + ISA dial within 24h*")
+            for n in high_records[:8]:
+                dm = (n.decision_maker_name or "?").strip()
+                rel = (n.decision_maker_relationship or "DM").strip()
+                addr = f"{n.address}, {n.city}"
+                lines.append(f"  • {addr} → {dm} ({rel})")
+            if len(high_records) > 8:
+                lines.append(f"  ... and {len(high_records) - 8} more in DataSift `dm_verified` filter")
+
+        # Heir-map records — split-test outreach
+        heir_records = [n for n in deceased if (n.heir_map_json or "").strip()]
+        if heir_records:
+            lines.append(f"")
+            lines.append(f":deciduous_tree: *{len(heir_records)} with heir maps — split-test multiple DMs*")
+            for n in heir_records[:5]:
+                addr = f"{n.address}, {n.city}"
+                lines.append(f"  • {addr}")
+            if len(heir_records) > 5:
+                lines.append(f"  ... and {len(heir_records) - 5} more in `has_heirs` filter")
+
+        # MEDIUM/LOW — standard cadence, summary only
+        if med_conf or low_conf or estate:
+            tail_parts = []
+            if med_conf:
+                tail_parts.append(f"{med_conf} medium")
+            if low_conf:
+                tail_parts.append(f"{low_conf} low")
+            if estate:
+                tail_parts.append(f"{estate} estate-fallback")
+            lines.append(f"")
+            lines.append(f":zap: *Standard cadence:* {' + '.join(tail_parts)} (no special action)")
     else:
-        lines.append("*Deceased owners found:* 0")
+        lines.append("*Deep prospecting:* 0 deceased owners today")
 
     # Upload result
     if upload_result:

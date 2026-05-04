@@ -106,6 +106,10 @@ LEDGER_COLUMNS = [
     "dedup_status",
     "datasift_uploaded",
     "datasift_tagged",
+    # ── Mike's working columns (manually edited in the Sheet) ──
+    "mike_status",       # New | Working | Hot | Appointment | Closed | Dead
+    "last_touched",      # Auto-stamped by onEdit trigger when the row changes
+    "mike_notes",        # Free-text notes from Mike
 ]
 
 
@@ -143,6 +147,12 @@ def _record_to_row(notice, run_date: str, dedup_status: str = "new") -> dict:
         "dedup_status": dedup_status,
         "datasift_uploaded": "",
         "datasift_tagged": "",
+        # Mike's columns are blank on initial write so onEdit doesn't
+        # mistake them for stale data; the Apps Script preserves any
+        # manually-edited values across re-pushes (matched by address).
+        "mike_status": "New",
+        "last_touched": "",
+        "mike_notes": "",
     }
 
 
