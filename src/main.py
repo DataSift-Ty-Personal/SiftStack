@@ -546,11 +546,14 @@ async def actor_main() -> None:
             except Exception as e:
                 Actor.log.warning("Persistent dedup failed: %s — uploading all", e)
 
-            # ── DataSift CSVs → KVS (manual upload) ─────────────────
-            # Generate DataSift-formatted CSVs and save to Apify KVS
-            # for manual download + upload to DataSift (more reliable than
-            # automated Playwright upload in headless cloud containers).
+            # ── DataSift CSVs → KVS (backup) + AUTO-UPLOAD ──────────
+            # CSVs are saved to KVS as a backup / fallback (so if auto-upload
+            # fails, we still have downloadable links to upload manually).
+            # Then we auto-upload + auto-tag via Playwright. Tagger v3 applies
+            # ftm-{type} + county tags + adds records to notice-type lists,
+            # with per-(type, county) verification posted to Slack.
             datasift_csv_urls = []
+            csv_infos = []
             try:
                 from datasift_formatter import write_datasift_split_csvs
 
@@ -568,6 +571,57 @@ async def actor_main() -> None:
             except Exception as e:
                 Actor.log.error("DataSift CSV generation failed: %s", e)
 
+            # ── DataSift auto-upload + auto-tag ─────────────────────
+            # Runs Playwright against app.reisift.io. Wraps:
+            #   1. Login + create-list upload wizard
+            #   2. Post-upload tagger v3 (per-(type, county) ftm + county tags)
+            #   3. Enrich Property Info (SiftMap) — beds/baths/Zestimate
+            #   4. Skip Trace — phones + emails via DataSift unlimited plan
+            # Each step is non-fatal: failure logs + posts to Slack but lets
+            # remaining steps run. CSVs in KVS remain as manual-upload backup.
+            datasift_upload_result = None
+            if csv_infos and config.DATASIFT_EMAIL and config.DATASIFT_PASSWORD:
+                try:
+                    from datasift_uploader import upload_datasift_split, upload_to_datasift
+
+                    Actor.log.info(
+                        "Starting DataSift auto-upload (%d CSVs, %d records)...",
+                        len(csv_infos), len(datasift_upload_records),
+                    )
+                    if len(csv_infos) > 1:
+                        datasift_upload_result = await upload_datasift_split(
+                            csv_infos,
+                            enrich=True,
+                            skip_trace=True,
+                            notices=datasift_upload_records,
+                        )
+                    else:
+                        datasift_upload_result = await upload_to_datasift(
+                            csv_infos[0]["path"],
+                            enrich=True,
+                            skip_trace=True,
+                            notices=datasift_upload_records,
+                        )
+
+                    if datasift_upload_result.get("success"):
+                        Actor.log.info(
+                            "DataSift auto-upload OK: %s",
+                            datasift_upload_result.get("message", ""),
+                        )
+                    else:
+                        Actor.log.error(
+                            "DataSift auto-upload FAILED: %s",
+                            datasift_upload_result.get("message", ""),
+                        )
+                except Exception as e:
+                    Actor.log.error("DataSift auto-upload threw: %s", e, exc_info=True)
+                    datasift_upload_result = {"success": False, "error": str(e)}
+            elif not (config.DATASIFT_EMAIL and config.DATASIFT_PASSWORD):
+                Actor.log.warning(
+                    "DataSift credentials not set — skipping auto-upload. "
+                    "CSVs in KVS for manual upload."
+                )
+
             # Mark uploaded records in state so future runs can skip them
             # if unchanged. Wrapped in try so a state-write failure doesn't
             # break the rest of the run.
@@ -584,6 +638,50 @@ async def actor_main() -> None:
                 Actor.log.info("Persistent dedup: appended %d addresses for next run", added)
             except Exception as e:
                 Actor.log.warning("Persistent dedup append failed: %s", e)
+
+            # ── Master Ledger (rolling Google Sheet) ───────────────
+            # One row per record (today's run), goes to Master Ledger tab in
+            # the shared Sheet so Aaron + Mike can audit/cross-reference
+            # without opening DataSift. Includes dedup + upload + tag status.
+            try:
+                from gsheet_writer import append_records_to_gsheet
+                # Build dedup status map: every notice has an outcome of
+                # "new" (uploaded), "duplicate" (dropped by dedup), or
+                # "carried" (carried forward from prior run state).
+                from datasift_dedup import normalize_address
+                dedup_status_map: dict = {}
+                fresh_keys = {normalize_address(n) for n in datasift_upload_records}
+                for n in notices:
+                    key = normalize_address(n)
+                    if key is None:
+                        continue
+                    if key in fresh_keys:
+                        dedup_status_map[key] = "new"
+                    else:
+                        dedup_status_map[key] = "duplicate"
+                upload_status_str = ""
+                tag_status_str = ""
+                if datasift_upload_result is not None:
+                    upload_status_str = "yes" if datasift_upload_result.get("success") else "no"
+                    tr = datasift_upload_result.get("tag_result") or {}
+                    if tr.get("groups"):
+                        any_failed = any(
+                            g.get("error") or not g.get("verified")
+                            for g in tr["groups"]
+                        )
+                        tag_status_str = "partial" if any_failed else "yes"
+                    else:
+                        tag_status_str = "no"
+                ledger_added = append_records_to_gsheet(
+                    notices,
+                    run_date=datetime.now().strftime("%Y-%m-%d"),
+                    dedup_status_map=dedup_status_map,
+                    upload_status=upload_status_str,
+                    tag_status=tag_status_str,
+                )
+                Actor.log.info("Master Ledger: appended %d rows", ledger_added)
+            except Exception as e:
+                Actor.log.warning("Master Ledger append failed: %s", e)
 
             # ── Slack Notification ────────────────────────────────────
             elapsed_min = (_time() - pipeline_start) / 60
@@ -621,14 +719,30 @@ async def actor_main() -> None:
                         cost_breakdown=cost_breakdown,
                     )
 
-                    # Send DataSift CSV download links as a follow-up message
+                    # Send DataSift auto-upload + tagger verification result.
+                    # If auto-upload succeeded, this posts the per-(type,county)
+                    # green/red breakdown so Mike knows which buckets are tagged
+                    # and which (if any) need manual recovery.
+                    if datasift_upload_result and datasift_upload_result.get("tag_result"):
+                        try:
+                            from slack_notifier import notify_tagger_result
+                            notify_tagger_result(datasift_upload_result["tag_result"])
+                        except Exception as e:
+                            Actor.log.warning("Tagger Slack notification failed: %s", e)
+
+                    # Always send CSV download links as a backup (in case Mike
+                    # needs to re-upload manually if auto-upload failed).
                     if datasift_csv_urls:
-                        csv_lines = [
-                            "*DataSift CSVs ready for manual upload:*",
-                        ]
+                        if datasift_upload_result and datasift_upload_result.get("success"):
+                            csv_lines = ["*DataSift CSVs (backup — auto-upload succeeded):*"]
+                        else:
+                            csv_lines = [
+                                ":warning: *Auto-upload FAILED — manual upload required:*",
+                            ]
                         for csv_info in datasift_csv_urls:
                             csv_lines.append(f"  <{csv_info['url']}|{csv_info['label']}> ({csv_info['records']} records)")
-                        csv_lines.append("_Upload at app.reisift.io → Upload File → Add Data_")
+                        if not (datasift_upload_result and datasift_upload_result.get("success")):
+                            csv_lines.append("_Upload at app.reisift.io → Upload File → Add Data_")
                         _send_webhook("\n".join(csv_lines))
 
                     # Send PDF download links

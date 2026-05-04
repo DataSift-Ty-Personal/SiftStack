@@ -24,17 +24,51 @@
 // That confirms it's reachable.
 
 const SHEET_ID = '1TbKDwHiZ7iyNIhMsl7jqPAEAWcZ_igvRMPGbcyKOrN0';
-const SHEET_TAB_NAME = 'Daily Summary';  // tab name within the Sheet
+const SUMMARY_TAB = 'Daily Summary';     // one row per daily run
+const LEDGER_TAB = 'Master Ledger';      // one row per scraped record (rolling)
 
 
 function doGet(e) {
-  // Browser ping — friendly status response.
   return ContentService
     .createTextOutput(JSON.stringify({
       status: 'ok',
       message: 'SiftStack webhook endpoint live. POST JSON to append a row.',
+      endpoints: {
+        summary: 'POST {object with summary fields} → Daily Summary tab',
+        records: 'POST {type: "records", records: [array]} → Master Ledger tab (one row per record)',
+      },
     }))
     .setMimeType(ContentService.MimeType.JSON);
+}
+
+
+function _appendRowsToSheet(ss, tabName, rows) {
+  // rows: array of objects, all sharing the same keys (caller's responsibility)
+  let sheet = ss.getSheetByName(tabName);
+  if (!sheet) sheet = ss.insertSheet(tabName);
+
+  if (!rows || rows.length === 0) return 0;
+
+  const firstKeys = Object.keys(rows[0]);
+
+  // If sheet empty, write header row
+  if (sheet.getLastRow() === 0) {
+    sheet.appendRow(firstKeys);
+    sheet.getRange(1, 1, 1, firstKeys.length)
+      .setFontWeight('bold')
+      .setBackground('#222222')
+      .setFontColor('#ffffff');
+    sheet.setFrozenRows(1);
+  }
+
+  // Use existing header order so new fields are dropped vs misalign columns
+  const existingHeaders = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+  const data = rows.map(r => existingHeaders.map(h => (r[h] !== undefined && r[h] !== null) ? r[h] : ''));
+
+  // Bulk append — far faster than per-row appendRow for large batches
+  const startRow = sheet.getLastRow() + 1;
+  sheet.getRange(startRow, 1, data.length, existingHeaders.length).setValues(data);
+  return data.length;
 }
 
 
@@ -43,41 +77,29 @@ function doPost(e) {
     const body = JSON.parse(e.postData.contents);
     const ss = SpreadsheetApp.openById(SHEET_ID);
 
-    // Get or create the Daily Summary tab
-    let sheet = ss.getSheetByName(SHEET_TAB_NAME);
-    if (!sheet) {
-      sheet = ss.insertSheet(SHEET_TAB_NAME);
+    // Records payload: bulk-append to Master Ledger tab
+    if (body.type === 'records' && Array.isArray(body.records)) {
+      const appended = _appendRowsToSheet(ss, LEDGER_TAB, body.records);
+      const sheet = ss.getSheetByName(LEDGER_TAB);
+      return ContentService
+        .createTextOutput(JSON.stringify({
+          status: 'ok',
+          tab: LEDGER_TAB,
+          appended_rows: appended,
+          total_rows: sheet.getLastRow() - 1,
+        }))
+        .setMimeType(ContentService.MimeType.JSON);
     }
 
-    const keys = Object.keys(body);
-    const values = Object.values(body);
-
-    // First-time setup: write headers if sheet is empty
-    if (sheet.getLastRow() === 0) {
-      sheet.appendRow(keys);
-      // Style header row: bold + frozen
-      sheet.getRange(1, 1, 1, keys.length)
-        .setFontWeight('bold')
-        .setBackground('#222222')
-        .setFontColor('#ffffff');
-      sheet.setFrozenRows(1);
-    } else {
-      // Existing sheet — make sure column order matches; if not, append
-      // values in the order matching the existing headers.
-      const existingHeaders = sheet.getRange(1, 1, 1, sheet.getLastColumn())
-        .getValues()[0];
-      const orderedRow = existingHeaders.map(h => body[h] !== undefined ? body[h] : '');
-      sheet.appendRow(orderedRow);
-      // Note: any new keys in `body` not present in existing headers are
-      // dropped silently. To add new columns, edit the header row manually
-      // OR delete the sheet and let the next run recreate it.
-    }
-
+    // Default: summary payload (single-row daily summary)
+    const appended = _appendRowsToSheet(ss, SUMMARY_TAB, [body]);
+    const sheet = ss.getSheetByName(SUMMARY_TAB);
     return ContentService
       .createTextOutput(JSON.stringify({
         status: 'ok',
+        tab: SUMMARY_TAB,
         row: sheet.getLastRow(),
-        appended: keys.length + ' fields',
+        appended: Object.keys(body).length + ' fields',
       }))
       .setMimeType(ContentService.MimeType.JSON);
 

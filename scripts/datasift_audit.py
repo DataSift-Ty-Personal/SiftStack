@@ -26,7 +26,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
 import config  # noqa: E402
-from datasift_core import login_datasift  # noqa: E402
+from datasift_core import login as login_datasift  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
@@ -58,7 +58,7 @@ async def main() -> int:
 
         # Login
         logger.info("Logging in to DataSift...")
-        await login_datasift(page, headless=True)
+        await login_datasift(page)
         logger.info("Logged in OK")
 
         # ── Lists ────────────────────────────────────────────────────────
