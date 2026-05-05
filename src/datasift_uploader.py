@@ -1065,24 +1065,15 @@ async def upload_to_datasift(
                 from datetime import datetime as _dt
                 list_name = f"SiftStack {_dt.now().strftime('%Y-%m-%d')}"
 
-                # ── Post-upload bulk tag + list assignment ──
-                # Step 4 column mapping silently fails for Tags/Lists columns.
-                # We apply tags + notice-type list assignments AFTER upload via
-                # the Records → Manage → Add Tag flow which is reliable.
+                # NOTE: post-upload bulk-tag (v4) requires bucketed CSV info.
+                # Single-CSV uploads (this path) skip the tagger — call sites
+                # should use upload_datasift_split with write_datasift_split_csvs
+                # for daily runs to get the per-bucket routing.
                 if notices:
-                    try:
-                        from datasift_post_upload_tagger import (
-                            apply_tags_and_lists_to_uploaded_records,
-                        )
-                        tag_result = await apply_tags_and_lists_to_uploaded_records(
-                            page, list_name, notices,
-                        )
-                        result["tag_result"] = tag_result
-                        logger.info("Post-upload tagging: %s",
-                                    tag_result.get("message", ""))
-                    except Exception as e:
-                        logger.warning("Post-upload tagging failed (non-fatal): %s", e)
-                        result["tag_result"] = {"success": False, "error": str(e)}
+                    logger.info(
+                        "Single-CSV upload mode — skipping post-upload tagger "
+                        "(use upload_datasift_split for bucketed daily flow)"
+                    )
 
                 # Enrich property data via SiftMap
                 if enrich:
@@ -1193,21 +1184,17 @@ async def upload_datasift_split(
                 "message": f"Uploaded {len(uploads)}/{len(csv_infos)} CSVs",
             }
 
-            # ── Post-upload bulk tag + list assignment ──
-            # Apply per-record tags + notice-type list assignments via Records UI
-            # since the upload wizard's Step 4 column mapping is unreliable.
-            if all_success and csv_infos and notices:
+            # ── Post-upload bulk tag + list assignment (split-upload v4) ──
+            # Each csv_info entry is a (notice_type, county) bucket with its
+            # own wrapper list name. We tag each bucket independently — filter
+            # by wrapper list NAME ONLY, then bulk-add tags + add-to-list.
+            # Sidesteps Step 4 column-mapping unreliability entirely.
+            if all_success and csv_infos:
                 try:
-                    from datasift_post_upload_tagger import (
-                        apply_tags_and_lists_to_uploaded_records,
-                    )
-                    # Tag against the DMs list (primary contacts list)
-                    primary_list = csv_infos[0]["list_name"]
-                    tag_result = await apply_tags_and_lists_to_uploaded_records(
-                        page, primary_list, notices,
-                    )
+                    from datasift_post_upload_tagger import apply_tags_to_buckets
+                    tag_result = await apply_tags_to_buckets(page, csv_infos)
                     combined["tag_result"] = tag_result
-                    logger.info("Post-upload tagging: %s",
+                    logger.info("Post-upload tagging v4: %s",
                                 tag_result.get("message", ""))
                 except Exception as e:
                     logger.warning("Post-upload tagging failed (non-fatal): %s", e)

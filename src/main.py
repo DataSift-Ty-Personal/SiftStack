@@ -582,26 +582,21 @@ async def actor_main() -> None:
             datasift_upload_result = None
             if csv_infos and config.DATASIFT_EMAIL and config.DATASIFT_PASSWORD:
                 try:
-                    from datasift_uploader import upload_datasift_split, upload_to_datasift
+                    from datasift_uploader import upload_datasift_split
 
                     Actor.log.info(
-                        "Starting DataSift auto-upload (%d CSVs, %d records)...",
+                        "Starting DataSift auto-upload (split-upload v4: %d buckets, %d records)...",
                         len(csv_infos), len(datasift_upload_records),
                     )
-                    if len(csv_infos) > 1:
-                        datasift_upload_result = await upload_datasift_split(
-                            csv_infos,
-                            enrich=True,
-                            skip_trace=True,
-                            notices=datasift_upload_records,
-                        )
-                    else:
-                        datasift_upload_result = await upload_to_datasift(
-                            csv_infos[0]["path"],
-                            enrich=True,
-                            skip_trace=True,
-                            notices=datasift_upload_records,
-                        )
+                    # Always go through the split-upload path. write_datasift_split_csvs
+                    # produces one CSV per (notice_type, county) bucket; the new tagger
+                    # filters by wrapper list NAME ONLY (no Step 4 dependency).
+                    datasift_upload_result = await upload_datasift_split(
+                        csv_infos,
+                        enrich=True,
+                        skip_trace=True,
+                        notices=datasift_upload_records,
+                    )
 
                     if datasift_upload_result.get("success"):
                         Actor.log.info(

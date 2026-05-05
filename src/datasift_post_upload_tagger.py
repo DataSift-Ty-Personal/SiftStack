@@ -33,12 +33,10 @@ will pick up the records correctly.
 from __future__ import annotations
 
 import logging
-from collections import defaultdict
 
 from playwright.async_api import Page
 
 from datasift_core import dismiss_popups as _dismiss_popups, screenshot as _screenshot
-from models import NoticeData
 
 logger = logging.getLogger(__name__)
 
@@ -68,28 +66,37 @@ NOTICE_TYPE_TO_LIST_NAME = {
 }
 
 
-async def _kill_overlays(page: Page) -> None:
-    """Remove DataSift's right-side filter overlay + autocomplete suggestion
-    container from the DOM if they're left over from a previous interaction.
+async def _kill_stale_overlays(page: Page) -> None:
+    """Disable pointer-event interception on stale overlays without removing
+    them — asideOverlay IS the filter panel's container, so deleting it
+    removes the panel itself (broke the first patched run).
 
-    DataSift leaves `<div id="asideOverlay">` open after enrich/skip-trace
-    runs, which intercepts pointer events on every subsequent click. The
-    `Inputstyles__InputSuggestionsContainer` autocomplete dropdown does the
-    same. We dispose of both before any panel interaction.
+    Strategy:
+      - asideOverlay → set pointer-events:none so it doesn't intercept clicks
+        meant for elements behind it; React state stays intact
+      - Beamer / NPS modals → remove (these have no functional content we need)
     """
     try:
         await page.evaluate(
             """
             () => {
-                document.querySelectorAll('#asideOverlay').forEach(el => el.remove());
-                document.querySelectorAll('[class*="InputSuggestionsContainer"]').forEach(el => el.remove());
+                document.querySelectorAll('#asideOverlay').forEach(el => {
+                    el.style.pointerEvents = 'none';
+                });
                 document.querySelectorAll('#beamerPushModal, #npsIframeContainer').forEach(el => el.remove());
             }
             """
         )
     except Exception:
         pass
-    # Also press Escape — closes any modal that asideOverlay might re-open
+
+
+async def _dismiss_autocomplete(page: Page) -> None:
+    """Dismiss any open autocomplete dropdown without removing it from DOM.
+
+    Used between sequential filter-block setups so the next field's click
+    isn't intercepted by the previous field's still-rendered suggestions.
+    """
     try:
         await page.keyboard.press("Escape")
         await page.wait_for_timeout(200)
@@ -107,7 +114,7 @@ async def _open_filter_panel(page: Page) -> bool:
       3. If that fails, fall back to JS click via element handle
     """
     await _dismiss_popups(page)
-    await _kill_overlays(page)
+    await _kill_stale_overlays(page)
 
     filter_link = page.locator('#Records__Filters_Trigger')
     if await filter_link.count() == 0:
@@ -142,7 +149,9 @@ async def _add_filter_block(page: Page, block_name: str) -> bool:
     Examples of block_name: 'All Lists (AND)', 'All Tags (AND)',
     'Notice Type' (custom field), 'Property County' (custom field).
     """
-    await _kill_overlays(page)
+    # Inside the active panel — DO NOT touch asideOverlay (the panel itself).
+    # Just dismiss any leftover autocomplete from a previous filter block.
+    await _dismiss_autocomplete(page)
 
     search = page.locator('#RecordsFilters__Filter_Blocks__Search')
     if await search.count() == 0:
@@ -237,7 +246,7 @@ async def _apply_filters(page: Page) -> bool:
 async def _clear_filters(page: Page) -> None:
     """Clear all filter blocks (returns Records to default state)."""
     await _dismiss_popups(page)
-    await _kill_overlays(page)
+    await _kill_stale_overlays(page)
     clear_link = page.locator('text="Clear Filters"')
     if await clear_link.count() > 0:
         try:
@@ -421,39 +430,39 @@ async def _read_filtered_count(page: Page) -> int | None:
     return None
 
 
-async def apply_tags_and_lists_to_uploaded_records(
+async def apply_tags_to_buckets(
     page: Page,
-    wrapper_list_name: str,
-    notices: list[NoticeData],
+    buckets: list[dict],
     hard_timeout_seconds: int = 1500,
 ) -> dict:
-    """For each (notice_type, county) in notices, bulk-apply tags + add to list.
+    """v4 split-upload tagger — one bulk-tag pass per bucket (wrapper list).
 
-    v3 (2026-05-01) — restores county tag (v2 wrongly dropped it; Mike's
-    FTM_*_County presets filter on county tag) + adds per-group verification.
+    Architecture (vs. v3):
+      v3 grouped one big upload by (notice_type, county) AFTER upload, then
+      filtered records by Notice Type + County custom-field filter blocks.
+      Those filter blocks rely on Step 4 column-mapping at upload time —
+      which silently fails — so the filters returned 0 records and tagger
+      failed every group.
 
-      * Iterates per (notice_type, county) — up to 12 groups (4 types × 3
-        counties). Each group ~2-3 min, total ~30 min for full daily batch.
-      * Tags applied per group: `ftm`, `ftm-{type}`, `{county-lower}`. Notice
-        type also adds the record to its notice-type list (Probate /
-        Foreclosure / Lis Pendens) — once per type, not once per (type,county).
-      * Per-group verification: reads the visible filtered-record count BEFORE
-        bulk-tagging. If 0 (or unreadable), logs LOUD warning and skips the
-        bulk-tag for that group — prevents silent "tagged nothing" failures.
-      * Hard wall-clock timeout (default 25 min). Aborts remaining groups if
-        we run past budget. Result includes `timed_out=True`.
-      * Failure mode is loud but non-fatal: log warning, return partial result
-        so caller can post per-group breakdown to Slack.
+      v4 takes pre-bucketed wrapper lists. Each bucket = one wrapper list
+      that we set at upload time. We filter records by wrapper list NAME
+      only (built-in filter, always works). Apply tags + add to list in one
+      bulk operation per bucket. No custom-field dependency, no Step 4
+      dependency.
 
-    Why county tag matters: Mike's presets filter on `Tag IS ftm-probate AND
-    Tag IS franklin` etc. Without the county tag, records show in 0 presets.
-    This is the routing bug that broke daily SMS cadences.
+    Per-bucket flow:
+      1. Clear filters → open filter panel
+      2. Add 'All Lists (AND)' filter block, set value = bucket["list_name"]
+      3. Apply filters → verify filtered_count > 0
+      4. Select all → Manage → Add Tag → ftm-{type}, {county}, ftm
+      5. Manage → Add to List → notice-type list (Probate / Foreclosure / ...)
 
     Args:
         page: Logged-in Playwright Page (already past upload).
-        wrapper_list_name: The dated wrapper list to filter by.
-        notices: NoticeData records — drives which (type, county) groups run.
-        hard_timeout_seconds: Abort after this many seconds (default 1500 = 25 min).
+        buckets: List of bucket descriptors from write_datasift_split_csvs:
+            [{"list_name": str, "notice_type": str, "county": str,
+              "count": int, ...}, ...]
+        hard_timeout_seconds: Abort after this many seconds (default 25 min).
 
     Returns:
         Dict shape:
@@ -463,10 +472,11 @@ async def apply_tags_and_lists_to_uploaded_records(
             "elapsed_seconds": float,
             "message": str,
             "groups": [
-              {"notice_type", "county", "expected_records", "filtered_count",
-               "tags_added", "list_added", "verified": bool, "error" (optional)}
+              {"notice_type", "county", "list_name", "expected_records",
+               "filtered_count", "tags_added", "list_added", "verified": bool,
+               "error" (optional)}
             ],
-            "lists_applied": set of notice_types we added to their list,
+            "lists_applied": list of notice-type lists we added to,
           }
     """
     import time as _time
@@ -480,49 +490,46 @@ async def apply_tags_and_lists_to_uploaded_records(
     }
     start = _time.monotonic()
 
-    if not notices:
-        result["message"] = "No notices to tag"
+    if not buckets:
+        result["message"] = "No buckets to tag"
         return result
 
-    # Group by (notice_type, county) — restores per-county routing.
-    group_counts: dict[tuple[str, str], int] = defaultdict(int)
-    for n in notices:
-        nt = (n.notice_type or "").strip().lower()
-        county = (n.county or "").strip().lower()
-        if nt and county:
-            group_counts[(nt, county)] += 1
-
     logger.info(
-        "Post-upload tagging v3: %d (type, county) groups across %d records in %s "
-        "(hard timeout: %ds)",
-        len(group_counts), len(notices), wrapper_list_name, hard_timeout_seconds,
+        "Post-upload tagging v4: %d buckets (one per wrapper list), hard timeout %ds",
+        len(buckets), hard_timeout_seconds,
     )
 
     # Navigate to Records once
     await page.goto("https://app.reisift.io/records/properties", wait_until="domcontentloaded")
     await page.wait_for_timeout(3000)
 
-    lists_applied: set[str] = set()  # only add-to-list once per notice_type
+    lists_applied: set[str] = set()
 
-    for (notice_type, county), count in sorted(group_counts.items()):
+    for bucket in buckets:
         elapsed = _time.monotonic() - start
         if elapsed > hard_timeout_seconds:
             logger.warning(
-                "Post-upload tagger HARD TIMEOUT at %ds (budget %ds) — skipping remaining groups",
+                "Tagger v4 HARD TIMEOUT at %ds (budget %ds) — skipping remaining buckets",
                 int(elapsed), hard_timeout_seconds,
             )
             result["success"] = False
             result["timed_out"] = True
             break
 
+        list_name = bucket.get("list_name", "")
+        notice_type = (bucket.get("notice_type") or "").lower()
+        county = (bucket.get("county") or "").lower()
+        expected = bucket.get("count", 0)
+
         ftm_tag = NOTICE_TYPE_TO_FTM_TAG.get(notice_type)
         target_list = NOTICE_TYPE_TO_LIST_NAME.get(notice_type)
 
-        logger.info("── Group: %s / %s (%d records) ──", notice_type, county, count)
+        logger.info("── Bucket: %s (%d records) ──", list_name, expected)
         group_result: dict = {
             "notice_type": notice_type,
             "county": county,
-            "expected_records": count,
+            "list_name": list_name,
+            "expected_records": expected,
             "filtered_count": None,
             "tags_added": 0,
             "list_added": False,
@@ -534,37 +541,42 @@ async def apply_tags_and_lists_to_uploaded_records(
             await _clear_filters(page)
             opened = await _open_filter_panel(page)
             if not opened:
-                logger.warning("Could not open filter panel for %s/%s — skipping", notice_type, county)
+                logger.warning("Could not open filter panel for %s — skipping", list_name)
                 group_result["error"] = "filter_panel_unopenable"
                 result["groups"].append(group_result)
                 continue
 
-            # 2. Filter by wrapper list AND Notice Type AND County
-            await _add_filter_block(page, "All Lists (AND)")
-            await _set_list_filter_value(page, wrapper_list_name)
-            await _add_filter_block(page, "Notice Type")
-            await _set_text_filter_value(page, notice_type, "Notice Type")
-            await _add_filter_block(page, "County")
-            await _set_text_filter_value(page, county, "County")
-            await _apply_filters(page)
-            await _screenshot(page, f"tagger_v3_filtered_{notice_type}_{county}")
+            # 2. Filter by WRAPPER LIST NAME ONLY (no custom fields)
+            if not await _add_filter_block(page, "All Lists (AND)"):
+                logger.warning("Could not add Lists filter block for %s — skipping", list_name)
+                group_result["error"] = "lists_filter_unaddable"
+                result["groups"].append(group_result)
+                continue
+            if not await _set_list_filter_value(page, list_name):
+                logger.warning("Could not set list filter to %r — skipping", list_name)
+                group_result["error"] = "list_value_unsettable"
+                result["groups"].append(group_result)
+                continue
 
-            # 3. VERIFY filtered count > 0 before doing anything destructive
+            await _apply_filters(page)
+            await _screenshot(page, f"tagger_v4_filtered_{notice_type}_{county}")
+
+            # 3. VERIFY filtered count > 0 before destructive ops
             filtered = await _read_filtered_count(page)
             group_result["filtered_count"] = filtered
             if filtered == 0:
                 logger.warning(
-                    "❌ %s/%s — filter returned 0 records (expected %d). Filters didn't apply. Skipping bulk-tag.",
-                    notice_type, county, count,
+                    "❌ %s — filter returned 0 records (expected %d). Wrapper list empty or filter didn't apply.",
+                    list_name, expected,
                 )
                 group_result["error"] = "filter_returned_zero"
                 result["success"] = False
                 result["groups"].append(group_result)
                 continue
-            if filtered is not None and filtered != count:
+            if filtered is not None and abs(filtered - expected) > 1:
                 logger.warning(
-                    "⚠ %s/%s — filtered count %d != expected %d (proceeding anyway)",
-                    notice_type, county, filtered, count,
+                    "⚠ %s — filtered %d != expected %d (proceeding)",
+                    list_name, filtered, expected,
                 )
             group_result["verified"] = filtered is not None and filtered > 0
 
@@ -572,9 +584,9 @@ async def apply_tags_and_lists_to_uploaded_records(
             await _select_all_records(page)
             await page.wait_for_timeout(1500)
 
-            # 5. Open Manage and bulk-add tag set (with county!)
+            # 5. Open Manage and bulk-add tags
             if not await _open_manage_menu(page):
-                logger.warning("Could not open Manage menu for %s/%s — skipping", notice_type, county)
+                logger.warning("Could not open Manage menu for %s — skipping", list_name)
                 group_result["error"] = "manage_menu_unopenable"
                 result["groups"].append(group_result)
                 continue
@@ -582,22 +594,23 @@ async def apply_tags_and_lists_to_uploaded_records(
             tags_to_add = ["ftm"]
             if ftm_tag:
                 tags_to_add.append(ftm_tag)
-            tags_to_add.append(county)  # restored: drives FTM_*_County preset filters
+            if county:
+                tags_to_add.append(county)
             added = await _bulk_add_tags(page, tags_to_add)
             group_result["tags_added"] = added
             await page.wait_for_timeout(1500)
 
-            # 6. Add to notice-type list (only once per type — first county hit)
-            if target_list and notice_type not in lists_applied:
+            # 6. Add bucket records to notice-type list (Probate / Foreclosure / ...)
+            if target_list:
                 await _open_manage_menu(page)
                 if await _bulk_add_to_list(page, target_list):
                     group_result["list_added"] = True
-                    lists_applied.add(notice_type)
+                    lists_applied.add(target_list)
 
             result["groups"].append(group_result)
 
         except Exception as e:
-            logger.warning("Tagging failed for %s/%s: %s", notice_type, county, e)
+            logger.warning("Tagging failed for bucket %s: %s", list_name, e)
             group_result["error"] = str(e)
             result["groups"].append(group_result)
             result["success"] = False

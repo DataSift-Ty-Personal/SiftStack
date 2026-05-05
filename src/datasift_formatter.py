@@ -903,87 +903,142 @@ def write_datasift_csv(
     return output_path
 
 
+def _notes_for_record(notice: NoticeData) -> str:
+    """Build the canonical Notes string for a record.
+
+    For deceased records with heir data, combines DM analysis + heir map
+    into a single multi-paragraph Notes string (separated by a divider).
+    Living owners get the standard DM notes only. This replaces the
+    historical two-CSV dual-message-board flow with a single rich Notes
+    column per record — aligns with the split-by-bucket upload model
+    where each record only ships in ONE CSV (its bucket).
+    """
+    dm = _build_dm_notes(notice)
+    if notice.owner_deceased == "yes" and (notice.heir_map_json or "").strip():
+        heir = _build_heir_notes(notice)
+        if heir and heir.strip():
+            return f"{dm}\n\n--- HEIR MAP ---\n\n{heir}"
+    return dm
+
+
 def write_datasift_split_csvs(
     notices: list[NoticeData],
     date_str: str | None = None,
 ) -> list[dict]:
-    """Generate separate DM and Heir Map CSVs for two-upload Message Board flow.
+    """Generate one CSV per (notice_type, county) bucket — split-upload flow.
 
-    CSV 1 ("DMs"): All records. Deceased get DM breakdown as Notes, living get
-    property details. Creates/updates all records in DataSift.
+    Each bucket uploads to its OWN dated wrapper list (e.g.,
+    "SiftStack 2026-05-05 - probate-franklin"). Downstream the post-upload
+    tagger filters records by wrapper list NAME only — the most reliable
+    DataSift filter that exists. This sidesteps Step 4's silent column-
+    mapping failures for Tags/Lists/CustomFields entirely: each bucket's
+    records all share notice_type + county, so we apply tags + add to list
+    in one bulk operation per wrapper list.
 
-    CSV 2 ("Heirs"): Only deceased records with heir data. Notes = full heir map.
-    DataSift merges by address, adding a second Message Board comment.
+    Why split this way (vs. one big CSV):
+      - DataSift's Step 4 wizard silently drops Tags + Lists + custom field
+        columns. A single mixed-bucket upload provides no way to identify
+        records by notice_type/county after upload — the only filter that
+        works is the wrapper list name, which is account-wide if shared.
+      - Per-bucket wrapper list = built-in identifier we set at upload time
+        that ALWAYS works. Tagger filters by that list name → tags entire
+        wrapper list with the right (ftm-{type}, {county}) pair → adds
+        entire wrapper list to the right notice-type list (Probate /
+        Foreclosure / Lis Pendens).
+
+    Heir-tree records (deceased owners with multiple potential DMs) merge
+    into their respective probate-{county} bucket; the heir map ships as
+    a section in the single Notes column (no separate Heirs CSV anymore).
 
     Args:
         notices: List of enriched NoticeData objects.
-        date_str: Optional date string for filenames/list names (default: today).
+        date_str: Optional date string for filenames/list names (default today).
 
     Returns:
-        List of dicts: [{"path": Path, "label": str, "list_name": str}, ...]
-        Returns 1 item if no deceased-with-heirs, 2 items otherwise.
+        List of dicts with shape:
+          [{"path": Path, "label": "<type>-<county>", "list_name": str,
+            "count": int, "notice_type": str, "county": str}, ...]
+        One entry per bucket that has at least one record. Empty buckets
+        are skipped — DataSift doesn't get spammed with empty wrapper lists.
     """
     if date_str is None:
         date_str = datetime.now().strftime("%Y-%m-%d")
 
     timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
-    results = []
 
-    # CSV 1: DMs — all records
-    dm_path = OUTPUT_DIR / f"datasift_upload_DMs_{timestamp}.csv"
-    dm_written = 0
-    incomplete = 0
+    # Group by (notice_type, county). Use lower-case county for filename
+    # consistency, but capture original casing for the wrapper list label.
+    buckets: dict[tuple[str, str], list[NoticeData]] = {}
+    skipped_no_bucket = 0
+    for n in notices:
+        nt = (n.notice_type or "").strip().lower()
+        cty = (n.county or "").strip().lower()
+        if not nt or not cty:
+            skipped_no_bucket += 1
+            continue
+        buckets.setdefault((nt, cty), []).append(n)
+
+    if skipped_no_bucket:
+        logger.warning(
+            "%d records dropped from upload — missing notice_type or county",
+            skipped_no_bucket,
+        )
+
+    if not buckets:
+        logger.warning("No records to upload — no buckets formed")
+        return []
+
+    results: list[dict] = []
+    total_complete = 0
+    total_incomplete = 0
     issue_counts: dict[str, int] = {}
-    with open(dm_path, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=DATASIFT_COLUMNS)
-        writer.writeheader()
-        for notice in notices:
-            row = _build_row(notice, notes_override=_build_dm_notes(notice))
-            is_complete, issues = _validate_row(row)
-            if not is_complete:
-                incomplete += 1
-                for issue in issues:
-                    issue_counts[issue] = issue_counts.get(issue, 0) + 1
-            writer.writerow(row)
-            dm_written += 1
 
-    logger.info("DMs CSV: %d records → %s", dm_written, dm_path)
-    if incomplete:
-        logger.warning("DataSift completeness: %d/%d clean, %d incomplete (%s)",
-                        dm_written - incomplete, dm_written, incomplete,
-                        ", ".join(f"{k}={v}" for k, v in issue_counts.items()))
-    else:
-        logger.info("DataSift completeness: %d/%d clean (100%%)", dm_written, dm_written)
-    results.append({
-        "path": dm_path,
-        "label": "DMs",
-        "list_name": f"SiftStack {date_str} - DMs",
-    })
+    for (notice_type, county), bucket_notices in sorted(buckets.items()):
+        label = f"{notice_type}-{county}"
+        bucket_path = OUTPUT_DIR / f"datasift_{label}_{timestamp}.csv"
+        list_name = f"SiftStack {date_str} - {label}"
 
-    # CSV 2: Heirs — only deceased with heir data
-    deceased_with_heirs = [
-        n for n in notices
-        if n.owner_deceased == "yes" and n.heir_map_json
-    ]
-
-    if deceased_with_heirs:
-        heir_path = OUTPUT_DIR / f"datasift_upload_Heirs_{timestamp}.csv"
-        heir_written = 0
-        with open(heir_path, "w", newline="", encoding="utf-8") as f:
+        bucket_written = 0
+        bucket_incomplete = 0
+        with open(bucket_path, "w", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=DATASIFT_COLUMNS)
             writer.writeheader()
-            for notice in deceased_with_heirs:
-                row = _build_row(notice, notes_override=_build_heir_notes(notice))
+            for notice in bucket_notices:
+                row = _build_row(notice, notes_override=_notes_for_record(notice))
+                is_complete, issues = _validate_row(row)
+                if not is_complete:
+                    bucket_incomplete += 1
+                    for issue in issues:
+                        issue_counts[issue] = issue_counts.get(issue, 0) + 1
                 writer.writerow(row)
-                heir_written += 1
+                bucket_written += 1
 
-        logger.info("Heirs CSV: %d records → %s", heir_written, heir_path)
+        total_complete += bucket_written - bucket_incomplete
+        total_incomplete += bucket_incomplete
+        logger.info(
+            "Bucket %s: %d records → %s (wrapper list: %s)",
+            label, bucket_written, bucket_path.name, list_name,
+        )
         results.append({
-            "path": heir_path,
-            "label": "Heirs",
-            "list_name": f"SiftStack {date_str} - Heirs",
+            "path": bucket_path,
+            "label": label,
+            "list_name": list_name,
+            "count": bucket_written,
+            "notice_type": notice_type,
+            "county": county,
         })
-    else:
-        logger.info("No deceased records with heir data — skipping Heirs CSV")
 
+    if total_incomplete:
+        logger.warning(
+            "DataSift completeness across all buckets: %d clean, %d incomplete (%s)",
+            total_complete, total_incomplete,
+            ", ".join(f"{k}={v}" for k, v in issue_counts.items()),
+        )
+    else:
+        logger.info(
+            "DataSift completeness across all buckets: %d/%d clean (100%%)",
+            total_complete, total_complete,
+        )
+
+    logger.info("Split-upload: %d buckets, %d total records", len(results), total_complete + total_incomplete)
     return results
