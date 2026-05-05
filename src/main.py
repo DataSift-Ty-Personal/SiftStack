@@ -554,6 +554,7 @@ async def actor_main() -> None:
             # with per-(type, county) verification posted to Slack.
             datasift_csv_urls = []
             csv_infos = []
+            drive_csv_result = {"folder_url": None, "files": []}
             try:
                 from datasift_formatter import write_datasift_split_csvs
 
@@ -563,13 +564,34 @@ async def actor_main() -> None:
                     key = f"datasift_{info['label'].lower().replace(' ', '_')}.csv"
                     with open(info["path"], "rb") as f:
                         await kvs.set_value(key, f.read(), content_type="text/csv")
-                    # Build public download URL
+                    # Build public download URL (KVS — backup, expires ~14d)
                     kvs_id = kvs._id if hasattr(kvs, '_id') else ''
                     url = f"https://api.apify.com/v2/key-value-stores/{kvs_id}/records/{key}"
                     datasift_csv_urls.append({"label": info["label"], "url": url, "records": info.get("count", "?")})
                     Actor.log.info("DataSift CSV (%s) saved to KVS: %s", info["label"], key)
             except Exception as e:
                 Actor.log.error("DataSift CSV generation failed: %s", e)
+
+            # ── Upload bucket CSVs to Google Drive (primary delivery) ──
+            # Drive folder is shared with Aaron + Mike; persists indefinitely.
+            # Creates dated subfolder so each day's buckets stay browsable.
+            # Slack ping below surfaces the Drive folder link as the primary
+            # action surface; KVS URLs remain as fallback.
+            if csv_infos and drive_folder_id and drive_key_b64:
+                try:
+                    from drive_uploader import upload_daily_bucket_csvs
+                    drive_csv_result = upload_daily_bucket_csvs(
+                        csv_infos,
+                        parent_folder_id=drive_folder_id,
+                        service_account_key_b64=drive_key_b64,
+                    )
+                    if drive_csv_result.get("folder_url"):
+                        Actor.log.info(
+                            "Daily bucket CSVs → Google Drive: %s",
+                            drive_csv_result["folder_url"],
+                        )
+                except Exception as e:
+                    Actor.log.error("Drive bucket upload failed (non-fatal): %s", e)
 
             # ── DataSift auto-upload + auto-tag ─────────────────────
             # Runs Playwright against app.reisift.io. Wraps:
@@ -701,21 +723,33 @@ async def actor_main() -> None:
                     )
 
                     # CSV bucket delivery for Mike — primary action item of
-                    # the day. Each bucket = (notice_type, county) = one CSV
-                    # = one DataSift upload Mike will run with the bucket name
-                    # as the wrapper list name (so per-bucket presets find
-                    # the right records).
-                    if datasift_csv_urls:
+                    # the day. Drive folder is the primary surface; KVS links
+                    # are fallback (KVS expires ~14 days).
+                    if datasift_csv_urls or drive_csv_result.get("folder_url"):
                         csv_lines = [
                             ":inbox_tray: *Mike — today's bucket CSVs ready for upload:*",
                             "",
                         ]
-                        # Sort by label for predictable order (probate-franklin
-                        # before lis_pendens-greene etc.)
-                        for csv_info in sorted(datasift_csv_urls, key=lambda x: x["label"]):
-                            label = csv_info["label"]
-                            records = csv_info.get("records", "?")
-                            csv_lines.append(f"  • <{csv_info['url']}|{label}.csv> — *{records} records*")
+
+                        # Drive folder link (primary, persistent, shared
+                        # with both Aaron + Mike)
+                        drive_url = drive_csv_result.get("folder_url")
+                        if drive_url:
+                            csv_lines.append(
+                                f":file_folder: *<{drive_url}|Open today's Drive folder>* — all CSVs in one place"
+                            )
+                            csv_lines.append("")
+
+                        # Per-bucket detail
+                        sources = drive_csv_result.get("files") or datasift_csv_urls
+                        for info in sorted(sources, key=lambda x: x.get("label", "")):
+                            label = info.get("label", "?")
+                            count = info.get("count") or info.get("records") or "?"
+                            link = info.get("url")
+                            if link:
+                                csv_lines.append(f"  • <{link}|{label}.csv> — *{count} records*")
+                            else:
+                                csv_lines.append(f"  • {label}.csv — *{count} records*")
                         csv_lines.append("")
                         csv_lines.append(
                             "_Upload each at app.reisift.io → Upload File → Add Data._"

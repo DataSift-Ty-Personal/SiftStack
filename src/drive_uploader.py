@@ -30,6 +30,102 @@ MIME_MAP = {
 }
 
 
+def get_or_create_subfolder(
+    parent_folder_id: str,
+    subfolder_name: str,
+    service_account_key_b64: str,
+) -> str | None:
+    """Get or create a dated subfolder under a Drive parent. Returns folder ID.
+
+    Used for daily CSV bucket delivery — each day gets its own subfolder
+    inside the SiftStack daily folder so Aaron + Mike can browse
+    chronologically.
+    """
+    try:
+        service = _build_service(service_account_key_b64)
+        # Check if subfolder already exists
+        query = (
+            f"name='{subfolder_name}' "
+            f"and mimeType='application/vnd.google-apps.folder' "
+            f"and '{parent_folder_id}' in parents "
+            f"and trashed=false"
+        )
+        results = service.files().list(
+            q=query, fields="files(id, name)"
+        ).execute()
+        existing = results.get("files", [])
+        if existing:
+            return existing[0]["id"]
+
+        # Create new subfolder
+        meta = {
+            "name": subfolder_name,
+            "mimeType": "application/vnd.google-apps.folder",
+            "parents": [parent_folder_id],
+        }
+        folder = service.files().create(body=meta, fields="id").execute()
+        logger.info("Created Drive subfolder: %s (id=%s)", subfolder_name, folder["id"])
+        return folder["id"]
+    except Exception:
+        logger.exception("Failed to get/create Drive subfolder: %s", subfolder_name)
+        return None
+
+
+def upload_daily_bucket_csvs(
+    csv_infos: list[dict],
+    parent_folder_id: str,
+    service_account_key_b64: str,
+    date_str: str | None = None,
+) -> dict:
+    """Upload today's bucket CSVs to a dated subfolder. Returns folder + file URLs.
+
+    Creates `<parent>/SiftStack Daily/YYYY-MM-DD/` and uploads each bucket
+    CSV. Returns dict with `folder_url` (the dated subfolder, shareable to
+    Aaron + Mike) and `files` (per-CSV link list).
+
+    Args:
+        csv_infos: List of bucket descriptors from write_datasift_split_csvs.
+            Each must have "path" and "label".
+        parent_folder_id: Top-level Drive folder ID (the daily-CSVs root).
+        service_account_key_b64: Base64-encoded service account JSON.
+        date_str: Optional date string (default: today). Used for subfolder name.
+
+    Returns:
+        {
+          "folder_url": str | None,
+          "folder_id": str | None,
+          "files": [{"label": str, "url": str | None}, ...],
+        }
+    """
+    if not csv_infos:
+        return {"folder_url": None, "folder_id": None, "files": []}
+
+    if date_str is None:
+        date_str = datetime.now().strftime("%Y-%m-%d")
+
+    sub_id = get_or_create_subfolder(
+        parent_folder_id, date_str, service_account_key_b64
+    )
+    if not sub_id:
+        return {"folder_url": None, "folder_id": None, "files": []}
+
+    files: list[dict] = []
+    for info in csv_infos:
+        link = upload_file(
+            file_path=Path(info["path"]),
+            folder_id=sub_id,
+            service_account_key_b64=service_account_key_b64,
+            filename=f"{info['label']}.csv",
+        )
+        files.append({"label": info["label"], "url": link, "count": info.get("count", "?")})
+
+    folder_url = f"https://drive.google.com/drive/folders/{sub_id}"
+    logger.info(
+        "Daily CSV folder ready: %s (%d files)", folder_url, len(files),
+    )
+    return {"folder_url": folder_url, "folder_id": sub_id, "files": files}
+
+
 def upload_file(
     file_path: Path,
     folder_id: str,
