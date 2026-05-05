@@ -579,43 +579,29 @@ async def actor_main() -> None:
             #   4. Skip Trace — phones + emails via DataSift unlimited plan
             # Each step is non-fatal: failure logs + posts to Slack but lets
             # remaining steps run. CSVs in KVS remain as manual-upload backup.
+            # ── Auto-upload to DataSift: DISABLED (1.0.14) ──────────
+            # Mike (data manager) handles upload + tagging + Trestle workflow
+            # manually in DataSift. SiftStack's job ends at clean CSV delivery.
+            #
+            # Why this is the right call:
+            #   - DataSift has no API; even DataSift's owner uses a data
+            #     manager for uploads. Our Playwright auto-upload kept fighting
+            #     UI selector drift (Step 4 column mapping, asideOverlay
+            #     intercepts, Manage button selectors). High maintenance,
+            #     fragile, opaque failure modes.
+            #   - Mike already runs DataSift daily and knows its quirks. He
+            #     can do upload + bulk-tag + Trestle in ~20 min reliably.
+            #   - SiftStack's actually-hard work (scrape, enrich, dedup,
+            #     bucket-split) all worked perfectly. We deliver the CSVs
+            #     and stop there.
+            #
+            # CSVs are saved to Apify KVS above + Slack-linked below + backed
+            # up to Google Drive. Mike downloads + uploads via DataSift wizard.
             datasift_upload_result = None
-            if csv_infos and config.DATASIFT_EMAIL and config.DATASIFT_PASSWORD:
-                try:
-                    from datasift_uploader import upload_datasift_split
-
-                    Actor.log.info(
-                        "Starting DataSift auto-upload (split-upload v4: %d buckets, %d records)...",
-                        len(csv_infos), len(datasift_upload_records),
-                    )
-                    # Always go through the split-upload path. write_datasift_split_csvs
-                    # produces one CSV per (notice_type, county) bucket; the new tagger
-                    # filters by wrapper list NAME ONLY (no Step 4 dependency).
-                    datasift_upload_result = await upload_datasift_split(
-                        csv_infos,
-                        enrich=True,
-                        skip_trace=True,
-                        notices=datasift_upload_records,
-                    )
-
-                    if datasift_upload_result.get("success"):
-                        Actor.log.info(
-                            "DataSift auto-upload OK: %s",
-                            datasift_upload_result.get("message", ""),
-                        )
-                    else:
-                        Actor.log.error(
-                            "DataSift auto-upload FAILED: %s",
-                            datasift_upload_result.get("message", ""),
-                        )
-                except Exception as e:
-                    Actor.log.error("DataSift auto-upload threw: %s", e, exc_info=True)
-                    datasift_upload_result = {"success": False, "error": str(e)}
-            elif not (config.DATASIFT_EMAIL and config.DATASIFT_PASSWORD):
-                Actor.log.warning(
-                    "DataSift credentials not set — skipping auto-upload. "
-                    "CSVs in KVS for manual upload."
-                )
+            Actor.log.info(
+                "Auto-upload disabled (1.0.14) — %d bucket CSVs delivered to KVS for Mike",
+                len(csv_infos),
+            )
 
             # Mark uploaded records in state so future runs can skip them
             # if unchanged. Wrapped in try so a state-write failure doesn't
@@ -714,30 +700,33 @@ async def actor_main() -> None:
                         cost_breakdown=cost_breakdown,
                     )
 
-                    # Send DataSift auto-upload + tagger verification result.
-                    # If auto-upload succeeded, this posts the per-(type,county)
-                    # green/red breakdown so Mike knows which buckets are tagged
-                    # and which (if any) need manual recovery.
-                    if datasift_upload_result and datasift_upload_result.get("tag_result"):
-                        try:
-                            from slack_notifier import notify_tagger_result
-                            notify_tagger_result(datasift_upload_result["tag_result"])
-                        except Exception as e:
-                            Actor.log.warning("Tagger Slack notification failed: %s", e)
-
-                    # Always send CSV download links as a backup (in case Mike
-                    # needs to re-upload manually if auto-upload failed).
+                    # CSV bucket delivery for Mike — primary action item of
+                    # the day. Each bucket = (notice_type, county) = one CSV
+                    # = one DataSift upload Mike will run with the bucket name
+                    # as the wrapper list name (so per-bucket presets find
+                    # the right records).
                     if datasift_csv_urls:
-                        if datasift_upload_result and datasift_upload_result.get("success"):
-                            csv_lines = ["*DataSift CSVs (backup — auto-upload succeeded):*"]
-                        else:
-                            csv_lines = [
-                                ":warning: *Auto-upload FAILED — manual upload required:*",
-                            ]
-                        for csv_info in datasift_csv_urls:
-                            csv_lines.append(f"  <{csv_info['url']}|{csv_info['label']}> ({csv_info['records']} records)")
-                        if not (datasift_upload_result and datasift_upload_result.get("success")):
-                            csv_lines.append("_Upload at app.reisift.io → Upload File → Add Data_")
+                        csv_lines = [
+                            ":inbox_tray: *Mike — today's bucket CSVs ready for upload:*",
+                            "",
+                        ]
+                        # Sort by label for predictable order (probate-franklin
+                        # before lis_pendens-greene etc.)
+                        for csv_info in sorted(datasift_csv_urls, key=lambda x: x["label"]):
+                            label = csv_info["label"]
+                            records = csv_info.get("records", "?")
+                            csv_lines.append(f"  • <{csv_info['url']}|{label}.csv> — *{records} records*")
+                        csv_lines.append("")
+                        csv_lines.append(
+                            "_Upload each at app.reisift.io → Upload File → Add Data._"
+                        )
+                        csv_lines.append(
+                            "_Set wrapper list name = bucket name (e.g. `SiftStack "
+                            f"{datetime.now().strftime('%Y-%m-%d')} - probate-franklin`)._"
+                        )
+                        csv_lines.append(
+                            "_After upload: bulk-tag per SOP-DAILY-OPERATIONS-V2.md_"
+                        )
                         _send_webhook("\n".join(csv_lines))
 
                     # Send PDF download links
