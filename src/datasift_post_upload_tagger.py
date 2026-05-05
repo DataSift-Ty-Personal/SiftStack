@@ -231,16 +231,40 @@ async def _set_text_filter_value(page: Page, value: str, block_label: str) -> bo
 
 
 async def _apply_filters(page: Page) -> bool:
-    """Click 'Apply Filters' button at the bottom of the filter panel."""
+    """Click 'Apply Filters' then kill the lingering panel overlay.
+
+    DataSift re-renders #asideOverlay after Apply Filters in a way that
+    blocks the records grid below — checkboxes, Manage button, etc. We
+    explicitly kill the overlay's pointer-events after applying so the
+    grid is clickable again.
+    """
     apply_btn = page.locator('text="Apply Filters"')
+    applied = False
     if await apply_btn.count() > 0:
-        await apply_btn.first.click()
+        try:
+            await apply_btn.first.click(force=True, timeout=5000)
+        except Exception:
+            try:
+                await apply_btn.first.evaluate("el => el.click()")
+            except Exception:
+                pass
         await page.wait_for_timeout(3000)
-        return True
-    # Fallback: close panel with Escape
-    await page.keyboard.press("Escape")
-    await page.wait_for_timeout(2000)
-    return False
+        applied = True
+    else:
+        await page.keyboard.press("Escape")
+        await page.wait_for_timeout(2000)
+
+    # Critical: kill the post-apply overlay re-render so subsequent
+    # records-grid interactions (select all, Manage menu) work.
+    await _kill_stale_overlays(page)
+    # Press Escape to ensure panel is fully dismissed
+    try:
+        await page.keyboard.press("Escape")
+        await page.wait_for_timeout(500)
+    except Exception:
+        pass
+    await _kill_stale_overlays(page)
+    return applied
 
 
 async def _clear_filters(page: Page) -> None:
@@ -260,37 +284,76 @@ async def _clear_filters(page: Page) -> None:
 
 
 async def _select_all_records(page: Page) -> bool:
-    """Click the 'Select all' header checkbox + 'Select all matching filter' link."""
-    # Header checkbox first
-    header_box = page.locator('input[type="checkbox"]:visible').first
-    if await header_box.count() > 0:
-        try:
-            await header_box.click()
-            await page.wait_for_timeout(800)
-        except Exception:
-            pass
-    # Then click "Select all matching filter" link if present
+    """Click 'Select all' header checkbox + 'Select all matching' link.
+
+    Hardened with kill-overlays before each click + force-click + JS click
+    fallbacks. The post-Apply-Filters asideOverlay re-render blocks plain
+    clicks on the records grid.
+    """
+    await _kill_stale_overlays(page)
+    # Header checkbox first — try multiple selectors so we hit the right one
+    for sel in [
+        'thead input[type="checkbox"]',
+        '[class*="HeaderRow"] input[type="checkbox"]',
+        'input[type="checkbox"]:visible',
+    ]:
+        cb = page.locator(sel).first
+        if await cb.count() > 0:
+            try:
+                await cb.click(force=True, timeout=3000)
+                await page.wait_for_timeout(800)
+                break
+            except Exception:
+                try:
+                    await cb.evaluate("el => el.click()")
+                    await page.wait_for_timeout(800)
+                    break
+                except Exception:
+                    continue
+    # Then "Select all matching" link
     select_all_link = page.locator('text="Select all"')
     if await select_all_link.count() > 0:
         try:
-            await select_all_link.first.click()
+            await select_all_link.first.click(force=True, timeout=3000)
             await page.wait_for_timeout(1000)
-            return True
         except Exception:
-            pass
-    return True  # header checkbox click counts as success
+            try:
+                await select_all_link.first.evaluate("el => el.click()")
+            except Exception:
+                pass
+    await _kill_stale_overlays(page)
+    return True
 
 
 async def _open_manage_menu(page: Page) -> bool:
-    """Click the Manage dropdown to reveal Add Tag / Add to List options."""
-    btn = page.locator('button:has-text("Manage")')
-    if await btn.count() == 0:
-        btn = page.locator('text="Manage"')
-    if await btn.count() == 0:
-        return False
-    await btn.first.click()
-    await page.wait_for_timeout(1500)
-    return True
+    """Click the Manage dropdown to reveal Add Tag / Add to List options.
+
+    Hardened: kill overlays first, try multiple selectors, force-click +
+    JS-click fallbacks. The Manage button only appears AFTER records are
+    selected, and asideOverlay can intercept the click.
+    """
+    await _kill_stale_overlays(page)
+    for sel in [
+        'button:has-text("Manage")',
+        '[class*="Manage"] >> text="Manage"',
+        'text="Manage"',
+        'a:has-text("Manage")',
+    ]:
+        btn = page.locator(sel)
+        if await btn.count() == 0:
+            continue
+        try:
+            await btn.first.click(force=True, timeout=3000)
+            await page.wait_for_timeout(1500)
+            return True
+        except Exception:
+            try:
+                await btn.first.evaluate("el => el.click()")
+                await page.wait_for_timeout(1500)
+                return True
+            except Exception:
+                continue
+    return False
 
 
 async def _bulk_add_tags(page: Page, tags: list[str]) -> int:
