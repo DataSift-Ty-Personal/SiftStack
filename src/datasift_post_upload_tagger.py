@@ -68,19 +68,72 @@ NOTICE_TYPE_TO_LIST_NAME = {
 }
 
 
+async def _kill_overlays(page: Page) -> None:
+    """Remove DataSift's right-side filter overlay + autocomplete suggestion
+    container from the DOM if they're left over from a previous interaction.
+
+    DataSift leaves `<div id="asideOverlay">` open after enrich/skip-trace
+    runs, which intercepts pointer events on every subsequent click. The
+    `Inputstyles__InputSuggestionsContainer` autocomplete dropdown does the
+    same. We dispose of both before any panel interaction.
+    """
+    try:
+        await page.evaluate(
+            """
+            () => {
+                document.querySelectorAll('#asideOverlay').forEach(el => el.remove());
+                document.querySelectorAll('[class*="InputSuggestionsContainer"]').forEach(el => el.remove());
+                document.querySelectorAll('#beamerPushModal, #npsIframeContainer').forEach(el => el.remove());
+            }
+            """
+        )
+    except Exception:
+        pass
+    # Also press Escape — closes any modal that asideOverlay might re-open
+    try:
+        await page.keyboard.press("Escape")
+        await page.wait_for_timeout(200)
+    except Exception:
+        pass
+
+
 async def _open_filter_panel(page: Page) -> bool:
-    """Click 'Filter Records' to open the right-side filter overlay."""
+    """Click 'Filter Records' to open the right-side filter overlay.
+
+    Hardened against the asideOverlay-intercepts-clicks failure mode that
+    blocked v3's first run on Apify (5 of 5 buckets failed). Strategy:
+      1. Dismiss popups + kill overlays from prior interactions
+      2. Try Playwright click with force=True (bypasses pointer-event check)
+      3. If that fails, fall back to JS click via element handle
+    """
     await _dismiss_popups(page)
+    await _kill_overlays(page)
+
     filter_link = page.locator('#Records__Filters_Trigger')
     if await filter_link.count() == 0:
         filter_link = page.locator('a:has-text("Filter Records")')
     if await filter_link.count() == 0:
         logger.warning("No Filter Records link found")
         return False
-    await filter_link.first.click()
-    await page.wait_for_timeout(2000)
-    await _dismiss_popups(page)
-    return True
+
+    # Attempt 1: Playwright force-click (bypasses pointer-event interception)
+    try:
+        await filter_link.first.click(force=True, timeout=5000)
+        await page.wait_for_timeout(2000)
+        await _dismiss_popups(page)
+        return True
+    except Exception as e:
+        logger.warning("Force-click on filter trigger failed: %s — trying JS click", e)
+
+    # Attempt 2: JS click via element evaluate
+    try:
+        await filter_link.first.evaluate("el => el.click()")
+        await page.wait_for_timeout(2000)
+        await _dismiss_popups(page)
+        return True
+    except Exception as e:
+        logger.warning("JS click on filter trigger also failed: %s", e)
+        return False
 
 
 async def _add_filter_block(page: Page, block_name: str) -> bool:
@@ -89,6 +142,8 @@ async def _add_filter_block(page: Page, block_name: str) -> bool:
     Examples of block_name: 'All Lists (AND)', 'All Tags (AND)',
     'Notice Type' (custom field), 'Property County' (custom field).
     """
+    await _kill_overlays(page)
+
     search = page.locator('#RecordsFilters__Filter_Blocks__Search')
     if await search.count() == 0:
         search = page.locator('input[placeholder*="filter block"]')
@@ -96,7 +151,14 @@ async def _add_filter_block(page: Page, block_name: str) -> bool:
         logger.warning("Filter block search input not found")
         return False
 
-    await search.first.click()
+    # Force-click + JS-fill bypasses InputSuggestionsContainer interception
+    try:
+        await search.first.click(force=True, timeout=5000)
+    except Exception:
+        try:
+            await search.first.evaluate("el => el.focus()")
+        except Exception:
+            pass
     await search.first.fill("")
     await page.wait_for_timeout(300)
     await search.first.fill(block_name.split()[0])  # e.g. "Notice" for "Notice Type"
@@ -104,7 +166,14 @@ async def _add_filter_block(page: Page, block_name: str) -> bool:
 
     option = page.locator(f'text="{block_name}"')
     if await option.count() > 0:
-        await option.first.click()
+        try:
+            await option.first.click(force=True, timeout=5000)
+        except Exception:
+            try:
+                await option.first.evaluate("el => el.click()")
+            except Exception as e:
+                logger.warning("Failed to click filter block option %r: %s", block_name, e)
+                return False
         await page.wait_for_timeout(1500)
         logger.debug("Added filter block: %s", block_name)
         return True
@@ -168,9 +237,16 @@ async def _apply_filters(page: Page) -> bool:
 async def _clear_filters(page: Page) -> None:
     """Clear all filter blocks (returns Records to default state)."""
     await _dismiss_popups(page)
+    await _kill_overlays(page)
     clear_link = page.locator('text="Clear Filters"')
     if await clear_link.count() > 0:
-        await clear_link.first.click()
+        try:
+            await clear_link.first.click(force=True, timeout=5000)
+        except Exception:
+            try:
+                await clear_link.first.evaluate("el => el.click()")
+            except Exception:
+                pass
         await page.wait_for_timeout(2000)
 
 
