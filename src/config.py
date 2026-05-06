@@ -61,6 +61,15 @@ DROPBOX_APP_SECRET = os.getenv("DROPBOX_APP_SECRET", "")
 DROPBOX_REFRESH_TOKEN = os.getenv("DROPBOX_REFRESH_TOKEN", "")
 PVA_EMAIL = os.getenv("PVA_EMAIL", "")                        # Jefferson County KY PVA login (jeffersonpva.ky.gov)
 PVA_PASSWORD = os.getenv("PVA_PASSWORD", "")
+GOOGLE_SERVICE_ACCOUNT_KEY = os.getenv("GOOGLE_SERVICE_ACCOUNT_KEY", "")  # base64-encoded service account JSON
+
+# ── Disposition Flyer ────────────────────────────────────────────────
+COMPANY_NAME = os.getenv("COMPANY_NAME", "Rednour Real Estate Services")
+COMPANY_PHONE = os.getenv("COMPANY_PHONE", "5022241882")
+REDNOUR_DRIVE_PARENT_FOLDER_ID = os.getenv(
+    "REDNOUR_DRIVE_PARENT_FOLDER_ID", ""
+)  # Drive folder containing per-property subfolders (each with a Photos/ subfolder)
+COMPANY_LOGO_PATH = PROJECT_ROOT / "assets" / "rednour_logo.png"
 
 # ── LLM Backend ──────────────────────────────────────────────────────
 LLM_BACKEND = os.getenv("LLM_BACKEND", "anthropic")           # "anthropic", "ollama", or "openrouter"

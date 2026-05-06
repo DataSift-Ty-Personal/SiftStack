@@ -348,6 +348,90 @@ python src/extract_market_finder.py --state "Tennessee" --county "Knox,Blount" -
 # Output: JSON file in output/market_finder_{state}_{county}_{timestamp}.json
 ```
 
+## Disposition Flyer (build 1.0.30+)
+
+1-page buyer-facing PDF for wholesale dispositions. Pulls property data from Jefferson PVA, downloads first iPhone photo from Google Drive, builds a branded flyer with hero photo + stats + asking/ARV + additional info + photos link, uploads PDF back to the property folder. Source: `src/disposition_flyer.py`.
+
+### CLI
+
+```bash
+python src/main.py disposition \
+    --address "1521 Sale Ave" --city Louisville --state KY --zip-code 40215 \
+    --asking 199999 --arv 250000 \
+    --bedrooms 2 \
+    --additional-info 'Vacant; Sold AS-IS; Cash close 14 days; Bring offers'
+
+# Asking/ARV accept text (wholesalers often use phrases):
+#   --asking 'Taking All Offers'   (auto-shrinks to fit)
+#   --arv '$360,000+'              (passes through verbatim)
+#   --asking 199999                (formatted as $199,999)
+
+# Override PVA values or supply when PVA returns nothing (Oldham County, etc.):
+#   --bathrooms 2.5 --sqft 2391 --year-built 1984 --acreage 0.25
+
+# Skip Drive upload (preview locally):
+#   --no-upload
+
+# Skip interactive prompts (fail if PVA misses a field):
+#   --non-interactive
+```
+
+### Drive folder layout
+
+```
+<REDNOUR_DRIVE_PARENT_FOLDER_ID>/        # Shared Drive 'Properties'
+└── 1521 Sale Ave/                       # match by address (case-insensitive)
+    ├── Photos/                          # optional — falls back to flat layout
+    │   ├── 00_front.jpg
+    │   └── 01_kitchen.jpg
+    ├── IMG_3569.HEIC                    # OR photos directly here (iPhone uploads)
+    ├── IMG_3570.HEIC
+    └── 1521_Sale_Ave_Flyer.pdf          # generated PDF lands here, replaces prior
+```
+
+Hero photo = first image alphabetically. To pick a specific shot, rename it to sort first (e.g., `00_hero.HEIC`). Re-runs auto-trash any prior PDF with the same filename so the buyer link always shows one definitive flyer.
+
+### Locked layout (do not change without explicit permission)
+
+The visual format was iterated and approved as "the standard". Future tweaks should be intentional, not drift:
+
+- **Header band**: logo (left, 110×55) · "Rednour Real Estate Services" + "Investment Opportunity — Off-Market" tagline (center) · "CALL DIRECT" + phone in red (right) · 2pt red `LINEBELOW`
+- **Hero photo**: 2.9" tall, full width, proportional fit (single hero — no second photo)
+- **Address line**: 18pt bold, centered, format `"1521 SALE AVE · LOUISVILLE, KY 40215"`
+- **Stats strip**: 4 light-bg boxes — Beds | Baths | Sqft (with `BUILT YYYY` + `+NNN BSMT` sub-label) | Acreage
+- **Money row**: ASKING PRICE | ARV (label is exactly "ARV", no parenthetical) — both red boxes pinned to identical row heights `[14, 38]` so different fonts (auto-shrink for long strings) don't make one taller than the other
+- **Info row**: Additional Info card (red header strip + bullets, light body) | dark "VIEW ALL PHOTOS →" button — both 1.5" tall
+- **CTA footer**: red bar, exact text `"CALL (PHONE) TO LOCK UP THIS DEAL TODAY"`, company name as sub
+- **Page constraint**: must fit on 1 page (Letter, 0.4" margins). If you add content, shrink something else.
+
+### Required env vars
+
+- `PVA_EMAIL` / `PVA_PASSWORD` — Jefferson County KY PVA login (1 concurrent session, off-hours preferred)
+- `GOOGLE_SERVICE_ACCOUNT_KEY` — base64-encoded JSON. Service account email must be granted **Content Manager** on the Shared Drive (or parent folder). Editor maps to Contributor on Shared Drives, which can upload but cannot delete — needed for the trash-prior-flyer step in `upload_pdf` to work. Without Content Manager you'll see a one-line warning per re-run and accumulate duplicates.
+- `REDNOUR_DRIVE_PARENT_FOLDER_ID` — Drive folder ID containing the per-property subfolders. Lives in a Shared Drive (uses `supportsAllDrives=True` everywhere)
+- `COMPANY_NAME` (default: `Rednour Real Estate Services`)
+- `COMPANY_PHONE` (default: `5022241882`, formatted on render as `(502) 224-1882`)
+
+### Logo
+
+Drop a PNG at `assets/rednour_logo.png` (110pt × 55pt, transparent background ideal). Falls back to text "REDNOUR" in red if the file is missing.
+
+### HEIC support
+
+iPhone photos upload as `image/heif`. `pillow-heif` is registered at module import to decode HEIC; `_normalize_image` re-encodes to JPEG for reportlab and bakes in EXIF orientation so portrait shots aren't sideways.
+
+### Shared Drive gotcha
+
+The Drive API silently returns 404 for Shared Drive content unless `supportsAllDrives=True` + `includeItemsFromAllDrives=True` are set on every call. All disposition flyer code paths set both via `_SHARED_DRIVE_KW`. `drive_uploader.upload_file()` also passes `supportsAllDrives=True` on `files().create()`.
+
+### PVA data extraction
+
+`kentucky_pva_lookup.get_detail()` returns a flat dict from both `<dl><dt><dd>` pairs AND the area `<table>` (Main Unit / Basement / Attic / Garage rows). Sqft headline = Main Unit Finished (falls back to Gross if Finished is dashed). Basement Finished shows as a `+NNN BSMT` sub-label. Bathrooms = Full + 0.5×Half. PVA does NOT publish bedroom count — always prompted or supplied via `--bedrooms`.
+
+### Counties outside Jefferson
+
+PVA lookup will return zero rows for non-Jefferson properties (e.g., Oldham County / Crestwood). Tool degrades gracefully: prompts interactively for missing stats, or accepts them via CLI flags in non-interactive mode.
+
 ## REI Skill Library (13 Skills)
 
 Distribution-ready Claude Co-Work skill files at `Skills for REI/improved/`. Each `.skill` is a ZIP containing `SKILL.md` + `references/` folder. Plugins (`.plugin`) also include `commands/` and `.claude-plugin/plugin.json`.

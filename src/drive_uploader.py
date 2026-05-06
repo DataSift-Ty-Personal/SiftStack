@@ -68,6 +68,7 @@ def upload_file(
             body=file_metadata,
             media_body=media,
             fields="id, webViewLink",
+            supportsAllDrives=True,
         ).execute()
 
         link = file.get("webViewLink", "")

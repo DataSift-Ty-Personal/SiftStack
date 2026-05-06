@@ -1056,7 +1056,7 @@ def cli_main() -> None:
             # New analysis & workflow modes
             "comp", "rehab", "analyze-deal", "market-analysis", "buyer-prospect",
             "deep-prospect", "lead-manage", "setup-sequences", "niche-sequential",
-            "playbook",
+            "playbook", "disposition",
         ],
         help=(
             "daily/historical = scrape notices; pdf-import/photo-import = import from files; "
@@ -1066,7 +1066,8 @@ def cli_main() -> None:
             "analyze-deal = full deal analysis; market-analysis = zip code scoring; "
             "buyer-prospect = cash buyer lists; deep-prospect = 4-level research; "
             "lead-manage = 4 Pillars qualification; setup-sequences = CRM automation; "
-            "niche-sequential = marketing cycle; playbook = SOP generator"
+            "niche-sequential = marketing cycle; playbook = SOP generator; "
+            "disposition = 1-page wholesale flyer (PVA + Drive photos)"
         ),
     )
     parser.add_argument(
@@ -1332,7 +1333,8 @@ def cli_main() -> None:
     parser.add_argument(
         "--no-upload",
         action="store_true",
-        help="Skip uploading phone tags back to DataSift (phone-validate mode)",
+        help="Skip upload step — phone-validate: don't push tags back to DataSift; "
+             "disposition: build PDF locally without uploading to Drive",
     )
     parser.add_argument(
         "--custom-tiers",
@@ -1499,6 +1501,21 @@ def cli_main() -> None:
                         help="Target market (playbook mode)")
     parser.add_argument("--team-size", type=int, default=1,
                         help="Team size 1/2/5 (playbook mode)")
+
+    # Disposition flyer
+    parser.add_argument("--asking", type=str, default="",
+                        help="Asking price (number or text like 'Make Offer'; disposition mode)")
+    parser.add_argument("--arv", type=str, default="",
+                        help="ARV (number or text like '$360,000+'; disposition mode)")
+    parser.add_argument("--year-built", type=str, default="",
+                        help="Year built (disposition mode — overrides PVA value)")
+    parser.add_argument("--acreage", type=float, default=0.0,
+                        help="Acreage (disposition mode — overrides PVA value)")
+    parser.add_argument("--additional-info", type=str, default="",
+                        help="Bullet items for the Additional Info card; "
+                             "separate with ';' (e.g. 'Vacant; Cash close; Sold AS-IS')")
+    parser.add_argument("--non-interactive", action="store_true",
+                        help="Skip interactive prompts (disposition mode — fail if PVA misses fields)")
 
     args = parser.parse_args()
 
@@ -1733,6 +1750,36 @@ def cli_main() -> None:
         )
         print(f"Playbook: {result['playbook_path']}")
         print(f"Blueprint: {result['blueprint'].title()} | Market: {result['market'].title()} | Team: {result['team_size']}")
+        return
+
+    if args.mode == "disposition":
+        if not args.address:
+            print("ERROR: --address is required for disposition mode")
+            return
+        if not args.asking or not args.arv:
+            print("ERROR: --asking and --arv are required for disposition mode")
+            return
+        from disposition_flyer import run_disposition_flyer
+        pdf_path = run_disposition_flyer(
+            address=args.address,
+            city=args.city or "Louisville",
+            state=args.state or "KY",
+            zip_code=args.zip_code or "",
+            asking_price=args.asking,
+            arv=args.arv,
+            bedrooms=args.bedrooms or 0,
+            bathrooms=args.bathrooms or 0.0,
+            sqft=args.sqft or 0,
+            year_built=args.year_built or "",
+            acreage=args.acreage or 0.0,
+            additional_info=args.additional_info or "",
+            interactive=not args.non_interactive,
+            skip_upload=args.no_upload,
+        )
+        if pdf_path:
+            print(f"\nFlyer ready: {pdf_path}")
+        else:
+            print("\nFlyer generation failed — check errors above.")
         return
 
     # Phone validation mode — separate pipeline

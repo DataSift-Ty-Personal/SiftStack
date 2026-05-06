@@ -355,7 +355,9 @@ def search_by_parcel(session: requests.Session, parcel_id: str) -> list[PvaRow]:
     return _parse_listing_page(html)
 
 
-def search_by_address(session: requests.Session, address: str) -> list[PvaRow]:
+def search_by_address(
+    session: requests.Session, address: str, max_pages: int = _MAX_PAGES_PER_SEARCH,
+) -> list[PvaRow]:
     """Run a street-name search (PVA's StreetSearch endpoint).
 
     PVA's address search **does not accept house numbers** in the query —
@@ -364,6 +366,11 @@ def search_by_address(session: requests.Session, address: str) -> list[PvaRow]:
     house+street address in the row. Strategy: strip the house number
     before querying, then the caller filters returned rows by matching
     the full address.
+
+    Long streets (e.g. Sale Ave has 205 properties) span multiple result
+    pages, so this paginates up to ``max_pages``. Default cap mirrors
+    ``search_by_owner`` to bound the polite-delay budget; raise it for
+    flyer/lookup tools that need to find a specific house number.
 
     Suffix abbreviation matters too: PVA stores suffixes in their
     abbreviated form (LN/DR/AVE/RD), so "CANNONS LANE" returns the same
@@ -376,27 +383,90 @@ def search_by_address(session: requests.Session, address: str) -> list[PvaRow]:
     street_only = re.sub(r"^\s*\d+\s+", "", address.strip())
     if not street_only:
         return []
-    params = {
-        "psfldAddress": street_only,
-        "propertySearchFormButton": "Search",
-        "searchType": "StreetSearch",
-    }
-    _polite_delay()
-    html = _get(session, PVA_LISTINGS_URL, params=params)
-    if not html:
-        return []
-    return _parse_listing_page(html)
+
+    all_rows: list[PvaRow] = []
+    seen_lrsns: set[str] = set()
+    for page in range(1, max_pages + 1):
+        params = {
+            "psfldAddress": street_only,
+            "propertySearchFormButton": "Search",
+            "searchType": "StreetSearch",
+        }
+        if page > 1:
+            params["searchPage"] = str(page)
+        _polite_delay()
+        html = _get(session, PVA_LISTINGS_URL, params=params)
+        if not html:
+            break
+        page_rows = _parse_listing_page(html)
+        new_rows = [r for r in page_rows if r.lrsn not in seen_lrsns]
+        if not new_rows:
+            break
+        for r in new_rows:
+            seen_lrsns.add(r.lrsn)
+        all_rows.extend(new_rows)
+        if len(page_rows) < 20:
+            break
+
+    return all_rows
 
 
 # ── Detail page fetch ─────────────────────────────────────────────────
 
 
+def _parse_area_table(soup: BeautifulSoup) -> dict[str, str]:
+    """Extract the property's area table (Main Unit / Basement / Attic / Garage).
+
+    Jefferson PVA renders these in an HTML <table> with headers
+    "Area Type | Gross Area | Finished Area" — separate from the <dl>
+    pairs that everything else uses. Returns flat keys suitable for
+    merging into the get_detail() dict, e.g.:
+
+      'Area:Main Unit:Finished' = '616'
+      'Area:Main Unit:Gross'    = '-'
+      'Area:Basement:Finished'  = '0'
+      'Area:Basement:Gross'     = '616'
+    """
+    out: dict[str, str] = {}
+    for table in soup.find_all("table"):
+        thead = table.find("thead")
+        if not thead:
+            continue
+        headers = [th.get_text(" ", strip=True).lower() for th in thead.find_all("th")]
+        if not (any("area type" in h for h in headers)
+                and any("gross" in h for h in headers)
+                and any("finished" in h for h in headers)):
+            continue
+        # Header indices include the row-label column (col 0). The <td> cells
+        # in body rows skip that column (the row label is a <th>), so subtract 1.
+        gross_col = next(
+            (i - 1 for i, h in enumerate(headers) if "gross" in h), -1
+        )
+        fin_col = next(
+            (i - 1 for i, h in enumerate(headers) if "finished" in h), -1
+        )
+        for tr in table.select("tbody tr"):
+            label_th = tr.find("th")
+            if not label_th:
+                continue
+            label = label_th.get_text(" ", strip=True)
+            tds = tr.find_all("td")
+            if 0 <= gross_col < len(tds):
+                out[f"Area:{label}:Gross"] = tds[gross_col].get_text(" ", strip=True)
+            if 0 <= fin_col < len(tds):
+                out[f"Area:{label}:Finished"] = tds[fin_col].get_text(" ", strip=True)
+        break
+    return out
+
+
 def get_detail(session: requests.Session, lrsn: str) -> dict[str, str]:
     """Fetch a property detail page and return all labeled fields.
 
-    Labels come from <dl><dt>..</dt><dd>..</dd></dl> pairs. Returns a dict
-    keyed by the label text; duplicate labels (e.g. multiple Deed Book/Page
-    entries in the sales history) are suffixed with an index.
+    Labels come from <dl><dt>..</dt><dd>..</dd></dl> pairs. Square footage
+    lives in a separate <table> (Main Unit / Basement / Attic / Garage rows)
+    and gets merged in with ``Area:<row>:Gross`` / ``Area:<row>:Finished``
+    keys. Duplicate labels (e.g. multiple Deed Book/Page entries in the
+    sales history) are suffixed with an index.
     """
     _polite_delay()
     html = _get(session, PVA_DETAIL_URL, params={"lrsn": lrsn})
@@ -418,6 +488,7 @@ def get_detail(session: requests.Session, lrsn: str) -> dict[str, str]:
                 label = f"{label} [{seen_labels[label]}]"
             fields[label] = value
 
+    fields.update(_parse_area_table(soup))
     return fields
 
 
