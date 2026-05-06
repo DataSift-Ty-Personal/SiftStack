@@ -289,9 +289,11 @@ async def upload_csv(
             # New list mode: type a new list name
             list_input = page.locator('input[placeholder*="Enter new list name"], input[placeholder*="list name"]')
             if await list_input.count() > 0:
+                # Single stable list name — date moves to the per-record tag
+                # set (SiftStack YYYY-MM-DD) so we don't accumulate one DataSift
+                # list per Wednesday run.
                 if list_name is None:
-                    from datetime import datetime as _dt
-                    list_name = f"SiftStack {_dt.now().strftime('%Y-%m-%d')}"
+                    list_name = "SiftStack"
                 await list_input.first.fill(list_name)
                 logger.info("Set list name: %s", list_name)
                 await page.wait_for_timeout(500)
@@ -1103,9 +1105,9 @@ async def upload_to_datasift(
             result = await upload_csv(page, csv_path)
 
             if result.get("success"):
-                # Derive list name (same format as upload_csv generates)
-                from datetime import datetime as _dt
-                list_name = f"SiftStack {_dt.now().strftime('%Y-%m-%d')}"
+                # Match the stable list name set by upload_csv — the date is
+                # carried on each record as a tag, not in the list name.
+                list_name = "SiftStack"
 
                 # Enrich property data via SiftMap
                 if enrich:

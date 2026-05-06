@@ -319,8 +319,11 @@ def _build_tags(notice: NoticeData) -> str:
     """
     tags = ["Courthouse Data", "siftstack_auto"]
 
-    # Batch identifier — lets you filter all records from a single pipeline run.
-    tags.append(f"run_{datetime.now().strftime('%Y-%m-%d')}")
+    # Batch identifier — every Wednesday's records get a "SiftStack YYYY-MM-DD"
+    # tag so a single run can be isolated in DataSift filters. This replaced
+    # the old "SiftStack YYYY-MM-DD" *list name* — list is now stable as
+    # "SiftStack" and the date lives here as a tag instead.
+    tags.append(f"SiftStack {datetime.now().strftime('%Y-%m-%d')}")
 
     # Week-based batch tag (e.g. "NOD Week 16 2026")
     if notice.notice_type:
@@ -1077,7 +1080,8 @@ def write_datasift_split_csvs(
     results.append({
         "path": dm_path,
         "label": "DMs",
-        "list_name": f"{list_name} - DMs" if list_name else f"SiftStack {date_str} - DMs",
+        # List name stays stable across runs — date is on each record as a tag.
+        "list_name": f"{list_name} - DMs" if list_name else "SiftStack - DMs",
     })
 
     # CSV 2: Heirs — only deceased with heir data
@@ -1101,7 +1105,8 @@ def write_datasift_split_csvs(
         results.append({
             "path": heir_path,
             "label": "Heirs",
-            "list_name": f"{list_name} - Heirs" if list_name else f"SiftStack {date_str} - Heirs",
+            # Stable list name — date carried in the per-record tag set instead.
+            "list_name": f"{list_name} - Heirs" if list_name else "SiftStack - Heirs",
         })
     else:
         logger.info("No deceased records with heir data — skipping Heirs CSV")
