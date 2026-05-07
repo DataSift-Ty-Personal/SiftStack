@@ -352,6 +352,18 @@ async def nj_weekly_all():
         elif not upload_ready:
             lines.append("DataSift: nothing uploaded (all records paused)")
 
+        # Per-run API cost estimate — counts hits in `enriched` directly
+        # (no CSV re-read needed), then formats one line for Slack.
+        try:
+            from cost_estimator import tally_notices, slack_summary_line
+            cost_tally = tally_notices(enriched)
+            cost_line = slack_summary_line(cost_tally)
+            if cost_line:
+                lines.append("")
+                lines.append(cost_line)
+        except Exception as e:
+            logger.warning("Cost estimate failed: %s", e)
+
         summary_text = "\n".join(lines)
 
         # Post summary and (if bot token set) grab thread_ts for file replies.
