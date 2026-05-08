@@ -40,6 +40,11 @@ from models import NoticeData
 logger = logging.getLogger(__name__)
 
 KV_STORE_KEY = "uploaded_addresses"
+# CRITICAL: must use a NAMED KV store so the set persists across Apify runs.
+# Actor.open_key_value_store() (default, no name) opens the DEFAULT store
+# which is unique per-run — the dedup set was being wiped every morning.
+# A named store is shared across all runs of the Actor account.
+APIFY_KV_STORE_NAME = "siftstack-dedup"
 LOCAL_FALLBACK_PATH = Path("output") / "uploaded_addresses.json"
 # Bootstrap seed: ships with the repo so day-1 Apify runs (where the KV store
 # is empty) still have a baseline dedup set. After the first successful run,
@@ -91,7 +96,8 @@ def _load_seed() -> set[str]:
 async def _load_from_apify() -> set[str]:
     try:
         from apify import Actor
-        kvs = await Actor.open_key_value_store()
+        # NAMED store — persists across runs (the per-run default store wipes daily)
+        kvs = await Actor.open_key_value_store(name=APIFY_KV_STORE_NAME)
         stored = await kvs.get_value(KV_STORE_KEY)
         if isinstance(stored, list) and stored:
             return set(stored)
@@ -111,9 +117,11 @@ async def _load_from_apify() -> set[str]:
 async def _save_to_apify(addresses: set[str]) -> None:
     try:
         from apify import Actor
-        kvs = await Actor.open_key_value_store()
+        # Same NAMED store as load — must match for cross-run persistence
+        kvs = await Actor.open_key_value_store(name=APIFY_KV_STORE_NAME)
         await kvs.set_value(KV_STORE_KEY, sorted(addresses))
-        logger.info("Apify KV: persisted %d addresses to %s", len(addresses), KV_STORE_KEY)
+        logger.info("Apify KV (named=%s): persisted %d addresses to %s",
+                    APIFY_KV_STORE_NAME, len(addresses), KV_STORE_KEY)
     except Exception as e:
         logger.warning("Apify KV save failed for %s: %s", KV_STORE_KEY, e)
 
