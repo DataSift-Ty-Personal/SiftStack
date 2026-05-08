@@ -351,6 +351,21 @@ def batch_skip_trace(
             else:
                 continue
 
+            # DIAGNOSTIC: log first record's shape so we can see field names
+            # if matching fails. Tracerfy may have changed their response keys.
+            if records and isinstance(records[0], dict):
+                sample_keys = sorted(records[0].keys())
+                logger.info(
+                    "Tracerfy response sample (first record keys): %s",
+                    ", ".join(sample_keys),
+                )
+                # Log a redacted sample value for each key
+                redacted = {
+                    k: ("<set>" if records[0].get(k) else "<empty>")
+                    for k in sample_keys
+                }
+                logger.info("Tracerfy response sample (values): %s", redacted)
+
             # Match results back to notices
             _match_results(records, lookup_map, stats)
             stats["cost"] = stats["submitted"] * 0.02
