@@ -25,12 +25,16 @@ Phone slot rules:
     to fit and append `Deep Prospect Phones Truncated` to the row's Tags.
 
 Phone Tag format (deterministic order):
-    {SubjectRole},{stars},{Dial Rank},{Source Flag}
+    {SubjectRole},{stars},{Source Flag}
 
 Examples:
-    Subject,*,Dial First,Verified 2+ Sites
-    Heir,**,Dial Second,Found via TPS
-    Family Pivot,***,Dial Third,Found via CBC
+    Subject,*,Verified 2+ Sites
+    Heir,**,Found via TPS
+    Family Pivot,***,Found via CBC
+
+Dial First/Second/Third labels are intentionally NOT emitted here —
+those come from Trestle phone-scoring downstream of the CLI, which has
+the line-type + carrier reputation data needed to rank dial priority.
 """
 
 from __future__ import annotations
@@ -66,25 +70,15 @@ NOTES_COL = "Notes"
 # ── Tag derivation ────────────────────────────────────────────────────
 
 
-_DIAL_RANK_LABEL = {1: "Dial First", 2: "Dial Second", 3: "Dial Third",
-                    4: "Dial Fourth", 5: "Dial Fifth", 6: "Dial Sixth"}
-
-
-def _dial_rank_label(rank: int) -> str:
-    return _DIAL_RANK_LABEL.get(rank, f"Dial {rank}")
-
-
 def _stars_for_subject_role(subject_role: str) -> str:
     """Map subject role → person-identifier asterisk count.
 
-    These asterisks identify WHICH PERSON a phone belongs to, NOT the
-    dial rank. The Dial First/Second/Third label on the same tag cell
-    carries the dial-order signal.
+    These asterisks identify WHICH PERSON a phone belongs to. Dial-rank
+    labeling is Trestle's job — not emitted by this CLI.
 
-    Sample data confirmed: Sally Baksh's phones all carry `*` regardless
-    of which dial position they're in (Dial First through Dial Sixth) —
-    because all of them are her, the Subject. Family-member phones get
-    `**` to distinguish them as a different person.
+    Sample data confirmed: Sally Baksh's phones all carry `*` because
+    all of them are her, the Subject. Family-member phones get `**` to
+    distinguish them as a different person.
 
     Slice 1 mapping (single DM only):
         SUBJECT       → "*"   (DM is the original record owner, alive)
@@ -117,27 +111,24 @@ def _subject_role_label(subject_role: str) -> str:
     return subject_role.replace("_", " ").title()
 
 
-def _confidence_to_rank(confidence: str) -> int:
-    """HIGH=1, MEDIUM=2, LOW=3 — drives Dial First/Second/Third."""
-    return {"HIGH": 1, "MEDIUM": 2, "LOW": 3}.get(confidence, 3)
-
-
-def derive_phone_tag_cell(
-    phone: Phone, *, subject_role: str, dial_rank: int,
-) -> str:
+def derive_phone_tag_cell(phone: Phone, *, subject_role: str) -> str:
     """Build the Phone Tags N cell content.
 
-    Stable order: role label, person-stars, dial label, source flag.
+    Stable order: {role label}, {person-stars}, {source flag}.
 
-    The person-stars come from `subject_role` (which person owns this
-    phone), NOT from `dial_rank` (which dial position this phone holds).
-    The People & Star Markers block at the top of the Notes field
-    resolves the stars back to named people.
+    Dial First/Second/Third labels are NOT emitted here — those come
+    from Trestle phone-scoring downstream of this CLI, which has the
+    line-type + carrier reputation data needed to rank dial priority.
+    Phase skip-trace produces phones; the CLI surfaces them as a
+    person-keyed set; Trestle adds the dial ordering later.
+
+    Person-stars derive from `subject_role` (which person owns this
+    phone). The People & Star Markers block at the top of the Notes
+    field resolves the stars back to named people.
     """
     parts = [
         _subject_role_label(subject_role),
         _stars_for_subject_role(subject_role),
-        _dial_rank_label(dial_rank),
     ]
     src = _source_flag(phone.sources)
     if src:
@@ -377,10 +368,10 @@ def overlay_pack_onto_row(row: dict, pack: ResearchPack) -> tuple[int, bool]:
     subject_role = dm.subject_role if dm else "SUBJECT"
 
     # Walk phones, write into next-empty slot, never overwrite. Dial
-    # rank derives from sorted-position so equal-confidence phones still
-    # get distinct Dial First/Second/Third labels — operator needs a
-    # call order, not a tied score.
-    for position, p in enumerate(phones, start=1):
+    # rank labels are intentionally NOT emitted here — Trestle adds
+    # those downstream when it scores the phones for line-type and
+    # carrier reputation.
+    for p in phones:
         slot = _next_empty_phone_slot(row)
         if slot is None:
             truncated = True
@@ -389,12 +380,11 @@ def overlay_pack_onto_row(row: dict, pack: ResearchPack) -> tuple[int, bool]:
                 p.csv_value, p.confidence,
             )
             break
-        rank = position
         row[f"Phone {slot}"] = p.csv_value
         row[f"Phone Type {slot}"] = p.type
         row[f"Phone Status {slot}"] = "UNKNOWN"
         row[f"Phone Tags {slot}"] = derive_phone_tag_cell(
-            p, subject_role=subject_role, dial_rank=rank,
+            p, subject_role=subject_role,
         )
         # Phone Is Connected stays blank (untested).
         row[f"Phone Is Connected {slot}"] = ""
