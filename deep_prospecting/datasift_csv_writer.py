@@ -237,11 +237,12 @@ def _outcome_tags_for(pack: ResearchPack, phones_added: int, *, truncated: bool)
 
     if pack.heir_map and any(h.status == "LIVING" for h in pack.heir_map.heirs):
         tags.append("Verified Living Heir Found")
-    if pack.decision_maker and pack.decision_maker.subject_role == "EXECUTOR":
+    primary = pack.primary_dm
+    if primary and primary.subject_role == "EXECUTOR":
         tags.append("Executor Confirmed")
     # LLC marker: the input was an LLC notice and we resolved a DM.
     if (pack.input.notice_type and "llc" in (pack.input.owner or "").lower()
-            and pack.decision_maker is not None):
+            and primary is not None):
         tags.append("LLC Owner Resolved")
 
     return tags
@@ -390,7 +391,7 @@ def overlay_pack_onto_row(row: dict, pack: ResearchPack) -> tuple[int, bool]:
             key=lambda p: confidence_rank.get(p.confidence, 3),
         )
 
-    dm = pack.decision_maker
+    dm = pack.primary_dm
     subject_role = dm.subject_role if dm else "SUBJECT"
 
     # Existing phones in the row — skip writing a duplicate number into

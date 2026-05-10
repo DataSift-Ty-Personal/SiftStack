@@ -209,15 +209,15 @@ async def run_batch(input_csv: Path, output_root: Path | None = None) -> dict:
                     else "-"
                 ),
                 "heirs": (len(pack.heir_map.heirs) if pack.heir_map else 0),
-                "dm_name": pack.decision_maker.name if pack.decision_maker else "-",
+                "dm_name": pack.primary_dm.name if pack.primary_dm else "-",
                 "dm_role": (
-                    pack.decision_maker.subject_role if pack.decision_maker else "-"
+                    pack.primary_dm.subject_role if pack.primary_dm else "-"
                 ),
                 "dm_status": (
-                    pack.decision_maker.status if pack.decision_maker else "-"
+                    pack.primary_dm.status if pack.primary_dm else "-"
                 ),
                 "dm_conf": (
-                    pack.decision_maker.confidence if pack.decision_maker else "-"
+                    pack.primary_dm.confidence if pack.primary_dm else "-"
                 ),
                 "phones_found": (
                     len(pack.skip_trace.phones) if pack.skip_trace else 0

@@ -184,6 +184,27 @@ class Phone(BaseModel):
     sources: list[SourceID]
     confidence: Confidence
 
+    # ── Slice 2 fields ─────────────────────────────────────────────────
+    # person_name: which heir / DM this phone belongs to. Phase Skiptrace
+    # populates this from the Tracerfy / CBC call context (the target
+    # we asked about). The writer uses it to derive per-person star
+    # markers — phones for the same person share a star count even when
+    # sourced from different sites.
+    person_name: str | None = None
+
+    # activity_score: 0-100, populated by Phase Trestle (Phone Intel).
+    # Higher = more recent activity on the line. Drives the optional
+    # dial-rank label in the Phone Tags cell when Trestle scoring runs.
+    activity_score: int | None = None
+
+    # Free-cost compliance signals from Tracerfy. None when the phone
+    # came from a source that doesn't expose the flag (e.g. CBC, Trestle
+    # Reverse Phone). Phase Trestle does NOT backfill these — they stay
+    # source-of-truth as whatever the original skip-trace returned.
+    dnc: bool | None = None
+    carrier: str | None = None
+    is_litigator: bool | None = None  # person-level flag; same value on all phones for the same person
+
     @field_validator("number")
     @classmethod
     def _normalize_e164(cls, v: str) -> str:
@@ -236,13 +257,20 @@ class Associate(BaseModel):
 
 
 class SkipTraceResult(BaseModel):
+    # Slice 2: when multiple heirs/DMs get skip-traced, this holds the
+    # primary DM (Phase 3's #1 pick). Phones/emails for ALL traced
+    # persons live in the flat lists below — each Phone carries its
+    # owning person_name. Backups live on ResearchPack.decision_makers
+    # so consumers that only want phone data don't need to walk the DM
+    # list.
     decision_maker: DecisionMaker
     phones: list[Phone] = Field(default_factory=list)
     emails: list[Email] = Field(default_factory=list)
     associates: list[Associate] = Field(default_factory=list)
     # One entry per skip-trace site we attempted (HIT / EMPTY / BLOCKED / ERROR).
-    # Lets the report show "TPS hit, FPS hit, CBC blocked" without callers
-    # needing to inspect skip trace results to infer what happened.
+    # Slice 2: site_state entries are recorded PER-target, so a Catherine-
+    # case run with 3 traced heirs will have ~3 cbc + 3 tracerfy entries.
+    # The render dedupes for display.
     site_state: list[SourceState] = Field(default_factory=list)
 
 
@@ -282,7 +310,15 @@ class ResearchPack(BaseModel):
     source_checklist: list[SourceCheck] = Field(default_factory=list)
     lead: Lead
     heir_map: HeirMap | None = None
-    decision_maker: DecisionMaker | None = None
+
+    # Slice 2: Phase 3 returns a *list* of DMs — primary plus up to N
+    # backups drawn from the verified-living heirs. L1 cases produce a
+    # single-element list. Order is Phase 3's priority ranking: the
+    # primary DM is decision_makers[0]. SkipTraceResult.decision_maker
+    # mirrors decision_makers[0] for backward compat with the markdown
+    # renderer and the CSV writer's `Subject vs Heir` star derivation.
+    decision_makers: list[DecisionMaker] = Field(default_factory=list)
+
     skip_trace: SkipTraceResult | None = None
     cost: CostBreakdown = Field(default_factory=CostBreakdown)
     timestamp_utc: datetime
@@ -294,3 +330,14 @@ class ResearchPack(BaseModel):
     aborted: bool = False
     abort_reason: Literal["cost_ceiling", "time_budget", "hard_failure"] | None = None
     aborted_at_phase: str | None = None  # "phase_1_title", "phase_2_genealogy", etc.
+
+    @property
+    def primary_dm(self) -> DecisionMaker | None:
+        """Convenience accessor for decision_makers[0].
+
+        Lets the renderer and the CSV writer migrate to multi-DM
+        consumption incrementally — Slice 1 code that did
+        `pack.decision_maker` now does `pack.primary_dm` and keeps
+        working until the consumer is updated to walk the full list.
+        """
+        return self.decision_makers[0] if self.decision_makers else None

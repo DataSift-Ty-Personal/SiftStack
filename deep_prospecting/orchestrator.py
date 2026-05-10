@@ -221,6 +221,12 @@ async def run(
 
     duration = (time.monotonic() - started_mono)
 
+    # Slice 2: ResearchPack.decision_maker (singular) is gone — Phase 3
+    # still returns one DM in Slice 1 / 2.5 transitional mode, so wrap
+    # it in a one-element list. When Phase 3 expands to return a list
+    # (step 6), this becomes `decision_makers=phase_3_result`.
+    pack_dms = [decision_maker] if decision_maker is not None else []
+
     pack = ResearchPack(
         input=prospect,
         level_selected=level,
@@ -228,7 +234,7 @@ async def run(
         source_checklist=all_checks,
         lead=lead,
         heir_map=heir_map,
-        decision_maker=decision_maker,
+        decision_makers=pack_dms,
         skip_trace=skip_trace,
         cost=cost,
         timestamp_utc=started_at,

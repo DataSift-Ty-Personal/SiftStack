@@ -206,7 +206,7 @@ def _section_7_heir_tree(pack: ResearchPack) -> str:
 
 
 def _section_8_dm(pack: ResearchPack) -> str:
-    dm = pack.decision_maker
+    dm = pack.primary_dm
     if dm is None:
         return "## 8) Decision-Maker Identified\n_(none — no verified living candidate)_\n"
     age = (
@@ -371,7 +371,7 @@ def render_people_block(pack: ResearchPack) -> str:
     """
     lines = ["People & Star Markers", "─" * 21]
 
-    dm = pack.decision_maker
+    dm = pack.primary_dm
     is_l3 = pack.level_selected == "L3" and pack.heir_map is not None
 
     # Subject — always rendered, even if no phones, even if deceased.
