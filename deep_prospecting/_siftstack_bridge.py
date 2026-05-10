@@ -27,6 +27,7 @@ What NOT to put here:
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -85,6 +86,77 @@ from obituary_enricher import (  # noqa: E402
     _parse_obituary_with_llm as obit_parse_with_llm,
 )
 import llm_client as _llm_client  # noqa: E402
+
+
+def sonnet_text(
+    prompt: str,
+    *,
+    system: str,
+    max_tokens: int = 400,
+    api_key: str | None = None,
+    model: str = "claude-sonnet-4-5",
+) -> str | None:
+    """Free-form Sonnet completion. Returns text or None on failure.
+
+    llm_client only exposes chat_json which forces JSON-mode output;
+    Phase 3 needs free-form prose for the DM reasoning paragraph, so we
+    call Anthropic directly. Used once per ResearchPack — cost ~$0.005.
+    """
+    try:
+        import anthropic
+    except Exception:
+        return None
+    key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
+    if not key:
+        return None
+    try:
+        client = anthropic.Anthropic(api_key=key)
+        resp = client.messages.create(
+            model=model,
+            max_tokens=max_tokens,
+            system=system,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        return resp.content[0].text.strip()
+    except Exception:
+        return None
+
+
+def firecrawl_fetch_full(url: str) -> str:
+    """Raw Firecrawl fetch that bypasses obituary_enricher's filters.
+
+    Two reasons we can't go through `_fetch_firecrawl`:
+      1. It applies `_filter_cbc_markdown` to any cyberbackgroundchecks.com
+         URL — which strips Phones, Related to, and Associated with
+         sections. Those are exactly what Phase skip-trace needs.
+      2. It truncates to MAX_OBITUARY_TEXT (6000 chars) — CBC detail
+         pages exceed that easily due to Google Maps tile blocks before
+         the data we care about.
+
+    This thin wrapper calls Firecrawl directly with the same auth + scrape
+    parameters, returning the raw markdown.
+    """
+    if not url:
+        return ""
+    import os
+    import requests
+    api_key = os.environ.get("FIRECRAWL_API_KEY", "")
+    if not api_key:
+        return ""
+    try:
+        resp = requests.post(
+            "https://api.firecrawl.dev/v1/scrape",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json={"url": url, "formats": ["markdown"], "waitFor": 5000},
+            timeout=45,
+        )
+        resp.raise_for_status()
+        return (resp.json().get("data") or {}).get("markdown", "") or ""
+    except Exception:
+        return ""
 
 
 def obit_parse_raw(

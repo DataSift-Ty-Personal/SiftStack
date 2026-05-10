@@ -149,7 +149,17 @@ def derive_phone_tag_cell(
 
 
 def _norm_addr(s: str) -> str:
-    return " ".join(s.upper().split()) if s else ""
+    """Uppercase + collapse whitespace + drop city/state/ZIP tail.
+
+    Pack inputs typically carry the full address ("8 Phyllis Pl, Milltown,
+    NJ 08850") while DataSift's `Property address` column holds just
+    the street ("8 Phyllis Pl"). Splitting at the first comma normalizes
+    both forms to "8 PHYLLIS PL" for matching.
+    """
+    if not s:
+        return ""
+    street = s.split(",", 1)[0]
+    return " ".join(street.upper().split())
 
 
 def find_row_index(rows: list[dict], pack: ResearchPack) -> int | None:
@@ -366,8 +376,11 @@ def overlay_pack_onto_row(row: dict, pack: ResearchPack) -> tuple[int, bool]:
     dm = pack.decision_maker
     subject_role = dm.subject_role if dm else "SUBJECT"
 
-    # Walk phones, write into next-empty slot, never overwrite.
-    for p in phones:
+    # Walk phones, write into next-empty slot, never overwrite. Dial
+    # rank derives from sorted-position so equal-confidence phones still
+    # get distinct Dial First/Second/Third labels — operator needs a
+    # call order, not a tied score.
+    for position, p in enumerate(phones, start=1):
         slot = _next_empty_phone_slot(row)
         if slot is None:
             truncated = True
@@ -376,7 +389,7 @@ def overlay_pack_onto_row(row: dict, pack: ResearchPack) -> tuple[int, bool]:
                 p.csv_value, p.confidence,
             )
             break
-        rank = _confidence_to_rank(p.confidence)
+        rank = position
         row[f"Phone {slot}"] = p.csv_value
         row[f"Phone Type {slot}"] = p.type
         row[f"Phone Status {slot}"] = "UNKNOWN"
