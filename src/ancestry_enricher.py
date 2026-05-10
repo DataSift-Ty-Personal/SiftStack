@@ -16,8 +16,10 @@ Account protection is #1 priority:
 import asyncio
 import json
 import logging
+import os
 import random
 import re
+import subprocess
 from datetime import date
 from pathlib import Path
 
@@ -25,13 +27,21 @@ import config as cfg
 
 logger = logging.getLogger(__name__)
 
-# Persistent browser profile directory
-PROFILE_DIR = Path(__file__).resolve().parent.parent / ".ancestry_profile"
+# Persistent browser profile directory.
+# In Modal the container is ephemeral — only `/tracking` (Volume) survives across
+# cron runs. Without persistence, Ancestry sees a fresh device every Wednesday
+# and is far more likely to issue 2FA/captcha. So when we detect Modal, route
+# the profile + page-load counter to the Volume.
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+_IN_MODAL = bool(os.environ.get("MODAL_TASK_ID"))
+_MODAL_STATE_DIR = Path("/tracking") if _IN_MODAL else None
+
+PROFILE_DIR = (_MODAL_STATE_DIR / ".ancestry_profile") if _IN_MODAL else (_REPO_ROOT / ".ancestry_profile")
+PAGE_LOAD_FILE = (_MODAL_STATE_DIR / ".ancestry_page_loads.json") if _IN_MODAL else (_REPO_ROOT / ".ancestry_page_loads.json")
+
 ANCESTRY_URL = "https://www.ancestry.com"
 SIGNIN_URL = "https://www.ancestry.com/account/signin"
 
-# Daily page load counter
-PAGE_LOAD_FILE = Path(__file__).resolve().parent.parent / ".ancestry_page_loads.json"
 DAILY_LIMIT = 100
 
 # ── Page load tracking ──────────────────────────────────────────────
@@ -114,28 +124,25 @@ def reset_circuit_breaker():
 async def _ensure_logged_in(page) -> bool:
     """Check existing session or auto-login.
 
-    Ancestry allows anonymous browsing (no redirect to signin), so we can't
-    just check the URL. Instead, check for 'Sign In' link in the nav bar
-    which indicates no active session.
+    Visit /account/orders — Ancestry forwards an authenticated user to
+    /order-history; an anonymous user is bounced to /account/signin. The
+    only reliable URL signal is whether we end up on a signin page.
+
+    (Prior version parsed the search page nav for a "Sign In" link, which
+    produced false negatives — Ancestry's search nav can render the same
+    selectors with or without auth — and triggered repeated re-auths that
+    got the Modal IP flagged with a Cloudflare challenge.)
     """
-    await page.goto(f"{ANCESTRY_URL}/search/", wait_until="domcontentloaded")
+    await page.goto(f"{ANCESTRY_URL}/account/orders", wait_until="domcontentloaded")
     _increment_page_loads()
     await _delay(1, 3)
 
     if await _check_blocked(page):
         return False
 
-    # Check for actual login state — not just URL
-    is_signed_in = await page.evaluate("""() => {
-        const text = document.body.textContent || '';
-        // "Sign In" in nav = NOT logged in; user menu/account link = logged in
-        const hasSignIn = !!document.querySelector('a[href*="signin"]');
-        const hasAccount = !!document.querySelector('a[href*="account/profile"], [class*="userName"]');
-        return hasAccount || !hasSignIn;
-    }""")
-
-    if is_signed_in:
-        logger.info("Ancestry session valid (authenticated)")
+    landed = page.url.lower()
+    if "signin" not in landed and "challenge" not in landed:
+        logger.info("Ancestry session valid (authenticated, on %s)", page.url)
         return True
 
     logger.info("Not logged in — auto-logging in...")
@@ -217,6 +224,36 @@ async def _auto_login(page) -> bool:
 # ── Browser lifecycle ───────────────────────────────────────────────
 
 
+_xvfb_proc = None
+
+
+def _ensure_xvfb() -> None:
+    """Start a virtual X display if no DISPLAY is set (Modal/headless servers).
+
+    Headed Chromium is intentional — Ancestry will flag and ban accounts
+    that connect via headless mode (the launcher's docstring at the top of
+    this file explains why). On Modal there is no physical display, so we
+    boot Xvfb and point DISPLAY at it. Idempotent — only starts once per
+    process.
+    """
+    global _xvfb_proc
+    if os.environ.get("DISPLAY"):
+        return
+    if _xvfb_proc is not None and _xvfb_proc.poll() is None:
+        return
+    display = ":99"
+    _xvfb_proc = subprocess.Popen(
+        ["Xvfb", display, "-screen", "0", "1920x1080x24", "-nolisten", "tcp"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    os.environ["DISPLAY"] = display
+    # Tiny grace period so the X server is up before Chromium connects.
+    import time as _t
+    _t.sleep(0.5)
+    logger.info("Started Xvfb on DISPLAY=%s (pid=%s)", display, _xvfb_proc.pid)
+
+
 async def launch_browser():
     """Launch persistent browser context. Returns (playwright, context, page).
 
@@ -224,7 +261,8 @@ async def launch_browser():
     """
     from playwright.async_api import async_playwright
 
-    PROFILE_DIR.mkdir(exist_ok=True)
+    _ensure_xvfb()
+    PROFILE_DIR.mkdir(parents=True, exist_ok=True)
     pw = await async_playwright().start()
     context = await pw.chromium.launch_persistent_context(
         str(PROFILE_DIR),

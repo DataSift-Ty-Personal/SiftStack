@@ -24,6 +24,10 @@ image = (
         "libtesseract-dev",
         "libgl1",
         "libglib2.0-0",
+        # Xvfb provides a virtual X display so ancestry_enricher can run a
+        # *headed* Chromium in Modal — Ancestry flags accounts that connect
+        # via headless mode, so we cannot use --headless here.
+        "xvfb",
     )
     .pip_install_from_requirements("requirements.txt")
     .run_commands("playwright install chromium && playwright install-deps chromium")
@@ -751,6 +755,155 @@ async def nj_scrape_manual(counties: list[str] | None = None):
     )
     print(f"Result: {result}")
     return result
+
+
+@app.function(
+    image=image,
+    secrets=[secrets],
+    timeout=300,
+    volumes={TRACKING_MOUNT: tracking_volume},
+)
+async def ancestry_login_smoke_test():
+    """Pre-flight check for the Wednesday cron — Ancestry login only.
+
+    Boots Xvfb, opens the persistent profile from /tracking/.ancestry_profile,
+    and runs `_ensure_logged_in`. No record lookups, no SSDI search — just
+    proves the login path works in Modal so we don't discover a 2FA challenge
+    8 hours into Wednesday's run.
+
+    On failure, dumps a screenshot + HTML + URL/title to
+    /tracking/diagnostics/ancestry_login_<ts>/ so we can see what blocked us
+    (most common: 2FA prompt, captcha, or device-verification interstitial).
+
+    Run with:  modal run modal_app.py::ancestry_login_smoke_test
+    """
+    import logging
+    import os
+    import sys
+    from datetime import datetime
+    from pathlib import Path
+
+    sys.path.insert(0, "/app/src")
+    os.chdir("/app")
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    )
+    logger = logging.getLogger("ancestry_login_smoke_test")
+
+    import ancestry_enricher as ae
+
+    logger.info("PROFILE_DIR=%s  PAGE_LOAD_FILE=%s", ae.PROFILE_DIR, ae.PAGE_LOAD_FILE)
+
+    diag_root = Path("/tracking/diagnostics") / f"ancestry_login_{datetime.utcnow().strftime('%Y%m%dT%H%M%SZ')}"
+    diag_root.mkdir(parents=True, exist_ok=True)
+
+    async def dump(page, label: str):
+        """Save url/title/html/screenshot/text snippet under diag_root."""
+        try:
+            url = page.url
+            title = await page.title()
+            html = await page.content()
+            text = await page.evaluate("() => document.body && document.body.innerText || ''")
+            (diag_root / f"{label}.url.txt").write_text(f"{url}\n{title}\n")
+            (diag_root / f"{label}.html").write_text(html)
+            (diag_root / f"{label}.text.txt").write_text(text[:8000])
+            await page.screenshot(path=str(diag_root / f"{label}.png"), full_page=True)
+            logger.info("Diag dump [%s] -> %s  url=%s", label, diag_root, url)
+        except Exception as e:
+            logger.warning("Diag dump %s failed: %s", label, e)
+
+    pw = context = page = None
+    try:
+        ae._ensure_xvfb()
+        ae.PROFILE_DIR.mkdir(parents=True, exist_ok=True)
+
+        from playwright.async_api import async_playwright
+        pw = await async_playwright().start()
+        context = await pw.chromium.launch_persistent_context(
+            str(ae.PROFILE_DIR),
+            headless=False,
+            viewport={"width": 1920, "height": 1080},
+            args=["--disable-blink-features=AutomationControlled"],
+        )
+        page = context.pages[0] if context.pages else await context.new_page()
+
+        # 1) Check existing session by visiting an auth-only page.
+        # /account/orders forwards a logged-in user to /order-history; an
+        # anonymous user gets bounced to /account/signin. So the only
+        # reliable signal is "did we end up on a signin page or not".
+        # (Earlier draft also required "account" in the URL — that produced
+        # false-negatives for /order-history and triggered repeated logins,
+        # which got the Modal IP flagged with a Cloudflare challenge.)
+        await page.goto(f"{ae.ANCESTRY_URL}/account/orders", wait_until="domcontentloaded")
+        await dump(page, "01_orders_check")
+        landed_url = page.url.lower()
+        if "signin" not in landed_url and "challenge" not in landed_url:
+            logger.info("Already logged in — protected page loaded: %s", page.url)
+            await ae.close_browser(pw, context)
+            tracking_volume.commit()
+            return {"ok": True, "current_url": page.url, "via": "persistent_profile"}
+        logger.info("Not logged in (bounced to %s) — attempting auto-login", page.url)
+
+        # 2) Walk login form manually so we can dump state at every step
+        await page.goto(ae.SIGNIN_URL, wait_until="domcontentloaded")
+        await dump(page, "02_signin_loaded")
+
+        from config import ANCESTRY_EMAIL, ANCESTRY_PASSWORD
+        if not ANCESTRY_EMAIL or not ANCESTRY_PASSWORD:
+            return {"ok": False, "error": "ANCESTRY_EMAIL/PASSWORD missing from secret",
+                    "diag_dir": str(diag_root)}
+
+        for sel in ["input[name='username']", "input[type='email']", "#username"]:
+            el = await page.query_selector(sel)
+            if el and await el.is_visible():
+                await el.fill(ANCESTRY_EMAIL)
+                break
+        for sel in ["input[name='password']", "input[type='password']", "#password"]:
+            el = await page.query_selector(sel)
+            if el and await el.is_visible():
+                await el.fill(ANCESTRY_PASSWORD)
+                break
+        await dump(page, "03_form_filled")
+
+        for sel in ["button[type='submit']", "input[type='submit']"]:
+            btn = await page.query_selector(sel)
+            if btn and await btn.is_visible():
+                await btn.click()
+                break
+
+        # Wait up to 15s for navigation away from signin
+        import asyncio
+        for i in range(15):
+            await asyncio.sleep(1)
+            if "signin" not in page.url.lower():
+                break
+        await dump(page, "04_after_submit")
+
+        if "signin" in page.url.lower():
+            logger.error("Login failed — still on signin URL=%s", page.url)
+            await ae.close_browser(pw, context)
+            tracking_volume.commit()
+            return {"ok": False, "error": "still on signin after submit",
+                    "current_url": page.url, "diag_dir": str(diag_root)}
+
+        logger.info("Login OK — landed on %s", page.url)
+        await ae.close_browser(pw, context)
+        tracking_volume.commit()
+        return {"ok": True, "current_url": page.url, "diag_dir": str(diag_root)}
+
+    except Exception as e:
+        logger.exception("Smoke test exception")
+        if page is not None:
+            await dump(page, "99_exception")
+        if pw is not None:
+            try: await ae.close_browser(pw, context)
+            except Exception: pass
+        try: tracking_volume.commit()
+        except Exception: pass
+        return {"ok": False, "error": f"{type(e).__name__}: {e}",
+                "diag_dir": str(diag_root)}
 
 
 @app.local_entrypoint()
