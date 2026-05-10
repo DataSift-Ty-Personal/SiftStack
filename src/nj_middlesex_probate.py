@@ -1,33 +1,45 @@
-"""Middlesex County NJ surrogate probate scraper — Bluestone public portal.
+"""NJ surrogate probate scraper — Bluestone public portal.
 
-Site: https://surrogatesearch.co.middlesex.nj.us/SurrogateSearch/default.aspx
+Two NJ counties expose probate filings via the same DevExpress/ASPxGridView
+"Bluestone Public View" platform with cosmetic differences (host, sub-path,
+detail-page filename suffix). The shared pieces — search form selectors,
+grid-row regex, detail-page parser, parties-grid parser — are factored
+behind a `BluestoneCountyConfig`.
+
+Coverage today:
+  - Middlesex:  https://surrogatesearch.co.middlesex.nj.us/SurrogateSearch/
+  - Somerset:   https://csi.co.somerset.nj.us/bluestonepublicview/
+
+Essex + Union surrogate offices have NO online portal — they require
+in-person/phone/email requests and are not covered here.
+
+Site characteristics (both counties):
 - No login, no captcha, no rate-limiting seen in probes
 - ASP.NET WebForms + DevExpress controls (dxe*/dxgv*/dxflGroupBox)
 - Search form requires ≥1 non-default filter (banner enforces it); the
   Death Date field works as a single-day filter that returns all probates
   for decedents who died on that exact date — so we loop day-by-day
 - Detail pages have stable GET URLs:
-  /WebPages/web_case_detail_middlesex.aspx?Q_PK_ID=NNN
+  /WebPages/web_case_detail_<county>.aspx?Q_PK_ID=NNN
   (no ViewState required) — fetch with plain requests
 - Flow: Playwright submits one search per day, scrapes grid → collect
   detail URLs, then requests.get each detail page concurrently to extract
   decedent mailing address + executor name/relation
 
 Produces NoticeData with:
-  notice_type="probate", county="Middlesex"
+  notice_type="probate", county=<Middlesex|Somerset>
   owner_name=<executor>, decedent_name=<decedent>
   address/city/state/zip=<decedent's mailing address>  (usually the property)
   decision_maker_name=<executor>, decision_maker_relationship=<spouse|child|...>
   dm_confidence="high" (court-named)
   raw_text="Docket: N | Case: Probate | Age: N | Filed: DATE | Relation: R"
-
-Middlesex only. Other NJ counties use different surrogate software.
 """
 
 import asyncio
 import html as html_lib
 import logging
 import re
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.parse import urljoin
@@ -40,8 +52,72 @@ from notice_parser import NoticeData
 
 logger = logging.getLogger(__name__)
 
-BLUESTONE_BASE = "https://surrogatesearch.co.middlesex.nj.us/SurrogateSearch/"
-BLUESTONE_SEARCH_URL = f"{BLUESTONE_BASE}default.aspx"
+
+@dataclass(frozen=True)
+class BluestoneCountyConfig:
+    """Per-county Bluestone parameters. Everything else is shared."""
+    name: str               # "Middlesex" / "Somerset"
+    base_url: str           # ends in '/' — e.g. "https://csi.co.somerset.nj.us/bluestonepublicview/"
+    detail_aspx: str        # "web_case_detail_<county>.aspx"
+    # Path appended to base_url for the search-form page. Middlesex serves
+    # it at default.aspx; Somerset's IIS app serves the form on the root
+    # (`/bluestonepublicview/`) and 404s when default.aspx is requested
+    # explicitly. So this is per-county.
+    search_path: str = "default.aspx"
+    # Per-county form selectors. Middlesex's "to_date_I" Death Date input is
+    # always visible; Somerset's form is collapsed by default and uses a
+    # different ID prefix entirely (SEARCHLAYOUT_*).
+    death_date_input_selector: str = (
+        "#ContentPlaceHolder1_ASPxSplitterDefaultMain_ASPxTextBox_to_date_I"
+    )
+    show_dates_button_selector: str = ""  # "" = no toggle needed (Middlesex)
+    search_button_selector: str = (
+        "#ContentPlaceHolder1_ASPxSplitterDefaultMain_ASPxButton_search"
+    )
+
+    @property
+    def search_url(self) -> str:
+        return f"{self.base_url}{self.search_path}"
+
+    @property
+    def detail_link_re(self) -> "re.Pattern[str]":
+        return re.compile(
+            rf'href="([^"]*{re.escape(self.detail_aspx)}\?Q_PK_ID=(\d+))"',
+            re.IGNORECASE,
+        )
+
+    def build_source_url(self, pk_id: str) -> str:
+        return f"{self.base_url}WebPages/{self.detail_aspx}?Q_PK_ID={pk_id}"
+
+
+MIDDLESEX = BluestoneCountyConfig(
+    name="Middlesex",
+    base_url="https://surrogatesearch.co.middlesex.nj.us/SurrogateSearch/",
+    detail_aspx="web_case_detail_middlesex.aspx",
+)
+SOMERSET = BluestoneCountyConfig(
+    name="Somerset",
+    base_url="https://csi.co.somerset.nj.us/bluestonepublicview/",
+    # Bluestone follows a `web_case_detail_<county>` naming convention.
+    detail_aspx="web_case_detail_somerset.aspx",
+    # Somerset's IIS app serves the search form at the root path itself —
+    # default.aspx is a 404. Form action attribute is "./" (root).
+    search_path="",
+    # Somerset's form uses a completely different DevExpress layout
+    # ("SEARCHLAYOUT" prefix) than Middlesex's "ASPxSplitterDefaultMain".
+    # Date filter is collapsed by default; clicking "Show Dates" reveals it.
+    # The literal IDs nest deeply, so we use [id$="..."] suffix selectors.
+    death_date_input_selector='[id$="SEARCHLAYOUT_to_date_I"]',
+    show_dates_button_selector='[id$="SEARCHLAYOUT_button_show_dates"]',
+    search_button_selector='[id$="SEARCHLAYOUT_button_search"]',
+)
+ALL_BLUESTONE_COUNTIES: tuple[BluestoneCountyConfig, ...] = (MIDDLESEX, SOMERSET)
+
+
+# Backwards-compat aliases — Middlesex constants used to be module-level
+# globals; some downstream code may reference them.
+BLUESTONE_BASE = MIDDLESEX.base_url
+BLUESTONE_SEARCH_URL = MIDDLESEX.search_url
 BLUESTONE_DOWNLOAD_DIR = OUTPUT_DIR / "nj_downloads"
 
 USER_AGENT = (
@@ -58,11 +134,8 @@ _SEARCH_BUTTON = "#ContentPlaceHolder1_ASPxSplitterDefaultMain_ASPxButton_search
 # Grid row: <a class="dxeHyperlink" href="...Q_PK_ID=N"> wraps an <img> (not
 # text — the decedent name sits in a separate <td column="full_name"> cell).
 # Cells carry explicit column="<col>" attrs so we can parse by name instead
-# of position — robust to column reordering.
-_DETAIL_LINK_RE = re.compile(
-    r'href="([^"]*web_case_detail_middlesex\.aspx\?Q_PK_ID=(\d+))"',
-    re.IGNORECASE,
-)
+# of position — robust to column reordering. The detail-link regex is built
+# per-county (filename varies) — see BluestoneCountyConfig.detail_link_re.
 _GRID_ROW_RE = re.compile(
     r'<tr id="[^"]*ASPxGridView_search_DXDataRow\d+"[^>]*>(.*?)</tr>',
     re.DOTALL,
@@ -106,21 +179,35 @@ _COL_ALIASES = {
 }
 
 
-def _parse_grid_rows(html: str) -> list[dict]:
+def _parse_grid_rows(html: str, cfg: BluestoneCountyConfig,
+                     require_detail_link: bool = True) -> list[dict]:
     """Extract per-row dicts from the search-results grid HTML.
 
     Cells carry `column="<col>"` attributes — parse by name, not position.
+
+    Middlesex grid rows have a `web_case_detail_*.aspx?Q_PK_ID=N` href and
+    we use that pk_id as the unique identifier + stable detail URL. Somerset
+    rows have only postback buttons (no GET URL), so callers handling
+    Somerset pass `require_detail_link=False` and we synthesize a pk_id
+    from the docket / row position.
     """
     records = []
-    for row_m in _GRID_ROW_RE.finditer(html):
+    detail_link_re = cfg.detail_link_re
+    for row_idx, row_m in enumerate(_GRID_ROW_RE.finditer(html)):
         inner = row_m.group(1)
-        link_m = _DETAIL_LINK_RE.search(inner)
-        if not link_m:
+        link_m = detail_link_re.search(inner)
+        if link_m:
+            detail_path, pk_id = link_m.group(1), link_m.group(2)
+            detail_url = urljoin(cfg.base_url, detail_path.lstrip("/"))
+        elif require_detail_link:
             continue
-        detail_path, pk_id = link_m.group(1), link_m.group(2)
-        detail_url = urljoin(BLUESTONE_BASE, detail_path.lstrip("/"))
+        else:
+            # Synthesize a pk_id — we'll look the docket up in cells below
+            # and set it after the cell loop.
+            pk_id = ""
+            detail_url = ""
 
-        rec: dict = {"pk_id": pk_id, "detail_url": detail_url}
+        rec: dict = {"pk_id": pk_id, "detail_url": detail_url, "row_idx": row_idx}
         for col, value in _CELL_WITH_COL_RE.findall(inner):
             alias = _COL_ALIASES.get(col)
             if alias:
@@ -134,6 +221,10 @@ def _parse_grid_rows(html: str) -> list[dict]:
         rec.setdefault("issued", "")
         rec.setdefault("dod", "")
         rec.setdefault("dob", "")
+        # Backfill synthesized pk_id with docket — gives us a stable dedup
+        # key for Somerset rows even without a Q_PK_ID in the URL.
+        if not rec["pk_id"]:
+            rec["pk_id"] = rec.get("docket") or f"row_{row_idx}"
         records.append(rec)
     return records
 
@@ -218,7 +309,8 @@ def _town_to_city(town: str) -> str:
     return " ".join(tokens).strip()
 
 
-def _build_notice(grid_row: dict, detail_fields: dict, parties: list[dict]) -> NoticeData | None:
+def _build_notice(grid_row: dict, detail_fields: dict, parties: list[dict],
+                  cfg: BluestoneCountyConfig) -> NoticeData | None:
     """Merge grid row + detail fields + parties grid into a NoticeData.
     Returns None if the row lacks the minimum usable data."""
     # Pull the decedent's full name in normal spoken order. Grid gives "Last
@@ -254,6 +346,15 @@ def _build_notice(grid_row: dict, detail_fields: dict, parties: list[dict]) -> N
     ]
     raw_text = " | ".join(b for b in raw_bits if b)
 
+    # Stable detail URLs only exist on counties that expose Q_PK_ID in the
+    # row href (Middlesex). Somerset rows have postback buttons only — fall
+    # back to the search URL so source_url still points to a useful place.
+    pk_id = grid_row.get("pk_id", "")
+    if pk_id and pk_id.isdigit():
+        source_url = cfg.build_source_url(pk_id)
+    else:
+        source_url = cfg.search_url
+
     notice = NoticeData(
         date_added=filed_iso or datetime.now().strftime("%Y-%m-%d"),
         address=addr,
@@ -262,8 +363,8 @@ def _build_notice(grid_row: dict, detail_fields: dict, parties: list[dict]) -> N
         zip=zip_code,
         owner_name=executor_name or decedent_name,
         notice_type="probate",
-        county="Middlesex",
-        source_url=f"{BLUESTONE_BASE}WebPages/web_case_detail_middlesex.aspx?Q_PK_ID={grid_row['pk_id']}",
+        county=cfg.name,
+        source_url=source_url,
         raw_text=raw_text,
         decedent_name=decedent_name,
         date_of_death=dod_iso,
@@ -279,40 +380,50 @@ def _build_notice(grid_row: dict, detail_fields: dict, parties: list[dict]) -> N
 
 # ---- search-loop driver ----
 
-async def _submit_day(page: Page, day: datetime) -> list[dict]:
+async def _submit_day(page: Page, day: datetime, cfg: BluestoneCountyConfig) -> list[dict]:
     """Run one search for decedents who died on `day`. Returns grid rows."""
-    await page.goto(BLUESTONE_SEARCH_URL, wait_until="domcontentloaded", timeout=45000)
+    await page.goto(cfg.search_url, wait_until="domcontentloaded", timeout=45000)
     await page.wait_for_timeout(2000)
 
+    # Some Bluestone deployments collapse the date filters by default and
+    # require clicking "Show Dates" to reveal the inputs.
+    if cfg.show_dates_button_selector:
+        try:
+            await page.click(cfg.show_dates_button_selector, timeout=8000)
+            await page.wait_for_timeout(800)
+        except Exception as e:
+            logger.warning("%s: show_dates click failed: %s", cfg.name, e)
+
     date_str = day.strftime("%m/%d/%Y")
-    box = page.locator(_DEATH_DATE_INPUT)
+    box = page.locator(cfg.death_date_input_selector)
     await box.click()
     await box.fill(date_str)
     await page.wait_for_timeout(300)
 
-    await page.click(_SEARCH_BUTTON)
+    await page.click(cfg.search_button_selector)
     await page.wait_for_timeout(3500)
 
     html = await page.content()
     if "No data to display" in html:
         return []
     if "Must Enter a Name" in html:
-        logger.warning("Middlesex probate: search rejected for %s — fell through", date_str)
+        logger.warning("%s probate: search rejected for %s — fell through", cfg.name, date_str)
         return []
-    return _parse_grid_rows(html)
+    return _parse_grid_rows(html, cfg)
 
 
-async def scrape_middlesex_probates(
+async def scrape_bluestone_probates(
+    cfg: BluestoneCountyConfig,
     days_back: int = 30,
     headless: bool = True,
     max_detail_workers: int = 4,
 ) -> list[NoticeData]:
-    """Scrape probates from Middlesex surrogate for the past `days_back` days.
+    """Scrape probates from a Bluestone-backed county surrogate.
 
     Iterates day-by-day on Death Date (can't batch since the filter is
     single-day, not range). Each day returns few rows (typical 0–10).
     """
-    logger.info("Middlesex probate: scanning last %d days of death dates", days_back)
+    logger.info("%s probate: scanning last %d days of death dates", cfg.name, days_back)
     today = datetime.now()
 
     # 1) Collect grid rows across all days (Playwright)
@@ -325,12 +436,12 @@ async def scrape_middlesex_probates(
         for offset in range(days_back):
             day = today - timedelta(days=offset)
             try:
-                rows = await _submit_day(page, day)
+                rows = await _submit_day(page, day, cfg)
                 if rows:
-                    logger.info("  %s: %d probate(s)", day.strftime("%Y-%m-%d"), len(rows))
+                    logger.info("  %s %s: %d probate(s)", cfg.name, day.strftime("%Y-%m-%d"), len(rows))
                 all_rows.extend(rows)
             except Exception as e:
-                logger.warning("Middlesex: failed %s: %s", day.strftime("%Y-%m-%d"), e)
+                logger.warning("%s: failed %s: %s", cfg.name, day.strftime("%Y-%m-%d"), e)
 
         await browser.close()
 
@@ -341,8 +452,8 @@ async def scrape_middlesex_probates(
         if r["pk_id"] not in seen:
             seen.add(r["pk_id"])
             unique_rows.append(r)
-    logger.info("Middlesex probate: %d unique rows across %d days",
-                len(unique_rows), days_back)
+    logger.info("%s probate: %d unique rows across %d days",
+                cfg.name, len(unique_rows), days_back)
 
     if not unique_rows:
         return []
@@ -361,15 +472,262 @@ async def scrape_middlesex_probates(
                     None, _fetch_detail, row["detail_url"], session
                 )
             except Exception as e:
-                logger.warning("detail fetch failed pk=%s: %s", row["pk_id"], e)
+                logger.warning("%s detail fetch failed pk=%s: %s", cfg.name, row["pk_id"], e)
                 return None
-            return _build_notice(row, fields, parties)
+            return _build_notice(row, fields, parties, cfg)
 
     notices_or_none = await asyncio.gather(*(_fetch_one(r) for r in unique_rows))
     notices = [n for n in notices_or_none if n]
-    logger.info("Middlesex probate: built %d NoticeData records (of %d rows)",
-                len(notices), len(unique_rows))
+    logger.info("%s probate: built %d NoticeData records (of %d rows)",
+                cfg.name, len(notices), len(unique_rows))
     return notices
+
+
+async def scrape_middlesex_probates(
+    days_back: int = 30,
+    headless: bool = True,
+    max_detail_workers: int = 4,
+) -> list[NoticeData]:
+    """Backwards-compatible wrapper — scrapes Middlesex specifically."""
+    return await scrape_bluestone_probates(
+        MIDDLESEX, days_back=days_back, headless=headless,
+        max_detail_workers=max_detail_workers,
+    )
+
+
+async def scrape_somerset_probates(
+    days_back: int = 30,
+    headless: bool = True,
+    max_detail_workers: int = 4,  # accepted for API parity; unused (one browser session)
+) -> list[NoticeData]:
+    """Scrape Somerset surrogate probates via the Bluestone Public View portal.
+
+    Somerset's deployment differs from Middlesex's enough that the Middlesex
+    "submit day-by-day, then fetch details concurrently via plain requests"
+    pattern doesn't apply:
+      - Search form uses date *range* dropdowns (Last 5/10/30 Days, monthly
+        buckets), not a single-day Date input — so we run ONE search using
+        the smallest preset that covers `days_back`, then filter client-side.
+      - Grid rows have NO direct detail URLs. The "View Details" button is
+        an ASP.NET postback (autoPostBack:true), so detail navigation must
+        stay inside the Playwright session.
+      - Detail panel exposes decedent info only (Address, City, ZIP, DOB,
+        DOD, etc.). Parties/executor info appears to be behind a tab that
+        only loads with login. So we don't get court-named executor — the
+        downstream obit pipeline reconstructs heirs from obituaries instead
+        (same path used for non-probate deceased records).
+    """
+    cfg = SOMERSET
+    logger.info("%s probate: searching last %d days via Bluestone date range", cfg.name, days_back)
+
+    # Pick the smallest predefined range that covers `days_back`. Bluestone's
+    # range dropdown options: Today / Yesterday / Last 5 / Last 10 / Last 30
+    # Days / monthly + yearly buckets. We use a daily preset for ≤30d and
+    # filter client-side; for longer windows the cron lives on Last 30 Days.
+    if days_back <= 5:
+        range_label = "Last 5 Days"
+    elif days_back <= 10:
+        range_label = "Last 10 Days"
+    else:
+        range_label = "Last 30 Days"
+
+    notices: list[NoticeData] = []
+    async with async_playwright() as pw:
+        browser = await pw.chromium.launch(headless=headless)
+        ctx = await browser.new_context(viewport={"width": 1400, "height": 900})
+        page = await ctx.new_page()
+
+        await page.goto(cfg.search_url, wait_until="domcontentloaded", timeout=45000)
+        await page.wait_for_timeout(2000)
+
+        # Reveal the date filter section
+        try:
+            await page.click(cfg.show_dates_button_selector, timeout=8000)
+            await page.wait_for_timeout(1500)
+        except Exception as e:
+            logger.error("%s: show_dates click failed: %s", cfg.name, e)
+            await browser.close()
+            return []
+
+        # Date Type = Death Date
+        await page.locator('[id$="search_create_or_issue_date_B-1"]').first.click()
+        await page.wait_for_timeout(700)
+        await page.locator(
+            '[id$="search_create_or_issue_date_DDD_L_LBT"] td:has-text("Death Date")'
+        ).first.click()
+        await page.wait_for_timeout(800)
+
+        # Range = Last N Days (preset)
+        await page.locator('[id$="search_entry_date_range_B-1"]').first.click()
+        await page.wait_for_timeout(700)
+        await page.locator(
+            f'[id$="search_entry_date_range_DDD_L_LBT"] td:has-text("{range_label}")'
+        ).first.click()
+        await page.wait_for_timeout(800)
+
+        # Submit
+        await page.click(cfg.search_button_selector)
+        await page.wait_for_timeout(5000)
+
+        notices = await _somerset_extract_records(page, cfg, days_back)
+
+        await browser.close()
+
+    logger.info("%s probate: built %d NoticeData records", cfg.name, len(notices))
+    return notices
+
+
+async def _somerset_extract_records(
+    page: Page, cfg: BluestoneCountyConfig, days_back: int,
+) -> list[NoticeData]:
+    """Walk Somerset search-result rows, click each detail button, parse."""
+    notices: list[NoticeData] = []
+    cutoff = datetime.now() - timedelta(days=days_back)
+
+    page_idx = 0
+    while True:
+        page_idx += 1
+        # Snapshot the rows on this page (Somerset rows have no detail href —
+        # only postback buttons — so accept rows without a detail link).
+        html = await page.content()
+        rows = _parse_grid_rows(html, cfg, require_detail_link=False)
+        if not rows:
+            logger.info("%s probate: page %d has no rows — stopping", cfg.name, page_idx)
+            break
+
+        logger.info("%s probate: page %d has %d rows", cfg.name, page_idx, len(rows))
+
+        for i, row in enumerate(rows):
+            # Filter by client-side cutoff (since the preset range may overshoot)
+            dod_iso = _to_iso_date(row.get("dod", ""))
+            if dod_iso:
+                try:
+                    dod_dt = datetime.strptime(dod_iso, "%Y-%m-%d")
+                    if dod_dt < cutoff:
+                        continue
+                except ValueError:
+                    pass
+
+            # The DevExpress detail button drives an ASP.NET postback via
+            # `__doPostBack(uniqueID, '')`. Playwright's normal click()
+            # times out on the wrapper div, and a JS .click() on the inner
+            # <input> doesn't trigger the ASPxClientButton callback. So we
+            # bypass DevExpress entirely: read the input's `name` attribute
+            # (which IS the postback uniqueID) and call __doPostBack
+            # directly. Same end result, no event-handler chain.
+            #
+            # Note: button IDs follow `cell{i}_29_ASPxButtonViewDAta_{i}`,
+            # not the `_0` suffix you'd expect. The trailing index matches
+            # the row, not the column-button ordinal.
+            cnt = await page.locator(f'input[id$="cell{i}_29_ASPxButtonViewDAta_{i}_I"]').count()
+            if cnt == 0:
+                logger.warning("%s: row %d input not in DOM (cnt=0) — stopping page", cfg.name, i)
+                break
+            try:
+                target = await page.evaluate(
+                    """(rowIdx) => {
+                        const input = document.querySelector(
+                            `input[id$="cell${rowIdx}_29_ASPxButtonViewDAta_${rowIdx}_I"]`
+                        );
+                        if (!input) return null;
+                        const name = input.getAttribute('name');
+                        if (!name) return null;
+                        if (typeof __doPostBack === 'function') {
+                            __doPostBack(name, '');
+                            return name;
+                        }
+                        return null;
+                    }""",
+                    i,
+                )
+                if not target:
+                    logger.warning("%s: row %d __doPostBack target not found", cfg.name, i)
+                    continue
+                # Postback is async — wait for the detail panel to render.
+                await page.wait_for_timeout(3500)
+            except Exception as e:
+                logger.warning("%s: detail postback row %d failed: %s", cfg.name, i, e)
+                continue
+
+            detail_html = await page.content()
+            # Scope the detail-panel parsing to the case_detail_main panel so
+            # we don't pick up search-form labels.
+            scoped = _isolate_panel(detail_html, "ASPxPanel_case_detail_main")
+            fields = _parse_detail_fields(scoped)
+            # Somerset public view doesn't expose parties — pass empty list
+            notice = _build_notice(row, fields, [], cfg)
+            if notice:
+                notices.append(notice)
+
+            # Navigate back to the result grid. The "Search" tab button in
+            # the page-control returns us to the list without resubmitting.
+            try:
+                await page.locator('[id$="ASPxPageControl_Search_hit_T0T"]').first.click(timeout=5000)
+                await page.wait_for_timeout(1500)
+            except Exception:
+                # Fall back: click the back-style button or re-run search
+                logger.warning("%s: couldn't return to results — stopping", cfg.name)
+                return notices
+
+        # Pagination: click next-page if there's another page available
+        try:
+            next_btn = page.locator('[id$="ASPxGridView_search_DXPagerBottom_PBN"]').first
+            if await next_btn.count() == 0:
+                break
+            disabled = await next_btn.get_attribute("class")
+            if disabled and "Disabled" in disabled:
+                break
+            await next_btn.click(timeout=5000)
+            await page.wait_for_timeout(2500)
+        except Exception:
+            break
+
+    return notices
+
+
+def _isolate_panel(html: str, panel_id_substring: str) -> str:
+    """Crude best-effort scope to a specific panel by id substring.
+
+    Bluestone HTML doesn't have nested div boundaries we can match
+    cleanly with regex, so this just slices from the panel's opening
+    tag to the next outer-panel sibling — good enough for the field
+    label/input pairing the detail parser cares about.
+    """
+    start = html.find(panel_id_substring)
+    if start < 0:
+        return html
+    # Walk back to the enclosing tag's start
+    open_tag = html.rfind("<", 0, start)
+    if open_tag < 0:
+        return html
+    # Take a generous chunk after the panel start — the detail panel is
+    # ~30-50KB. Take the first 200KB to be safe.
+    return html[open_tag:open_tag + 200_000]
+
+
+async def scrape_all_bluestone_probates(
+    days_back: int = 30,
+    headless: bool = True,
+    max_detail_workers: int = 4,
+    counties: tuple[BluestoneCountyConfig, ...] = ALL_BLUESTONE_COUNTIES,
+) -> list[NoticeData]:
+    """Run every supported Bluestone county sequentially. Returns the merged list.
+
+    Sequential rather than parallel — Playwright contention + the per-day
+    loop already saturates one browser; running two at once doubles RAM
+    without much wall-clock gain on Modal.
+    """
+    out: list[NoticeData] = []
+    for cfg in counties:
+        try:
+            n = await scrape_bluestone_probates(
+                cfg, days_back=days_back, headless=headless,
+                max_detail_workers=max_detail_workers,
+            )
+            out.extend(n)
+        except Exception as e:
+            logger.error("%s probate scrape failed (other counties continue): %s", cfg.name, e)
+    return out
 
 
 async def run_middlesex_probate_scrape(
