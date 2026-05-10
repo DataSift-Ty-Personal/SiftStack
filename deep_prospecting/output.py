@@ -22,13 +22,9 @@ Design notes:
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
-from deep_prospecting.models import (
-    Associate, DecisionMaker, Email, Heir, HeirMap, Phone,
-    ResearchPack, SkipTraceResult, SourceCheck,
-)
+from deep_prospecting.models import Heir, ResearchPack
 
 # Status markers per skill template.
 MARK_DECEASED = "†"
@@ -356,63 +352,56 @@ def write(pack: ResearchPack, out_dir: Path) -> Path:
 # ── DataSift Notes-field renderer ─────────────────────────────────────
 
 
-def render_notes_block(pack: ResearchPack) -> str:
-    """Compact `=== DEEP PROSPECTING ===` block for the DataSift Notes field.
+def render_people_block(pack: ResearchPack) -> str:
+    """Lookup table that resolves `*` / `**` / `***` person-tags on phones
+    back to named people. Goes at the top of the Notes block so the
+    operator sees who they're calling before reading the rest of the pack.
 
-    Mirrors the SiftStack convention used in `enrichment_pipeline.py`'s
-    `=== DECEASED OWNER === / === OBITUARY === / === SURVIVORS ===`
-    sections. Designed to be appended to existing Notes content with `\n\n`
-    separator (preserving any prior blocks).
+    Asterisks here are PERSON IDENTIFIERS, not dial-rank — the
+    `Dial First/Second/Third` label on each phone tag carries dial order.
 
-    L4 escalation is prepended when applicable so it's the first thing
-    the operator sees on the row.
+    Slice 1 mapping:
+        *    = Subject (always present, even if no phones, even if deceased)
+        **   = Decision Maker (only present when distinct from Subject —
+               i.e., L3 runs where the Subject is deceased and the DM is
+               the heir/executor)
+        ***  = Backup heir (Slice 2+; not emitted in Slice 1)
+
+    For an L1 run with only the Subject, only the `*` line appears.
     """
-    lines: list[str] = []
-    if pack.heir_map and pack.heir_map.escalation_needed:
-        lines.append(f"[L4 ESCALATION RECOMMENDED — {pack.heir_map.escalation_reason}]")
-        lines.append("")
-
-    lines.append("=== DEEP PROSPECTING ===")
-    lines.append(f"Level: {pack.level_selected} — {pack.level_reason}")
+    lines = ["People & Star Markers", "─" * 21]
 
     dm = pack.decision_maker
-    if dm:
-        lines.append(
-            f"Decision Maker: {dm.name} ({dm.relationship}, "
-            f"{dm.subject_role}, {dm.status}, {dm.confidence} confidence)"
+    is_l3 = pack.level_selected == "L3" and pack.heir_map is not None
+
+    # Subject — always rendered, even if no phones, even if deceased.
+    if is_l3 and pack.heir_map:
+        decedent = pack.heir_map.decedent_name or "[unknown decedent]"
+        dod = (
+            pack.heir_map.decedent_dod.isoformat() if pack.heir_map.decedent_dod
+            else pack.heir_map.decedent_dod_text or "?"
         )
+        lines.append(f"*    {decedent} — Subject (decedent, DOD {dod})")
+    elif dm and dm.subject_role == "SUBJECT":
+        status = "alive" if dm.status == "VERIFIED_LIVING" else "unverified"
+        lines.append(
+            f"*    {dm.name} — Subject "
+            f"({dm.relationship}, {status}, {dm.confidence} confidence)"
+        )
+    elif pack.input.owner:
+        lines.append(f"*    {pack.input.owner} — Subject (from input)")
+    elif pack.lead.title_owner:
+        lines.append(f"*    {pack.lead.title_owner} — Subject (from title)")
     else:
-        lines.append("Decision Maker: [none — no verified living candidate]")
+        lines.append("*    [unknown subject]")
 
-    if pack.skip_trace:
-        st = pack.skip_trace
-        lines.append(f"Phones added: {len(st.phones)}")
-        lines.append(f"Emails added: {len(st.emails)}")
-        if st.site_state:
-            site_summary = ", ".join(
-                f"{s.source}:{s.status}" for s in st.site_state
-            )
-            lines.append(f"Sites: {site_summary}")
-
-    if pack.heir_map:
-        hm = pack.heir_map
-        living = sum(1 for h in hm.heirs if h.status == "LIVING")
-        deceased = sum(1 for h in hm.heirs if h.status == "DECEASED")
+    # Decision Maker — only when distinct from Subject (L3 case).
+    if is_l3 and dm:
+        role_label = dm.subject_role.replace("_", " ").title()
+        status_label = dm.status.replace("_", " ").lower()
         lines.append(
-            f"Heir map: {len(hm.heirs)} heirs "
-            f"({living} living, {deceased} deceased) "
-            f"across {hm.generations_searched} generation(s)"
+            f"**   {dm.name} — {role_label} "
+            f"({dm.relationship}, {status_label}, {dm.confidence} confidence)"
         )
 
-    if dm and dm.reasoning:
-        lines.append("")
-        lines.append("Reasoning:")
-        lines.append(dm.reasoning.strip())
-
-    lines.append("")
-    lines.append(f"Run: {pack.timestamp_utc.isoformat(timespec='seconds')}")
-    lines.append(f"Cost: ${pack.cost.total:.4f}")
-    if pack.aborted:
-        lines.append(f"ABORTED: {pack.abort_reason} at {pack.aborted_at_phase}")
-    lines.append("=== END DEEP PROSPECTING ===")
     return "\n".join(lines)

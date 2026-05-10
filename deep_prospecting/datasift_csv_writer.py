@@ -66,22 +66,36 @@ NOTES_COL = "Notes"
 # ── Tag derivation ────────────────────────────────────────────────────
 
 
-def _stars(rank: int) -> str:
-    """Asterisk tier matching the operator's existing convention.
-
-    rank=1 (Dial First)  → "*"
-    rank=2 (Dial Second) → "**"
-    ...
-    """
-    return "*" * max(1, rank)
-
-
 _DIAL_RANK_LABEL = {1: "Dial First", 2: "Dial Second", 3: "Dial Third",
                     4: "Dial Fourth", 5: "Dial Fifth", 6: "Dial Sixth"}
 
 
 def _dial_rank_label(rank: int) -> str:
     return _DIAL_RANK_LABEL.get(rank, f"Dial {rank}")
+
+
+def _stars_for_subject_role(subject_role: str) -> str:
+    """Map subject role → person-identifier asterisk count.
+
+    These asterisks identify WHICH PERSON a phone belongs to, NOT the
+    dial rank. The Dial First/Second/Third label on the same tag cell
+    carries the dial-order signal.
+
+    Sample data confirmed: Sally Baksh's phones all carry `*` regardless
+    of which dial position they're in (Dial First through Dial Sixth) —
+    because all of them are her, the Subject. Family-member phones get
+    `**` to distinguish them as a different person.
+
+    Slice 1 mapping (single DM only):
+        SUBJECT       → "*"   (DM is the original record owner, alive)
+        HEIR          → "**"  (DM is heir of deceased Subject)
+        EXECUTOR      → "**"  (DM is court-named executor)
+        FAMILY_PIVOT  → "**"  (DM is an associate; rare in Slice 1)
+
+    Slice 2+ adds backup heirs at "***", secondary contacts at "****".
+    The People & Star Markers block in Notes resolves these to names.
+    """
+    return "*" if subject_role == "SUBJECT" else "**"
 
 
 def _source_flag(sources: list[SourceID]) -> str:
@@ -113,11 +127,16 @@ def derive_phone_tag_cell(
 ) -> str:
     """Build the Phone Tags N cell content.
 
-    Stable order: role, stars, dial label, source flag.
+    Stable order: role label, person-stars, dial label, source flag.
+
+    The person-stars come from `subject_role` (which person owns this
+    phone), NOT from `dial_rank` (which dial position this phone holds).
+    The People & Star Markers block at the top of the Notes field
+    resolves the stars back to named people.
     """
     parts = [
         _subject_role_label(subject_role),
-        _stars(dial_rank),
+        _stars_for_subject_role(subject_role),
         _dial_rank_label(dial_rank),
     ]
     src = _source_flag(phone.sources)
@@ -389,13 +408,31 @@ def append_outcome_tags(row: dict, pack: ResearchPack, *,
 
 
 def append_notes_block(row: dict, pack: ResearchPack) -> None:
-    """Append the markdown `=== DEEP PROSPECTING ===` block to row Notes.
+    """Append the FULL 9-section research-pack markdown to row Notes,
+    wrapped in `=== DEEP PROSPECTING ===` delimiters.
 
-    Preserves any existing Notes content (e.g., SiftStack's
-    `=== DECEASED OWNER ===` block) by joining with two newlines.
+    The on-disk research_pack.md is the canonical artifact; this Notes
+    embed is the operator-convenience copy so they can read the entire
+    breakdown inside DataSift without opening another file.
+
+    The People & Star Markers lookup table sits above the markdown so
+    the operator sees who `*` / `**` / `***` resolve to before reading
+    the rest. Existing Notes content (e.g., SiftStack's
+    `=== DECEASED OWNER ===` block) is preserved with `\\n\\n` separator.
     """
-    from deep_prospecting.output import render_notes_block
-    block = render_notes_block(pack)
+    from deep_prospecting.output import render, render_people_block
+
+    people = render_people_block(pack)
+    body = render(pack)
+
+    block_parts = ["=== DEEP PROSPECTING ==="]
+    if people:
+        block_parts.append(people)
+        block_parts.append("---")
+    block_parts.append(body)
+    block_parts.append("=== END DEEP PROSPECTING ===")
+    block = "\n\n".join(block_parts)
+
     existing = (row.get(NOTES_COL) or "").rstrip()
     row[NOTES_COL] = f"{existing}\n\n{block}" if existing else block
 
