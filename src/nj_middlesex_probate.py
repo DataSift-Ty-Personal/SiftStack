@@ -137,7 +137,7 @@ _SEARCH_BUTTON = "#ContentPlaceHolder1_ASPxSplitterDefaultMain_ASPxButton_search
 # of position — robust to column reordering. The detail-link regex is built
 # per-county (filename varies) — see BluestoneCountyConfig.detail_link_re.
 _GRID_ROW_RE = re.compile(
-    r'<tr id="[^"]*ASPxGridView_search_DXDataRow\d+"[^>]*>(.*?)</tr>',
+    r'<tr id="[^"]*ASPxGridView_search_DXDataRow(\d+)"[^>]*>(.*?)</tr>',
     re.DOTALL,
 )
 _CELL_WITH_COL_RE = re.compile(
@@ -193,8 +193,14 @@ def _parse_grid_rows(html: str, cfg: BluestoneCountyConfig,
     """
     records = []
     detail_link_re = cfg.detail_link_re
-    for row_idx, row_m in enumerate(_GRID_ROW_RE.finditer(html)):
-        inner = row_m.group(1)
+    for row_m in _GRID_ROW_RE.finditer(html):
+        # Group 1 is now the actual DXDataRow{N} index — DevExpress numbers
+        # rows globally across pages (page 2 has rows 20, 21, 22 not 0, 1, 2),
+        # and the per-row click button IDs use that same number, so we have
+        # to extract it instead of using enumerate() — otherwise pagination
+        # row clicks miss every row past page 1.
+        row_idx = int(row_m.group(1))
+        inner = row_m.group(2)
         link_m = detail_link_re.search(inner)
         if link_m:
             detail_path, pk_id = link_m.group(1), link_m.group(2)
@@ -582,7 +588,10 @@ async def _somerset_extract_records(
 ) -> list[NoticeData]:
     """Walk Somerset search-result rows, click each detail button, parse."""
     notices: list[NoticeData] = []
-    cutoff = datetime.now() - timedelta(days=days_back)
+    # Compare on calendar dates (not datetimes) so a DOD on the boundary
+    # day doesn't get excluded by hour-of-day differences.
+    from datetime import date as _date
+    cutoff = _date.today() - timedelta(days=days_back)
 
     page_idx = 0
     while True:
@@ -597,13 +606,17 @@ async def _somerset_extract_records(
 
         logger.info("%s probate: page %d has %d rows", cfg.name, page_idx, len(rows))
 
-        for i, row in enumerate(rows):
+        for row in rows:
+            # row["row_idx"] is the GLOBAL DevExpress row number (page 2 has
+            # 20, 21, 22 etc) — required for the per-row button IDs to match.
+            ridx = row["row_idx"]
+
             # Filter by client-side cutoff (since the preset range may overshoot)
             dod_iso = _to_iso_date(row.get("dod", ""))
             if dod_iso:
                 try:
-                    dod_dt = datetime.strptime(dod_iso, "%Y-%m-%d")
-                    if dod_dt < cutoff:
+                    dod_d = datetime.strptime(dod_iso, "%Y-%m-%d").date()
+                    if dod_d < cutoff:
                         continue
                 except ValueError:
                     pass
@@ -616,18 +629,18 @@ async def _somerset_extract_records(
             # (which IS the postback uniqueID) and call __doPostBack
             # directly. Same end result, no event-handler chain.
             #
-            # Note: button IDs follow `cell{i}_29_ASPxButtonViewDAta_{i}`,
+            # Note: button IDs follow `cell{ridx}_29_ASPxButtonViewDAta_{ridx}`,
             # not the `_0` suffix you'd expect. The trailing index matches
             # the row, not the column-button ordinal.
-            cnt = await page.locator(f'input[id$="cell{i}_29_ASPxButtonViewDAta_{i}_I"]').count()
+            cnt = await page.locator(f'input[id$="cell{ridx}_29_ASPxButtonViewDAta_{ridx}_I"]').count()
             if cnt == 0:
-                logger.warning("%s: row %d input not in DOM (cnt=0) — stopping page", cfg.name, i)
-                break
+                logger.warning("%s: row %d input not in DOM (cnt=0) — skipping", cfg.name, ridx)
+                continue
             try:
                 target = await page.evaluate(
-                    """(rowIdx) => {
+                    """(ridx) => {
                         const input = document.querySelector(
-                            `input[id$="cell${rowIdx}_29_ASPxButtonViewDAta_${rowIdx}_I"]`
+                            `input[id$="cell${ridx}_29_ASPxButtonViewDAta_${ridx}_I"]`
                         );
                         if (!input) return null;
                         const name = input.getAttribute('name');
@@ -638,15 +651,15 @@ async def _somerset_extract_records(
                         }
                         return null;
                     }""",
-                    i,
+                    ridx,
                 )
                 if not target:
-                    logger.warning("%s: row %d __doPostBack target not found", cfg.name, i)
+                    logger.warning("%s: row %d __doPostBack target not found", cfg.name, ridx)
                     continue
                 # Postback is async — wait for the detail panel to render.
                 await page.wait_for_timeout(3500)
             except Exception as e:
-                logger.warning("%s: detail postback row %d failed: %s", cfg.name, i, e)
+                logger.warning("%s: detail postback row %d failed: %s", cfg.name, ridx, e)
                 continue
 
             detail_html = await page.content()
@@ -658,6 +671,16 @@ async def _somerset_extract_records(
             notice = _build_notice(row, fields, [], cfg)
             if notice:
                 notices.append(notice)
+            else:
+                # Trace which decedent we couldn't build a NoticeData for —
+                # _build_notice returns None when it can't pull a mailing
+                # street address from the detail panel. We still want to
+                # surface those names so the runner can chase them manually.
+                logger.info(
+                    "%s: row %d (%s) skipped — no street address in detail panel",
+                    cfg.name, ridx,
+                    row.get("decedent_name") or "(unknown)",
+                )
 
             # Navigate back to the result grid. The "Search" tab button in
             # the page-control returns us to the list without resubmitting.
@@ -669,20 +692,43 @@ async def _somerset_extract_records(
                 logger.warning("%s: couldn't return to results — stopping", cfg.name)
                 return notices
 
-        # Pagination: click next-page if there's another page available
+        # Pagination — Somerset's DXPager uses class-based <a> tags (no
+        # stable id). Each visible page-number is `a.dxp-num`; the icon-only
+        # next-button is `a.dxp-button.dxp-bi`. The current page's number
+        # has class `dxp-current` (no anchor) so by clicking dxp-num that
+        # text == (page_idx + 1) we advance one page.
+        next_page_text = str(page_idx + 1)
+        next_link = page.locator(
+            f'[id$="DXPagerBottom"] a.dxp-num:has-text("{next_page_text}")'
+        ).first
         try:
-            next_btn = page.locator('[id$="ASPxGridView_search_DXPagerBottom_PBN"]').first
-            if await next_btn.count() == 0:
+            if await next_link.count() == 0:
+                logger.info("%s: no page-%s link — pagination done", cfg.name, next_page_text)
                 break
-            disabled = await next_btn.get_attribute("class")
-            if disabled and "Disabled" in disabled:
-                break
-            await next_btn.click(timeout=5000)
-            await page.wait_for_timeout(2500)
-        except Exception:
+            await next_link.click(timeout=5000)
+            await page.wait_for_timeout(3000)
+        except Exception as e:
+            logger.warning("%s: pagination to page %s failed: %s", cfg.name, next_page_text, e)
             break
 
-    return notices
+    # Output dedup — the detail-postback flow occasionally double-counts a
+    # row when navigating back to results re-renders the same case briefly
+    # before the grid restores. Key on (decedent_name, address) since pk_id
+    # is synthesized from docket and may not be stable across re-renders.
+    seen: set[tuple[str, str]] = set()
+    deduped: list[NoticeData] = []
+    for n in notices:
+        key = (n.decedent_name.upper().strip(), n.address.upper().strip())
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(n)
+    if len(deduped) < len(notices):
+        logger.info(
+            "%s probate: dedup removed %d duplicate row(s)",
+            cfg.name, len(notices) - len(deduped),
+        )
+    return deduped
 
 
 def _isolate_panel(html: str, panel_id_substring: str) -> str:
