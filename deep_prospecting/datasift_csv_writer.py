@@ -367,11 +367,27 @@ def overlay_pack_onto_row(row: dict, pack: ResearchPack) -> tuple[int, bool]:
     dm = pack.decision_maker
     subject_role = dm.subject_role if dm else "SUBJECT"
 
+    # Existing phones in the row — skip writing a duplicate number into
+    # a fresh slot. Common when a row was previously enriched by the
+    # operator or by an earlier CLI run. Compare on the 10-digit canonical
+    # form (Phone.csv_value matches the column format).
+    existing_phones = {
+        (row.get(f"Phone {n}") or "").strip()
+        for n in range(1, PHONE_SLOTS + 1)
+    }
+    existing_phones.discard("")
+
     # Walk phones, write into next-empty slot, never overwrite. Dial
     # rank labels are intentionally NOT emitted here — Trestle adds
     # those downstream when it scores the phones for line-type and
     # carrier reputation.
     for p in phones:
+        if p.csv_value in existing_phones:
+            logger.debug(
+                "row already has phone %s — skipping duplicate write",
+                p.csv_value,
+            )
+            continue
         slot = _next_empty_phone_slot(row)
         if slot is None:
             truncated = True
@@ -388,16 +404,28 @@ def overlay_pack_onto_row(row: dict, pack: ResearchPack) -> tuple[int, bool]:
         )
         # Phone Is Connected stays blank (untested).
         row[f"Phone Is Connected {slot}"] = ""
+        existing_phones.add(p.csv_value)
         phones_added += 1
 
-    # Emails — same first-empty pattern. No metadata columns.
+    # Emails — same first-empty pattern, also deduped against existing
+    # column values (case-insensitive: "Foo@Bar.com" ≡ "foo@bar.com").
     if pack.skip_trace:
+        existing_emails = {
+            (row.get(f"Email {n}") or "").strip().lower()
+            for n in range(1, EMAIL_SLOTS + 1)
+        }
+        existing_emails.discard("")
         for e in pack.skip_trace.emails:
+            addr_norm = e.address.strip().lower()
+            if addr_norm in existing_emails:
+                logger.debug("row already has email %s — skipping", e.address)
+                continue
             slot = _next_empty_email_slot(row)
             if slot is None:
                 logger.warning("row exhausted Email 1..10 — dropping %s", e.address)
                 break
             row[f"Email {slot}"] = e.address
+            existing_emails.add(addr_norm)
 
     return phones_added, truncated
 
