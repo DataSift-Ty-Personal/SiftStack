@@ -57,6 +57,15 @@ logger = logging.getLogger(__name__)
 PHONE_SLOTS = 30
 EMAIL_SLOTS = 10
 
+# Columns dropped on write — DataSift exports these but the import
+# auto-mapper doesn't accept them (the field is dialer-side, populated
+# internally, not via CSV upload). Including them causes the mapper to
+# shift `Phone Is Connected N` onto the next slot's `Phone Number`,
+# cascading wrong from there. We read them through (they're real columns
+# in the export) but strip them from the output. `validate_round_trip`
+# excludes them from both sides of the comparison.
+DROP_ON_WRITE: set[str] = {f"Phone Is Connected {n}" for n in range(1, PHONE_SLOTS + 1)}
+
 # Tag-cell separators
 PHONE_TAG_SEP = ","
 ROW_TAG_SEP = ","
@@ -303,27 +312,44 @@ def write_csv(
     len(headers), data rows are truncated to that count — the trailing
     header columns are emitted in the header line only. This preserves
     DataSift's footer-column convention.
+
+    Columns in `DROP_ON_WRITE` are filtered out of both the header and
+    the data rows before writing. They get parsed back in on read for
+    in-memory completeness, but never emitted — DataSift's auto-mapper
+    chokes on them.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
-    if data_field_count is None or data_field_count >= len(headers):
+
+    # Filter DROP_ON_WRITE columns from header. Track how many of the
+    # dropped columns lived in the data-row portion so we can shrink
+    # data_field_count by the same amount and keep header/data alignment.
+    out_headers = [h for h in headers if h not in DROP_ON_WRITE]
+    out_data_field_count = data_field_count
+    if data_field_count is not None and data_field_count < len(headers):
+        dropped_in_data = sum(
+            1 for h in headers[:data_field_count] if h in DROP_ON_WRITE
+        )
+        out_data_field_count = data_field_count - dropped_in_data
+
+    if out_data_field_count is None or out_data_field_count >= len(out_headers):
         # Symmetric case — DictWriter does the right thing.
         with open(path, "w", encoding="utf-8", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=headers, extrasaction="ignore")
+            writer = csv.DictWriter(f, fieldnames=out_headers, extrasaction="ignore")
             writer.writeheader()
             for row in rows:
-                writer.writerow({h: (row.get(h) or "") for h in headers})
+                writer.writerow({h: (row.get(h) or "") for h in out_headers})
     else:
         # Asymmetric case — emit header fully, then write data rows with
-        # only the first `data_field_count` columns. Use raw csv.writer
+        # only the first `out_data_field_count` columns. Use raw csv.writer
         # so we control field-count per row exactly.
-        data_cols = headers[:data_field_count]
+        data_cols = out_headers[:out_data_field_count]
         with open(path, "w", encoding="utf-8", newline="") as f:
             writer = csv.writer(f)
-            writer.writerow(headers)
+            writer.writerow(out_headers)
             for row in rows:
                 writer.writerow([(row.get(h) or "") for h in data_cols])
     logger.info("wrote %d rows × %d cols to %s",
-                len(rows), len(headers), path)
+                len(rows), len(out_headers), path)
 
 
 def ensure_notes_column(headers: list[str]) -> list[str]:
@@ -550,10 +576,13 @@ def overlay(
 
 
 def validate_round_trip(in_csv: Path, *, out_csv: Path | None = None) -> dict:
-    """Read → write back unchanged → assert byte-equal (after EOL norm).
+    """Read → write back unchanged → assert round-trip safety.
 
-    No overlay applied. Used as a CI check: any drift means the writer
-    is silently mutating data and round-trip safety is broken.
+    Filtered-mode comparison: the writer intentionally drops the
+    `DROP_ON_WRITE` columns (Phone Is Connected 1..30) from output, so a
+    pure byte-equal check would always fail. Instead we structurally
+    compare the source against the output, filtering the source by the
+    same DROP_ON_WRITE set before comparing each row's cells.
 
     Returns dict with `ok`, `differences`. `ok=True` means safe.
     """
@@ -562,29 +591,64 @@ def validate_round_trip(in_csv: Path, *, out_csv: Path | None = None) -> dict:
         out_csv = in_csv.with_name(in_csv.stem + "_roundtrip.csv")
     write_csv(headers, rows, out_csv, data_field_count=data_field_count)
 
-    src_text = Path(in_csv).read_bytes().decode("utf-8-sig")
-    dst_text = Path(out_csv).read_bytes().decode("utf-8")
+    # Parse both CSVs row-by-row with the csv module — structural
+    # comparison, not byte. csv.reader handles quoting + escaping
+    # deterministically so cell-by-cell match is sufficient.
+    def _parse(path: Path) -> list[list[str]]:
+        with open(path, encoding="utf-8-sig", newline="") as f:
+            return list(csv.reader(f))
 
-    # Normalize line endings — csv module always writes \r\n on Windows
-    # but we forced newline="" + Unix \n via DictWriter default. Compare
-    # without the trailing newline since DataSift exports may or may not
-    # have one.
-    src_norm = src_text.replace("\r\n", "\n").rstrip("\n")
-    dst_norm = dst_text.replace("\r\n", "\n").rstrip("\n")
+    src_lines = _parse(in_csv)
+    dst_lines = _parse(out_csv)
 
-    if src_norm == dst_norm:
-        return {"ok": True, "differences": []}
+    if not src_lines:
+        return {"ok": False, "differences": ["source CSV is empty"]}
 
-    # Compute line-by-line diff for diagnosis.
-    src_lines = src_norm.split("\n")
-    dst_lines = dst_norm.split("\n")
+    # Compute column indices to drop from the source so the filtered
+    # source aligns with what `write_csv` actually emitted.
+    src_header = src_lines[0]
+    keep_indices = [
+        i for i, h in enumerate(src_header) if h not in DROP_ON_WRITE
+    ]
+    # Filter each line by kept indices. Skip indices past the line's
+    # actual length so we don't pad trailing empty cells where the
+    # source row was shorter than the header (the DataSift footer-column
+    # asymmetry — data rows have N-1 fields vs N header cells).
+    src_filtered = [
+        [ln[i] for i in keep_indices if i < len(ln)]
+        for ln in src_lines
+    ]
+
     diffs: list[str] = []
-    if len(src_lines) != len(dst_lines):
-        diffs.append(f"line count: {len(src_lines)} vs {len(dst_lines)}")
-    for i, (a, b) in enumerate(zip(src_lines, dst_lines)):
+    if len(src_filtered) != len(dst_lines):
+        diffs.append(
+            f"line count: src={len(src_filtered)} dst={len(dst_lines)}"
+        )
+    for i, (a, b) in enumerate(zip(src_filtered, dst_lines)):
         if a != b:
-            diffs.append(f"line {i+1}: differs")
+            # Report up to 5 differing lines plus the first cell-level
+            # delta within the first differing line for easier triage.
+            mismatched_cell = next(
+                (
+                    (idx, av, bv)
+                    for idx, (av, bv) in enumerate(zip(a, b))
+                    if av != bv
+                ),
+                None,
+            )
+            if mismatched_cell is not None:
+                idx, av, bv = mismatched_cell
+                diffs.append(
+                    f"line {i+1}: col {idx} differs ({av!r} vs {bv!r})"
+                )
+            else:
+                diffs.append(
+                    f"line {i+1}: differs (len src={len(a)} dst={len(b)})"
+                )
             if len(diffs) >= 5:
                 diffs.append("... (more diffs suppressed)")
                 break
+
+    if not diffs:
+        return {"ok": True, "differences": []}
     return {"ok": False, "differences": diffs}
