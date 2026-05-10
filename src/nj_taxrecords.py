@@ -219,7 +219,11 @@ def _post_search(
         "adv": "1",
         "out_type": "2",  # multi-line list — gives mailing address
         "ms_ln": str(page_size),
-        "pageno": "1",
+        # pageno MUST be empty for first-page results. With "1" the
+        # server returns the header row only ("N Records Found, Page: 2")
+        # and forces you into pagination even for single-hit queries.
+        # Empty string returns every row up to ms_ln on one page.
+        "pageno": "",
         "owner": owner,
         "p_loc": property_location,
         "block": block,

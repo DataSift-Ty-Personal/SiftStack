@@ -23,9 +23,42 @@ What NOT to put here:
   - Generic Python stdlib imports.
   - Pure third-party imports (anthropic, playwright, etc.).
   - Anything that could equally live in `_utils.py`.
-
-Slice 1 keeps this file empty. Phase 1 (MOD-IV title lookup) will be the
-first real consumer — likely importing nj_taxrecords helpers.
 """
 
-# Intentionally empty for Slice 1.
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+# Make src/ importable when running from the project root. SiftStack's
+# convention is "PYTHONPATH=src + cwd=project root"; replicate that here
+# so deep_prospecting works in both layouts (CLI, REPL, pytest).
+_SRC = Path(__file__).resolve().parent.parent / "src"
+if str(_SRC) not in sys.path:
+    sys.path.insert(0, str(_SRC))
+
+# ── NJ MOD-IV (taxrecords-nj.com) — three of our four counties ──────────
+# Used by Phase 1 (title lookup) to resolve owner of record + parcel ID +
+# mailing address for a target property. The vendor (Vital Communications)
+# covers Middlesex / Somerset / Union. Essex is on a different vendor with
+# reCAPTCHA, so phase 1 records SourceStatus=SKIPPED for Essex inputs
+# rather than blowing up.
+from nj_taxrecords import (  # noqa: E402
+    Parcel as ModIVParcel,
+    lookup_by_address as modiv_lookup_by_address,
+    lookup_by_owner_name as modiv_lookup_by_owner,
+)
+
+# ── Owner-name death-indicator classifier ───────────────────────────────
+# Pure string→string function. Returns one of {"personal_rep","life_estate",
+# "care_of","et_al","trustee",""}. Same logic used by SiftStack's Knox
+# enrichment — no adapter needed, just re-export under a name that doesn't
+# leak the SiftStack module path.
+from tax_enricher import detect_deceased_indicator as classify_owner_death_indicator  # noqa: E402
+
+__all__ = [
+    "ModIVParcel",
+    "modiv_lookup_by_address",
+    "modiv_lookup_by_owner",
+    "classify_owner_death_indicator",
+]
