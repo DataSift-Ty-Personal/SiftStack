@@ -51,7 +51,7 @@ SCHEDULE_CRON_UTC = "0 10 * * 3"
 @app.function(
     image=image,
     secrets=[secrets],
-    timeout=18000,  # 5 hr — obituary search on ~300 records adds 3-5hr to the run
+    timeout=28800,  # 8 hr — obit + heir verification + Ancestry SSDI per heir
     retries=modal.Retries(
         max_retries=2,
         initial_delay=60.0,
@@ -196,15 +196,26 @@ async def nj_weekly_all():
     opts = PipelineOptions(
         skip_filter_sold=False,
         skip_tax=True,
-        # Obit search runs on all records going forward — catches deceased
-        # foreclosure defendants / sheriff-sale owners that the court scrapers
-        # don't flag. Probate records route through the probate_preset path
-        # inside obituary_enricher which uses the court-named executor
-        # directly (never overrides with a wrong obit match).
+        # Obit search runs on all records — catches deceased foreclosure
+        # defendants / sheriff-sale owners that the court scrapers don't flag.
+        # Probate records route through the probate_preset path inside
+        # obituary_enricher which uses the court-named executor directly
+        # (never overrides with a wrong obit match).
         skip_obituary=False,
-        skip_ancestry=True,
-        skip_dm_address=True,
-        skip_heir_verification=True,
+        # Ancestry.com SSDI verification per heir — confirms alive vs
+        # deceased status. Requires ANCESTRY_EMAIL/ANCESTRY_PASSWORD in
+        # the Modal secret.
+        skip_ancestry=False,
+        # Multi-tier DM address waterfall: Tier 3 (TruePeopleSearch via
+        # Serper+Firecrawl) and Tier 4 (Tracerfy) work for NJ today.
+        # Tiers 1 + 2 are TN-specific (Knox Tax API) and no-op for NJ
+        # records cleanly — adding NJ MOD-IV is the next optimization.
+        skip_dm_address=False,
+        # Build the full ranked heir map per deceased record: each heir
+        # gets verified-living/verified-deceased status, signing-authority
+        # flag, and an address lookup via the waterfall above. Generates
+        # heir_map_json + signing_chain_count + signing_chain_names.
+        skip_heir_verification=False,
         skip_parcel_lookup=True,
         source_label="NJ Weekly All (NJLP + Middlesex Probate + Somerset Sheriff + Tax Sale + CivilView Sheriff)",
     )
