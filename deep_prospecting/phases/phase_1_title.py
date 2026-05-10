@@ -157,9 +157,16 @@ def _classify_death_signal(
 
     upper = modiv_owner.upper()
 
-    # 1. Literal "ESTATE OF" — strongest possible signal.
-    if "ESTATE OF" in upper:
-        return True, "title_owner_contains_estate_of", warnings
+    # 1. NJ MOD-IV "(ESTATE)" suffix OR "ESTATE OF X" form — both fire.
+    #    Examples seen in the wild:
+    #      SCHWICHTENBERG, MARIE (ESTATE)
+    #      BERNSHOCK, DANIEL S (ESTATE)
+    #      ESTATE OF JOHN SMITH
+    #    Skip when ESTATE is part of a business name ("ESTATE GARDENS
+    #    LLC", "REAL ESTATE TRUST OF NJ") so we don't false-positive on
+    #    commercial owners.
+    if re.search(r"\bESTATE\b", upper) and not _BUSINESS_RE.search(upper):
+        return True, "title_owner_estate_marker", warnings
 
     # 2. Owner-name pattern classifier (life_est, personal_rep, et_al, etc.)
     indicator = classify_owner_death_indicator(modiv_owner) or ""
