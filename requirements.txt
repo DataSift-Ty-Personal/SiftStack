@@ -9,6 +9,7 @@ pdfminer.six>=20221105
 pdfplumber>=0.11.0
 smartystreets-python-sdk>=4.11.0
 beautifulsoup4>=4.12.0
+brotli>=1.1.0
 ddgs>=9.0.0
 pytesseract>=0.3.10
 Pillow>=10.0.0
