@@ -383,6 +383,17 @@ async def nj_weekly_all():
         elif not upload_ready:
             lines.append("DataSift: nothing uploaded (all records paused)")
 
+        # One-time volume-shift heads-up after the MOD-IV pageno bug fix
+        # (commit 0412563, 2026-05-10). Auto-clears after the first run
+        # that exercises the fix — keeps the note out of long-term noise.
+        from datetime import date
+        if date.today() <= date(2026, 5, 13):
+            lines.append("")
+            lines.append(
+                ":wrench: MOD-IV single-hit fix applied — expect uptick "
+                "in MOD-IV-verified DM addresses vs. prior weeks."
+            )
+
         # Per-run API cost estimate — counts hits in `enriched` directly
         # (no CSV re-read needed), then formats one line for Slack.
         try:

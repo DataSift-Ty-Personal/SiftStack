@@ -56,9 +56,78 @@ from nj_taxrecords import (  # noqa: E402
 # leak the SiftStack module path.
 from tax_enricher import detect_deceased_indicator as classify_owner_death_indicator  # noqa: E402
 
+# ── Obituary search waterfall ───────────────────────────────────────────
+# The same DDGS-search → page-fetch → Haiku-parse pipeline the weekly cron
+# uses. Phase 2 (genealogy) reuses it verbatim so:
+#   1. We don't fork validation effort — the waterfall is already
+#      battle-tested against the runner's PDFs.
+#   2. Pricing stays consistent — Haiku cost goes to the same model the
+#      cost_estimator already accounts for.
+#
+# Conversion contract:
+#   - obit_search(name, city, state)    : list[{url, title, snippet}]
+#   - obit_fetch_page_text(url)         : str (HTTP→BS4→Firecrawl fallback)
+#   - obit_parse_with_llm(...)          : dict | None
+#       The SiftStack-side function filters to match=True only — used by
+#       the weekly cron where false-positives are costly.
+#   - obit_parse_raw(...)               : dict | None
+#       Phase 2 needs the LLM's structured output even when it self-
+#       reports match=False — common when the obit's city differs from
+#       the property city (decedent died at out-of-town hospital). Phase
+#       2 applies its own first-name + surname match check on top.
+from obituary_enricher import (  # noqa: E402
+    OBITUARY_PROMPT,
+    SYSTEM_PROMPT,
+    MAX_TOKENS,
+    MAX_OBITUARY_TEXT,
+    _search_obituary as obit_search,
+    _fetch_page_text as obit_fetch_page_text,
+    _parse_obituary_with_llm as obit_parse_with_llm,
+)
+import llm_client as _llm_client  # noqa: E402
+
+
+def obit_parse_raw(
+    obituary_text: str,
+    owner_name: str,
+    city: str,
+    address: str,
+    api_key: str,
+    state: str = "New Jersey",
+) -> dict | None:
+    """Same Haiku call as `obit_parse_with_llm`, but returns the LLM's
+    structured dict regardless of its self-reported `match` field.
+
+    Phase 2 uses the structured extraction (survivors, DOD, full_name)
+    even when the LLM's binary match decision is conservative on geo.
+    Phase 2 validates the identity match itself (first + surname).
+    """
+    if not obituary_text or not obituary_text.strip():
+        return None
+    if not api_key:
+        return None
+    prompt = OBITUARY_PROMPT.format(
+        owner_name=owner_name,
+        city=city or "unknown",
+        address=address or "unknown",
+        state=state,
+        obituary_text=obituary_text[:MAX_OBITUARY_TEXT],
+    )
+    try:
+        return _llm_client.chat_json(
+            prompt, system=SYSTEM_PROMPT, max_tokens=MAX_TOKENS, api_key=api_key,
+        )
+    except Exception:
+        return None
+
+
 __all__ = [
     "ModIVParcel",
     "modiv_lookup_by_address",
     "modiv_lookup_by_owner",
     "classify_owner_death_indicator",
+    "obit_search",
+    "obit_fetch_page_text",
+    "obit_parse_with_llm",
+    "obit_parse_raw",
 ]
