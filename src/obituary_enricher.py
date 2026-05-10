@@ -2772,6 +2772,12 @@ def enrich_obituary_data(
                 "status": "verified_living",
                 "source": "probate_notice",
                 "rank": 1,
+                # Court-appointed executor IS the signing authority by
+                # definition — the whole reason probate names a PR is to
+                # designate who can sign on behalf of the estate. Without
+                # this flag, signing_chain_count comes back as 0 for every
+                # probate record (verified in the 2026-05-10 dry run).
+                "signing_authority": True,
                 "street": notice.owner_street,
                 "city": notice.owner_city or "Knoxville",
                 "state": "TN",
