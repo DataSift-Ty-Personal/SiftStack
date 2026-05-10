@@ -398,7 +398,13 @@ def overlay_pack_onto_row(row: dict, pack: ResearchPack) -> tuple[int, bool]:
             break
         row[f"Phone {slot}"] = p.csv_value
         row[f"Phone Type {slot}"] = p.type
-        row[f"Phone Status {slot}"] = "UNKNOWN"
+        # Phone Status is the operator's post-dial outcome field
+        # (DEAD / CORRECT / WRONG / NO_ANSWER / DNC, or "UNKNOWN" when
+        # a dial happened but the result was inconclusive). Fresh CLI-
+        # added slots must stay BLANK so the dialer + operator can see
+        # the phone hasn't been touched yet — writing "UNKNOWN" would
+        # falsely signal a prior dial attempt.
+        row[f"Phone Status {slot}"] = ""
         row[f"Phone Tags {slot}"] = derive_phone_tag_cell(
             p, subject_role=subject_role,
         )
