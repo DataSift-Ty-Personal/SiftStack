@@ -111,7 +111,13 @@ async def nj_weekly_all():
     logger.info("Starting combined weekly scrape via Modal...")
     results = await asyncio.gather(
         _safe(scrape_nj_lp_notices(counties=["Essex", "Middlesex", "Somerset", "Union"]), "NJLP"),
-        _safe(scrape_middlesex_probates(days_back=30), "Middlesex Probate"),
+        # Middlesex Bluestone has no File Date filter — only Death Date.
+        # 90 days catches most probates that filed in the last week (typical
+        # death-to-file gap is 0–3 months). Broader window than the 30 we
+        # used initially (which only had ~2% recall vs runner's weekly PDF).
+        _safe(scrape_middlesex_probates(days_back=90), "Middlesex Probate"),
+        # Somerset Bluestone supports File Date filtering directly, so 30
+        # days of file-date is the natural cron window.
         _safe(scrape_somerset_probates(days_back=30), "Somerset Probate"),
         _safe(scrape_somerset_notices(include_bankruptcy=True, max_records=0), "Somerset Sheriff"),
         _safe(scrape_nj_tax_sale_notices(

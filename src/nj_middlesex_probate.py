@@ -555,11 +555,15 @@ async def scrape_somerset_probates(
             await browser.close()
             return []
 
-        # Date Type = Death Date
+        # Date Type = File Date.
+        # Earlier we tried "Death Date" — that gave only ~10% overlap with
+        # the runner's manual reports because most week's filings cover
+        # decedents who died months earlier. Filing date matches the
+        # surrogate court's actual workflow.
         await page.locator('[id$="search_create_or_issue_date_B-1"]').first.click()
         await page.wait_for_timeout(700)
         await page.locator(
-            '[id$="search_create_or_issue_date_DDD_L_LBT"] td:has-text("Death Date")'
+            '[id$="search_create_or_issue_date_DDD_L_LBT"] td:has-text("File Date")'
         ).first.click()
         await page.wait_for_timeout(800)
 
@@ -586,12 +590,14 @@ async def scrape_somerset_probates(
 async def _somerset_extract_records(
     page: Page, cfg: BluestoneCountyConfig, days_back: int,
 ) -> list[NoticeData]:
-    """Walk Somerset search-result rows, click each detail button, parse."""
+    """Walk Somerset search-result rows, click each detail button, parse.
+
+    No client-side DOD cutoff: we filter by File Date at the Bluestone
+    level, so DODs in the result set can legitimately stretch back months
+    (someone died 6 months ago, filing happens this week). Bluestone's
+    range preset is the authority.
+    """
     notices: list[NoticeData] = []
-    # Compare on calendar dates (not datetimes) so a DOD on the boundary
-    # day doesn't get excluded by hour-of-day differences.
-    from datetime import date as _date
-    cutoff = _date.today() - timedelta(days=days_back)
 
     page_idx = 0
     while True:
@@ -610,16 +616,6 @@ async def _somerset_extract_records(
             # row["row_idx"] is the GLOBAL DevExpress row number (page 2 has
             # 20, 21, 22 etc) — required for the per-row button IDs to match.
             ridx = row["row_idx"]
-
-            # Filter by client-side cutoff (since the preset range may overshoot)
-            dod_iso = _to_iso_date(row.get("dod", ""))
-            if dod_iso:
-                try:
-                    dod_d = datetime.strptime(dod_iso, "%Y-%m-%d").date()
-                    if dod_d < cutoff:
-                        continue
-                except ValueError:
-                    pass
 
             # The DevExpress detail button drives an ASP.NET postback via
             # `__doPostBack(uniqueID, '')`. Playwright's normal click()
