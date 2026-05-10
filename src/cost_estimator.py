@@ -15,15 +15,34 @@ from collections import defaultdict
 from pathlib import Path
 
 # ── Per-API rate estimates (USD) ──────────────────────────────────────
+# Tuned 2026-05-10 against actual provider dashboards. Comments note where
+# the previous estimate was off.
 
-RATE_SMARTY_PER_RECORD = 0.003
-RATE_ZILLOW_PER_RECORD = 0.001
+# Smarty Cloud Plan Starter: $17/mo flat for 1,000 lookups → $0.017 effective
+# per record but bills as flat. We model as per-record so the per-run cost
+# reflects "what fraction of the monthly bucket did this run consume."
+RATE_SMARTY_PER_RECORD = 0.017
+
+# OpenWeb Ninja Zillow on RapidAPI pay-as-you-go: confirmed $0.005 per call.
+# Was estimated at $0.001 — bumped 5x.
+RATE_ZILLOW_PER_RECORD = 0.005
+
+# Serper free tier covers our usage today; once paid, $50/50k = $0.001/search.
+# Stays at $0.001 — applies once skip_dm_address fires (post-2026-05-10).
 RATE_SERPER_PER_SEARCH = 0.001
-RATE_FIRECRAWL_PER_PAGE = 0.010
-RATE_ANTHROPIC_PER_PARSE = 0.020
 
-# Average pages fetched per obit candidate (cache + retry adjustment)
-AVG_FIRECRAWL_PAGES_PER_RECORD = 1.4
+# Firecrawl free 1k/mo plan covers us today (~9 pages/run typical). When/if
+# we exceed it: Hobby plan is $16/$10k = $0.0016/page. Stays at the more
+# conservative $0.005 to flag any unexpected page-fetch volume.
+RATE_FIRECRAWL_PER_PAGE = 0.005
+
+# Claude Haiku 4.5: actual usage is ~$0.003 per obit parse based on $2.12
+# spend across ~700 records. Was estimated at $0.020 — dropped 7x.
+RATE_ANTHROPIC_PER_PARSE = 0.003
+
+# Average pages fetched per obit candidate. Was 1.4 (overstated). Actual
+# from 4 weeks of cron data: ~9 pages / ~200 records = 0.05.
+AVG_FIRECRAWL_PAGES_PER_RECORD = 0.05
 
 # Business-entity heuristic — these get filtered before obit search runs,
 # so they don't incur Serper/Firecrawl/Anthropic costs.
