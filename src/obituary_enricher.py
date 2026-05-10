@@ -1361,11 +1361,18 @@ def _batch_tracerfy_lookup(notices: list) -> None:
 def _lookup_dm_address(
     name: str, city: str, api_key: str, tracerfy_tier1: bool = False,
     state: str = "Tennessee",
+    county: str = "",
 ) -> dict:
     """Look up decision-maker's mailing address using tiered sources.
 
+    Routes by state — TN records hit the Knox Tax API tier; NJ records
+    hit the taxrecords-nj.com tier (Vital Communications, free, covers
+    Middlesex/Somerset/Union). Both then fall through to people-search
+    waterfall for nationwide coverage.
+
     Tier 0 (opt-in): Tracerfy skip tracing (paid, highest hit rate)
-    Tier 1: Knox County Tax API (free, fast, Knox only)
+    Tier 1 (TN):  Knox County Tax API (free, fast, Knox only)
+    Tier 1 (NJ):  taxrecords-nj.com county-wide owner-name search (free)
     Tier 2: Serper.dev + Firecrawl + LLM (cheap, national)
     Tier 2b: DuckDuckGo fallback (free, unreliable -- used when Serper not configured)
 
@@ -1376,12 +1383,19 @@ def _lookup_dm_address(
     if not name or not name.strip():
         return result
 
+    # Detect NJ vs TN routing — `state` arrives as either the 2-letter code
+    # or the full state name depending on caller. NJ-specific tiers only
+    # fire when we're confident the record is in NJ.
+    state_norm = (state or "").strip().lower()
+    is_nj = state_norm in ("nj", "new jersey")
+
     # Tier 0 (opt-in): Tracerfy as primary lookup
     if tracerfy_tier1:
         import config as cfg
         if cfg.TRACERFY_API_KEY:
             tf_result = _lookup_dm_address_tracerfy(
-                name, city or "Knoxville", address="", zip_code=""
+                name, city or ("Newark" if is_nj else "Knoxville"),
+                address="", zip_code="",
             )
             if tf_result and tf_result.get("street"):
                 result.update(tf_result)
@@ -1390,11 +1404,74 @@ def _lookup_dm_address(
                             result["street"], result["city"])
                 return result
 
-    # Tier 1: Knox County Tax API (free, fast)
+    # Tier 1 (NJ): taxrecords-nj.com — Vital Communications county-wide
+    # search via inf.cgi. Free, fast, covers Middlesex/Somerset/Union
+    # (Essex uses a different vendor and falls through cleanly).
+    if is_nj:
+        try:
+            from nj_taxrecords import (
+                lookup_by_owner_name as _nj_lookup_by_name,
+                parcel_to_address_dict as _nj_to_dict,
+                COUNTY_CODES as _NJ_COUNTY_CODES,
+            )
+            nj_county = (county or "").strip().title()
+            if nj_county and nj_county in _NJ_COUNTY_CODES:
+                # MOD-IV's owner column is "LAST, FIRST [MIDDLE]" format.
+                # Strategy: search by last name only (broad), then filter
+                # client-side by first-name token match — handles middle
+                # initials, hyphenated names, etc. without forcing the
+                # caller to know the exact format.
+                #
+                # Caller may pass either "First Last" (typical from
+                # obituary_enricher's identify_decision_maker) OR
+                # "Last, First" (typical from court records). Detect
+                # via comma presence.
+                if "," in name:
+                    # "Smith, Carol A" format
+                    before, _, after = name.partition(",")
+                    before_tokens = [t for t in before.split() if t and len(t) > 1]
+                    after_tokens = [t for t in after.split() if t and len(t) > 1]
+                    last_name = before_tokens[-1].upper() if before_tokens else ""
+                    first_name = after_tokens[0].upper() if after_tokens else ""
+                else:
+                    # "Carol Smith" format
+                    name_tokens = [t for t in name.split() if t and len(t) > 1]
+                    if not name_tokens:
+                        raise ValueError(f"empty name: {name!r}")
+                    last_name = name_tokens[-1].upper()
+                    first_name = name_tokens[0].upper() if len(name_tokens) > 1 else ""
+
+                if not last_name:
+                    raise ValueError(f"no last name extracted from: {name!r}")
+
+                parcels = _nj_lookup_by_name(last_name, nj_county, page_size=100)
+                # Score each candidate: first-name match wins
+                if first_name:
+                    matched = [
+                        p for p in parcels
+                        if first_name in (p.owner_name or "").upper()
+                    ]
+                    parcels = matched or parcels  # fall back to all if no first-name match
+
+                if parcels:
+                    addr = _nj_to_dict(parcels[0], source="nj_taxrecords")
+                    if addr.get("street"):
+                        result.update(addr)
+                        logger.info(
+                            "    Tier 1 (NJ MOD-IV): %s, %s, %s %s  [%s]",
+                            result["street"], result["city"],
+                            result["state"], result["zip"],
+                            parcels[0].owner_name,
+                        )
+                        return result
+        except Exception as e:
+            logger.debug("NJ taxrecords lookup failed: %s", e)
+
+    # Tier 1 (TN): Knox County Tax API (free, fast)
     knox_cities = {"knoxville", "powell", "corryton", "mascot", "halls",
                    "farragut", "karns", "gibbs", "fountain city"}
     dm_city = (city or "").lower().strip()
-    if not dm_city or dm_city in knox_cities:
+    if not is_nj and (not dm_city or dm_city in knox_cities):
         name_parts = name.split()
         if len(name_parts) >= 2:
             tax_name = f"{name_parts[-1]} {' '.join(name_parts[:-1])}"
@@ -3003,7 +3080,8 @@ def enrich_obituary_data(
                     j, len(matches), dm_name, dm_city_hint or "unknown",
                 )
                 addr = _lookup_dm_address(dm_name, dm_city_hint, api_key,
-                                          tracerfy_tier1=tracerfy_tier1, state=state_name)
+                                          tracerfy_tier1=tracerfy_tier1, state=state_name,
+                                          county=notice.county)
                 if addr.get("street"):
                     dm.update(addr)
                     source = addr.get("source", "unknown")
