@@ -76,14 +76,70 @@ def _parse_city_state_from_address(addr: str) -> tuple[str, str]:
     return city, state_code
 
 
-def _confidence_for(phones: list, addresses: list, family_overlap: int) -> Confidence:
+def _confidence_for(
+    phones: list,
+    addresses: list,
+    family_overlap: int,
+    *,
+    title_address_overlap: bool = False,
+) -> Confidence:
+    """Derive confidence from cross-validated signals.
+
+    Promotion rules:
+      - L3 (obit cross-validated): phones >= 2 + addresses + obit
+        family-name overlap >= 1 → HIGH
+      - L1 (no obit): phones >= 1 + addresses + CBC address history
+        contains the title address → HIGH. The title-address match
+        proves the CBC record IS the title owner, not a same-name
+        different person. Without that proof MEDIUM is the right
+        default — common names produce CBC hits that aren't the actual
+        property owner.
+      - phones only (no validation overlap) → MEDIUM
+      - addresses only → LOW
+      - nothing → LOW
+    """
     if len(phones) >= 2 and addresses and family_overlap >= 1:
+        return "HIGH"
+    if phones and addresses and title_address_overlap:
         return "HIGH"
     if phones:
         return "MEDIUM"
     if addresses:
         return "LOW"
     return "LOW"
+
+
+def _title_address_overlaps_cbc(
+    title_mailing_address: str | None,
+    cbc_addresses: list,
+) -> bool:
+    """Check whether the title's mailing address appears in CBC's history.
+
+    Compare on the leading "<house number> <street>" tokens (case- and
+    whitespace-insensitive), since CBC formats apartment / city / ZIP
+    differently than MOD-IV. False unless both are non-empty.
+    """
+    import re
+    if not title_mailing_address or not cbc_addresses:
+        return False
+
+    def key(s: str) -> str:
+        s = re.sub(r"\s+", " ", s.upper()).strip()
+        # Take everything before the first comma → "102 GRACEY ST"
+        s = s.split(",")[0]
+        # Drop common suffix abbreviations and apartment markers so the
+        # key matches across formats:
+        #   "102 GRACEY ST" vs "102 GRACEY STREET" → both → "102 GRACEY"
+        s = re.sub(r"\b(STREET|AVENUE|ROAD|PLACE|DRIVE|LANE|COURT|"
+                   r"BOULEVARD|TERRACE|CIRCLE|PARKWAY)\b", "", s)
+        s = re.sub(r"\b(ST|AVE|RD|PL|DR|LN|CT|BLVD|TER|CIR|PKWY)\b", "", s)
+        s = re.sub(r"\b(APT|APARTMENT|UNIT|STE|#)\b.*$", "", s)
+        return " ".join(s.split())
+
+    title_key = key(title_mailing_address)
+    if not title_key:
+        return False
+    return any(key(a).startswith(title_key) for a in cbc_addresses)
 
 
 async def run(
@@ -215,7 +271,17 @@ async def run(
     else:
         dm_status = dm.status
 
-    confidence = _confidence_for(phones, addresses_current, family_overlap)
+    # L1 promotion signal: does CBC's address history include the title
+    # mailing address? If yes, the CBC record IS the title owner (not a
+    # same-name different person). Combined with phones + address, that's
+    # enough to promote MEDIUM → HIGH.
+    title_overlap = _title_address_overlaps_cbc(
+        lead.mailing_address, person.addresses,
+    )
+    confidence = _confidence_for(
+        phones, addresses_current, family_overlap,
+        title_address_overlap=title_overlap,
+    )
 
     updated_dm = dm.model_copy(update={
         "status": dm_status,

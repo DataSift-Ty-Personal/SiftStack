@@ -35,7 +35,6 @@ Outputs:
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import time
 from pathlib import Path
@@ -147,6 +146,15 @@ async def run(
             heir_map, p2_checks, p2_cost = p2_result
             all_checks.extend(p2_checks)
             cost = _add_costs(cost, p2_cost)
+
+        # When death signal fired but obit search produced no heirs, mark
+        # the run for the operator. Phase 3 still runs (with a sparse
+        # HeirMap or None) and will fall back to caller-supplied owner.
+        if heir_map is None or not heir_map.heirs:
+            if "phase_2_no_obit_found" not in lead.warnings:
+                lead = lead.model_copy(update={
+                    "warnings": list(lead.warnings) + ["phase_2_no_obit_found"],
+                })
 
         if _would_exceed_ceiling() or _budget_seconds_left() <= 0:
             aborted, abort_reason, aborted_at_phase = (

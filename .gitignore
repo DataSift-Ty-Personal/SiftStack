@@ -29,6 +29,7 @@ NOD Week*
 # Output (generated data)
 output/
 logs/
+deep_prospecting/outputs/
 
 # Python
 __pycache__/
