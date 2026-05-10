@@ -760,6 +760,115 @@ async def nj_scrape_manual(counties: list[str] | None = None):
 @app.function(
     image=image,
     secrets=[secrets],
+    timeout=7200,  # 2 hr — should be plenty for ~5-15 probate records
+    volumes={TRACKING_MOUNT: tracking_volume},
+)
+async def nj_probate_dry_run(days_back: int = 7):
+    """End-to-end dry-run of the Wednesday cron's enrichment pipeline,
+    scoped to Middlesex probate only.
+
+    Exercises every code path the full nj_weekly_all run will hit:
+      - Obit search (incl. probate_preset routing)
+      - Ancestry SSDI heir verification (xvfb + persistent profile)
+      - DM address waterfall (NJ MOD-IV Tier 1 + Tracerfy + Serper/Firecrawl)
+      - Heir map building
+      - Per-list CSV split
+
+    Skips:
+      - The other 4 scrapers (NJLP, Somerset, Tax Sale, CivilView)
+      - Cross-run dedup (so already-seen records are re-enriched)
+      - DataSift upload
+      - Slack notification
+
+    Output: /tracking/output/dry_run/<ts>/  — fetch with `modal volume get`.
+
+    Run with:  modal run modal_app.py::nj_probate_dry_run --days-back 7
+    """
+    import logging
+    import os
+    import sys
+    from datetime import datetime
+    from pathlib import Path
+
+    sys.path.insert(0, "/app/src")
+    os.chdir("/app")
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    )
+    logger = logging.getLogger("nj_probate_dry_run")
+
+    from nj_middlesex_probate import scrape_middlesex_probates
+    from enrichment_pipeline import PipelineOptions, run_enrichment_pipeline
+    from data_formatter import write_csv, write_csv_by_list
+    from cost_estimator import tally_notices, estimate_costs
+
+    logger.info("DRY RUN: Middlesex probate, last %d days, full enrichment", days_back)
+
+    notices = await scrape_middlesex_probates(days_back=days_back, headless=True)
+    if not notices:
+        return {"ok": True, "records": 0, "message": "no probate filings in window"}
+
+    logger.info("Scraped %d Middlesex probate filings — running enrichment", len(notices))
+
+    # Same flags as nj_weekly_all (the production cron path)
+    opts = PipelineOptions(
+        skip_filter_sold=False,
+        skip_tax=True,
+        skip_obituary=False,
+        skip_ancestry=False,
+        skip_dm_address=False,
+        skip_heir_verification=False,
+        skip_parcel_lookup=True,
+        source_label="DRY RUN: Middlesex Probate",
+    )
+    enriched = run_enrichment_pipeline(notices, opts)
+
+    ts = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+    out_root = Path(f"{TRACKING_MOUNT}/output/dry_run/{ts}")
+    out_root.mkdir(parents=True, exist_ok=True)
+
+    main_csv = write_csv(enriched, f"dry_run_middlesex_probate_{ts}.csv")
+    dst_main = out_root / main_csv.name
+    dst_main.write_bytes(main_csv.read_bytes())
+
+    by_list = write_csv_by_list(enriched, prefix="dry_run") or []
+    list_paths = []
+    for list_name, src_path, count in by_list:
+        dst = out_root / src_path.name
+        dst.write_bytes(src_path.read_bytes())
+        list_paths.append({"list": list_name, "file": dst.name, "count": count})
+
+    tally = tally_notices(enriched)
+    costs = estimate_costs(tally)
+
+    deceased = [n for n in enriched if (n.owner_deceased or "").lower() == "yes"]
+    with_dm_addr = [n for n in enriched if (n.decision_maker_street or "")]
+    with_heir_map = [n for n in enriched if (n.heir_map_json or "")]
+
+    summary = {
+        "ok": True,
+        "records": len(enriched),
+        "deceased_records": len(deceased),
+        "records_with_dm_address": len(with_dm_addr),
+        "records_with_heir_map": len(with_heir_map),
+        "smarty_hits": tally["smarty_hits"],
+        "zillow_hits": tally["zillow_hits"],
+        "cost_breakdown": {k: round(v, 4) for k, v in costs.items()},
+        "cost_total": round(sum(costs.values()), 4),
+        "output_dir": str(out_root),
+        "per_list": list_paths,
+    }
+    logger.info("DRY RUN SUMMARY: %s", summary)
+
+    await tracking_volume.commit.aio()
+    return summary
+
+
+@app.function(
+    image=image,
+    secrets=[secrets],
     timeout=300,
     volumes={TRACKING_MOUNT: tracking_volume},
 )
