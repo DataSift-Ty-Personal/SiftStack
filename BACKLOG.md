@@ -24,6 +24,12 @@ Deferred work — surfaced during builds but punted to keep scope focused.
 
 - **Pre-probate detection blindspot — Michael Raspa pattern.** Title is still in the living owner's name (no death signal from MOD-IV), but the owner may have died very recently (obit exists, probate not yet filed). Phase 1 has no signal to fire on. Slice 3 should consider running a cheap obit dork (Serper-only, no Haiku parse) on **every** L1 case as a secondary check — only escalate to full Phase 2 / 2.5 if the dork surfaces a personal-obit URL (not a city listing page). Budget impact: ~$0.001/L1 record (one Serper call) ≈ $0.005 per weekly cron run at current volumes. Worth the recall lift.
 
+- **`(ESTATE)` marker false-positives on alive owners — surfaced during Slice 3 validation.** Phase 1's `title_owner_estate_marker` heuristic fires whenever MOD-IV stores `LASTNAME, FIRST (ESTATE)`. Slice 3 testing surfaced two cases where the marker is wrong:
+  - **Daniel S Bernshock (Linden NJ)** is **alive** (84 yo per nationalpublicdata; named as a surviving son in his late mother Sophia's 2018 obit). The `(ESTATE)` marker on his title is almost certainly from his late wife Ann's 2010 estate that affected joint title — Daniel inherited and the marker stayed on the parcel record.
+  - **Marie Schwichtenberg (East Brunswick NJ)** has no personal obit indexed online despite the `(ESTATE)` marker. Could be (a) alive with a similar historical-spouse-estate marker, (b) very old / very local death that's not online, or (c) the 2005 "Maria Schwichtenberg" obit at legacy.com IS her mother and "Marie" is actually the heir, not the decedent. Needs operator eyeball to disambiguate.
+
+  Fix path: validate `(ESTATE)` death signal via a cheap Serper obit dork on Phase 1's title_owner BEFORE entering Phase 2. If Serper finds the title_owner as a *surviving* family member of a different decedent's obit, flip the death_signal to False and route as L1 with the marker as advisory only. If Serper finds nothing for the title_owner specifically, keep the marker but lower confidence on the death_signal. Budget: ~$0.001 per `(ESTATE)`-marker record (very small fraction of cohort).
+
 ## Operator runbook (DataSift round-trip)
 
 Observed during v2-slice2 operational validation (2026-05-10). Workflow docs, not bugs — but if the friction shows up weekly, candidates for automation in Slice 3+.
