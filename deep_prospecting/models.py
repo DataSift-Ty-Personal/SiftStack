@@ -43,6 +43,10 @@ NoticeType = Literal[
 SourceID = Literal[
     "mod_iv", "obit_search", "findagrave", "legacy",
     "tps", "fps", "cbc", "google_dork",
+    # Slice 2 sources
+    "tracerfy",       # /v1/api/trace/lookup/ — paid per-heir skip trace
+    "trestle",        # /3.0/phone_intel + /3.2/phone — scoring + reverse-phone
+    "bv_manual",      # operator paste-and-parse, manual workflow (Slice 3+)
 ]
 SourceStatus = Literal["HIT", "EMPTY", "BLOCKED", "ERROR", "SKIPPED"]
 County = Literal["Essex", "Middlesex", "Somerset", "Union"]
@@ -283,13 +287,18 @@ class CostBreakdown(BaseModel):
     serper: float = 0.0
     firecrawl: float = 0.0
     smarty: float = 0.0
-    other: float = 0.0  # tracerfy, 2captcha, etc. if used
+    # Slice 2: tracerfy promoted from `other` to a typed field so the
+    # Slack cost line + per-record summary can attribute spend per
+    # vendor. Trestle (Phone Intel, Reverse Phone) will land alongside
+    # in step 5 — kept under `other` until then to avoid a no-op field.
+    tracerfy: float = 0.0
+    other: float = 0.0  # trestle (until step 5), 2captcha, etc.
 
     @property
     def total(self) -> float:
         return round(
             self.anthropic + self.serper + self.firecrawl
-            + self.smarty + self.other,
+            + self.smarty + self.tracerfy + self.other,
             4,
         )
 
