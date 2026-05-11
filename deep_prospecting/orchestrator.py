@@ -204,18 +204,23 @@ async def run(
             )
 
     # ── Phase Skip Trace ────────────────────────────────────────────────
-    if not aborted and decision_maker is not None:
+    if not aborted and decision_makers:
         st_result = await _utils._safe_call(
-            lambda: phase_skiptrace.run(decision_maker, lead, heir_map),
+            lambda: phase_skiptrace.run(decision_makers, lead, heir_map),
             name="phase_skiptrace",
         )
         if st_result is not None:
-            skip_trace, st_checks, st_cost = st_result
+            # Slice 2 step 7: phase_skiptrace returns a 4-tuple now —
+            # extra slot is `lead.warnings` deltas (e.g.
+            # phase_skiptrace_unresolved:{heir_name}).
+            skip_trace, st_checks, st_cost, st_warnings = st_result
             all_checks.extend(st_checks)
             cost = _add_costs(cost, st_cost)
-            # Phase skip-trace returns an updated DM with contact info
-            # filled in — replace.
-            decision_maker = skip_trace.decision_maker
+            decision_maker = skip_trace.decision_maker  # primary DM, updated
+            if st_warnings:
+                lead = lead.model_copy(update={
+                    "warnings": list(lead.warnings) + st_warnings,
+                })
 
         if _would_exceed_ceiling() or _budget_seconds_left() <= 0:
             aborted, abort_reason, aborted_at_phase = (

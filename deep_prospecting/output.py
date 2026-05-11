@@ -395,13 +395,34 @@ def render_people_block(pack: ResearchPack) -> str:
     else:
         lines.append("*    [unknown subject]")
 
-    # Decision Maker — only when distinct from Subject (L3 case).
-    if is_l3 and dm:
-        role_label = dm.subject_role.replace("_", " ").title()
-        status_label = dm.status.replace("_", " ").lower()
-        lines.append(
-            f"**   {dm.name} — {role_label} "
-            f"({dm.relationship}, {status_label}, {dm.confidence} confidence)"
-        )
+    # Decision Makers — Slice 2 walks ALL of them so the per-person
+    # star map matches what the writer emits in Phone Tags. Use the
+    # same star derivation the CSV writer uses (single source of truth).
+    if dm:
+        from deep_prospecting.datasift_csv_writer import derive_person_stars
+        stars_map = derive_person_stars(pack)
+        for dm_candidate in pack.decision_makers:
+            star_marker = stars_map.get(dm_candidate.name)
+            if not star_marker:
+                # Person has no phones in the pack — synthesize the
+                # next available star count so the block still reflects
+                # the DM ranking even without skip-trace hits.
+                used = set(stars_map.values())
+                # find next star count after the highest one used
+                next_n = 2
+                while ("*" * next_n) in used:
+                    next_n += 1
+                star_marker = "*" * next_n
+                stars_map[dm_candidate.name] = star_marker
+            if star_marker == "*":
+                # Subject already rendered above — skip.
+                continue
+            role_label = dm_candidate.subject_role.replace("_", " ").title()
+            status_label = dm_candidate.status.replace("_", " ").lower()
+            lines.append(
+                f"{star_marker:<5}{dm_candidate.name} — {role_label} "
+                f"({dm_candidate.relationship}, {status_label}, "
+                f"{dm_candidate.confidence} confidence)"
+            )
 
     return "\n".join(lines)

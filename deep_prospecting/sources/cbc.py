@@ -348,11 +348,21 @@ async def cbc_fetch_person(
         )
         return person, "HIT"
 
-    # Merge listing addresses into detail-page addresses (listing often
-    # has the most recent address; detail tail-loads history).
-    for a in chosen.get("addresses") or []:
-        if a not in person.addresses:
-            person.addresses.insert(0, a)
+    # Merge listing addresses into detail-page addresses. The listing
+    # page is the authoritative chronology — "Lives at" comes first,
+    # then "Used to live" — so the listing-page address list IS in
+    # current-first order. Put it at the front (preserving its order),
+    # then append any detail-page addresses not already present.
+    #
+    # The earlier `insert(0, a)` pattern reverse-LIFO'd the listing
+    # order, burying the actual current address. That caused step 7's
+    # Tracerfy lookup to fire on the WRONG address for Catherine
+    # (Wilmington DE instead of NYC), returning a same-address-different-
+    # person record that failed the name match.
+    listing_addrs = list(chosen.get("addresses") or [])
+    listing_set = set(listing_addrs)
+    detail_only = [a for a in person.addresses if a not in listing_set]
+    person.addresses = listing_addrs + detail_only
     person.source_url = chosen["detail_url"]
     person.detail_url = chosen["detail_url"]
     return person, "HIT"

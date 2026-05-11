@@ -120,26 +120,67 @@ def _subject_role_label(subject_role: str) -> str:
     return subject_role.replace("_", " ").title()
 
 
-def derive_phone_tag_cell(phone: Phone, *, subject_role: str) -> str:
+def derive_person_stars(pack) -> dict[str, str]:
+    """Build {person_name: star_string} for one pack.
+
+    Subject (decedent for L3, original owner for L1) → "*".
+    Each unique person_name found on a phone gets the next star count
+    (**, ***, ****, …) in order of first appearance across
+    pack.skip_trace.phones.
+
+    The walk is over pack.skip_trace.phones so the star order matches
+    Phase 3's DM ranking (Phase Skiptrace builds the phone list in DM
+    order). For Catherine: phones[0..2] are hers → **, phones[3..N]
+    are Paul's → ***, phones[N+1..] are Ashley's → ****.
+    """
+    stars: dict[str, str] = {}
+
+    # Subject identification: L3 uses decedent_name; L1/L2 uses the
+    # SUBJECT-role DM from decision_makers (typically the original owner).
+    subject_name: str | None = None
+    if pack.heir_map and pack.heir_map.decedent_name:
+        subject_name = pack.heir_map.decedent_name
+    else:
+        for dm in pack.decision_makers:
+            if dm.subject_role == "SUBJECT":
+                subject_name = dm.name
+                break
+
+    if subject_name:
+        stars[subject_name] = "*"
+
+    next_count = 2
+    phones = pack.skip_trace.phones if pack.skip_trace else []
+    for ph in phones:
+        nm = ph.person_name
+        if not nm or nm in stars:
+            continue
+        stars[nm] = "*" * next_count
+        next_count += 1
+
+    return stars
+
+
+def derive_phone_tag_cell(
+    phone: Phone, *, subject_role: str,
+    person_stars: dict[str, str] | None = None,
+) -> str:
     """Build the Phone Tags N cell content.
 
     Stable order: {role label}, {person-stars}, {source flag}, {dial rank}.
 
-    Slice 2 step 5: the Dial First/Second/Third label is back, but now
-    derived from `phone.activity_score` (populated by Phase Trestle from
-    Trestle Phone Intel), NOT from CLI-side confidence. Phones that
-    haven't been scored yet (activity_score=None) get no dial label
-    appended — operator sees three parts, with Trestle adding the
-    fourth when it runs.
-
-    Person-stars derive from `subject_role` (which person owns this
-    phone). The People & Star Markers block at the top of the Notes
-    field resolves the stars back to named people.
+    Slice 2 step 7+8: person-stars now come from a pack-level map keyed
+    by phone.person_name (built by `derive_person_stars`). Two heirs in
+    the same role bucket get different stars (** Catherine, *** Paul,
+    **** Ashley). Falls back to the subject_role-only mapping when no
+    person_stars map is provided (Slice 1 callsites stay working).
     """
-    parts = [
-        _subject_role_label(subject_role),
-        _stars_for_subject_role(subject_role),
-    ]
+    if person_stars and phone.person_name and phone.person_name in person_stars:
+        stars = person_stars[phone.person_name]
+    else:
+        stars = _stars_for_subject_role(subject_role)
+
+    parts = [_subject_role_label(subject_role), stars]
     src = _source_flag(phone.sources)
     if src:
         parts.append(src)
@@ -402,7 +443,17 @@ def overlay_pack_onto_row(row: dict, pack: ResearchPack) -> tuple[int, bool]:
         )
 
     dm = pack.primary_dm
-    subject_role = dm.subject_role if dm else "SUBJECT"
+    primary_role = dm.subject_role if dm else "SUBJECT"
+
+    # Slice 2 step 8: build the per-pack {person_name: stars} map once.
+    # Each phone's tag picks its star from the map by phone.person_name.
+    person_stars = derive_person_stars(pack)
+
+    # Map person_name → that person's DecisionMaker subject_role so each
+    # phone gets the right Role label (Heir / Family Pivot / Executor /
+    # Subject). Falls back to the primary DM's role when an unknown
+    # person_name surfaces.
+    role_by_person = {dm.name: dm.subject_role for dm in pack.decision_makers}
 
     # Existing phones in the row — skip writing a duplicate number into
     # a fresh slot. Common when a row was previously enriched by the
@@ -442,8 +493,13 @@ def overlay_pack_onto_row(row: dict, pack: ResearchPack) -> tuple[int, bool]:
         # the phone hasn't been touched yet — writing "UNKNOWN" would
         # falsely signal a prior dial attempt.
         row[f"Phone Status {slot}"] = ""
+        # Per-phone role: each phone belongs to a specific person whose
+        # role may differ from the primary (e.g., primary HEIR, backup
+        # HEIR, FAMILY_PIVOT). Look up by person_name; fall back to
+        # primary role for phones with no person_name set.
+        phone_role = role_by_person.get(p.person_name or "", primary_role)
         row[f"Phone Tags {slot}"] = derive_phone_tag_cell(
-            p, subject_role=subject_role,
+            p, subject_role=phone_role, person_stars=person_stars,
         )
         # Phone Is Connected stays blank (untested).
         row[f"Phone Is Connected {slot}"] = ""

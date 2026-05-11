@@ -26,14 +26,17 @@ logger = logging.getLogger(__name__)
 
 # ── Cost discipline ───────────────────────────────────────────────────
 # Hard ceiling: orchestrator stamps abort + halts before a phase whose
-# projected spend would push total over this. Set conservatively below
-# the spec's $0.20 — Rick wants $0.18 enforced.
-COST_CEILING_USD: float = 0.18
+# projected spend would push total over this.
+#
+# Slice 1 placeholder was $0.18 (CBC-only, no paid APIs). Slice 2 raised
+# to $1.00 because Tracerfy at $0.10/heir × 3 heirs + Trestle at $0.015
+# × ~10 phones lands an L3 case near $0.50 with headroom for outliers.
+COST_CEILING_USD: float = 1.00
 # Target: aspirational — runs above this aren't aborted, but the orchestrator
 # can use it to choose cheaper variants (e.g., Haiku vs Sonnet for the
 # DM-reasoning paragraph) when below target, switch to faster/cheaper
-# strategies when above.
-COST_TARGET_USD: float = 0.10
+# strategies when above. Slice 2: $0.50 target per spec.
+COST_TARGET_USD: float = 0.50
 
 
 # ── _safe wrapper ─────────────────────────────────────────────────────
