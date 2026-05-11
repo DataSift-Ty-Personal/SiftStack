@@ -129,7 +129,8 @@ async def run(
     all_checks.extend(p1_checks)
 
     heir_map = None
-    decision_maker = None
+    decision_makers: list = []  # Slice 2: list of DMs from Phase 3
+    decision_maker = None       # primary DM (decision_makers[0]) — Slice 1 callsites
     skip_trace = None
 
     if _would_exceed_ceiling() or _budget_seconds_left() <= 0:
@@ -188,7 +189,11 @@ async def run(
             name="phase_3_target",
         )
         if p3_result is not None:
-            decision_maker, p3_checks, p3_cost = p3_result
+            # Slice 2 step 6: Phase 3 now returns list[DecisionMaker].
+            # `decision_maker` stays as the primary alias for Phase
+            # Skiptrace + writer consumers that haven't migrated yet.
+            decision_makers, p3_checks, p3_cost = p3_result
+            decision_maker = decision_makers[0] if decision_makers else None
             all_checks.extend(p3_checks)
             cost = _add_costs(cost, p3_cost)
 
@@ -255,11 +260,13 @@ async def run(
 
     duration = (time.monotonic() - started_mono)
 
-    # Slice 2: ResearchPack.decision_maker (singular) is gone — Phase 3
-    # still returns one DM in Slice 1 / 2.5 transitional mode, so wrap
-    # it in a one-element list. When Phase 3 expands to return a list
-    # (step 6), this becomes `decision_makers=phase_3_result`.
-    pack_dms = [decision_maker] if decision_maker is not None else []
+    # Slice 2 step 6: Phase 3 returns list[DecisionMaker] (primary +
+    # backups, ranked). When Phase 3 ran and produced DMs, use them
+    # directly. Phase Skiptrace's updated DM (with contact info filled
+    # in) replaces decision_makers[0] so primary_dm stays in sync.
+    pack_dms = list(decision_makers)
+    if decision_maker is not None and pack_dms:
+        pack_dms[0] = decision_maker
 
     pack = ResearchPack(
         input=prospect,
