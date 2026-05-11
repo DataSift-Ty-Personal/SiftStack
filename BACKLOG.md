@@ -30,6 +30,17 @@ Deferred work — surfaced during builds but punted to keep scope focused.
 
   Fix path: validate `(ESTATE)` death signal via a cheap Serper obit dork on Phase 1's title_owner BEFORE entering Phase 2. If Serper finds the title_owner as a *surviving* family member of a different decedent's obit, flip the death_signal to False and route as L1 with the marker as advisory only. If Serper finds nothing for the title_owner specifically, keep the marker but lower confidence on the death_signal. Budget: ~$0.001 per `(ESTATE)`-marker record (very small fraction of cohort).
 
+  **STATUS:** Shipped in v4-slice4 (`phases/phase_1_title.validate_estate_marker`). Validator does 2 Serper queries (decedent + survivor) + 2 Haiku boolean calls (~$0.012 per `(ESTATE)`-marker record). Verified on the 7-record cohort: Daniel S. Bernshock + Marie Schwichtenberg both flipped L2/L3 → L1 with `phase_1_estate_marker_advisory_spouse_estate` warning. Catherine's `title_owner_mismatch_same_surname` heuristic doesn't trigger the validator — L3 routing unchanged.
+
+## Validator observability
+
+- **Track `(ESTATE)`-marker validator flip rate across production backlog.** Slice 4's `validate_estate_marker` is heuristic-on-heuristic — Phase 1's `(ESTATE)` marker fires first, validator decides if it's a real death. Need observed flip rate to know if the underlying heuristic is well-calibrated:
+  - If **flip rate > 30%** across the production backlog: the `(ESTATE)` marker is too noisy. Rethink the upstream heuristic — maybe drop it entirely and rely on the cheaper Serper dork as the primary death signal, not as a corrector.
+  - If **flip rate < 5%** across the production backlog: the validator is overkill — the original heuristic was reasonably accurate. Consider stripping back to save the ~$0.012/`(ESTATE)`-record validator cost.
+  - If **5%–30%** (likely): validator is doing real work, keep it.
+
+  Track via: count records where `lead.warnings` contains `phase_1_estate_marker_advisory_spouse_estate` vs total records where Phase 1 hit the `(ESTATE)` path. Add a counter to `run_batch.py`'s summary output. Defer wiring until 50+ production records observed.
+
 ## Operator runbook (DataSift round-trip)
 
 Observed during v2-slice2 operational validation (2026-05-10). Workflow docs, not bugs — but if the friction shows up weekly, candidates for automation in Slice 3+.
