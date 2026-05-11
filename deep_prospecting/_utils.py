@@ -141,13 +141,19 @@ def output_dir_for_run(slug_text: str, *, base: Path | None = None) -> Path:
 
     Layout: outputs/YYYY-MM-DD/{slug}/
 
+    The date in the folder name is the operator's LOCAL date — UTC was
+    confusing for west-coast operators ("I ran this at 5pm PDT but the
+    folder is in tomorrow's UTC dir"). The audit timestamp on the
+    ResearchPack itself (`now_utc()`) stays UTC for record-keeping
+    consistency across machines.
+
     The base can be overridden via `PROSPECT_OUTPUT_DIR` env var; default
     is `outputs/` next to the deep_prospecting module.
     """
     if base is None:
         env_base = os.environ.get("PROSPECT_OUTPUT_DIR")
         base = Path(env_base) if env_base else Path(__file__).resolve().parent / "outputs"
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    today = datetime.now().astimezone().strftime("%Y-%m-%d")
     out = base / today / slug(slug_text)
     out.mkdir(parents=True, exist_ok=True)
     return out

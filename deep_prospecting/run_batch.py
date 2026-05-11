@@ -29,7 +29,7 @@ import csv
 import logging
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 
 from deep_prospecting import datasift_csv_writer, orchestrator
@@ -150,7 +150,9 @@ async def run_batch(input_csv: Path, output_root: Path | None = None) -> dict:
         rows = list(csv.DictReader(fh))
     logger.info("Batch run: %d rows from %s", len(rows), input_csv)
 
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    # Local-date folder (matches _utils.output_dir_for_run convention —
+    # operator's "today's runs" intuition lines up with their wall clock).
+    today = datetime.now().astimezone().strftime("%Y-%m-%d")
     output_root = (
         output_root
         if output_root is not None
