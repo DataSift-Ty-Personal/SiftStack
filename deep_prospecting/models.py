@@ -287,18 +287,20 @@ class CostBreakdown(BaseModel):
     serper: float = 0.0
     firecrawl: float = 0.0
     smarty: float = 0.0
-    # Slice 2: tracerfy promoted from `other` to a typed field so the
-    # Slack cost line + per-record summary can attribute spend per
-    # vendor. Trestle (Phone Intel, Reverse Phone) will land alongside
-    # in step 5 — kept under `other` until then to avoid a no-op field.
+    # Slice 2: per-vendor attribution so the Slack cost line + per-record
+    # summary can show spend by source. tracerfy = /trace/lookup/ paid
+    # skip-trace; trestle = /3.0/phone_intel scoring + /3.2/phone reverse
+    # finder (combined into one field — both endpoints are flat-rate per
+    # call and there's no operational value in splitting them).
     tracerfy: float = 0.0
-    other: float = 0.0  # trestle (until step 5), 2captcha, etc.
+    trestle: float = 0.0
+    other: float = 0.0  # 2captcha, etc.
 
     @property
     def total(self) -> float:
         return round(
             self.anthropic + self.serper + self.firecrawl
-            + self.smarty + self.tracerfy + self.other,
+            + self.smarty + self.tracerfy + self.trestle + self.other,
             4,
         )
 
