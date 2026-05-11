@@ -34,7 +34,7 @@ from pydantic import BaseModel, Field, field_validator
 Confidence = Literal["HIGH", "MEDIUM", "LOW"]
 HeirStatus = Literal["LIVING", "DECEASED", "UNVERIFIED"]
 DMStatus = Literal["VERIFIED_LIVING", "UNVERIFIED"]
-PhoneType = Literal["MOBILE", "LANDLINE", "UNKNOWN"]
+PhoneType = Literal["MOBILE", "LANDLINE", "VOIP", "UNKNOWN"]
 ResearchLevel = Literal["L1", "L2", "L3"]
 NoticeType = Literal[
     "foreclosure", "probate", "tax_sale", "tax_delinquent",

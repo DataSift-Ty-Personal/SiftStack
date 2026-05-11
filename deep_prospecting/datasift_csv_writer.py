@@ -123,13 +123,14 @@ def _subject_role_label(subject_role: str) -> str:
 def derive_phone_tag_cell(phone: Phone, *, subject_role: str) -> str:
     """Build the Phone Tags N cell content.
 
-    Stable order: {role label}, {person-stars}, {source flag}.
+    Stable order: {role label}, {person-stars}, {source flag}, {dial rank}.
 
-    Dial First/Second/Third labels are NOT emitted here — those come
-    from Trestle phone-scoring downstream of this CLI, which has the
-    line-type + carrier reputation data needed to rank dial priority.
-    Phase skip-trace produces phones; the CLI surfaces them as a
-    person-keyed set; Trestle adds the dial ordering later.
+    Slice 2 step 5: the Dial First/Second/Third label is back, but now
+    derived from `phone.activity_score` (populated by Phase Trestle from
+    Trestle Phone Intel), NOT from CLI-side confidence. Phones that
+    haven't been scored yet (activity_score=None) get no dial label
+    appended — operator sees three parts, with Trestle adding the
+    fourth when it runs.
 
     Person-stars derive from `subject_role` (which person owns this
     phone). The People & Star Markers block at the top of the Notes
@@ -142,6 +143,15 @@ def derive_phone_tag_cell(phone: Phone, *, subject_role: str) -> str:
     src = _source_flag(phone.sources)
     if src:
         parts.append(src)
+
+    # Dial-rank — lazy import keeps the writer free of phase deps when
+    # someone uses datasift_csv_writer outside the orchestrator (e.g.
+    # a Phase 1 / Phase 2 partial pack with no Trestle scoring yet).
+    from deep_prospecting.phases.phase_trestle import derive_dial_rank_label
+    dial_label = derive_dial_rank_label(phone.activity_score)
+    if dial_label:
+        parts.append(dial_label)
+
     return PHONE_TAG_SEP.join(parts)
 
 

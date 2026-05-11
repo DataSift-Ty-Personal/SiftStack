@@ -69,6 +69,8 @@ def _add_costs(base: CostBreakdown, delta: CostBreakdown) -> CostBreakdown:
         serper=round(base.serper + delta.serper, 6),
         firecrawl=round(base.firecrawl + delta.firecrawl, 6),
         smarty=round(base.smarty + delta.smarty, 6),
+        tracerfy=round(base.tracerfy + delta.tracerfy, 6),
+        trestle=round(base.trestle + delta.trestle, 6),
         other=round(base.other + delta.other, 6),
     )
 
@@ -209,6 +211,38 @@ async def run(
             # Phase skip-trace returns an updated DM with contact info
             # filled in — replace.
             decision_maker = skip_trace.decision_maker
+
+        if _would_exceed_ceiling() or _budget_seconds_left() <= 0:
+            aborted, abort_reason, aborted_at_phase = (
+                True, "cost_ceiling" if _would_exceed_ceiling() else "time_budget",
+                "phase_trestle",
+            )
+
+    # ── Phase Trestle — phone scoring + dial-rank label ─────────────────
+    if not aborted and skip_trace is not None and skip_trace.phones:
+        # Build a partial pack to pass into the phase — it consumes the
+        # whole skip_trace, not just the phone list.
+        from deep_prospecting.phases import phase_trestle
+        # Synthesize a transient pack stub for Phase Trestle (it only
+        # reads pack.skip_trace; everything else is for the compile step).
+        from deep_prospecting.models import ResearchPack as _RP
+        from datetime import datetime as _dt, timezone as _tz
+        _stub = _RP(
+            input=prospect, level_selected="L1", level_reason="phase_trestle_stub",
+            lead=lead, skip_trace=skip_trace,
+            timestamp_utc=_dt.now(_tz.utc), duration_seconds=0.0,
+        )
+        pt_result = await _utils._safe_call(
+            lambda: phase_trestle.run(_stub),
+            name="phase_trestle",
+        )
+        if pt_result is not None:
+            updated_stub, pt_checks, pt_cost = pt_result
+            all_checks.extend(pt_checks)
+            cost = _add_costs(cost, pt_cost)
+            # Pull the rescored skip_trace back out — its phones now
+            # carry activity_score, upgraded type, carrier (where blank).
+            skip_trace = updated_stub.skip_trace
 
     # ── Compile + level selection ───────────────────────────────────────
     heir_count = len(heir_map.heirs) if heir_map else 0
