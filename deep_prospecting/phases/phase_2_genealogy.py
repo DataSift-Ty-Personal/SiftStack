@@ -296,6 +296,35 @@ async def run(lead: Lead) -> tuple[HeirMap | None, list[SourceCheck], CostBreakd
         except Exception as e:
             logger.warning("obit_search retry failed: %s", e)
 
+    # Slice 3: Serper fallback when DDGS returns nothing. Resolves the
+    # DDGS non-determinism (BACKLOG'd) that produced phase_2_no_obit_found
+    # warnings on Marie + Maryann in the Slice 2 cohort. Serper is paid
+    # but flat $0.001/search, free tier covers 2,500/mo, and only fires
+    # on the recall-gap path — DDGS-first behavior is preserved.
+    if not candidates:
+        from deep_prospecting.sources import serper_obit_fallback
+        state_code = state_code if state_code else ""
+        try:
+            serper_results = await _utils._safe_call(
+                lambda: serper_obit_fallback.fallback_obit_search(
+                    decedent_search_name, city or None, state_code or None,
+                ),
+                name=f"obit_search[serper,{decedent_search_name}]",
+            ) or []
+            cost.serper += serper_obit_fallback.CALL_COST_USD
+            candidates = serper_results
+            if serper_results:
+                checks.append(SourceCheck(
+                    source="obit_search",
+                    status="HIT",
+                    notes=(
+                        f"serper fallback fired (DDGS empty); "
+                        f"{len(serper_results)} obit URLs returned"
+                    ),
+                ))
+        except Exception as e:
+            logger.warning("serper obit fallback failed: %s", e)
+
     if not candidates:
         checks.append(SourceCheck(
             source="obit_search",
