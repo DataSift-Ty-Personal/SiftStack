@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from dataclasses import dataclass
 
 from deep_prospecting._siftstack_bridge import sonnet_text
@@ -479,6 +480,15 @@ async def run(
     cost = CostBreakdown()
 
     caller_owner = (lead.input.owner or "").strip() or None
+
+    # Slice 5b: title_owner-alive branch. Phase 2's reverse-address
+    # probe set `lead.actual_subject_name` when the title_owner is
+    # alive at the property. Build a 2-DM list directly — title_owner
+    # SUBJECT, DataSift contact FAMILY_PIVOT — skipping the heir-based
+    # ranking (no obit was found, no heirs to rank).
+    if lead.actual_subject_name:
+        return _build_title_owner_alive_dms(lead, checks, cost)
+
     ranked = pick_decision_makers(heir_map, caller_owner=caller_owner)
 
     api_key = os.environ.get("ANTHROPIC_API_KEY", "")
@@ -539,6 +549,7 @@ async def run(
                     decedent=decedent_name,
                 ).strip(),
             ))
+        _apply_executor_label_override(decision_makers, lead, heir_map)
         return decision_makers, checks, cost
 
     # No LIVING heirs — fall back to legacy single-DM logic (FAMILY_PIVOT
@@ -583,4 +594,110 @@ async def run(
         confidence=confidence,
         reasoning=reasoning.strip(),
     ))
+    _apply_executor_label_override(decision_makers, lead, heir_map)
     return decision_makers, checks, cost
+
+
+def _apply_executor_label_override(
+    dms: list[DecisionMaker],
+    lead: Lead,
+    heir_map: HeirMap | None,
+) -> None:
+    """Slice 5b: when Phase 1 set named_contact_role='executor' AND Phase 2
+    parsed a real DOD on the decedent, relabel the DataSift contact's DM
+    as EXECUTOR. Without the DOD we're still in 'suspected probate'
+    territory and SUBJECT is the safer label.
+
+    Pure label correction — no routing or skip-trace impact.
+    """
+    if lead.named_contact_role != "executor":
+        return
+    if heir_map is None or heir_map.decedent_dod is None:
+        return
+    caller_key = _name_token_key_phase3(lead.input.owner or "")
+    if not caller_key:
+        return
+    for dm in dms:
+        if _name_token_key_phase3(dm.name) == caller_key:
+            dm.subject_role = "EXECUTOR"
+            return
+
+
+def _name_token_key_phase3(name: str) -> frozenset[str]:
+    """Token-key compare for caller-vs-DM matching. Mirrors Phase 1's
+    `_name_token_key` semantics so cross-phase identity checks agree
+    on '(LAST, FIRST)' vs 'First Last' variants."""
+    if not name:
+        return frozenset()
+    cleaned = re.sub(r"[^a-zA-Z\s,]", " ", name).replace(",", " ")
+    tokens = {t.lower() for t in cleaned.split() if len(t) > 1}
+    return frozenset(tokens)
+
+
+def _build_title_owner_alive_dms(
+    lead: Lead,
+    checks: list[SourceCheck],
+    cost: CostBreakdown,
+) -> tuple[list[DecisionMaker], list[SourceCheck], CostBreakdown]:
+    """Slice 5b: build the 2-DM output for the title_owner-alive branch.
+
+    Primary DM = title_owner verified alive (SUBJECT).
+    Backup DM = original DataSift contact (FAMILY_PIVOT).
+
+    Deterministic reasoning only — Sonnet would burn ~$0.01-0.02 to write
+    prose for a routing case where the explanation is mechanical. The
+    operator's report can render the Tracerfy alive-evidence directly.
+    """
+    dms: list[DecisionMaker] = []
+
+    primary_name = (lead.actual_subject_name or "").strip()
+    secondary_name = (lead.secondary_contact_name or "").strip()
+    evidence = lead.title_owner_alive_evidence or {}
+    age = evidence.get("age")
+
+    age_clause = f", age {age}" if age else ""
+    primary_reason = (
+        f"Title owner '{primary_name}' verified alive at the property"
+        f"{age_clause} via Tracerfy reverse-address probe. Phase 1 set "
+        f"executor_swap_confirmed (Lists tag + name mismatch) but Phase 2 "
+        f"obit search returned empty — title owner is alive, not deceased. "
+        f"Phase Skiptrace will pull phones + emails from the property "
+        f"address. Operator dials this person FIRST."
+    )
+    dms.append(DecisionMaker(
+        name=primary_name,
+        relationship="owner",
+        status="VERIFIED_LIVING",
+        subject_role="SUBJECT",
+        contact=ContactInfo(),
+        confidence="HIGH",
+        reasoning=primary_reason,
+    ))
+
+    if secondary_name:
+        dms.append(DecisionMaker(
+            name=secondary_name,
+            relationship="family",
+            status="UNVERIFIED",
+            subject_role="FAMILY_PIVOT",
+            contact=ContactInfo(),
+            confidence="MEDIUM",
+            reasoning=(
+                f"DataSift-supplied contact '{secondary_name}'. The "
+                f"operator's upstream workflow flagged this row as "
+                f"Probate/Inheritance/NOD, but the title owner "
+                f"('{primary_name}') is alive — not deceased. Demoted to "
+                f"family pivot. Skip-trace as a secondary contact in case "
+                f"primary doesn't answer."
+            ),
+        ))
+
+    checks.append(SourceCheck(
+        source="tracerfy",
+        status="HIT",
+        notes=(
+            f"phase 3 title_owner_alive branch: SUBJECT='{primary_name}', "
+            f"FAMILY_PIVOT='{secondary_name or '(none)'}'"
+        ),
+    ))
+    return dms, checks, cost

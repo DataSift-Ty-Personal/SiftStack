@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import csv
 import logging
+import re
 from datetime import date
 from pathlib import Path
 from typing import Iterable
@@ -111,13 +112,34 @@ def _source_flag(sources: list[SourceID]) -> str:
     if not sources:
         return ""
     src = sources[0]
-    label = {"tps": "TPS", "fps": "FPS", "cbc": "CBC"}.get(src, src.upper())
+    label = {
+        "tps": "TPS",
+        "fps": "FPS",
+        "cbc": "CBC",
+        "tracerfy": "Tracerfy",
+        "trestle": "Trestle",
+        "bv_manual": "BV Manual",
+    }.get(src, src.upper())
     return f"Found via {label}"
 
 
 def _subject_role_label(subject_role: str) -> str:
     """SubjectRole literal → operator-friendly label for the tag cell."""
     return subject_role.replace("_", " ").title()
+
+
+def _person_token_key(name: str) -> frozenset[str]:
+    """Order-independent token-key for name comparison. Strips
+    punctuation + lowercases. Used by `derive_person_stars` to dedup
+    'Allan Maltby' vs 'Allan J. Maltby' as the same person.
+    """
+    if not name:
+        return frozenset()
+    cleaned = re.sub(r"[^a-zA-Z\s]", " ", name)
+    # Drop 1-char tokens (middle initials, "J", "P") so they don't
+    # gate identity. Token *additions* in BV output shouldn't fork
+    # the star map.
+    return frozenset(t.lower() for t in cleaned.split() if len(t) > 1)
 
 
 def derive_person_stars(pack) -> dict[str, str]:
@@ -132,8 +154,21 @@ def derive_person_stars(pack) -> dict[str, str]:
     Phase 3's DM ranking (Phase Skiptrace builds the phone list in DM
     order). For Catherine: phones[0..2] are hers → **, phones[3..N]
     are Paul's → ***, phones[N+1..] are Ashley's → ****.
+
+    Slice 5b: identity uses token-key compare ('Allan Maltby' ≡
+    'Allan J. Maltby') so BV-emitted middle-initial variants don't
+    duplicate a person in the star map. The OUTPUT dict maps every
+    surface form (each unique `phone.person_name` string) to the
+    shared star count, so the writer's `phone_stars[phone.person_name]`
+    lookup hits regardless of which variant the phone carries.
     """
     stars: dict[str, str] = {}
+    keyed_to_star: dict[frozenset[str], str] = {}
+
+    def _assign(name: str, star: str) -> None:
+        """Bind both the surface name and its token-key to the star."""
+        stars[name] = star
+        keyed_to_star[_person_token_key(name)] = star
 
     # Subject identification:
     #   - L3 (confirmed decedent — obit found with parseable DOD): * = decedent
@@ -157,15 +192,23 @@ def derive_person_stars(pack) -> dict[str, str]:
                 break
 
     if subject_name:
-        stars[subject_name] = "*"
+        _assign(subject_name, "*")
 
     next_count = 2
     phones = pack.skip_trace.phones if pack.skip_trace else []
     for ph in phones:
         nm = ph.person_name
-        if not nm or nm in stars:
+        if not nm:
             continue
-        stars[nm] = "*" * next_count
+        if nm in stars:
+            continue
+        key = _person_token_key(nm)
+        if key in keyed_to_star:
+            # Same person, different surface form ('Allan' vs 'Allan J.')
+            # — point both names at the same star.
+            stars[nm] = keyed_to_star[key]
+            continue
+        _assign(nm, "*" * next_count)
         next_count += 1
 
     return stars
@@ -462,8 +505,14 @@ def overlay_pack_onto_row(row: dict, pack: ResearchPack) -> tuple[int, bool]:
     # Map person_name → that person's DecisionMaker subject_role so each
     # phone gets the right Role label (Heir / Family Pivot / Executor /
     # Subject). Falls back to the primary DM's role when an unknown
-    # person_name surfaces.
+    # person_name surfaces. Token-key compare so BV-emitted middle
+    # initials don't break the lookup ('Amber Tami' ≡ 'Amber L. Tami').
     role_by_person = {dm.name: dm.subject_role for dm in pack.decision_makers}
+    role_by_key = {
+        _person_token_key(dm.name): dm.subject_role
+        for dm in pack.decision_makers
+        if dm.name
+    }
 
     # Existing phones in the row — skip writing a duplicate number into
     # a fresh slot. Common when a row was previously enriched by the
@@ -505,9 +554,15 @@ def overlay_pack_onto_row(row: dict, pack: ResearchPack) -> tuple[int, bool]:
         row[f"Phone Status {slot}"] = ""
         # Per-phone role: each phone belongs to a specific person whose
         # role may differ from the primary (e.g., primary HEIR, backup
-        # HEIR, FAMILY_PIVOT). Look up by person_name; fall back to
-        # primary role for phones with no person_name set.
-        phone_role = role_by_person.get(p.person_name or "", primary_role)
+        # HEIR, FAMILY_PIVOT). Look up by person_name first (exact),
+        # then by token-key (handles middle-initial variants from BV).
+        # Fall back to primary role for phones with no match.
+        phone_name = p.person_name or ""
+        phone_role = role_by_person.get(phone_name)
+        if phone_role is None and phone_name:
+            phone_role = role_by_key.get(_person_token_key(phone_name))
+        if phone_role is None:
+            phone_role = primary_role
         row[f"Phone Tags {slot}"] = derive_phone_tag_cell(
             p, subject_role=phone_role, person_stars=person_stars,
         )

@@ -134,6 +134,173 @@ def _parse_city_state_from_address(addr: str | None) -> tuple[str, str]:
     return city, state_code
 
 
+def _parse_full_address_for_tracerfy(
+    addr: str | None,
+) -> tuple[str, str, str, str | None]:
+    """Split '900 Baldwin Ave, Linden, NJ 07036-2925' into
+    (street, city, state, zip). Returns empty strings when fields are
+    missing — caller handles the miss.
+
+    Slice 5b: used by `_verify_title_owner_alive` to send the property
+    address to Tracerfy.
+    """
+    if not addr:
+        return "", "", "", None
+    parts = [p.strip() for p in addr.split(",") if p.strip()]
+    if len(parts) < 3:
+        return "", "", "", None
+    street = parts[0]
+    city = parts[-2]
+    # Final token = "STATE [ZIP]" — parse both
+    tail = parts[-1].strip()
+    m = re.match(r"^([A-Za-z]{2})(?:\s+(\d{5}(?:-\d{4})?))?$", tail)
+    if not m:
+        return street, city, "", None
+    state = m.group(1).upper()
+    zip_ = m.group(2)
+    # Tracerfy accepts the 5-digit base; strip ZIP+4 extension.
+    if zip_ and "-" in zip_:
+        zip_ = zip_.split("-", 1)[0]
+    return street, city, state, zip_
+
+
+def _title_owner_first_last(modiv_owner: str) -> tuple[str, str]:
+    """Pull (first_name, last_name) from 'TAMI, JEFFREY P' or
+    'SCHWICHTENBERG, MARIE (ESTATE)'. Returns ('', '') when format
+    doesn't fit. Used by `_verify_title_owner_alive` for name matching
+    against Tracerfy persons.
+
+    Joint owners ('GUIGUE, YEHONATHAN & SARAH') return only the FIRST
+    listed person — the caller is interested in whether ANY person at
+    this address matches the title.
+    """
+    if not modiv_owner:
+        return "", ""
+    # Strip parens annotations (ESTATE, EST, LIFE EST, etc.)
+    s = re.sub(r"\([^)]*\)", "", modiv_owner).strip()
+    if "," not in s:
+        return "", ""
+    last_raw, _, rest = s.partition(",")
+    last = last_raw.strip().title()
+    rest = rest.strip()
+    # Drop joint suffix "& OTHER" — only return the first listed person
+    rest = re.split(r"\s*&\s*", rest)[0].strip()
+    # First name = first whitespace-delimited token in `rest`
+    tokens = rest.split()
+    if not tokens:
+        return "", last
+    first = tokens[0].title()
+    return first, last
+
+
+async def _verify_title_owner_alive(
+    lead: Lead,
+    cost: CostBreakdown,
+    checks: list[SourceCheck],
+) -> None:
+    """Slice 5b: Tracerfy reverse-address probe on the property when
+    Phase 2's obit search returned empty AND Phase 1 set
+    executor_swap_confirmed. If the title_owner is found alive at the
+    property, mutate `lead` to flip routing:
+
+        lead.death_signal       = False
+        lead.actual_subject_name = "<First Last>"
+        lead.secondary_contact_name = <DataSift contact>
+        lead.title_owner_alive_evidence = {alive person snapshot}
+        lead.warnings += "phase_1_title_owner_alive_datasift_contact_secondary"
+
+    Phase 3 reads these fields to build a 2-DM list (title_owner SUBJECT
+    + DataSift contact FAMILY_PIVOT) instead of routing single-DM.
+
+    No-op when the gating preconditions aren't met or the Tracerfy
+    probe doesn't find the title_owner alive.
+    """
+    # Only fires on the executor-swap confirmed path with a parseable
+    # title_owner — never on the surname-mismatch heuristic or vanilla
+    # death_signal=False rows.
+    if lead.death_signal_reason != "executor_swap_confirmed":
+        return
+    if not lead.title_owner:
+        return
+
+    first, last = _title_owner_first_last(lead.title_owner)
+    if not (first and last):
+        return
+
+    street, city, state, zip_ = _parse_full_address_for_tracerfy(
+        lead.input.address,
+    )
+    if not (street and city and state):
+        return
+
+    from deep_prospecting.sources import tracerfy as _tracerfy
+    tr = await _utils._safe_call(
+        lambda: _tracerfy.search(
+            address=street, city=city, state=state, zip=zip_,
+            find_owner=True,
+        ),
+        name=f"tracerfy.title_owner_alive_check[{street}]",
+    )
+    if tr is None:
+        return
+    cost.tracerfy = round(cost.tracerfy + tr.cost_usd, 4)
+    checks.append(SourceCheck(
+        source="tracerfy",
+        status=tr.status,
+        notes=f"title_owner_alive probe at {street}, {city} {state} ({tr.persons_count} persons)",
+    ))
+    if not tr.hit:
+        return
+
+    # Look for an alive person whose name first+last matches title_owner.
+    matching = None
+    fnorm, lnorm = first.lower(), last.lower()
+    for p in tr.persons:
+        if p.deceased:
+            continue
+        pf = (p.first_name or "").lower()
+        pl = (p.last_name or "").lower()
+        # Permissive first-name match: handle "Jeffrey P" vs "Jeffrey"
+        # (Tracerfy doesn't return middle initials in first_name).
+        if pl == lnorm and (pf == fnorm or pf.startswith(fnorm) or fnorm.startswith(pf)):
+            matching = p
+            break
+    if not matching:
+        return
+
+    # Title_owner is alive — flip routing.
+    lead.death_signal = False
+    lead.actual_subject_name = (matching.full_name or f"{matching.first_name} {matching.last_name}").strip()
+    lead.actual_subject_first_name = matching.first_name or first
+    lead.actual_subject_last_name = matching.last_name or last
+    lead.secondary_contact_name = (lead.input.owner or "").strip() or None
+    lead.title_owner_alive_evidence = {
+        "first_name": matching.first_name,
+        "last_name": matching.last_name,
+        "full_name": matching.full_name,
+        "age": matching.age,
+        "dob": matching.dob,
+        "deceased": matching.deceased,
+        "property_owner": matching.property_owner,
+        "phones": [
+            {"number": ph.number, "type": ph.type, "rank": ph.rank, "dnc": ph.dnc, "carrier": ph.carrier}
+            for ph in (matching.phones or [])
+        ],
+        "emails": [
+            {"email": e.email, "rank": e.rank} for e in (matching.emails or [])
+        ],
+    }
+    lead.warnings.append(
+        "phase_1_title_owner_alive_datasift_contact_secondary"
+    )
+    lead.warnings.append(
+        f"phase_2_title_owner_alive_check: '{lead.actual_subject_name}' "
+        f"found alive at {street} (age={matching.age or '?'}); "
+        f"flipping subject — DataSift contact "
+        f"'{lead.secondary_contact_name or '?'}' demoted to secondary"
+    )
+
+
 # ── DOD parsing ──────────────────────────────────────────────────────────
 
 
@@ -336,6 +503,7 @@ async def run(lead: Lead) -> tuple[HeirMap | None, list[SourceCheck], CostBreakd
             status="EMPTY",
             notes=f"no obituary hits for '{decedent_search_name}' in {state_full}",
         ))
+        await _verify_title_owner_alive(lead, cost, checks)
         return (
             HeirMap(
                 decedent_name=decedent_search_name,
@@ -404,6 +572,7 @@ async def run(lead: Lead) -> tuple[HeirMap | None, list[SourceCheck], CostBreakd
                 f"no first+surname token match for '{decedent_search_name}'"
             ),
         ))
+        await _verify_title_owner_alive(lead, cost, checks)
         return (
             HeirMap(
                 decedent_name=decedent_search_name,

@@ -353,7 +353,7 @@ def _print_summary_table(result: dict) -> None:
     print(f"Pack dirs:   {result['output_root']}/<slug>/")
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Batch deep_prospecting runner")
     parser.add_argument("input_csv", type=Path, help="DataSift CSV export to process")
     parser.add_argument(
@@ -361,7 +361,7 @@ def main() -> int:
         help="Override outputs/{date}/ root (default: deep_prospecting/outputs/{utc-date})",
     )
     parser.add_argument("-v", "--verbose", action="store_true")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     logging.basicConfig(
         level=logging.INFO if args.verbose else logging.WARNING,

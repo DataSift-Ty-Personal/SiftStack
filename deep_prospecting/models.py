@@ -125,6 +125,23 @@ class Lead(BaseModel):
     # executor-swap path so Phase 3 can confirm the DM directly without
     # re-deriving from the heir map.
     named_contact_role: str | None = None
+    # Slice 5b: title_owner-alive verification. When Phase 1 set
+    # executor_swap_confirmed but Phase 2 found no obit, Phase 2 runs a
+    # Tracerfy reverse-address probe on the property. If the title_owner
+    # is found alive at the property, these fields capture the real
+    # subject (title_owner) and demote the DataSift contact to a
+    # secondary (FAMILY_PIVOT). Phase 3 reads these to build the 2-DM
+    # output; death_signal is flipped back to False on this branch.
+    actual_subject_name: str | None = None       # title_owner verified alive
+    actual_subject_first_name: str | None = None  # for skip-trace name matching
+    actual_subject_last_name: str | None = None
+    secondary_contact_name: str | None = None    # DataSift contact when demoted
+    # Raw Tracerfy person snapshot (subset) cached so observability /
+    # tests can introspect the alive evidence. Phase Skiptrace does NOT
+    # currently reuse this — it re-fetches when scoring phones — so the
+    # ~$0.10 duplicate cost is accepted in exchange for simpler flow.
+    # Worth optimizing if the alive-verification branch fires often.
+    title_owner_alive_evidence: dict | None = None
     name_variants: list[str] = Field(default_factory=list)
     red_flags: list[str] = Field(default_factory=list)
     mailing_address: str | None = None
