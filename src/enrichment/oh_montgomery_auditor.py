@@ -274,7 +274,13 @@ def _sync_search(
                 "parcel_id": row["parcel_id"],
                 "owner_name": row["owner_name"],
                 "address": row["address"],
-                "city": "",          # not in result table; geocode upstream
+                # Default city = Dayton (Montgomery County seat — ~70% of parcels).
+                # Smarty will correct to actual suburb on standardization if
+                # the address is in Kettering / Vandalia / Centerville / etc.
+                # Without this default, every Montgomery probate record failed
+                # validation ("missing zip") because Smarty needs city to
+                # standardize and infer ZIP.
+                "city": "Dayton",
                 "state": "OH",
                 "zip": "",
                 "assessed_value": "",
