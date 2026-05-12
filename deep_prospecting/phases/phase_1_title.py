@@ -455,19 +455,35 @@ async def validate_estate_marker(
     )
 
 
+# Lists-column tags that confirm an operator-resolved probate/inheritance
+# situation. When the DataSift contact name doesn't match the title owner
+# AND one of these tags is present, the operator has already done the
+# executor research upstream and swapped First/Last to the executor —
+# the title owner is the decedent.
+_EXECUTOR_SWAP_LIST_TAGS = {
+    "probate",
+    "inheritance",
+    "notice of default (lis pendens)",
+}
+
+
 def _classify_death_signal(
     *,
     modiv_owner: str,
     caller_owner: str | None,
-) -> tuple[bool, str | None, list[str]]:
+    list_tags: list[str] | None = None,
+) -> tuple[bool, str | None, str | None, str | None, list[str]]:
     """Decide whether the title evidence justifies a death signal.
 
-    Returns (death_signal, reason, warnings).
+    Returns (death_signal, reason, decedent_name, named_contact_role,
+    warnings). The decedent_name / named_contact_role pair is set only
+    on the executor-swap-confirmed path; other paths return (None, None)
+    for those slots so the orchestrator falls back to title_owner.
     """
     warnings: list[str] = []
 
     if not modiv_owner:
-        return False, None, warnings
+        return False, None, None, None, warnings
 
     upper = modiv_owner.upper()
 
@@ -478,16 +494,41 @@ def _classify_death_signal(
     #      ESTATE OF JOHN SMITH
     #    Skip when ESTATE is part of a business name ("ESTATE GARDENS
     #    LLC", "REAL ESTATE TRUST OF NJ") so we don't false-positive on
-    #    commercial owners.
+    #    commercial owners. ESTATE marker takes precedence over the
+    #    executor-swap signal so Slice 4's validator still runs (the
+    #    marker can be a false positive on joint-estate carry-over).
     if re.search(r"\bESTATE\b", upper) and not _BUSINESS_RE.search(upper):
-        return True, "title_owner_estate_marker", warnings
+        return True, "title_owner_estate_marker", None, None, warnings
 
     # 2. Owner-name pattern classifier (life_est, personal_rep, et_al, etc.)
     indicator = classify_owner_death_indicator(modiv_owner) or ""
     if indicator:
-        return True, f"title_owner_indicator_{indicator}", warnings
+        return True, f"title_owner_indicator_{indicator}", None, None, warnings
 
-    # 3. Surname-share with caller-supplied owner. Catches "Catherine
+    # 3. Executor-swap confirmed by Lists tag. The operator's upstream
+    #    workflow swaps the executor name into the DataSift First/Last
+    #    fields once they've resolved the probate. So when the contact
+    #    name is different from the MOD-IV title owner AND the row
+    #    carries Probate / Inheritance / Notice of Default in Lists,
+    #    title_owner IS the decedent — no need to guess from surname.
+    #    Routes Phase 2 obit search at the explicit decedent name and
+    #    flags the named contact as the executor for Phase 3.
+    if (
+        caller_owner
+        and list_tags
+        and _name_token_key(caller_owner) != _name_token_key(modiv_owner)
+    ):
+        normalized_tags = {t.strip().lower() for t in list_tags}
+        if normalized_tags & _EXECUTOR_SWAP_LIST_TAGS:
+            return (
+                True,
+                "executor_swap_confirmed",
+                modiv_owner,
+                "executor",
+                warnings,
+            )
+
+    # 4. Surname-share with caller-supplied owner. Catches "Catherine
     #    Geczik" on probate docket vs "GECZIK, OLIVE" on MOD-IV — same
     #    family, deceased owner transferred title to surviving relative.
     if caller_owner:
@@ -497,7 +538,11 @@ def _classify_death_signal(
             # Same-person check: token-key compare so "Sally Baksh" and
             # "BAKSH, SALLY" don't fire a false-positive death signal.
             if _name_token_key(caller_owner) != _name_token_key(modiv_owner):
-                return True, "title_owner_mismatch_same_surname", warnings
+                return (
+                    True,
+                    "title_owner_mismatch_same_surname",
+                    None, None, warnings,
+                )
         elif caller_last and modiv_last and caller_last != modiv_last:
             # Different surname entirely — might mean stale caller data
             # (recent sale), might mean ID confusion. Warn but don't
@@ -507,7 +552,7 @@ def _classify_death_signal(
                 f"surname than MOD-IV owner '{modiv_owner}'"
             )
 
-    return False, None, warnings
+    return False, None, None, None, warnings
 
 
 # ── Address-match filtering ─────────────────────────────────────────────
@@ -638,9 +683,16 @@ async def run(prospect: ProspectInput) -> tuple[Lead, list[SourceCheck]]:
     checks.append(SourceCheck(source="mod_iv", status="HIT", notes=""))
 
     # Classify death signal from owner-name + caller cross-check.
-    death_signal, death_reason, ds_warnings = _classify_death_signal(
+    (
+        death_signal,
+        death_reason,
+        explicit_decedent,
+        named_contact_role,
+        ds_warnings,
+    ) = _classify_death_signal(
         modiv_owner=parcel.owner_name,
         caller_owner=prospect.owner,
+        list_tags=prospect.list_tags,
     )
     warnings.extend(ds_warnings)
 
@@ -711,6 +763,10 @@ async def run(prospect: ProspectInput) -> tuple[Lead, list[SourceCheck]]:
             title_owner=_collapse_ws(parcel.owner_name),
             death_signal=death_signal,
             death_signal_reason=death_reason,
+            decedent_name=(
+                _collapse_ws(explicit_decedent) if explicit_decedent else None
+            ),
+            named_contact_role=named_contact_role,
             name_variants=name_variants,
             mailing_address=_collapse_ws(parcel.mailing_full),
             parcel_id=parcel.parcel_id or None,

@@ -67,6 +67,12 @@ class ProspectInput(BaseModel):
     docket: str | None = None
     county: County | None = None
     notice_type: NoticeType | None = None
+    # DataSift `Lists` column, split on comma. Carries the operator's
+    # upstream routing signal (e.g. "Probate", "Inheritance",
+    # "Notice of Default (Lis Pendens)") — Phase 1 uses these to
+    # confirm executor-swap cases where the contact name has already
+    # been swapped to the operator-resolved executor.
+    list_tags: list[str] = Field(default_factory=list)
     raw_record: dict | None = None  # CSV-row passthrough
 
 
@@ -108,6 +114,17 @@ class Lead(BaseModel):
     deed_history: list[Deed] = Field(default_factory=list)
     death_signal: bool = False
     death_signal_reason: str | None = None  # which signal fired (estate-of, probate ref, obit hit)
+    # Explicit decedent name when Phase 1 has high-confidence evidence
+    # (e.g. executor-swap-confirmed via Lists tag). Phase 2 uses this as
+    # the obit-search target instead of guessing from title_owner.
+    # Distinct from title_owner because title_owner may need
+    # MOD-IV-format normalization before obit search.
+    decedent_name: str | None = None
+    # Operator-resolved role of the DataSift contact (First/Last Name
+    # fields) when known — "executor" / "owner" / None. Set on the
+    # executor-swap path so Phase 3 can confirm the DM directly without
+    # re-deriving from the heir map.
+    named_contact_role: str | None = None
     name_variants: list[str] = Field(default_factory=list)
     red_flags: list[str] = Field(default_factory=list)
     mailing_address: str | None = None

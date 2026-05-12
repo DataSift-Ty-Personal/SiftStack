@@ -252,7 +252,12 @@ async def run(lead: Lead) -> tuple[HeirMap | None, list[SourceCheck], CostBreakd
     checks: list[SourceCheck] = []
     cost = CostBreakdown()
 
-    decedent_search_name = _title_owner_to_search_name(lead.title_owner or "")
+    # Prefer the explicit decedent_name when Phase 1 set it
+    # (executor-swap-confirmed path) — the operator's upstream signal is
+    # more authoritative than title-owner guessing. Falls back to
+    # title_owner for the heuristic-driven paths.
+    search_source = lead.decedent_name or lead.title_owner or ""
+    decedent_search_name = _title_owner_to_search_name(search_source)
     if not decedent_search_name:
         checks.append(SourceCheck(
             source="obit_search",

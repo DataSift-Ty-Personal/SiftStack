@@ -108,11 +108,20 @@ def _row_to_prospect(row: dict) -> ProspectInput | None:
     county = _normalize_county(row.get("Property county") or "")
     notice_type = _guess_notice_type(row)
 
+    # DataSift `Lists` is a comma-separated multi-tag column. Phase 1's
+    # executor-swap detector reads this to spot operator-resolved
+    # probates (Lists carries "Probate" / "Inheritance" /
+    # "Notice of Default (Lis Pendens)").
+    list_tags = [
+        t.strip() for t in (row.get("Lists") or "").split(",") if t.strip()
+    ]
+
     return ProspectInput(
         address=address,
         owner=owner,
         county=county,
         notice_type=notice_type,
+        list_tags=list_tags,
     )
 
 

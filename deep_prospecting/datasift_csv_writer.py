@@ -123,7 +123,7 @@ def _subject_role_label(subject_role: str) -> str:
 def derive_person_stars(pack) -> dict[str, str]:
     """Build {person_name: star_string} for one pack.
 
-    Subject (decedent for L3, original owner for L1) → "*".
+    Subject (confirmed decedent for L3, original owner for L1/L2) → "*".
     Each unique person_name found on a phone gets the next star count
     (**, ***, ****, …) in order of first appearance across
     pack.skip_trace.phones.
@@ -135,10 +135,20 @@ def derive_person_stars(pack) -> dict[str, str]:
     """
     stars: dict[str, str] = {}
 
-    # Subject identification: L3 uses decedent_name; L1/L2 uses the
-    # SUBJECT-role DM from decision_makers (typically the original owner).
+    # Subject identification:
+    #   - L3 (confirmed decedent — obit found with parseable DOD): * = decedent
+    #   - L1 / L2 (no confirmed obit): * = the SUBJECT-role DM (named contact)
+    # The DOD presence is the only signal that distinguishes a real
+    # decedent from a Phase-2-populated-but-unconfirmed search target.
+    # Without it, an L2 row with `decedent_name` set but `decedent_dod`
+    # None pre-allocates * to a phantom person and pushes the live
+    # named contact to ** (Slice 5a bug fix — see BACKLOG).
     subject_name: str | None = None
-    if pack.heir_map and pack.heir_map.decedent_name:
+    if (
+        pack.heir_map
+        and pack.heir_map.decedent_name
+        and pack.heir_map.decedent_dod is not None
+    ):
         subject_name = pack.heir_map.decedent_name
     else:
         for dm in pack.decision_makers:

@@ -30,6 +30,7 @@ NOD Week*
 output/
 logs/
 deep_prospecting/outputs/
+deep_prospecting/inputs/
 
 # Python
 __pycache__/
