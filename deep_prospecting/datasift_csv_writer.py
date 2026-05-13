@@ -238,13 +238,19 @@ def derive_phone_tag_cell(
     if src:
         parts.append(src)
 
-    # Dial-rank — lazy import keeps the writer free of phase deps when
-    # someone uses datasift_csv_writer outside the orchestrator (e.g.
-    # a Phase 1 / Phase 2 partial pack with no Trestle scoring yet).
-    from deep_prospecting.phases.phase_trestle import derive_dial_rank_label
-    dial_label = derive_dial_rank_label(phone.activity_score)
-    if dial_label:
-        parts.append(dial_label)
+    # DNC supersedes dial-rank. When the operator (or BV source) flagged
+    # this phone as Do-Not-Call, the dialer must not attempt — emit DNC
+    # in place of any Trestle-derived priority label.
+    if phone.dnc:
+        parts.append("DNC")
+    else:
+        # Dial-rank — lazy import keeps the writer free of phase deps when
+        # someone uses datasift_csv_writer outside the orchestrator (e.g.
+        # a Phase 1 / Phase 2 partial pack with no Trestle scoring yet).
+        from deep_prospecting.phases.phase_trestle import derive_dial_rank_label
+        dial_label = derive_dial_rank_label(phone.activity_score)
+        if dial_label:
+            parts.append(dial_label)
 
     return PHONE_TAG_SEP.join(parts)
 

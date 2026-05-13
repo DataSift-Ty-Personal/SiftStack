@@ -41,6 +41,18 @@ Deferred work — surfaced during builds but punted to keep scope focused.
 
   Track via: count records where `lead.warnings` contains `phase_1_estate_marker_advisory_spouse_estate` vs total records where Phase 1 hit the `(ESTATE)` path. Add a counter to `run_batch.py`'s summary output. Defer wiring until 50+ production records observed.
 
+## BV paste-and-parse refinements (queued for v5-slice5c)
+
+Surfaced during real-world BV markdown testing in v5-slice5b on Amber Tami (Jeffrey-Tami-Living-Owner case) + Allan Maltby (Ronald-Maltby-Estate probate case). Parser handles both shapes, but four operator-facing polish items remain.
+
+- **`DECEDENT` subject_role enum + label + role-lookup precedence.** Decedent legacy phones currently tag as `Subject,*,Found via BV Manual,DNC` because the role lookup falls back to `primary_role` (the living DM's role). Should tag as `Decedent,*,Found via BV Manual,DNC` so the operator immediately reads "this phone belongs to the deceased person" without having to cross-reference the star map. Minimal change: add `DECEDENT` to the `SubjectRole` literal, wire `_subject_role_label` (already handles `replace("_", " ").title()` — would render as "Decedent"), and add a role-lookup precedence rule: if `phone.person_name` matches `heir_map.decedent_name` (token-key compare), force `subject_role="DECEDENT"`.
+
+- **Phone alias mapping for shared household landlines.** When a BV phone dedupes against an existing pack entry but a different BV person is also attributed to that number (shared household line — Allan/Azra's `(732) 972-8358`; Jeffrey/Amber's `(908) 587-2600` legacy), the second person never appears in the star map and is silently invisible in the operator-facing output. They show up in `persons_seen` only. Fix path: on dedup-hit, append the new person's name to a `phone.aliases: list[str]` field; star map walks aliases too so co-attributed persons get adjacent star slots. People & Star Markers block renders as e.g. `**   Allan Maltby / Azra Maltby — household landline`.
+
+- **Always include named family members from BV Section 5 / 7.** Glen, Colleen, Brad, David Maltby surface in the obit/heir map with no contact data, so they're silently filtered out of the merged pack today. The operator-facing case context loses signal: "we know there are 4 children but we don't have their numbers" reads differently from "we have no other heirs". Render as a `Heir (verified living, no contact data surfaced)` entry in the People & Star Markers block — without forcing them into the phone-star sequence (which is contact-only). Likely a separate `pack.persons_contextual: list[ContextualPerson]` field, written by parse_bv when Haiku emits phoneless persons.
+
+- **Investigate Haiku non-determinism on phoneless-person extraction.** Haiku sometimes emits Glen/Colleen/Brad/David (with empty phones), sometimes omits them entirely. Same input markdown across consecutive runs. Adopt an always-include policy in the extraction prompt — "If a person is named in a family/heir section, include them even with empty phones[] / emails[] arrays" — and re-test for determinism. Combine with the contextual-persons feature above so the always-included phoneless persons land in `persons_contextual` instead of polluting `persons`.
+
 ## Operator runbook (DataSift round-trip)
 
 Observed during v2-slice2 operational validation (2026-05-10). Workflow docs, not bugs — but if the friction shows up weekly, candidates for automation in Slice 3+.

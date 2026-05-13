@@ -140,6 +140,11 @@ operator manually pasted. The record may describe one PRIMARY subject and \
 several relatives. Return STRICT JSON only (no prose, no markdown) matching:
 
 {{
+  "decedent": null | {{
+    "name": "First Last",
+    "date_of_death": "YYYY-MM-DD" | null,
+    "age_at_death": <int or null>
+  }},
   "persons": [
     {{
       "name": "First Last",
@@ -148,24 +153,51 @@ several relatives. Return STRICT JSON only (no prose, no markdown) matching:
       "relationship_to_primary": "self" | "spouse" | "ex_spouse" | "son" | "daughter" | "father" | "mother" | "brother" | "sister" | "stepchild" | "stepparent" | "cousin" | "uncle" | "aunt" | "associate" | "unknown",
       "city": "City, ST" | null,
       "phones": [
-        {{ "number": "9085551234", "type": "MOBILE" | "LANDLINE" | "VOIP" | "UNKNOWN" }}
+        {{ "number": "9085551234", "type": "MOBILE" | "LANDLINE" | "VOIP" | "UNKNOWN", "dnc": true | false }}
       ],
       "emails": ["name@example.com"]
     }}
   ]
 }}
 
+The `decedent` field captures probate / deceased-owner records. Fill it \
+when the record explicitly states someone is deceased (DOD, "predeceased", \
+"† deceased", obituary references, probate filings, etc.). Set to null \
+when no death is referenced.
+
+IMPORTANT: A decedent often has legacy phones still in service (the \
+household landline, a number that may forward to the executor, etc.). \
+If the record lists phones or emails for the decedent — even labeled \
+"legacy" / "may still ring through" / "for reference only" — INCLUDE \
+the decedent as a regular `persons[]` entry with their full contact data. \
+The `decedent` block captures name + DOD; the `persons[]` entry captures \
+their phones/emails. Both are needed.
+
 Rules:
 - Output ONLY the JSON. No commentary.
 - Normalize phones to bare 10-digit (no punctuation, no country code).
-- Drop a phone if it is clearly invalid (less than 10 digits, fake-looking, \
-or labeled "unknown / disconnected / fax / business" in the source text).
+- Drop a phone ONLY if it is structurally invalid (fewer than 10 digits, \
+all zeros, repeated digits like 5555555555) OR explicitly labeled \
+"disconnected / fax / business / wrong number" in the source narrative. \
+A phone whose TYPE column is "UNKNOWN" is still a real phone — type=UNKNOWN \
+means line-type wasn't identified, NOT that the phone is bad. KEEP these. \
+Use "UNKNOWN" as the JSON "type" value when in doubt.
+- Include phones flagged "low value / legacy / shared with another person" \
+— the dialer needs them as backup contacts even if not primary.
+- Skip phones explicitly tagged "different family / ruled out / not related" \
+in the source — those are negative findings, not contact data.
+- Skip persons explicitly tagged "different family / ruled out / not related" \
+— do NOT emit them in the output even with empty contact lists.
 - The primary subject is whoever the record is centered on — typically \
 the first person profiled or the one named in section headings. Set \
 "is_primary_subject": true on EXACTLY one person.
 - If relationship is ambiguous, prefer "associate" over guessing.
-- If a relative's name is mentioned but no contact data is available, \
-omit them from the output — we only want persons we can actually contact.
+- If a relative's name is mentioned but no phones AND no emails are listed \
+for them, OMIT them from the output. We only want persons with at least \
+one contact channel.
+- Per-email confidence hint: if a person's email list is split into \
+"Best Match" and "lower confidence" groups, ONLY emit the Best Match \
+emails. Skip the lower-confidence noise — operator already filtered.
 
 Record:
 {record_text}
@@ -257,18 +289,62 @@ def _normalize_phone_type(raw: str) -> _models.PhoneType:
     return "UNKNOWN"
 
 
+def _apply_decedent_to_heir_map(
+    pack_dict: dict, decedent: dict | None,
+) -> bool:
+    """When the BV record names a decedent (probate / deceased-owner
+    case), populate pack.heir_map.decedent_name + decedent_dod so the
+    star map correctly puts `*` on the deceased person.
+
+    Conservative: only writes when the pack has no existing decedent_dod
+    (the automated CLI's obit found has precedence — it has primary
+    source observability). Returns True when the heir_map was updated.
+    """
+    if not decedent:
+        return False
+    name = (decedent.get("name") or "").strip()
+    if not name:
+        return False
+    # heir_map may be explicitly null in results.json (L1 pack), so
+    # setdefault doesn't help — read-then-replace pattern instead.
+    hm = pack_dict.get("heir_map") or {}
+    pack_dict["heir_map"] = hm
+    # Don't clobber a CLI-found decedent that already has a parseable DOD.
+    if hm.get("decedent_dod"):
+        return False
+
+    hm["decedent_name"] = name
+    dod = (decedent.get("date_of_death") or "").strip()
+    if dod:
+        hm["decedent_dod"] = dod
+        hm["decedent_dod_text"] = dod
+    # Heir list stays whatever it was (probably empty). BV-surfaced
+    # children + grandchildren are folded into skip_trace.phones for
+    # star derivation; promoting them to typed Heir entries would
+    # require more structural work.
+    hm.setdefault("heirs", [])
+    hm.setdefault("generations_searched", 0)
+    return True
+
+
 def _merge_bv_into_pack(
     pack_dict: dict,
     extracted: dict,
-) -> tuple[int, int, list[str]]:
+) -> tuple[int, int, list[str], bool]:
     """Mutate `pack_dict` in place with BV persons. Returns
-    (phones_added, emails_added, person_names_seen).
+    (phones_added, emails_added, person_names_seen, decedent_applied).
 
     Dedup: by E.164 phone / lowercased email against existing entries.
     New phones / emails carry sources=["bv_manual"] and the
-    person_name field for star derivation.
+    person_name field for star derivation. DNC flag rides through to
+    the Phone entry so downstream Trestle scoring + dial-rank labeling
+    respects the operator's data.
     """
     persons = extracted.get("persons") or []
+    decedent_applied = _apply_decedent_to_heir_map(
+        pack_dict, extracted.get("decedent"),
+    )
+
     skip = pack_dict.setdefault("skip_trace", {})
     phones = skip.setdefault("phones", [])
     emails = skip.setdefault("emails", [])
@@ -292,13 +368,13 @@ def _merge_bv_into_pack(
         persons_seen.append(name)
 
         for ph in person.get("phones") or []:
-            raw_number = ph.get("number") if isinstance(ph, dict) else ph
+            if not isinstance(ph, dict):
+                ph = {"number": ph}
+            raw_number = ph.get("number")
             e164 = _e164(str(raw_number or ""))
             if not e164 or e164 in existing_phones:
                 continue
-            ptype = _normalize_phone_type(
-                ph.get("type") if isinstance(ph, dict) else "UNKNOWN"
-            )
+            ptype = _normalize_phone_type(ph.get("type") or "UNKNOWN")
             phones.append({
                 "number": e164,
                 "type": ptype,
@@ -306,7 +382,10 @@ def _merge_bv_into_pack(
                 "confidence": "MEDIUM",  # operator-curated, not auto-verified
                 "person_name": name,
                 "activity_score": None,
-                "dnc": False,
+                # DNC is a load-bearing operator signal — if BV / the
+                # operator flagged a phone as DNC, downstream tooling
+                # (Trestle scoring, dial-rank labeling) must respect it.
+                "dnc": bool(ph.get("dnc", False)),
                 "carrier": "",
                 "is_litigator": False,
             })
@@ -327,7 +406,7 @@ def _merge_bv_into_pack(
             existing_emails.add(em_str.lower())
             emails_added += 1
 
-    return phones_added, emails_added, persons_seen
+    return phones_added, emails_added, persons_seen, decedent_applied
 
 
 # ── Overlay row update ──────────────────────────────────────────────────
@@ -361,13 +440,19 @@ def _write_back(pack_dir: Path, pack_dict: dict) -> None:
 def _rerun_trestle_on_new_phones(pack: _models.ResearchPack) -> tuple[int, float]:
     """Score the unscored BV phones via Trestle Phone Intel. Returns
     (phones_scored, cost_usd). Quiet no-op when TRESTLE_API_KEY is
-    missing.
+    missing or all new phones are DNC-flagged.
+
+    DNC-flagged phones are NOT scored: the operator's DNC signal
+    overrides automated dial-rank derivation, and there's no point
+    spending $0.015/phone on a number the operator can't dial.
     """
     if not pack.skip_trace:
         return 0, 0.0
     new_phones = [
         p for p in pack.skip_trace.phones
-        if _BV_SOURCE in p.sources and p.activity_score is None
+        if _BV_SOURCE in p.sources
+        and p.activity_score is None
+        and not p.dnc  # skip DNC-flagged numbers
     ]
     if not new_phones:
         return 0, 0.0
@@ -426,8 +511,8 @@ def run(case: str, input_path: Path) -> dict:
         }
     pack_dict = json.loads(results_path.read_text(encoding="utf-8"))
 
-    phones_added, emails_added, persons_seen = _merge_bv_into_pack(
-        pack_dict, extracted,
+    phones_added, emails_added, persons_seen, decedent_applied = (
+        _merge_bv_into_pack(pack_dict, extracted)
     )
 
     # Re-hydrate into a typed ResearchPack so the writer + Trestle can
@@ -454,6 +539,7 @@ def run(case: str, input_path: Path) -> dict:
         "persons_seen": persons_seen,
         "phones_added": phones_added,
         "emails_added": emails_added,
+        "decedent_applied": decedent_applied,
         "phones_scored_by_trestle": phones_scored,
         "trestle_cost_usd": trestle_cost,
         "overlay_result": overlay_result,
