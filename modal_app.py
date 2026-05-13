@@ -726,13 +726,31 @@ async def nj_somerset_sheriff_manual(
 @app.function(
     image=image,
     secrets=[secrets],
-    timeout=1800,
+    # 180-day Middlesex DoD scan + Somerset 30-day file-date scan + combined
+    # enrichment (obit + Ancestry SSDI + DM address waterfall + heir map)
+    # can run 60-90 min on a busy week. Give it 2hr like nj_weekly_all.
+    timeout=7200,
+    volumes={TRACKING_MOUNT: tracking_volume},
 )
-async def nj_probate_manual(days_back: int = 30):
-    """On-demand Middlesex probate scrape."""
+async def nj_probate_manual(mx_days_back: int = 180, som_days_back: int = 30):
+    """On-demand Middlesex + Somerset probate scrape.
+
+    Mirrors the probate slice of nj_weekly_all: parallel scrape both
+    counties, cross-run dedup via the siftstack-tracking volume, single
+    enrichment pass, split by DataSift list, Slack summary. Probate is
+    in SIFTSTACK_UPLOAD_PAUSED_TYPES so records are held for cleaning
+    rather than auto-uploaded.
+
+    Run with:
+      modal run modal_app.py::nj_probate_manual                       # 180d + 30d defaults
+      modal run modal_app.py::nj_probate_manual --mx-days-back 90
+    """
+    import asyncio
     import logging
     import os
     import sys
+    from datetime import datetime
+    from pathlib import Path
 
     sys.path.insert(0, "/app/src")
     os.chdir("/app")
@@ -741,17 +759,161 @@ async def nj_probate_manual(days_back: int = 30):
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
+    logger = logging.getLogger("modal_nj_probate_manual")
 
-    from nj_middlesex_probate import run_middlesex_probate_scrape
+    from nj_middlesex_probate import scrape_middlesex_probates, scrape_somerset_probates
+    from dedup_tracker import load_tracking, save_tracking, filter_new
+    from enrichment_pipeline import PipelineOptions, run_enrichment_pipeline
+    from data_formatter import write_csv, write_csv_by_list
+    import config
 
-    result = await run_middlesex_probate_scrape(
-        days_back=days_back,
-        headless=True,
-        upload_datasift=True,
-        notify_slack=True,
+    async def _safe(coro, label):
+        try:
+            notices = await coro
+            logger.info("%s: %d notices", label, len(notices))
+            return label, notices, None
+        except Exception as e:
+            logger.error("%s failed: %s", label, e)
+            return label, [], str(e)
+
+    logger.info(
+        "Probate manual: Middlesex %dd DoD + Somerset %dd file-date",
+        mx_days_back, som_days_back,
     )
-    print(f"Result: {result}")
-    return result
+    results = await asyncio.gather(
+        _safe(scrape_middlesex_probates(days_back=mx_days_back), "Middlesex Probate"),
+        _safe(scrape_somerset_probates(days_back=som_days_back), "Somerset Probate"),
+    )
+    per_source = {label: n for label, n, _ in results}
+    errors = [(label, err) for label, _, err in results if err]
+
+    if not any(per_source.values()):
+        msg = "Both probate scrapers returned 0 records"
+        if errors:
+            msg += f" (errors: {errors})"
+        logger.error(msg)
+        _notify_failure(msg)
+        return {"success": False, "scraped": 0, "message": msg, "errors": errors}
+
+    # Cross-run dedup against the shared tracking volume.
+    await tracking_volume.reload.aio()
+    tracking = load_tracking(TRACKING_FILE)
+    new_mx, skipped_mx = filter_new(per_source.get("Middlesex Probate", []), "probate", tracking)
+    new_som, skipped_som = filter_new(
+        per_source.get("Somerset Probate", []), "somerset_probate", tracking,
+    )
+    logger.info(
+        "Dedup: Middlesex %d new / %d skipped, Somerset %d new / %d skipped",
+        len(new_mx), skipped_mx, len(new_som), skipped_som,
+    )
+
+    combined = new_mx + new_som
+    if not combined:
+        save_tracking(tracking, TRACKING_FILE)
+        await tracking_volume.commit.aio()
+        msg = f"All {skipped_mx + skipped_som} records previously processed — nothing new to enrich"
+        logger.info(msg)
+        try:
+            if config.SLACK_WEBHOOK_URL:
+                from slack_notifier import _send_webhook
+                _send_webhook("*NJ Probate Manual — no new records*\n" + msg)
+        except Exception:
+            pass
+        return {
+            "success": True, "scraped": skipped_mx + skipped_som, "new": 0,
+            "skipped_middlesex": skipped_mx, "skipped_somerset": skipped_som,
+        }
+
+    opts = PipelineOptions(
+        skip_filter_sold=False,
+        skip_tax=True,
+        skip_obituary=False,
+        skip_ancestry=False,
+        skip_dm_address=False,
+        skip_heir_verification=False,
+        skip_parcel_lookup=True,
+        source_label=f"NJ Probate Manual (Middlesex {mx_days_back}d + Somerset {som_days_back}d)",
+    )
+    enriched = run_enrichment_pipeline(combined, opts)
+
+    ts = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+    csv_path = write_csv(enriched, f"nj_probate_manual_{ts}.csv")
+
+    # Probate is paused from auto-upload — records flow to a separate CSV
+    # for manual cleaning before DataSift ingest (existing policy).
+    paused = config.SIFTSTACK_UPLOAD_PAUSED_TYPES
+    upload_ready = [n for n in enriched if (n.notice_type or "").lower() not in paused]
+    held_back = [n for n in enriched if (n.notice_type or "").lower() in paused]
+    held_csv_path = (
+        write_csv(held_back, f"nj_probate_manual_{ts}_HELD_FOR_CLEANING.csv")
+        if held_back else None
+    )
+    by_list_ready = write_csv_by_list(upload_ready, prefix="upload_ready") if upload_ready else []
+    by_list_held = write_csv_by_list(held_back, prefix="HELD") if held_back else []
+
+    # Persist per-list CSVs to the tracking volume for retrieval via
+    # `modal volume get siftstack-tracking output/{date}/...`.
+    date_folder = datetime.now().strftime("%Y-%m-%d")
+    volume_out_dir = Path(f"{TRACKING_MOUNT}/output/{date_folder}")
+    volume_out_dir.mkdir(parents=True, exist_ok=True)
+    for _list_name, src_path, _count in by_list_ready + by_list_held:
+        try:
+            (volume_out_dir / src_path.name).write_bytes(src_path.read_bytes())
+        except Exception as e:
+            logger.warning("Failed to copy %s to volume: %s", src_path.name, e)
+
+    # Save tracking only after enrichment + writes succeed.
+    save_tracking(tracking, TRACKING_FILE)
+    await tracking_volume.commit.aio()
+    logger.info(
+        "Tracking saved: %d probate / %d somerset_probate total IDs",
+        len(tracking.get("probate", {})),
+        len(tracking.get("somerset_probate", {})),
+    )
+
+    # Slack summary
+    try:
+        if config.SLACK_WEBHOOK_URL:
+            from slack_notifier import _send_webhook
+            lines = [
+                f"*NJ Probate Manual — Middlesex {mx_days_back}d + Somerset {som_days_back}d*",
+                f"  Middlesex Probate: {len(new_mx)} new / {skipped_mx} skipped (already processed)",
+                f"  Somerset Probate: {len(new_som)} new / {skipped_som} skipped (already processed)",
+                f"Enriched total: {len(enriched)}",
+                f"Combined CSV: {csv_path.name}",
+            ]
+            if held_csv_path:
+                lines.append(
+                    f":pause_button: Held for cleaning: {len(held_back)} records "
+                    f"(probate paused from auto-upload) — {held_csv_path.name}"
+                )
+            if errors:
+                lines.append(f"errors: {errors}")
+            try:
+                from cost_estimator import tally_notices, slack_summary_line
+                cost_line = slack_summary_line(tally_notices(enriched))
+                if cost_line:
+                    lines.append("")
+                    lines.append(cost_line)
+            except Exception as e:
+                logger.warning("Cost estimate failed: %s", e)
+            _send_webhook("\n".join(lines))
+    except Exception as e:
+        logger.warning("Slack notify failed: %s", e)
+
+    return {
+        "success": True,
+        "scraped_middlesex": len(per_source.get("Middlesex Probate", [])),
+        "scraped_somerset": len(per_source.get("Somerset Probate", [])),
+        "new_middlesex": len(new_mx),
+        "new_somerset": len(new_som),
+        "skipped_middlesex": skipped_mx,
+        "skipped_somerset": skipped_som,
+        "enriched": len(enriched),
+        "held_back": len(held_back),
+        "csv": csv_path.name,
+        "errors": errors,
+    }
 
 
 @app.function(
