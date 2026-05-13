@@ -112,10 +112,11 @@ async def nj_weekly_all():
     results = await asyncio.gather(
         _safe(scrape_nj_lp_notices(counties=["Essex", "Middlesex", "Somerset", "Union"]), "NJLP"),
         # Middlesex Bluestone has no File Date filter — only Death Date.
-        # 90 days catches most probates that filed in the last week (typical
-        # death-to-file gap is 0–3 months). Broader window than the 30 we
-        # used initially (which only had ~2% recall vs runner's weekly PDF).
-        _safe(scrape_middlesex_probates(days_back=90), "Middlesex Probate"),
+        # 180 days catches the realistic death-to-file gap (filings cluster
+        # 30-150 days post-death; recent DoDs return 0 rows because the
+        # probate hasn't been filed yet). Dedup via siftstack-tracking
+        # volume handles the inevitable repeats from older DoDs.
+        _safe(scrape_middlesex_probates(days_back=180), "Middlesex Probate"),
         # Somerset Bluestone supports File Date filtering directly, so 30
         # days of file-date is the natural cron window.
         _safe(scrape_somerset_probates(days_back=30), "Somerset Probate"),
@@ -356,7 +357,7 @@ async def nj_weekly_all():
     try:
         import config
         lines = ["*NJ Weekly All — combined Wednesday run*"]
-        for label in ("NJLP", "Middlesex Probate", "Somerset Sheriff", "Tax Sale", "CivilView Sheriff"):
+        for label in ("NJLP", "Middlesex Probate", "Somerset Probate", "Somerset Sheriff", "Tax Sale", "CivilView Sheriff"):
             n, s = new_counts.get(label, 0), skipped_counts.get(label, 0)
             lines.append(f"  {label}: {n} new / {s} skipped (already processed)")
         if errors:

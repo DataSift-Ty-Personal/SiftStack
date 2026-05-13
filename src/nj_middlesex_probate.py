@@ -391,6 +391,22 @@ async def _submit_day(page: Page, day: datetime, cfg: BluestoneCountyConfig) -> 
     await page.goto(cfg.search_url, wait_until="domcontentloaded", timeout=45000)
     await page.wait_for_timeout(2000)
 
+    # DevExpress sizes the form's textboxes via post-load JS. On Modal's
+    # headless Chromium the layout briefly resolves to offsetWidth=0, which
+    # tripped Playwright's actionability wait and timed out at 30s per day.
+    # Local Chromium (headed and headless) doesn't hit this race. Wait for
+    # the box to have non-zero width before interacting.
+    try:
+        await page.wait_for_function(
+            "(sel) => { const el = document.querySelector(sel); return el && el.offsetWidth > 0; }",
+            arg=cfg.death_date_input_selector,
+            timeout=15000,
+        )
+    except Exception as e:
+        logger.warning("%s: death-date input never rendered on %s — %s",
+                       cfg.name, day.strftime("%Y-%m-%d"), e)
+        return []
+
     # Some Bluestone deployments collapse the date filters by default and
     # require clicking "Show Dates" to reveal the inputs.
     if cfg.show_dates_button_selector:
@@ -402,7 +418,8 @@ async def _submit_day(page: Page, day: datetime, cfg: BluestoneCountyConfig) -> 
 
     date_str = day.strftime("%m/%d/%Y")
     box = page.locator(cfg.death_date_input_selector)
-    await box.click()
+    # fill() handles focus on its own — the standalone click() before it
+    # was the 30s actionability timeout in Modal headless. Dropping it.
     await box.fill(date_str)
     await page.wait_for_timeout(300)
 
