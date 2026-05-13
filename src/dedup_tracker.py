@@ -2,7 +2,8 @@
 
 Stores a JSON index of already-processed record IDs per source, keyed by:
   - `njlp`              — NJ Lis Pendens docket number (F-NNNNNN-YY)
-  - `probate`           — Middlesex surrogate case (docket) number
+  - `probate`           — Middlesex surrogate case (Bluestone Q_PK_ID)
+  - `somerset_probate`  — Somerset surrogate case (Bluestone Q_PK_ID, separate bucket from Middlesex)
   - `somerset`          — Somerset County sheriff-sale number (5-digit)
   - `tax_sale`          — RealAuction cert composite: {subdomain}{adv_number}{tax_year}
   - `civilview_sheriff` — salesweb.civilview.com Sheriff# (Essex/Middlesex/Union)
@@ -23,7 +24,7 @@ from notice_parser import NoticeData
 
 logger = logging.getLogger(__name__)
 
-_SOURCES = ("njlp", "probate", "somerset", "tax_sale", "civilview_sheriff")
+_SOURCES = ("njlp", "probate", "somerset_probate", "somerset", "tax_sale", "civilview_sheriff")
 
 
 def _empty_tracking() -> dict:
@@ -79,9 +80,10 @@ def extract_id(notice: NoticeData, source: str) -> str | None:
     if source == "njlp":
         m = _NJLP_DOCKET_RE.search(raw)
         return m.group(1).replace("‐", "-").replace("–", "-") if m else None
-    if source == "probate":
-        # Prefer the Q_PK_ID in source_url (stable numeric key) but fall back
-        # to the docket number in raw_text.
+    if source in ("probate", "somerset_probate"):
+        # Both Middlesex + Somerset use the same Bluestone query param
+        # (Q_PK_ID) — they live in separate buckets in _SOURCES so the
+        # numeric IDs can't collide across counties.
         m = _PROBATE_PK_RE.search(url)
         if m:
             return m.group(1)
