@@ -787,7 +787,9 @@ async def nj_probate_manual(mx_days_back: int = 180, som_days_back: int = 30):
     )
     logger = logging.getLogger("modal_nj_probate_manual")
 
-    from nj_middlesex_probate import scrape_middlesex_probates, scrape_somerset_probates
+    from nj_middlesex_probate import (
+        scrape_middlesex_probates, scrape_somerset_probates, CloudflareBlockError,
+    )
     from dedup_tracker import load_tracking, save_tracking, filter_new
     from enrichment_pipeline import PipelineOptions, run_enrichment_pipeline
     from data_formatter import write_csv, write_csv_by_list
@@ -798,6 +800,12 @@ async def nj_probate_manual(mx_days_back: int = 180, som_days_back: int = 30):
             notices = await coro
             logger.info("%s: %d notices", label, len(notices))
             return label, notices, None
+        except CloudflareBlockError:
+            # Propagate so the function-level retry config can rotate the
+            # container's egress IP. Catching here would silently degrade
+            # to "0 notices" instead of retrying with a fresh IP.
+            logger.warning("%s: Cloudflare blocked — raising for Modal retry", label)
+            raise
         except Exception as e:
             logger.error("%s failed: %s", label, e)
             return label, [], str(e)
