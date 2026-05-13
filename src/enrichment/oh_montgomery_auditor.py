@@ -40,6 +40,13 @@ logger = logging.getLogger(__name__)
 # ── Endpoint ──────────────────────────────────────────────────────────
 BASE_URL = "https://www.mcrealestate.org"
 SEARCH_URL = f"{BASE_URL}/search/commonsearch.aspx?mode=owner"
+DETAIL_URL = f"{BASE_URL}/datalets/datalet.aspx?mode=profileall&UseSearch=no&pin="
+
+# "DAYTON, OH  45414 2239" → city + state + zip
+_DETAIL_CSZ_RE = re.compile(
+    r'City,\s*State,\s*Zip.*?DataletData"[^>]*>\s*([A-Z][A-Z .\-]+?)\s*,\s*([A-Z]{2})\s+(\d{5})(?:\s+(\d{4}))?',
+    re.IGNORECASE | re.DOTALL,
+)
 
 # ── Behaviour knobs ───────────────────────────────────────────────────
 REQUEST_DELAY_MIN = 2.0
@@ -134,6 +141,42 @@ def _extract_hidden_fields(html: str) -> dict[str, str]:
         n = inp.get("name")
         if n:
             out[n] = inp.get("value", "") or ""
+    return out
+
+
+def _fetch_parcel_city_zip(
+    session: requests.Session,
+    parcel_id: str,
+) -> Optional[dict]:
+    """Hit the parcel detail page and parse out the mailing City/State/ZIP.
+
+    For probate decedents, the owner is the resident, so the mailing city/ZIP
+    matches the property city/ZIP in the overwhelming majority of cases.
+    Returns ``{"city": ..., "state": ..., "zip": ..., "zip_plus4": ...}`` or
+    ``None`` on miss.
+    """
+    if not parcel_id:
+        return None
+    url = DETAIL_URL + parcel_id.replace(" ", "%20")
+    r = _request_with_retries(
+        session, "GET", url,
+        headers={"Referer": SEARCH_URL},
+    )
+    if r is None or r.status_code != 200:
+        return None
+    if r.encoding is None or r.encoding.lower() == "iso-8859-1":
+        r.encoding = r.apparent_encoding or "utf-8"
+    m = _DETAIL_CSZ_RE.search(r.text)
+    if not m:
+        return None
+    city, state, zip5, zip4 = m.group(1), m.group(2), m.group(3), m.group(4)
+    out = {
+        "city": city.title().strip(),
+        "state": state.upper(),
+        "zip": zip5,
+    }
+    if zip4:
+        out["zip_plus4"] = f"{zip5}-{zip4}"
     return out
 
 
@@ -295,7 +338,22 @@ def _sync_search(
         key=lambda r: r["match_score"],
         reverse=True,
     )
-    return ranked[:MAX_RESULTS]
+    top = ranked[:MAX_RESULTS]
+
+    # Enrich top matches with city/state/ZIP from parcel detail page.
+    # Cheap insurance: without this, downstream Smarty often can't infer
+    # the right suburb (Kettering / Vandalia / etc.) from "Dayton, OH" alone.
+    for row in top:
+        _polite_sleep()
+        detail = _fetch_parcel_city_zip(session, row["parcel_id"])
+        if detail:
+            row["city"] = detail["city"] or row.get("city", "")
+            row["state"] = detail["state"] or row.get("state", "OH")
+            row["zip"] = detail["zip"] or row.get("zip", "")
+            if "zip_plus4" in detail:
+                row["zip_plus4"] = detail["zip_plus4"]
+
+    return top
 
 
 async def search_by_owner_name(

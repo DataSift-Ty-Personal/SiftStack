@@ -3,6 +3,9 @@
 Processes a batch of NoticeData records, overwrites address/city/zip with
 USPS-standardized versions, and populates geocode + validation fields.
 
+State safety: results are accepted when Smarty's returned state matches
+``notice.state``. Records with no expected state accept any Smarty result.
+
 Graceful degradation: if no API keys or API errors, all notices pass through
 unchanged.
 """
@@ -42,7 +45,7 @@ def _build_lastline(notice: NoticeData) -> str:
     lastline = ", ".join(parts)
     if notice.zip:
         lastline += " " + notice.zip if lastline else notice.zip
-    return lastline or "TN"
+    return lastline or (notice.state or "OH")
 
 
 def standardize_addresses(
@@ -125,12 +128,17 @@ def standardize_addresses(
             metadata = candidate.metadata
             analysis = candidate.analysis
 
-            # Safety: reject non-TN results (bad match on out-of-state address)
-            if components and components.state_abbreviation and components.state_abbreviation != "TN":
+            # Reject only if Smarty returns a state that disagrees with the
+            # notice's expected state (e.g. notice.state="OH" but Smarty says
+            # "MI" — bad match). If notice.state is blank, accept anything.
+            expected_state = (notice.state or "").upper()
+            returned_state = (components.state_abbreviation or "").upper() if components else ""
+            if expected_state and returned_state and returned_state != expected_state:
                 logger.warning(
-                    "Smarty returned %s for '%s' -- keeping original",
-                    components.state_abbreviation,
+                    "Smarty returned %s for '%s' (expected %s) -- keeping original",
+                    returned_state,
                     notice.address,
+                    expected_state,
                 )
                 failed += 1
                 continue
@@ -318,7 +326,9 @@ def retry_with_geocoded_city(
             metadata = candidate.metadata
             analysis = candidate.analysis
 
-            if components and components.state_abbreviation and components.state_abbreviation != "TN":
+            expected_state = (notice.state or "").upper()
+            returned_state = (components.state_abbreviation or "").upper() if components else ""
+            if expected_state and returned_state and returned_state != expected_state:
                 failed += 1
                 continue
 
