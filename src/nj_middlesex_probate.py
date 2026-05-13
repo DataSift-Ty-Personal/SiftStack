@@ -53,6 +53,35 @@ from notice_parser import NoticeData
 logger = logging.getLogger(__name__)
 
 
+class CloudflareBlockError(RuntimeError):
+    """Raised when the Bluestone portal returns a Cloudflare bot-block page.
+
+    Bluestone sits behind Cloudflare. Modal's egress IPs occasionally land
+    on Cloudflare's bot blocklist (typically triggered by rapid request
+    patterns). Detected via the response title containing "Cloudflare" or
+    the page being orders of magnitude smaller than the real form.
+
+    Callers in modal_app.py let this exception propagate so Modal's
+    function-level retries spin up a new container — and likely a new
+    egress IP — until a clean one is assigned.
+    """
+
+
+async def _check_cloudflare_block(page, county_name: str) -> None:
+    """Raise CloudflareBlockError if the current page is a CF challenge.
+
+    Fast pre-flight check after the first goto, before we burn 180+ days
+    of timeouts hammering a blocked IP. The CF block page weighs ~5KB and
+    has 'Cloudflare' in the <title>; the real Bluestone form is ~80KB+.
+    """
+    title = (await page.title()) or ""
+    if "Cloudflare" in title or "Attention Required" in title:
+        raise CloudflareBlockError(
+            f"{county_name}: Cloudflare blocked the IP "
+            f"(title={title!r}). Letting Modal retry on a fresh container."
+        )
+
+
 @dataclass(frozen=True)
 class BluestoneCountyConfig:
     """Per-county Bluestone parameters. Everything else is shared."""
@@ -391,6 +420,11 @@ async def _submit_day(page: Page, day: datetime, cfg: BluestoneCountyConfig) -> 
     await page.goto(cfg.search_url, wait_until="domcontentloaded", timeout=45000)
     await page.wait_for_timeout(2000)
 
+    # CF block check before each day — IPs can get flagged mid-scrape.
+    # Propagates CloudflareBlockError up to scrape_bluestone_probates
+    # which raises out for Modal to retry on a fresh container.
+    await _check_cloudflare_block(page, cfg.name)
+
     # DevExpress sizes the form's textboxes via post-load JS. On Modal's
     # headless Chromium the layout briefly resolves to offsetWidth=0, which
     # tripped Playwright's actionability wait and timed out at 30s per day.
@@ -456,6 +490,17 @@ async def scrape_bluestone_probates(
         ctx = await browser.new_context(viewport={"width": 1400, "height": 900})
         page = await ctx.new_page()
 
+        # Pre-flight CF check — bail fast on blocked IPs instead of
+        # burning days_back × ~17s of futile timeouts. Raises out so
+        # Modal's function-level retries can rotate the container.
+        try:
+            await page.goto(cfg.search_url, wait_until="domcontentloaded", timeout=45000)
+            await page.wait_for_timeout(1500)
+            await _check_cloudflare_block(page, cfg.name)
+        except CloudflareBlockError:
+            await browser.close()
+            raise
+
         for offset in range(days_back):
             day = today - timedelta(days=offset)
             try:
@@ -463,6 +508,11 @@ async def scrape_bluestone_probates(
                 if rows:
                     logger.info("  %s %s: %d probate(s)", cfg.name, day.strftime("%Y-%m-%d"), len(rows))
                 all_rows.extend(rows)
+            except CloudflareBlockError:
+                # Mid-scrape CF block — IP got flagged partway through.
+                # Propagate so Modal retries with a fresh container.
+                await browser.close()
+                raise
             except Exception as e:
                 logger.warning("%s: failed %s: %s", cfg.name, day.strftime("%Y-%m-%d"), e)
 
@@ -562,6 +612,14 @@ async def scrape_somerset_probates(
 
         await page.goto(cfg.search_url, wait_until="domcontentloaded", timeout=45000)
         await page.wait_for_timeout(2000)
+
+        # CF pre-flight — raise out so Modal can retry on a fresh IP
+        # rather than burning 30s on a doomed show_dates click.
+        try:
+            await _check_cloudflare_block(page, cfg.name)
+        except CloudflareBlockError:
+            await browser.close()
+            raise
 
         # Reveal the date filter section
         try:

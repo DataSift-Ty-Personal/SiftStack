@@ -56,10 +56,16 @@ SCHEDULE_CRON_UTC = "0 10 * * 3"
     image=image,
     secrets=[secrets],
     timeout=28800,  # 8 hr — obit + heir verification + Ancestry SSDI per heir
+    # Bumped from 2 → 8 for Cloudflare IP-rotation: Bluestone scrapers raise
+    # CloudflareBlockError on hard blocks, which propagates here; Modal then
+    # restarts the container with (usually) a fresh egress IP. The cost is
+    # re-running the 5 non-blocked scrapers on each retry, but dedup via the
+    # tracking volume makes that idempotent — wasted compute, not bad data.
+    # Initial delay stays short because the block is IP-bound, not rate-bound.
     retries=modal.Retries(
-        max_retries=2,
-        initial_delay=60.0,
-        backoff_coefficient=2.0,
+        max_retries=8,
+        initial_delay=10.0,
+        backoff_coefficient=1.0,
     ),
     schedule=modal.Cron(SCHEDULE_CRON_UTC),
     volumes={TRACKING_MOUNT: tracking_volume},
@@ -94,7 +100,9 @@ async def nj_weekly_all():
     logger = logging.getLogger("modal_nj_weekly_all")
 
     from nj_scraper import scrape_nj_lp_notices
-    from nj_middlesex_probate import scrape_middlesex_probates, scrape_somerset_probates
+    from nj_middlesex_probate import (
+        scrape_middlesex_probates, scrape_somerset_probates, CloudflareBlockError,
+    )
     from nj_somerset_sheriff import scrape_somerset_notices
     from nj_tax_sale_monitor import scrape_nj_tax_sale_notices
     from nj_sheriff_sales import scrape_civilview_notices
@@ -104,6 +112,12 @@ async def nj_weekly_all():
             notices = await coro
             logger.info("%s: %d notices", label, len(notices))
             return label, notices, None
+        except CloudflareBlockError:
+            # Propagate up so Modal's function-level retries can rotate
+            # the container's egress IP. Catching here would silently
+            # drop the source for the week.
+            logger.warning("%s: Cloudflare blocked — raising for Modal retry", label)
+            raise
         except Exception as e:
             logger.error("%s failed: %s", label, e)
             return label, [], str(e)
@@ -730,6 +744,18 @@ async def nj_somerset_sheriff_manual(
     # enrichment (obit + Ancestry SSDI + DM address waterfall + heir map)
     # can run 60-90 min on a busy week. Give it 2hr like nj_weekly_all.
     timeout=7200,
+    # Cloudflare rotates Modal egress IPs into and out of its bot blocklist.
+    # When the Bluestone scrapers detect a CF challenge they raise
+    # CloudflareBlockError, which propagates out of nj_probate_manual; Modal
+    # then spawns a new container — and (usually) a different egress IP. 8
+    # attempts at ~30s cold-start ≈ ~4 min worst-case before giving up.
+    # Initial delay is short because the block is IP-bound, not rate-bound;
+    # waiting longer doesn't help.
+    retries=modal.Retries(
+        max_retries=8,
+        initial_delay=10.0,
+        backoff_coefficient=1.0,
+    ),
     volumes={TRACKING_MOUNT: tracking_volume},
 )
 async def nj_probate_manual(mx_days_back: int = 180, som_days_back: int = 30):
@@ -945,6 +971,70 @@ async def nj_scrape_manual(counties: list[str] | None = None):
     )
     print(f"Result: {result}")
     return result
+
+
+@app.function(
+    image=image,
+    secrets=[secrets],
+    timeout=600,
+    volumes={TRACKING_MOUNT: tracking_volume},
+)
+async def nj_bluestone_diag():
+    """Probe Middlesex Bluestone portal from Modal — dump HTML, screenshot,
+    and offsetWidth so we can compare against local rendering. Used to
+    diagnose 'death-date input never rendered' failures in the cron run.
+    """
+    import logging
+    import os
+    import sys
+    from datetime import datetime
+    from pathlib import Path
+
+    sys.path.insert(0, "/app/src")
+    os.chdir("/app")
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+    logger = logging.getLogger("nj_bluestone_diag")
+
+    from playwright.async_api import async_playwright
+
+    diag = Path(f"/tracking/diagnostics/bluestone_{datetime.utcnow().strftime('%Y%m%dT%H%M%SZ')}")
+    diag.mkdir(parents=True, exist_ok=True)
+
+    url = "https://surrogatesearch.co.middlesex.nj.us/SurrogateSearch/default.aspx"
+    sel = "#ContentPlaceHolder1_ASPxSplitterDefaultMain_ASPxTextBox_to_date_I"
+
+    async with async_playwright() as pw:
+        browser = await pw.chromium.launch(headless=True)
+        ctx = await browser.new_context(viewport={"width": 1400, "height": 900})
+        page = await ctx.new_page()
+        await page.goto(url, wait_until="domcontentloaded", timeout=45000)
+        await page.wait_for_timeout(2000)
+
+        width = await page.evaluate(
+            "(s) => { const el = document.querySelector(s); return el ? el.offsetWidth : 'null'; }",
+            sel,
+        )
+        title = await page.title()
+        html = await page.content()
+        text = await page.evaluate("() => document.body && document.body.innerText || ''")
+
+        (diag / "page.html").write_text(html)
+        (diag / "page.txt").write_text(text[:10000])
+        (diag / "meta.txt").write_text(f"url={page.url}\ntitle={title!r}\nto_date_I.offsetWidth={width}\nhtml_bytes={len(html)}\n")
+        await page.screenshot(path=str(diag / "page.png"), full_page=True)
+
+        await browser.close()
+
+    await tracking_volume.commit.aio()
+    logger.info("Diag dumped to %s — fetch with: modal volume get siftstack-tracking %s",
+                diag, str(diag).removeprefix("/tracking/"))
+    return {
+        "ok": True,
+        "diag_dir": str(diag),
+        "offsetWidth": width,
+        "title": title,
+        "html_bytes": len(html),
+    }
 
 
 @app.function(
