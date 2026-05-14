@@ -233,11 +233,78 @@ class RealAuctionScraper(NoticeScraper):
                 await context.close()
                 await browser.close()
 
+        # ── Auditor parcel-ID fallback for missing defendant names ──
+        # RealAuction's public sales calendar exposes property address +
+        # parcel_id + case number, but the defendant name lives on the
+        # DETAILS page (login-gated). When login fails (stale creds, MFA,
+        # site outage), every record comes back with owner_name="". We
+        # plug that hole by querying the County Auditor by parcel_id —
+        # the auditor's owner-of-record IS the foreclosure defendant in
+        # the overwhelming majority of cases.
+        await self._enrich_missing_owners(records)
+
         records.sort(key=lambda r: (r.auction_date, r.source_url))
         logger.info(
             "%s foreclosure scrape done — %d records", self.county, len(records)
         )
         return records
+
+    # ── Auditor fallback ───────────────────────────────────────────────
+    async def _enrich_missing_owners(self, records: list[NoticeData]) -> None:
+        """Fill owner_name + owner mailing for records the DETAILS pass missed.
+
+        Routes to the per-county Auditor module by ``self.county``. No-op for
+        counties without an auditor wiring. Records that already carry an
+        ``owner_name`` are skipped.
+        """
+        missing = [r for r in records if not r.owner_name and r.parcel_id]
+        if not missing:
+            return
+
+        county = (self.county or "").lower()
+        if county == "franklin":
+            from enrichment.oh_franklin_auditor import fetch_parcel_owner
+        elif county == "greene":
+            from enrichment.oh_greene_auditor import fetch_parcel_owner
+        elif county == "montgomery":
+            # Montgomery RealAuction surface always carries defendant names —
+            # if we ever add a fallback here, mirror the Franklin pattern.
+            return
+        else:
+            return
+
+        logger.info(
+            "%s: looking up owner via Auditor for %d nameless record(s)",
+            self.county, len(missing),
+        )
+        filled = 0
+        for rec in missing:
+            try:
+                data = await fetch_parcel_owner(rec.parcel_id)
+            except Exception as exc:
+                logger.warning(
+                    "Auditor lookup failed for parcel %s: %s",
+                    rec.parcel_id, exc,
+                )
+                continue
+            if not data or not data.get("owner_name"):
+                continue
+            rec.owner_name = data["owner_name"]
+            rec.tax_owner_name = data["owner_name"]
+            # Mailing address — auditor's "owner mailing" field. Falls back
+            # to property address when blank (true for owner-occupants).
+            rec.owner_street = data.get("mail_street") or rec.address
+            rec.owner_city = data.get("mail_city") or rec.city
+            rec.owner_state = data.get("mail_state") or "OH"
+            rec.owner_zip = data.get("mail_zip") or rec.zip
+            filled += 1
+            # Polite pacing — auditors are public + free; don't pound them.
+            await asyncio.sleep(random.uniform(2.0, 3.0))
+
+        logger.info(
+            "%s: Auditor fallback populated %d/%d nameless records",
+            self.county, filled, len(missing),
+        )
 
     # ── Login / session ────────────────────────────────────────────────
     async def _ensure_logged_in(self, page: Page) -> bool:

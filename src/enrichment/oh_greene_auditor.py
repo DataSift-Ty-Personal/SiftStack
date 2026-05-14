@@ -486,6 +486,80 @@ def _search_sync(
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Parcel-by-ID lookup (used by RealAuction foreclosure scraper to fill in
+# defendant names when RealAuction itself only exposes address + parcel)
+# ---------------------------------------------------------------------------
+
+
+def _lookup_parcel_sync(parcel_id: str) -> Optional[dict]:
+    """Query Greene's ArcGIS PAS layer by Parcel_Id, return owner + address.
+
+    The layer stores ``Parcel_Id`` as the raw vendor key (e.g. an 18-char
+    alphanumeric like ``M40000200010011200``). The ``Parcel_Number`` field
+    holds the dashed/human form and isn't a reliable lookup key.
+    """
+    if not parcel_id:
+        return None
+    raw = parcel_id.strip().replace("-", "")
+    session = _new_session()
+    _polite_sleep()
+    params = {
+        "where": f"Parcel_Id='{_sql_escape(raw)}'",
+        "outFields": (
+            "Parcel_Id,Parcel_Number,Owner_Name,Property_Address,"
+            "Property_City_St_Zip,Address_City,Address_State,Address_ZipCode,"
+            "Assessed_Total"
+        ),
+        "returnGeometry": "false",
+        "f": "json",
+    }
+    data = _http_get_json(session, QUERY_URL, params)
+    if not data:
+        return None
+    features = data.get("features") or []
+    if not features:
+        return None
+    attrs = features[0].get("attributes") or {}
+    owner = (attrs.get("Owner_Name") or "").strip()
+    site = (attrs.get("Property_Address") or "").strip()
+    site_csz = (attrs.get("Property_City_St_Zip") or "").strip()
+    # "XENIA OH 45385" -> ("Xenia", "OH", "45385")
+    site_city = site_state = site_zip = ""
+    m = re.match(r"^(.*?)\s+([A-Z]{2})\s+(\d{5})(?:-(\d{4}))?$", site_csz)
+    if m:
+        site_city = m.group(1).strip().title()
+        site_state = m.group(2)
+        site_zip = m.group(3) + (f"-{m.group(4)}" if m.group(4) else "")
+    mail_city = (attrs.get("Address_City") or "").strip().title()
+    mail_state = (attrs.get("Address_State") or "").strip()
+    mail_zip = (attrs.get("Address_ZipCode") or "").strip()
+    return {
+        "owner_name": owner,
+        "mail_street": "",
+        "mail_city": mail_city,
+        "mail_state": mail_state,
+        "mail_zip": mail_zip,
+        "site_address": site,
+        "city": site_city,
+        "state": site_state or "OH",
+        "zip": site_zip,
+        "assessed_value": str(attrs.get("Assessed_Total") or "").strip(),
+    }
+
+
+async def fetch_parcel_owner(parcel_id: str) -> Optional[dict]:
+    """Look up Greene parcel by ID and return owner + mailing address.
+
+    Used by the RealAuction foreclosure scraper to fill in defendant names
+    that RealAuction's public calendar doesn't expose. Returns ``None`` on
+    miss. Same shape as ``oh_franklin_auditor.fetch_parcel_owner``.
+    """
+    if not parcel_id:
+        return None
+    return await asyncio.to_thread(_lookup_parcel_sync, parcel_id)
+
+
 async def search_by_owner_name(
     name: str,
     last_name: Optional[str] = None,

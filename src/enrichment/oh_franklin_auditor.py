@@ -424,6 +424,106 @@ def _enrich_match(session: requests.Session, match: dict) -> None:
     match.update(parsed)
 
 
+# ---------------------------------------------------------------------------
+# Parcel-by-ID lookup (used by RealAuction foreclosure scraper to fill in
+# defendant names when RealAuction itself only exposes address + parcel)
+# ---------------------------------------------------------------------------
+
+
+def _parse_owner_block(html: str) -> dict:
+    """Extract owner name + mailing address from the OWNERS3 datalet block.
+
+    The Franklin auditor renders an "Owner" datalet block (div with
+    name="OWNERS3") containing rows like:
+
+        Owner                    -> <a>BLANTON KATHERINE</a>
+        Owner Mailing /          -> 6623 LOCKBOURNE RD
+        Contact Address          -> LOCKBOURNE OH 43137
+        Site (Property) Address  -> 6623 LOCKBOURNE RD
+
+    Returns a dict with keys: ``owner_name``, ``mail_street``, ``mail_city``,
+    ``mail_state``, ``mail_zip``, ``site_address``. Blank strings on miss.
+    """
+    out = {
+        "owner_name": "",
+        "mail_street": "",
+        "mail_city": "",
+        "mail_state": "",
+        "mail_zip": "",
+        "site_address": "",
+    }
+    soup = BeautifulSoup(html, "html.parser")
+    block = soup.find("div", attrs={"name": "OWNERS3"})
+    if not block:
+        return out
+
+    pending_label: Optional[str] = None
+    for row in block.find_all("tr"):
+        cells = row.find_all("td")
+        if len(cells) < 2:
+            continue
+        label = cells[0].get_text(strip=True).rstrip(":").strip()
+        value = cells[1].get_text(" ", strip=True)
+        if not label or label in ("\xa0", ""):
+            label = pending_label or ""
+        # "Owner Mailing /" + "Contact Address" come on adjacent rows
+        if label.lower().startswith("owner") and "mailing" not in label.lower() and not out["owner_name"]:
+            if value and value != "\xa0":
+                out["owner_name"] = value
+        elif "owner mailing" in label.lower() and not out["mail_street"]:
+            out["mail_street"] = value
+            pending_label = "contact address"
+        elif label.lower() == "contact address" and not out["mail_city"]:
+            # "LOCKBOURNE OH 43137" — split into city, state, zip
+            m = re.match(r"^(.*?)\s+([A-Z]{2})\s+(\d{5})(?:-(\d{4}))?$", value.strip())
+            if m:
+                out["mail_city"] = m.group(1).strip().title()
+                out["mail_state"] = m.group(2)
+                out["mail_zip"] = m.group(3) + (f"-{m.group(4)}" if m.group(4) else "")
+        elif "site" in label.lower() and "property" in label.lower() and not out["site_address"]:
+            out["site_address"] = value
+        pending_label = label
+    return out
+
+
+def _lookup_parcel_sync(parcel_id: str) -> Optional[dict]:
+    """Synchronous core for fetch_parcel_owner."""
+    pin = _parcel_id_to_pin(parcel_id)
+    if not pin:
+        return None
+    session = _new_session()
+    text = _http_get(session, PERMALINK_BASE + pin)
+    if not text:
+        return None
+    owner = _parse_owner_block(text)
+    detail = _parse_datalet(text)
+    return {**owner, **{k: v for k, v in detail.items() if v}}
+
+
+async def fetch_parcel_owner(parcel_id: str) -> Optional[dict]:
+    """Look up Franklin parcel by ID and return owner + mailing address.
+
+    Used by the RealAuction foreclosure scraper to fill in defendant names
+    that RealAuction's public calendar doesn't expose. Returns ``None`` if
+    the parcel ID is empty or the auditor lookup fails. Otherwise returns:
+
+        {
+            "owner_name": "BLANTON KATHERINE",
+            "mail_street": "6623 LOCKBOURNE RD",
+            "mail_city": "Lockbourne",
+            "mail_state": "OH",
+            "mail_zip": "43137",
+            "site_address": "6623 LOCKBOURNE RD",
+            "city": "...",          # property city from datalet
+            "zip": "...",           # property zip from datalet
+            "assessed_value": "...",
+        }
+    """
+    if not parcel_id:
+        return None
+    return await asyncio.to_thread(_lookup_parcel_sync, parcel_id)
+
+
 def _search_sync(name: str, last_name: Optional[str], first_name: Optional[str]) -> list[dict]:
     variants = _build_name_variants(name, last_name, first_name)
     if not variants:
