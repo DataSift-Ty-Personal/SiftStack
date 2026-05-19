@@ -159,6 +159,18 @@ async def run_batch(input_csv: Path, output_root: Path | None = None) -> dict:
         rows = list(csv.DictReader(fh))
     logger.info("Batch run: %d rows from %s", len(rows), input_csv)
 
+    # Tracerfy credit pre-flight — abort cleanly before burning hours of
+    # orchestrator work on a drained account. Surfaced by the Week 21
+    # cohort: every Tracerfy call silently returned 402 mid-batch and the
+    # output looked superficially fine. See BACKLOG.md "Operational
+    # hygiene" for the broader push to gate all paid APIs this way.
+    from deep_prospecting.sources.tracerfy import preflight_check
+    ok, msg = preflight_check(batch_size=len(rows))
+    if not ok:
+        print(msg, file=sys.stderr)
+        sys.exit(1)
+    logger.info("%s", msg)
+
     # Local-date folder (matches _utils.output_dir_for_run convention —
     # operator's "today's runs" intuition lines up with their wall clock).
     today = datetime.now().astimezone().strftime("%Y-%m-%d")

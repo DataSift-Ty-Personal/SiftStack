@@ -183,6 +183,118 @@ def _parse_response(
 # ── HTTP plumbing ───────────────────────────────────────────────────────
 
 
+# ── Pre-flight credit check ───────────────────────────────────────────────
+#
+# /v1/api/analytics/ is free — call it before kicking off a batch to confirm
+# enough credits to finish the run. Prevents the "silent 402-on-every-call"
+# scenario surfaced during the Week 21 cleanup, where the batch ran to
+# completion looking healthy but every Tracerfy lookup returned 0 results
+# because the account was drained mid-run.
+
+# How many credits Tracerfy charges per Instant Trace lookup. Quoted in the
+# 402 error body — see Week 21 logs: "Instant trace requires 5 credits per
+# lookup". If Tracerfy changes pricing, update here.
+CREDITS_PER_LOOKUP = 5
+
+
+@dataclass
+class CreditBalanceResult:
+    """Outcome of a /v1/api/analytics/ probe.
+
+    `balance` is None when the probe itself failed (missing key, network
+    error, unexpected response shape) — in that case the caller should
+    decide policy (fail-open vs fail-closed). `error` carries a one-line
+    diagnostic for surfacing to the operator.
+    """
+    balance: int | None
+    error: str | None = None
+
+
+def get_credit_balance() -> CreditBalanceResult:
+    """Fetch current Tracerfy credit balance (free, no credits consumed)."""
+    api_key = os.environ.get("TRACERFY_API_KEY", "")
+    if not api_key:
+        return CreditBalanceResult(balance=None, error="TRACERFY_API_KEY not set")
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Accept": "application/json",
+    }
+    try:
+        resp = requests.get(
+            f"{_BASE_URL}/analytics/", headers=headers, timeout=_TIMEOUT_SECONDS,
+        )
+    except requests.exceptions.RequestException as e:
+        return CreditBalanceResult(balance=None, error=f"network error: {e}")
+
+    if resp.status_code >= 400:
+        return CreditBalanceResult(
+            balance=None,
+            error=f"HTTP {resp.status_code}: {(resp.text or '')[:200]}",
+        )
+    try:
+        data = resp.json()
+    except ValueError as e:
+        return CreditBalanceResult(balance=None, error=f"non-JSON response: {e}")
+
+    # Tolerant lookup — Tracerfy hasn't published a stable analytics schema,
+    # so probe common field names and fall back to scanning the response
+    # for an integer-valued key that contains 'credit' or 'balance'.
+    for key in ("credits", "balance", "current_balance", "remaining_credits", "credits_remaining"):
+        v = data.get(key)
+        if isinstance(v, (int, float)):
+            return CreditBalanceResult(balance=int(v))
+    # Some endpoints nest the value: {"account": {"credits": 100}} or similar.
+    for parent_key in ("account", "user", "data"):
+        nested = data.get(parent_key)
+        if isinstance(nested, dict):
+            for k in ("credits", "balance", "current_balance", "remaining_credits"):
+                v = nested.get(k)
+                if isinstance(v, (int, float)):
+                    return CreditBalanceResult(balance=int(v))
+    return CreditBalanceResult(
+        balance=None,
+        error=f"could not locate credit balance in response (keys: {sorted(data.keys())})",
+    )
+
+
+def preflight_check(batch_size: int, buffer: float = 1.2) -> tuple[bool, str]:
+    """Block batches that don't have enough Tracerfy credits to complete.
+
+    Computes required_credits = batch_size × CREDITS_PER_LOOKUP × buffer
+    (default 20% buffer to absorb retries / unanticipated extra calls).
+
+    Returns (ok, message). On `ok=False`, message is the operator-facing
+    warning the caller should print before aborting. On `ok=True`, message
+    is a one-line summary suitable for logging at INFO level.
+
+    Fail-open policy when the balance probe itself fails: emit a warning
+    and return ok=True so the batch can still run. The alternative (hard
+    fail on missing analytics) would block legitimate runs whenever
+    Tracerfy's analytics endpoint is briefly down.
+    """
+    required = int(batch_size * CREDITS_PER_LOOKUP * buffer)
+    result = get_credit_balance()
+    if result.balance is None:
+        return True, (
+            f"WARNING: could not probe Tracerfy credit balance "
+            f"({result.error}); proceeding with batch_size={batch_size}, "
+            f"required ≈ {required} credits"
+        )
+    if result.balance < required:
+        msg = (
+            "ERROR: Tracerfy credits insufficient for this batch.\n"
+            f"  Current balance: {result.balance} credits\n"
+            f"  Estimated need: {required} credits "
+            f"({batch_size} records × {CREDITS_PER_LOOKUP} credits, ×{buffer} buffer)\n"
+            f"  Top up at https://tracerfy.com/dashboard before running."
+        )
+        return False, msg
+    return True, (
+        f"Tracerfy credit pre-flight OK: balance={result.balance}, "
+        f"required={required} (batch_size={batch_size})"
+    )
+
+
 def _sync_post_lookup(
     api_key: str,
     *,

@@ -41,6 +41,10 @@ Deferred work — surfaced during builds but punted to keep scope focused.
 
   Track via: count records where `lead.warnings` contains `phase_1_estate_marker_advisory_spouse_estate` vs total records where Phase 1 hit the `(ESTATE)` path. Add a counter to `run_batch.py`'s summary output. Defer wiring until 50+ production records observed.
 
+## Operational hygiene
+
+- **Pre-flight credit checks for all paid APIs.** Tracerfy now probes `/v1/api/analytics/` before each batch and aborts cleanly if balance < `batch_size × credits_per_lookup × 1.2` — landed in v5-slice5b-credit-safety after the Week 21 cleanup batch silently 402'd on every Tracerfy call mid-run (account had drained to 0 credits but the script kept going, producing 24/31 NO_MATCH rows that looked like real misses). Same pattern should extend to: **Trestle** (phone scoring), **Firecrawl** (TPS/FPS/CBC scrapes; web crawler quota), and **Serper** (obituary dorks) — if their billing surfaces a balance endpoint. Goal: any batch that uses a metered paid API aborts at the start with a clear "top up before running" message rather than producing degraded output halfway through. Cost: zero (analytics endpoints are free). Non-blocking until similar silent-degradation incidents surface for the other three providers.
+
 ## BV paste-and-parse refinements (queued for v5-slice5c)
 
 Surfaced during real-world BV markdown testing in v5-slice5b on Amber Tami (Jeffrey-Tami-Living-Owner case) + Allan Maltby (Ronald-Maltby-Estate probate case). Parser handles both shapes, but four operator-facing polish items remain.
