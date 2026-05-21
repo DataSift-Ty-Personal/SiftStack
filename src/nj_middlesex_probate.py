@@ -61,9 +61,9 @@ class CloudflareBlockError(RuntimeError):
     patterns). Detected via the response title containing "Cloudflare" or
     the page being orders of magnitude smaller than the real form.
 
-    Callers in modal_app.py let this exception propagate so Modal's
-    function-level retries spin up a new container — and likely a new
-    egress IP — until a clean one is assigned.
+    Caught by the `_safe()` wrapper in modal_app.py so a CF block on one
+    scraper doesn't kill the rest of the parallel weekly run. The block
+    is surfaced in the Slack summary; the other scrapers ship as normal.
     """
 
 
@@ -77,8 +77,8 @@ async def _check_cloudflare_block(page, county_name: str) -> None:
     title = (await page.title()) or ""
     if "Cloudflare" in title or "Attention Required" in title:
         raise CloudflareBlockError(
-            f"{county_name}: Cloudflare blocked the IP "
-            f"(title={title!r}). Letting Modal retry on a fresh container."
+            f"{county_name}: Cloudflare blocked the IP (title={title!r}). "
+            f"Scraper skipped — other scrapers continue."
         )
 
 

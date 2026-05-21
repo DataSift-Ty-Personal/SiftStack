@@ -56,12 +56,13 @@ SCHEDULE_CRON_UTC = "0 10 * * 3"
     image=image,
     secrets=[secrets],
     timeout=28800,  # 8 hr — obit + heir verification + Ancestry SSDI per heir
-    # Bumped from 2 → 8 for Cloudflare IP-rotation: Bluestone scrapers raise
-    # CloudflareBlockError on hard blocks, which propagates here; Modal then
-    # restarts the container with (usually) a fresh egress IP. The cost is
-    # re-running the 5 non-blocked scrapers on each retry, but dedup via the
-    # tracking volume makes that idempotent — wasted compute, not bad data.
-    # Initial delay stays short because the block is IP-bound, not rate-bound.
+    # Function-level retries cover real crashes only (OOM, network blip,
+    # unhandled exception). CloudflareBlockError no longer propagates —
+    # _safe() catches it per-scraper so one source's CF block can't kill
+    # the parallel gather (May 2026 incident: probate CF-blocked, retry-
+    # cascade wiped 56 NJLP + 402 sheriff + Somerset sheriff mid-parse).
+    # 8 retries are excessive for non-CF crashes; tune down once the new
+    # behavior is observed in one or two weekly runs.
     retries=modal.Retries(
         max_retries=8,
         initial_delay=10.0,
@@ -112,12 +113,18 @@ async def nj_weekly_all():
             notices = await coro
             logger.info("%s: %d notices", label, len(notices))
             return label, notices, None
-        except CloudflareBlockError:
-            # Propagate up so Modal's function-level retries can rotate
-            # the container's egress IP. Catching here would silently
-            # drop the source for the week.
-            logger.warning("%s: Cloudflare blocked — raising for Modal retry", label)
-            raise
+        except CloudflareBlockError as e:
+            # Isolated failure — propagating crashed the container and
+            # killed every parallel scraper (May 2026 incident). Now we
+            # log, surface the block in the Slack summary, and let the
+            # remaining scrapers ship their records. Sentinel value
+            # "cloudflare_block" lets the summary distinguish CF blocks
+            # from generic errors.
+            logger.warning(
+                "%s: Cloudflare blocked — skipping, others continue: %s",
+                label, e,
+            )
+            return label, [], "cloudflare_block"
         except Exception as e:
             logger.error("%s failed: %s", label, e)
             return label, [], str(e)
@@ -374,8 +381,12 @@ async def nj_weekly_all():
         for label in ("NJLP", "Middlesex Probate", "Somerset Probate", "Somerset Sheriff", "Tax Sale", "CivilView Sheriff"):
             n, s = new_counts.get(label, 0), skipped_counts.get(label, 0)
             lines.append(f"  {label}: {n} new / {s} skipped (already processed)")
-        if errors:
-            lines.append(f"  errors: {errors}")
+        cf_blocked = [label for label, err in errors if err == "cloudflare_block"]
+        other_errors = [(label, err) for label, err in errors if err != "cloudflare_block"]
+        if cf_blocked:
+            lines.append(f"  :warning: BLOCKED: {', '.join(cf_blocked)} (Cloudflare)")
+        if other_errors:
+            lines.append(f"  errors: {other_errors}")
         lines.append(f"Enriched total: {len(enriched)}")
         lines.append(f"Combined CSV: {csv_path.name}")
 
