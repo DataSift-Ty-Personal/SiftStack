@@ -36,7 +36,7 @@ import urllib.request
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
-from kentucky_name_resolver import SUFFIX_RE
+from kentucky_name_resolver import SUFFIX_RE, generate_variants
 from notice_parser import NoticeData
 
 logger = logging.getLogger(__name__)
@@ -1342,14 +1342,46 @@ def lookup_owner_deed_history(
         opener = _make_opener()
         _accept_disclaimer(opener)
 
+    # Drive the deed name search off the resolver's ordered variant set
+    # (NAME-01) instead of a single normalized query. Maiden/prior/co-borrower
+    # surnames surface mortgage/lien chains indexed under a name other than the
+    # decedent's current one (fixes the Burkhart "indexed only under wife MARY"
+    # miss). Maiden/aka context comes from the obituary step (Plan 03); getattr
+    # falls back to None so this still works when obituary didn't run.
+    #
+    # CourtNet name->case DEPENDENCY (spec section 3 — documented, NOT solved
+    # here): the resolver feeds name->case discovery for the PVA + deeds
+    # surfaces. The KCOJ/CourtNet docket layer cannot be re-searched by a
+    # maiden/prior name today because `kcoj_case_detail.search_case` is
+    # case-number-only (no by-name search exists). Wiring a CourtNet by-name
+    # search is a separate task (parent plan 2c); the maiden re-search benefit
+    # at the docket layer is therefore a documented downstream dependency.
+    src_name = (notice.decedent_name or notice.owner_name or "").strip()
+    variants = generate_variants(
+        src_name,
+        maiden_name=getattr(notice, "decedent_obit_maiden_name", None) or None,
+        prior_surnames=getattr(notice, "decedent_also_known_as", None) or None,
+    )
+    # Fall back to the cleaned single query if the resolver yields nothing.
+    variant_values = [v.value for v in variants] or [query]
+
     try:
-        rows = _search_names_unique(opener, query)
-        best = _pick_best_name_match(query, rows)
+        best = None
+        matched_query = query
+        rows: list[tuple[str, str, int]] = []
+        # Loop variants highest-confidence-first; stop on the FIRST variant
+        # whose best row clears the existing 0.6 floor.
+        for vq in variant_values:
+            rows = _search_names_unique(opener, vq)
+            best = _pick_best_name_match(vq, rows)
+            if best:
+                matched_query = vq
+                break
         if not best:
             logger.info("JCD: no deed-list match for %r (checked %d rows)", query, len(rows))
             return
         display, checkbox_value, count = best
-        logger.info("JCD: matched %r → %r (%d records)", query, display, count)
+        logger.info("JCD: matched %r → %r (%d records)", matched_query, display, count)
 
         html = _fetch_deed_list(opener, checkbox_value)
         if not html:
