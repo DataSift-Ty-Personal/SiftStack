@@ -82,6 +82,16 @@ _EXECUTOR_PARTY_TYPES = {"P", "PE", "EE", "FI", "AD", "EX", "PR", "ADM"}
 _ATTORNEY_PARTY_TYPES = {"AP", "AD-P", "ATTY"}
 _DECEDENT_PARTY_TYPES = {"DEC", "DE", "DECD"}
 _JUDGE_PARTY_TYPES = {"J", "JUDGE"}  # PJ intentionally NOT here — unclear meaning
+# Warning-Order-Attorney (Phase 6 / COVER-02): a court-appointed attorney who
+# represents UNKNOWN / non-appearing heirs in a lis-pendens or tax-foreclosure —
+# a tell that the death surfaced with NO probate party graph (McGarvey, Walker,
+# Combs, Cooper, Dorsey, Gonzalez, Herflicker, Rutter, Spencer, Thompson-Hale).
+# These are NEVER promoted to owner_name/estate_attorney_name/DM: the WOA cannot
+# sell the property — they only signal that the no-probate / unknown-heir branch
+# (heir_identifier.identify_heirs) should fire instead of dropping the lead.
+_WARNING_ORDER_PARTY_TYPES = {
+    "WOA", "WO", "WARNING ORDER ATTORNEY", "WARNING-ORDER ATTORNEY",
+}
 
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -163,6 +173,11 @@ def _classify_party(pt: str) -> str:
     code = pt.strip().upper()
     if code in _EXECUTOR_PARTY_TYPES:
         return "executor"
+    # Check Warning-Order-Attorney BEFORE the generic attorney bucket so a
+    # "WOA"/"WO" code is recognized as its own no-probate signal and is NOT
+    # swallowed as a plain estate attorney (it must never become DM/owner).
+    if code in _WARNING_ORDER_PARTY_TYPES:
+        return "warning_order_attorney"
     if code in _ATTORNEY_PARTY_TYPES:
         return "attorney"
     if code in _DECEDENT_PARTY_TYPES:
@@ -170,6 +185,40 @@ def _classify_party(pt: str) -> str:
     if code in _JUDGE_PARTY_TYPES:
         return "judge"
     return "other"
+
+
+def has_warning_order_attorney(notice: NoticeData) -> bool:
+    """True when notice.courtnet_party_types contains a Warning-Order-Attorney
+    code — i.e. the death surfaced with a court-appointed attorney for unknown
+    heirs (a no-probate / unknown-heir tell). Reads the pipe-joined codes that
+    apply_parties_to_notice records; never re-parses the party graph."""
+    codes = (getattr(notice, "courtnet_party_types", "") or "")
+    return any(
+        c.strip().upper() in _WARNING_ORDER_PARTY_TYPES
+        for c in codes.split("|")
+        if c.strip()
+    )
+
+
+def no_usable_party_graph(notice: NoticeData) -> bool:
+    """True when CourtNet gave us no one who can SELL — the no-probate branch
+    trigger (Phase 6 / COVER-02).
+
+    Fires when owner_name is still blank AND either:
+      * courtnet_party_types is empty (0 parties — fresh/just-filed or no probate
+        case at all, e.g. McGarvey tax-foreclosure with no probate ever), OR
+      * the only meaningful representation is a Warning-Order-Attorney (a normal
+        probate would have an executor-class party that filled owner_name).
+
+    A notice with a real executor-filled owner_name returns False, so the branch
+    never overwrites a populated DM (T-06-10).
+    """
+    if (getattr(notice, "owner_name", "") or "").strip():
+        return False
+    party_codes = (getattr(notice, "courtnet_party_types", "") or "").strip()
+    if not party_codes:
+        return True
+    return has_warning_order_attorney(notice)
 
 
 # ── Session management (Playwright, headless) ─────────────────────────
@@ -509,6 +558,17 @@ def apply_parties_to_notice(notice: NoticeData, parties: list[dict]) -> None:
                 notice.case_number, notice.decedent_name, ptype,
             )
             decedent_set = True
+        elif category == "warning_order_attorney":
+            # Recorded in courtnet_party_types (above) but DELIBERATELY NOT
+            # promoted to owner_name/estate_attorney_name/DM — a Warning-Order-
+            # Attorney represents unknown heirs and cannot sell. The no-probate
+            # branch (Step 9.5 / heir_identifier) reads the recorded WOA code and
+            # routes the lead to heir identification instead of dropping it.
+            logger.info(
+                "  [CourtNet] case %s: Warning-Order-Attorney %r (type=%s) — "
+                "no-probate signal, NOT promoted to DM/owner",
+                notice.case_number, name, ptype,
+            )
         elif category == "other":
             logger.debug(
                 "  [CourtNet] case %s: unclassified party %r (type=%s)",
