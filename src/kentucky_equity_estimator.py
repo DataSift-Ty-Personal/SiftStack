@@ -270,9 +270,14 @@ def _net_encumbrances(
                     active_mtg.instnum,
                 )
 
-    # Lien / other records: judgment / lis_pendens / tax_cert. Skip the rows
-    # already accounted for as mortgages or releases.
+    # Lien / other records: hecm / judgment / lis_pendens / tax_cert. Skip the
+    # rows already accounted for as mortgages or releases. A stray HECM record
+    # whose doc_type didn't classify as a "mortgage" (e.g. doc_type=="HECM")
+    # is caught here as a flag-only encumbrance — still NOT straight-lined.
+    active_instnum = active_mtg.instnum if active_mtg is not None else None
     for rec in records:
+        if active_instnum and rec.instnum == active_instnum:
+            continue  # already handled on the mortgage path
         try:
             group = _classify(rec.doc_type)
         except Exception:  # noqa: BLE001
@@ -280,6 +285,21 @@ def _net_encumbrances(
         if group in ("mortgage", "release", "deed"):
             continue
         bucket = _classify_lien(rec.doc_type, f"{rec.grantor or ''} {rec.grantee or ''}")
+        if bucket == "hecm":
+            # HECM-as-non-mortgage row: flag only, never amortize.
+            flags.add("hecm")
+            amount = _record_amount(rec, amounts)
+            if amount > 0:
+                haircut += amount
+                logger.info(
+                    "  [Equity] HECM record %s — haircut full original ~$%s (NOT amortized)",
+                    rec.instnum, f"{amount:,}",
+                )
+            else:
+                logger.info(
+                    "  [Equity] HECM record %s — balance unknown, flag only", rec.instnum,
+                )
+            continue
         if bucket not in ("judgment", "lis_pendens", "tax_cert"):
             continue
         flags.add(bucket)
