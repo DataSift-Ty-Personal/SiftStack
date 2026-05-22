@@ -151,6 +151,17 @@ async def nj_weekly_all():
     per_source = {label: notices for label, notices, _ in results}
     errors = [(label, err) for label, _, err in results if err]
 
+    # Read the sheriff scrapers' stale-auction drop counts. Each scraper
+    # exports LAST_STALE_DROPPED after its filter pass; surfacing here
+    # gives operators visibility into "where did all those 2024 records
+    # go?" in the weekly Slack summary.
+    import nj_sheriff_sales as _civilview_mod
+    import nj_somerset_sheriff as _somerset_sheriff_mod
+    stale_dropped_counts = {
+        "CivilView Sheriff": _civilview_mod.LAST_STALE_DROPPED,
+        "Somerset Sheriff": _somerset_sheriff_mod.LAST_STALE_DROPPED,
+    }
+
     if not any(per_source.values()):
         msg = "All 6 scrapers returned 0 records"
         if errors:
@@ -404,7 +415,9 @@ async def nj_weekly_all():
         lines = ["*NJ Weekly All — combined Wednesday run*"]
         for label in ("NJLP", "Middlesex Probate", "Somerset Probate", "Somerset Sheriff", "Tax Sale", "CivilView Sheriff"):
             n, s = new_counts.get(label, 0), skipped_counts.get(label, 0)
-            lines.append(f"  {label}: {n} new / {s} skipped (already processed)")
+            stale = stale_dropped_counts.get(label, 0)
+            stale_suffix = f" / {stale} stale auctions filtered" if stale else ""
+            lines.append(f"  {label}: {n} new / {s} skipped (already processed){stale_suffix}")
         cf_blocked = [label for label, err in errors if err == "cloudflare_block"]
         other_errors = [(label, err) for label, err in errors if err != "cloudflare_block"]
         if cf_blocked:

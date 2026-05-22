@@ -18,8 +18,9 @@ Columns per row:
 """
 
 import logging
+import os
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import requests
 
@@ -32,6 +33,53 @@ from config import (
 from notice_parser import NoticeData
 
 logger = logging.getLogger(__name__)
+
+# Drop sheriff-sale records whose auction date is older than this many
+# days. Defaults to 90 because most NJ counties hold a redo auction within
+# ~60 days of the original date — anything older has either resold,
+# settled, or is otherwise stale. Override via env var for backfills /
+# historical runs. The 2026-05-21 weekly run shipped 32 stale records
+# (~20%, oldest from Nov 2024) to enrichment before this filter existed.
+SHERIFF_SALE_MAX_AGE_DAYS = int(os.getenv("SHERIFF_SALE_MAX_AGE_DAYS", "90"))
+
+# Last filter pass's drop count — read by modal_app.py to surface in the
+# weekly Slack summary. Module-level state is fine here because each
+# Modal run is a fresh container; tests should reset between cases.
+LAST_STALE_DROPPED: int = 0
+
+
+def _filter_stale_auctions(notices: list[NoticeData]) -> list[NoticeData]:
+    """Drop sheriff_sale records whose auction_date is older than the cutoff.
+
+    Updates module-level LAST_STALE_DROPPED so the orchestrator can
+    surface the count in the run summary. Records without an
+    auction_date are kept (we don't know they're stale — let enrichment
+    handle them).
+    """
+    global LAST_STALE_DROPPED
+    cutoff = datetime.now().date() - timedelta(days=SHERIFF_SALE_MAX_AGE_DAYS)
+    kept: list[NoticeData] = []
+    dropped = 0
+    for n in notices:
+        if not n.auction_date:
+            kept.append(n)
+            continue
+        try:
+            auction_dt = datetime.strptime(n.auction_date, "%Y-%m-%d").date()
+        except ValueError:
+            kept.append(n)
+            continue
+        if auction_dt < cutoff:
+            dropped += 1
+            continue
+        kept.append(n)
+    LAST_STALE_DROPPED = dropped
+    if dropped:
+        logger.info(
+            "Filtered %d stale sheriff sales (auction_date older than %d days, before %s)",
+            dropped, SHERIFF_SALE_MAX_AGE_DAYS, cutoff.isoformat(),
+        )
+    return kept
 
 USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -291,12 +339,19 @@ def scrape_all(counties: list[str] | None = None) -> list[NoticeData]:
         except Exception as e:
             logger.error("Failed to scrape %s: %s", county, e)
 
+    # Drop stale auctions (older than SHERIFF_SALE_MAX_AGE_DAYS) before
+    # they hit enrichment — these properties already sold or settled and
+    # waste Smarty / Zillow credits.
+    pre_filter_count = len(all_notices)
+    all_notices = _filter_stale_auctions(all_notices)
+
     # Persist last run timestamp (not used for dedup — listings are refreshed daily
     # by the site itself, and existing data_formatter.deduplicate() handles duplicate
     # addresses across counties and prior runs).
     save_state(NJ_SHERIFF_STATE_FILE, {
         "last_run": datetime.now().isoformat(),
         "total_records": len(all_notices),
+        "stale_dropped": pre_filter_count - len(all_notices),
         "counties": targets,
     })
 

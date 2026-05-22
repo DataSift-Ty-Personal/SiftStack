@@ -19,6 +19,13 @@ from playwright.async_api import async_playwright
 
 logger = logging.getLogger(__name__)
 
+# Shared cutoff with the CivilView scraper — defined in nj_sheriff_sales
+# so both sheriff scrapers honor one SHERIFF_SALE_MAX_AGE_DAYS env var.
+from nj_sheriff_sales import SHERIFF_SALE_MAX_AGE_DAYS
+
+# Last filter pass's stale-drop count — read by modal_app.py for Slack.
+LAST_STALE_DROPPED: int = 0
+
 # ── Constants ─────────────────────────────────────────────────────────────────
 
 BASE_URL = "https://www.somersetcountynj.gov"
@@ -116,9 +123,17 @@ def parse_sales_list(html: str) -> list[dict]:
 
 
 def filter_active_sales(sales: list[dict]) -> list[dict]:
-    """Filter for upcoming/active sales only."""
+    """Filter for upcoming/active sales only.
+
+    Drops sales older than SHERIFF_SALE_MAX_AGE_DAYS (shared with the
+    CivilView scraper) so the same env var controls both sheriff sources.
+    Records the stale drop count to LAST_STALE_DROPPED for Slack summary.
+    """
+    global LAST_STALE_DROPPED
     active = []
+    stale_dropped = 0
     today = datetime.now()
+    cutoff = today - timedelta(days=SHERIFF_SALE_MAX_AGE_DAYS)
 
     for sale in sales:
         status_lower = sale["status"].lower().strip()
@@ -138,13 +153,20 @@ def filter_active_sales(sales: list[dict]) -> list[dict]:
         # Parse date and check if upcoming
         try:
             sale_date = datetime.strptime(sale["date"], "%m/%d/%y")
-            # Include sales from last 90 days (recent) and all future sales
-            if sale_date >= today - timedelta(days=90):
+            if sale_date >= cutoff:
                 active.append(sale)
+            else:
+                stale_dropped += 1
         except ValueError:
             # Can't parse date — include it to be safe
             active.append(sale)
 
+    LAST_STALE_DROPPED = stale_dropped
+    if stale_dropped:
+        logger.info(
+            "Filtered %d stale Somerset sheriff sales (older than %d days, before %s)",
+            stale_dropped, SHERIFF_SALE_MAX_AGE_DAYS, cutoff.date().isoformat(),
+        )
     logger.info(f"Filtered to {len(active)} active/upcoming sales")
     return active
 
