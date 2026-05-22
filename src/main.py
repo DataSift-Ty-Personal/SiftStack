@@ -336,6 +336,13 @@ async def actor_main() -> None:
             kcoj_seen_cases = await kvs.get_value("kcoj_seen_cases") or {}
             Actor.log.info("Loaded %d previously-seen KCOJ case numbers from KVS", len(kcoj_seen_cases))
 
+            # ── Load re-poll queue from KVS (Phase 6 / COVER-01) ──────────────
+            # Mirrors kcoj_seen_cases exactly. Fresh 0-row leads (CourtNet 0 parties /
+            # obituary not posted) + Phase 5's credits-exhausted records are enqueued
+            # here and re-searched at the START of a later run (drain in scraper.py).
+            kcoj_repoll_queue = await kvs.get_value("kcoj_repoll_queue") or {}
+            Actor.log.info("Loaded %d re-poll queue entries from KVS", len(kcoj_repoll_queue))
+
             async def persist_seen_ids(ids: dict) -> None:
                 """Mid-run persistence — if a later search crashes, progress is kept."""
                 try:
@@ -353,6 +360,12 @@ async def actor_main() -> None:
                 except Exception as e:
                     Actor.log.warning("Failed to persist kcoj_seen_cases to KVS: %s", e)
 
+            async def persist_kcoj_repoll_queue(queue: dict) -> None:
+                try:
+                    await kvs.set_value("kcoj_repoll_queue", queue)
+                except Exception as e:
+                    Actor.log.warning("Failed to persist kcoj_repoll_queue to KVS: %s", e)
+
             # ── Scrape ────────────────────────────────────────────────
             notices = await scrape_all(
                 mode=mode, searches=searches, proxy_url=proxy_url, on_batch=push_batch,
@@ -363,6 +376,8 @@ async def actor_main() -> None:
                 kcoj_seen_cases=kcoj_seen_cases,
                 on_search_complete=persist_seen_ids,
                 on_kcoj_search_complete=persist_kcoj_seen_cases,
+                repoll_queue=kcoj_repoll_queue,
+                on_repoll_complete=persist_kcoj_repoll_queue,
             )
             # Handle async probate lookup before pipeline (requires await)
             probate_notices = [n for n in notices if n.notice_type == "probate" and n.decedent_name and not n.address]
