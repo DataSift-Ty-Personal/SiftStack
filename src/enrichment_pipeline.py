@@ -694,6 +694,51 @@ def run_enrichment_pipeline(
     elif opts.skip_obituary:
         logger.info("── Step 9: Obituary (skipped) ──")
 
+    # ── Step 9c: PVA Maiden Retry (Phase 2a, post-obituary) ──────────
+    # Closes the obituary->PVA maiden bridge. Step 3d runs PVA BEFORE Step 9
+    # (obituary), so on the first pass PVA has no maiden context and a property
+    # titled under a maiden/prior surname (Jackson -> GREATHOUSE: 0 rows under
+    # the married name) cannot resolve. Now that obituary has populated
+    # notice.decedent_obit_maiden_name, re-run the PVA probate lookup ONLY for
+    # the subset where obituary just found a maiden name AND PVA's first pass
+    # still left the address empty. probate_property_lookup re-reads the maiden
+    # context via getattr, so generate_variants now emits + searches the
+    # maiden_obit variant. Gated to the eligible subset (no maiden found, or
+    # already resolved -> skipped entirely). Per-county dispatch like Step 3d.
+    maiden_retry = [
+        n for n in notices
+        if n.notice_type == "probate"
+        and not n.address.strip()
+        and (n.decedent_obit_maiden_name.strip()
+             or n.decedent_obit_prior_surnames.strip())
+    ]
+    if maiden_retry:
+        logger.info(
+            "── Step 9c: PVA Maiden Retry (%d candidate(s)) ──", len(maiden_retry)
+        )
+        by_county = {}
+        for n in maiden_retry:
+            by_county.setdefault(n.county.lower(), []).append(n)
+        for county_key, group in by_county.items():
+            if county_key == "jefferson":
+                try:
+                    from kentucky_pva_lookup import probate_property_lookup as _ky_probate_lookup
+                    _ky_probate_lookup(group)
+                    found = sum(1 for n in group if n.address.strip())
+                    logger.info(
+                        "  [Jefferson] Maiden-retry property address found: %d/%d",
+                        found, len(group),
+                    )
+                except ImportError:
+                    logger.warning("  [Jefferson] kentucky_pva_lookup not available — skipping")
+                except Exception as e:
+                    logger.warning("  [Jefferson] PVA maiden retry failed: %s", e)
+            else:
+                logger.info(
+                    "  [%s] %d record(s) — maiden retry only wired for Jefferson",
+                    county_key.title(), len(group),
+                )
+
     # ── Step 9b: Data Validation ────────────────────────────────────
     logger.info("── Step 9b: Data Validation ──")
     before = len(notices)
