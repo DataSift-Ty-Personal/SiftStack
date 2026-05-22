@@ -812,6 +812,63 @@ def run_enrichment_pipeline(
                     county_key.title(), len(group),
                 )
 
+    # ── Step 9.5: No-probate / unknown-heir branch (Phase 6 COVER-02) ─
+    # Runs AFTER the obituary step (Step 9 / 9c) so owner_deceased is set and any
+    # obituary heirs are already on the notice (heir_map_json / decision_maker_*),
+    # and BEFORE Step 9b validation. Deaths that surfaced with NO usable CourtNet
+    # party graph — a Warning-Order-Attorney, or 0 parties (McGarvey tax-foreclosure,
+    # Walker intestate, Combs/Cooper/Dorsey/Gonzalez/Herflicker/Rutter/Spencer/
+    # Thompson-Hale) — would otherwise be DROPPED with no DM. Instead route them to
+    # the shared heir_identifier.identify_heirs waterfall (obituary-off-notice →
+    # affidavit-of-descent → deed-grantor → Phase-1 people-search) and write the
+    # candidates into heir_map_json so the existing skip-trace (Phase 5) + report
+    # paths consume them unchanged. Normal probate (a real executor-filled DM) is
+    # NOT touched: no_usable_party_graph requires a blank owner_name (T-06-10), and
+    # candidates already carrying heirs are skipped.
+    if not opts.skip_heir_verification:
+        try:
+            # PUBLIC gate + predicate via normal imports only (no dynamic-import
+            # trick, no reference to any private gate name).
+            from heir_identifier import (
+                identify_heirs, write_heir_map, eligible_for_heir_id,
+            )
+            from kcoj_case_detail import no_usable_party_graph
+
+            candidates = [
+                n for n in notices
+                if eligible_for_heir_id(n)
+                and no_usable_party_graph(n)
+                and not n.heir_map_json.strip()
+            ]
+            logger.info(
+                "── Step 9.5: No-probate heir branch (%d candidate(s)) ──",
+                len(candidates),
+            )
+            hits = 0
+            for n in candidates:
+                try:
+                    heirs = identify_heirs(n)
+                    if heirs:
+                        write_heir_map(n, heirs)
+                        hits += 1
+                except Exception as e:  # one bad notice must not abort the branch
+                    logger.warning(
+                        "  No-probate branch failed for %r: %s",
+                        n.decedent_name or n.owner_name, e,
+                    )
+            logger.info(
+                "  No-probate branch: %d/%d produced candidate heirs",
+                hits, len(candidates),
+            )
+        except ImportError as e:
+            logger.warning(
+                "── Step 9.5: No-probate branch unavailable (%s) — skipping ──", e
+            )
+        except Exception as e:  # best-effort: never abort enrichment
+            logger.warning("── Step 9.5: No-probate branch failed: %s ──", e)
+    else:
+        logger.info("── Step 9.5: No-probate branch (skipped) ──")
+
     # ── Step 9d: Wholesale-Fit Gate (final enrichment step) ──────────
     # Runs AFTER all enrichment that feeds the score (Zillow value @Step 8,
     # obituary/DM @Step 9, PVA maiden-retry address @Step 9c) and BEFORE
