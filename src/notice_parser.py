@@ -46,6 +46,13 @@ class NoticeData:
     dpv_match_code: str = ""   # Delivery Point Validation: Y=confirmed, S=secondary missing, N=no match
     vacant: str = ""           # "Y" if address is vacant
     rdi: str = ""              # "Residential" or "Commercial"
+    # Block/lot fallback — addresses that aren't a real street address
+    # (e.g. tax sale notices referencing "Block 14 Lot 7"). Flagged
+    # records skip Smarty + the vacant-land filter and survive to the
+    # held CSVs with the original block/lot text preserved for manual
+    # downstream lookup.
+    needs_manual_address: str = ""  # "yes" when address requires manual resolution
+    address_raw: str = ""           # Original pre-flag address (preserved when flagged)
     # Zillow property enrichment fields (populated post-scrape)
     mls_status: str = ""           # "Active", "Pending", "Sold", "Off Market"
     mls_listing_price: str = ""    # Current list price or last sold price

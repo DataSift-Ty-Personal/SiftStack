@@ -65,16 +65,27 @@ def standardize_addresses(
         logger.info("Smarty credentials not configured -- skipping address standardization")
         return notices
 
-    # Filter to notices that have an address worth standardizing
-    eligible = [(i, n) for i, n in enumerate(notices) if n.address.strip()]
+    # Filter to notices that have an address worth standardizing. Skip:
+    #   - blank addresses (nothing to send)
+    #   - needs_manual_address-flagged records (block/lot, no street # —
+    #     Smarty can't standardize them and we already preserved the
+    #     raw text upstream; wasting API credits would be silly)
+    eligible = [
+        (i, n) for i, n in enumerate(notices)
+        if n.address.strip() and n.needs_manual_address != "yes"
+    ]
     if not eligible:
         logger.info("No notices with addresses to standardize")
         return notices
 
+    skipped_blank = sum(1 for n in notices if not n.address.strip())
+    skipped_flagged = sum(
+        1 for n in notices
+        if n.address.strip() and n.needs_manual_address == "yes"
+    )
     logger.info(
-        "Standardizing %d addresses via Smarty (%d skipped -- no address)",
-        len(eligible),
-        len(notices) - len(eligible),
+        "Standardizing %d addresses via Smarty (%d blank, %d flagged needs_manual_address)",
+        len(eligible), skipped_blank, skipped_flagged,
     )
 
     try:

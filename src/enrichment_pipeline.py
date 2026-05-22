@@ -98,6 +98,10 @@ def _filter_vacant_land(notices: list[NoticeData]) -> list[NoticeData]:
 
     Vacant land parcels (e.g., "0 Andersonville Pike", "0000 Old Rd",
     or just "Andersonville Pike") are not actionable for marketing.
+
+    Records flagged `needs_manual_address` are kept regardless — those
+    are block/lot tax-sale addresses we intentionally preserve for
+    manual downstream lookup.
     """
 
     def _has_house_number(addr: str) -> bool:
@@ -110,11 +114,58 @@ def _filter_vacant_land(notices: list[NoticeData]) -> list[NoticeData]:
         return int(m.group(1)) > 0
 
     before = len(notices)
-    result = [n for n in notices if _has_house_number(n.address)]
+    result = [
+        n for n in notices
+        if n.needs_manual_address == "yes" or _has_house_number(n.address)
+    ]
     removed = before - len(result)
     if removed:
         logger.info("  Removed %d vacant land records (no house number)", removed)
     return result
+
+
+# Patterns that signal a non-street-address (block/lot, parcel-id-ish,
+# range descriptions). Matched case-insensitively against the raw
+# address string before Smarty.
+_BLOCK_LOT_PATTERNS = (
+    re.compile(r"\bblock\s*\d+", re.IGNORECASE),
+    re.compile(r"\blot\s*\d+", re.IGNORECASE),
+    re.compile(r"\bb\s*\d+\s*[\s,/-]?\s*l\s*\d+", re.IGNORECASE),
+    re.compile(r"\bparcel\s*(id|#|no\.?|number)?\s*\d+", re.IGNORECASE),
+)
+_HAS_LEADING_STREET_NUMBER = re.compile(r"^\s*\d+\s+\S")
+
+
+def _flag_block_lot_addresses(notices: list[NoticeData]) -> int:
+    """Pre-filter: flag block/lot-style addresses before Smarty + vacant-land.
+
+    Tax-sale notices and similar court records often reference properties
+    by "Block N Lot M" or parcel id rather than a deliverable street
+    address. Smarty can't standardize those (wasted credits), and the
+    vacant-land filter would drop them outright. Flagging them lets the
+    pipeline preserve the original text in `address_raw` and route the
+    record to the HELD CSV with `needs_manual_address="yes"`.
+
+    Trigger conditions (any one):
+      - matches a block/lot/parcel pattern in _BLOCK_LOT_PATTERNS
+      - non-empty address with no leading street number
+
+    Returns the count of records flagged.
+    """
+    flagged = 0
+    for n in notices:
+        addr = n.address.strip()
+        if not addr:
+            continue  # blank addresses handled elsewhere
+        if n.needs_manual_address == "yes":
+            continue  # already flagged
+        is_block_lot = any(p.search(addr) for p in _BLOCK_LOT_PATTERNS)
+        has_street_number = bool(_HAS_LEADING_STREET_NUMBER.match(addr))
+        if is_block_lot or not has_street_number:
+            n.address_raw = addr
+            n.needs_manual_address = "yes"
+            flagged += 1
+    return flagged
 
 
 def _filter_entity_owners(notices: list[NoticeData]) -> list[NoticeData]:
@@ -306,6 +357,18 @@ def run_enrichment_pipeline(
         len(notices),
         f" (removed {removed})" if removed else "",
     )
+
+    # ── Step 2b: Block/Lot Address Flag ──────────────────────────────
+    # Detect non-street addresses (tax-sale block/lot, parcel-id-style)
+    # BEFORE vacant-land filter + Smarty. Flagged records preserve the
+    # original address in `address_raw`, set needs_manual_address=yes,
+    # skip Smarty, survive vacant-land, and reach the HELD CSV intact.
+    logger.info("── Step 2b: Block/Lot Address Flag ──")
+    flagged = _flag_block_lot_addresses(notices)
+    if flagged:
+        logger.info("  Flagged %d records as needs_manual_address (block/lot or no street #)", flagged)
+    else:
+        logger.info("  No block/lot addresses detected")
 
     # ── Step 3: Vacant Land Filter ───────────────────────────────────
     if not opts.skip_vacant_filter:
