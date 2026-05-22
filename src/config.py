@@ -71,6 +71,15 @@ REDNOUR_DRIVE_PARENT_FOLDER_ID = os.getenv(
 )  # Drive folder containing per-property subfolders (each with a Photos/ subfolder)
 COMPANY_LOGO_PATH = PROJECT_ROOT / "assets" / "rednour_logo.png"
 
+# ── Wholesale-Fit Gate ────────────────────────────────────────────────
+# Buyer-box thresholds for the wholesale-fit scorer (Phase 4 / src/wholesale_fit.py).
+# Config, not hardcoded, so the buyer box can move without a code change. Defaults are
+# starting points to calibrate against the first ~100 scored leads.
+WHOLESALE_MIN_VALUE = int(os.getenv("WHOLESALE_MIN_VALUE", "30000"))      # below this + teardown/vacant-lot = hard drop
+WHOLESALE_MAX_VALUE = int(os.getenv("WHOLESALE_MAX_VALUE", "450000"))     # above this = luxury-tier soft demotion (kept)
+WHOLESALE_MIN_EQUITY_PCT = int(os.getenv("WHOLESALE_MIN_EQUITY_PCT", "10"))  # equity% <= this + active mortgage = negative-equity hard drop
+SKIP_TRACE_MIN_FIT = int(os.getenv("SKIP_TRACE_MIN_FIT", "40"))           # fit score below this = excluded from PAID skip trace
+
 # ── LLM Backend ──────────────────────────────────────────────────────
 LLM_BACKEND = os.getenv("LLM_BACKEND", "anthropic")           # "anthropic", "ollama", or "openrouter"
 LLM_MODEL = os.getenv("LLM_MODEL", "claude-haiku-4-5-20251001")  # Anthropic model name

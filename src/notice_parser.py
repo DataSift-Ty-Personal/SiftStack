@@ -179,6 +179,11 @@ class NoticeData:
     # CourtNet case-detail enrichment (KY probate; Phase 2c)
     estate_attorney_name: str = ""       # Attorney representing the estate (party-type AP)
     courtnet_party_types: str = ""       # Pipe-separated party-type codes observed on the case (AP|FI|AD|PE|HE|...)
+    # Wholesale-fit gate (Phase 4; src/wholesale_fit.py). Set by score_wholesale_fit.
+    # Stored as strings for CSV round-trip consistency with every other NoticeData field.
+    wholesale_fit_score: str = ""        # "0"-"100" — fit score from score_wholesale_fit (string for CSV consistency)
+    fit_drop_reason: str = ""            # e.g. "no_property", "out_of_estate", "negative_equity", "teardown", "luxury_tier", ""
+    dm_sophisticated: str = ""           # manual hook (v1): "yes" if the DM is a sophisticated seller (RIA, flipper); NOT auto-detected (locked decision 3)
 
 
 # ── Known cities in target markets ────────────────────────────────────
