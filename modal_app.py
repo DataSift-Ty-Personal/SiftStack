@@ -233,6 +233,31 @@ async def nj_weekly_all():
             pass
         return {"success": True, "total": 0, "skipped": skipped_counts, "new": new_counts, "errors": errors}
 
+    # Persist the pre-enrichment RAW scrape to the Modal Volume BEFORE
+    # enrichment starts. The 2026-05-21 incident lost ~1000 tax_sale
+    # records because the vacant-land filter dropped them and the only
+    # combined-CSV copy lived on the ephemeral container, which dies
+    # when the function exits. RAW snapshot here means any future
+    # enrichment failure / OOM / preemption can still recover scraped
+    # data. Same ts / date_folder / volume_out_dir get reused below for
+    # the per-list persistence step so all outputs share one timestamp.
+    from data_formatter import write_csv
+    ts = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+    date_folder = datetime.now().strftime("%Y-%m-%d")
+    volume_out_dir = Path(f"{TRACKING_MOUNT}/output/{date_folder}")
+    volume_out_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        raw_csv_path = write_csv(combined, f"nj_weekly_all_RAW_{ts}.csv")
+        raw_dst = volume_out_dir / raw_csv_path.name
+        raw_dst.write_bytes(raw_csv_path.read_bytes())
+        await tracking_volume.commit.aio()
+        logger.info(
+            "Persisted RAW pre-enrichment scrape to volume: %s (%d records)",
+            raw_dst.relative_to(TRACKING_MOUNT).as_posix(), len(combined),
+        )
+    except Exception as e:
+        logger.warning("Failed to persist RAW pre-enrichment CSV: %s", e)
+
     # Single enrichment pass across all 3 sources' new notices
     from enrichment_pipeline import PipelineOptions, run_enrichment_pipeline
     opts = PipelineOptions(
@@ -263,9 +288,10 @@ async def nj_weekly_all():
     )
     enriched = run_enrichment_pipeline(combined, opts)
 
-    # One combined CSV (all records, including paused types — for manual review)
-    from data_formatter import write_csv, write_csv_by_list
-    ts = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+    # One combined CSV (all records, including paused types — for manual review).
+    # ts already defined above (hoisted so the RAW pre-enrichment CSV
+    # could be persisted before this step ran).
+    from data_formatter import write_csv_by_list
     csv_path = write_csv(enriched, f"nj_weekly_all_{ts}.csv")
 
     # Split off paused notice_types before DataSift upload. Paused records
@@ -305,10 +331,8 @@ async def nj_weekly_all():
     # Persist per-list CSVs to the Modal Volume so they survive container
     # shutdown and can be fetched with `modal volume get siftstack-tracking
     # output/{date}/...`. This is the zero-config path — no Dropbox/Drive
-    # credentials required.
-    date_folder = datetime.now().strftime("%Y-%m-%d")
-    volume_out_dir = Path(f"{TRACKING_MOUNT}/output/{date_folder}")
-    volume_out_dir.mkdir(parents=True, exist_ok=True)
+    # credentials required. date_folder / volume_out_dir already defined
+    # above (hoisted with ts for the RAW pre-enrichment persist step).
     volume_paths: list[tuple[str, str, int]] = []  # (list_name, volume_relpath, count)
     for list_name, src_path, count in by_list_ready + by_list_held:
         dst = volume_out_dir / src_path.name
