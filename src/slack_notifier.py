@@ -14,6 +14,7 @@ from datetime import datetime
 
 import requests
 
+import config
 from notice_parser import NoticeData
 
 logger = logging.getLogger(__name__)
@@ -226,6 +227,23 @@ def build_summary(
             lines.append(f"  Estate fallback: {estate}")
     else:
         lines.append("*Deceased owners found:* 0")
+
+    # Fit gate (Phase 4): hard-drops are already removed from `notices` by the
+    # pipeline before the summary runs, so report the breakdown of REMAINING
+    # soft-demotes by fit_drop_reason plus how many survivors fall below the
+    # paid-skip-trace floor (SKIP_TRACE_MIN_FIT).
+    from collections import Counter
+    demoted = Counter(n.fit_drop_reason for n in notices if n.fit_drop_reason)
+    below_floor = sum(
+        1 for n in notices
+        if n.wholesale_fit_score and int(n.wholesale_fit_score) < config.SKIP_TRACE_MIN_FIT
+    )
+    if demoted or below_floor:
+        parts = ", ".join(f"{k}: {v}" for k, v in demoted.most_common())
+        lines.append(
+            f"*Fit gate:* {below_floor} below skip-trace floor"
+            + (f" | demoted — {parts}" if parts else "")
+        )
 
     # Upload result
     if upload_result:

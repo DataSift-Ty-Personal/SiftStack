@@ -400,13 +400,19 @@ async def actor_main() -> None:
             # get skip traced for free inside DataSift's unlimited plan.
             tracerfy_stats = None
             if do_tracerfy and config.TRACERFY_API_KEY:
+                # Fit gate (Phase 4): paid Tracerfy runs only on records at/above
+                # SKIP_TRACE_MIN_FIT, keeping the deceased/DM condition as a
+                # SECONDARY requirement. Parse wholesale_fit_score defensively so an
+                # unscored/blank record fails CLOSED (scores 0 → excluded), never
+                # crashing the gate.
                 dp_for_tracerfy = [
                     n for n in notices
-                    if n.owner_deceased == "yes" or n.heir_map_json or n.decision_maker_name
+                    if (int(n.wholesale_fit_score or 0) >= config.SKIP_TRACE_MIN_FIT)
+                    and (n.owner_deceased == "yes" or n.heir_map_json or n.decision_maker_name)
                 ]
                 if dp_for_tracerfy:
-                    Actor.log.info("Running Tracerfy on %d DP candidates (%d basic records skipped)...",
-                                   len(dp_for_tracerfy), total - len(dp_for_tracerfy))
+                    Actor.log.info("Running Tracerfy on %d fit DP candidates (>= SKIP_TRACE_MIN_FIT %d; %d records skipped)...",
+                                   len(dp_for_tracerfy), config.SKIP_TRACE_MIN_FIT, total - len(dp_for_tracerfy))
                     try:
                         from tracerfy_skip_tracer import batch_skip_trace
                         tracerfy_stats = batch_skip_trace(dp_for_tracerfy)
@@ -1974,7 +1980,16 @@ def _run_scrape_pipeline(args, searches) -> None:
         import config as cfg
         if cfg.TRACERFY_API_KEY:
             from tracerfy_skip_tracer import batch_skip_trace
-            tracerfy_stats = batch_skip_trace(notices)
+            # Fit gate (Phase 4): below-fit leads are not submitted to paid
+            # Tracerfy. Parse wholesale_fit_score defensively so an unscored/blank
+            # record fails CLOSED (scores 0 → excluded), never crashing the gate.
+            trace_candidates = [
+                n for n in notices
+                if int(n.wholesale_fit_score or 0) >= cfg.SKIP_TRACE_MIN_FIT
+            ]
+            logging.info("Tracerfy fit-gate: %d/%d records >= SKIP_TRACE_MIN_FIT (%d)",
+                         len(trace_candidates), len(notices), cfg.SKIP_TRACE_MIN_FIT)
+            tracerfy_stats = batch_skip_trace(trace_candidates)
             if tracerfy_stats.get("credits_exhausted"):
                 logging.error(
                     "TRACERFY OUT OF CREDITS — skip trace disabled for this run. "
