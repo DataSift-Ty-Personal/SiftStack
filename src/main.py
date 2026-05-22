@@ -1055,6 +1055,7 @@ def cli_main() -> None:
             "csv-import", "phone-validate", "manage-sold", "manage-presets",
             # New analysis & workflow modes
             "comp", "rehab", "analyze-deal", "market-analysis", "buyer-prospect",
+            "buyer-prospect-jefferson",
             "deep-prospect", "lead-manage", "setup-sequences", "niche-sequential",
             "playbook", "disposition",
         ],
@@ -1466,6 +1467,18 @@ def cli_main() -> None:
     parser.add_argument("--min-transactions", type=int, default=2,
                         help="Min transactions to qualify as investor (buyer-prospect mode)")
 
+    # Buyer prospect — Jefferson KY (DataSift Sold Properties scrape)
+    parser.add_argument("--start", type=str, default=None,
+                        help="Start month YYYY-MM (buyer-prospect-jefferson mode)")
+    parser.add_argument("--end", type=str, default=None,
+                        help="End month YYYY-MM (buyer-prospect-jefferson mode). "
+                             "If --start/--end omitted, uses --months-back (default 12).")
+    parser.add_argument("--include-deeds", action="store_true",
+                        help="Cross-reference DataSift buyers against Jefferson County "
+                             "Clerk deed records (Phase 1B). Adds 'Deeds Found' column "
+                             "to scorecard + 'Deed-Only Buyers' tab. Adds ~5 min to the "
+                             "scrape for a 12-month window.")
+
     # Deep prospecting
     parser.add_argument("--depth", type=int, default=3, choices=[1, 2, 3, 4],
                         help="Research depth level 1-4 (deep-prospect mode, default: 3)")
@@ -1669,6 +1682,49 @@ def cli_main() -> None:
             print(f"Buyer report: {result['report_path']}")
             print(f"Found {report.total_investors} investors")
             print(f"CSV: {result.get('csv_path', 'N/A')}")
+        return
+
+    if args.mode == "buyer-prospect-jefferson":
+        import asyncio
+        from jefferson_buyer_prospector import run_jefferson_buyer_prospecting
+        # If user didn't pass --start/--end, default --months-back to 12
+        # for this mode (the generic flag defaults to 1, which is wrong here).
+        months_back = args.months_back if args.months_back != 1 else 12
+        result = asyncio.run(run_jefferson_buyer_prospecting(
+            start_month=args.start,
+            end_month=args.end,
+            months_back=months_back,
+            include_deeds=getattr(args, "include_deeds", False),
+        ))
+        if "error" in result:
+            logger.error("Jefferson buyer prospecting failed: %s", result["error"])
+        else:
+            print(f"Excel:        {result['excel']}")
+            print(f"Raw CSV:      {result['raw_csv']}")
+            print(f"DataSift CSV: {result['datasift_csv']}")
+            main_top = result["main_buyers"][:10]
+            n_builders = len(result["builder_buyers"])
+            print(f"\nTop 10 wholesale-target buyers "
+                  f"({result['start_month']} -> {result['end_month']}, "
+                  f"{n_builders} builders/bulk separated):")
+            for r in main_top:
+                tag = "[Entity]" if r.is_entity else "[Indiv]"
+                print(f"  #{r.rank:2d}  {tag} {r.transaction_count:3d}x  ${r.total_invested:>11,}  {r.buyer_name}")
+            if n_builders:
+                print(f"\nTop builders/bulk acquirers (excluded from main rank):")
+                for r in result["builder_buyers"][:5]:
+                    print(f"  #{r.rank:2d}  {r.transaction_count:3d}x  ${r.total_invested:>11,}  "
+                          f"{r.buyer_name}  [{r.bulk_signal}]")
+            cr = result.get("cross_ref")
+            if cr is not None:
+                print(f"\nJCD deed cross-reference:")
+                print(f"  DataSift verified: {cr.verified_count} / unverified: {cr.unverified_count}")
+                print(f"  Total deeds scanned: {cr.total_deeds:,} ({cr.total_entity_grantees:,} entity grantees)")
+                print(f"  Deed-only buyers DataSift missed: {cr.deed_only_count}")
+                if cr.deed_only_buyers:
+                    print(f"\nTop 10 deed-only entity buyers (NOT in DataSift):")
+                    for b in cr.deed_only_buyers[:10]:
+                        print(f"  #{b.rank:2d}  {b.deed_count:3d}x deeds  {b.first_filing}..{b.last_filing}  {b.buyer_name}")
         return
 
     if args.mode == "deep-prospect":

@@ -633,6 +633,288 @@ def scrape_jefferson_deeds(
 
 
 # ══════════════════════════════════════════════════════════════════════
+# Phase 1B — Bulk DEED transfer scrape for buyer cross-reference
+# ══════════════════════════════════════════════════════════════════════
+#
+# Pulls every recorded DEED (instrument code DED) for a date range so we
+# can cross-reference DataSift's Sold Properties / Investor list against
+# real grantees in the public record. DataSift's investor AI misses
+# transactions; the deed record is the ground truth.
+#
+# Scale: Jefferson KY records ~90 deeds/business day → ~24K/year.
+# The p6.php endpoint silently caps at 1,000 results per request, so we
+# chunk weekly (≈450/week, well under the cap).
+
+DEED_INSTRUMENT_CODE = "DED"
+
+
+@dataclass
+class DeedTransfer:
+    """Lightweight deed-transfer record used for cross-referencing.
+
+    Distinct from `DeedRecord` (Phase 2b) which is a richer per-document
+    dataclass for owner-name mortgage research. Here we just need the
+    grantee, grantor, and filing date — no PDF fetches.
+    """
+    instnum: str = ""
+    year: str = ""
+    db: str = ""
+    detail_url: str = ""
+    grantor: str = ""           # raw, LAST FIRST format from JCD
+    grantees: list[str] = field(default_factory=list)
+    primary_grantee: str = ""   # first grantee, LAST FIRST format
+    legal_desc: str = ""
+    date_filed: str = ""        # YYYY-MM-DD
+    book_page: str = ""
+
+
+def _week_chunks(start_date: str, end_date: str) -> list[tuple[str, str]]:
+    """Split [start_date, end_date] (inclusive, YYYY-MM-DD) into weekly
+    chunks suitable for the JCD p6.php cap. Returns list of (start, end)
+    tuples, each at most 6 days wide.
+    """
+    start = datetime.strptime(start_date, "%Y-%m-%d").date()
+    end = datetime.strptime(end_date, "%Y-%m-%d").date()
+    if end < start:
+        start, end = end, start
+    chunks: list[tuple[str, str]] = []
+    cur = start
+    while cur <= end:
+        chunk_end = min(cur + timedelta(days=6), end)
+        chunks.append((cur.strftime("%Y-%m-%d"), chunk_end.strftime("%Y-%m-%d")))
+        cur = chunk_end + timedelta(days=1)
+    return chunks
+
+
+def _parse_deed_transfer_table(html: str) -> list[dict]:
+    """Parse p6.php HIT LIST response for DEED records.
+
+    Different from `_parse_results_table` (which is tuned for lis pendens
+    where all parties are crammed into the FIRST textContainer_Truncate
+    div). For deed transfers each FORM block has TWO party divs:
+        div[0] = grantor(s) — seller
+        div[1] = grantee(s) — buyer
+    """
+    records: list[dict] = []
+    forms = list(_FORM_RE.finditer(html))
+    for form_match in forms:
+        form_html = form_match.group(0)
+
+        m = _INSTNUM_RE.search(form_html)
+        if not m:
+            continue
+        instnum, year, db = m.group(1), m.group(2), m.group(3)
+        detail_url = (
+            f"{JCD_DETAIL_URL}?instnum={instnum}&year={year}"
+            f"&db={db}&cnum={JCD_COUNTY_NUM}"
+        )
+
+        party_divs = _PARTY_DIV_RE.findall(form_html)
+
+        def _div_lines(div_html: str) -> list[str]:
+            return [
+                _strip_tags(ln)
+                for ln in re.split(r"<br\s*/?>", div_html, flags=re.IGNORECASE)
+                if _strip_tags(ln)
+            ]
+
+        grantors = _div_lines(party_divs[0]) if len(party_divs) >= 1 else []
+        grantees = _div_lines(party_divs[1]) if len(party_divs) >= 2 else []
+        grantor = grantors[0] if grantors else ""
+
+        legal_raw = ""
+        m2 = _DETILS_TD_RE.search(form_html)
+        if m2:
+            legal_raw = _strip_tags(m2.group(1))
+        case_num = ""
+        cn_m = _CASE_NUM_RE.match(legal_raw)
+        if cn_m:
+            case_num = cn_m.group(1)
+            legal_desc = legal_raw[cn_m.end():].strip()
+        else:
+            legal_desc = legal_raw
+
+        date_m = _DATE_TD_RE.search(form_html)
+        date_filed = date_m.group(1) if date_m else ""
+        book_m = _BOOK_TD_RE.search(form_html)
+        book_page = book_m.group(1) if book_m else ""
+
+        records.append({
+            "instnum": instnum, "year": year, "db": db,
+            "detail_url": detail_url,
+            "grantor": grantor,
+            "grantors": grantors,
+            "grantees": grantees,
+            "legal_desc": legal_desc,
+            "case_num": case_num,
+            "date_filed": date_filed,
+            "book_page": book_page,
+        })
+    return records
+
+
+def scrape_jefferson_deed_transfers(
+    start_date: str,
+    end_date: str,
+    *,
+    instrument_code: str = DEED_INSTRUMENT_CODE,
+) -> list[DeedTransfer]:
+    """Bulk-scrape Jefferson County KY deed transfers for a date range.
+
+    Chunks weekly to stay under the silent 1,000-result-per-query cap on
+    p6.php. No PDF fetches — we only need grantor/grantee/date for the
+    buyer cross-reference. Returns one DeedTransfer per filing.
+
+    Args:
+        start_date: 'YYYY-MM-DD' inclusive
+        end_date:   'YYYY-MM-DD' inclusive
+        instrument_code: defaults to 'DED' (DEED). Pass another code from
+                         insttype.php if you need a different instrument
+                         family (e.g. 'DVL' for deed-with-vendor-lien).
+    """
+    def _to_form(d: str) -> str:
+        return datetime.strptime(d, "%Y-%m-%d").strftime("%m/%d/%Y")
+
+    chunks = _week_chunks(start_date, end_date)
+    logger.info(
+        "JCD deed transfers: scraping %s -> %s in %d weekly chunks (code=%s)",
+        start_date, end_date, len(chunks), instrument_code,
+    )
+
+    all_transfers: list[DeedTransfer] = []
+    for i, (cstart, cend) in enumerate(chunks, 1):
+        bdate = _to_form(cstart)
+        edate = _to_form(cend)
+        # Retry with exponential backoff. JCD throttles aggressively after
+        # several rapid hits and returns 10060 connection timeouts; a 30s
+        # cooldown reliably recovers in observed testing.
+        html = ""
+        for attempt in range(3):
+            try:
+                html = _post(JCD_SEARCH_URL, {
+                    "cnum": "CNUM",
+                    "searchtype": "ITYPE",
+                    "itype1": instrument_code,
+                    "itype2": "",
+                    "itype3": "",
+                    "bDate": bdate,
+                    "eDate": edate,
+                    "search": "Execute Search",
+                })
+                break
+            except Exception as exc:
+                wait = 15 * (attempt + 1)  # 15s, 30s, 45s
+                logger.warning(
+                    "JCD deed chunk %d/%d (%s..%s) attempt %d/3 failed: %s "
+                    "— sleeping %ds before retry",
+                    i, len(chunks), cstart, cend, attempt + 1, exc, wait,
+                )
+                time.sleep(wait)
+
+        if not html:
+            logger.error(
+                "JCD deed chunk %d/%d (%s..%s) FAILED after 3 attempts — skipping",
+                i, len(chunks), cstart, cend,
+            )
+            continue
+
+        if "HIT LIST" not in html:
+            logger.warning("JCD deed chunk %d/%d returned no HIT LIST page", i, len(chunks))
+            _delay()
+            continue
+
+        records = _parse_deed_transfer_table(html)
+        if len(records) >= 990:
+            # Caught the silent cap — we may be missing data.
+            # Sub-chunk the offender into 2-day windows.
+            logger.warning(
+                "JCD deed chunk %d/%d (%s..%s) returned %d records — likely "
+                "hit the 1000-result cap; consider narrowing chunk size",
+                i, len(chunks), cstart, cend, len(records),
+            )
+
+        for r in records:
+            all_transfers.append(DeedTransfer(
+                instnum=r["instnum"],
+                year=r["year"],
+                db=r["db"],
+                detail_url=r["detail_url"],
+                grantor=r["grantor"],
+                grantees=r["grantees"],
+                primary_grantee=r["grantees"][0] if r["grantees"] else "",
+                legal_desc=r["legal_desc"],
+                date_filed=_normalize_date(r["date_filed"]) if r["date_filed"] else "",
+                book_page=r["book_page"],
+            ))
+
+        logger.info(
+            "JCD deed chunk %d/%d (%s..%s): %d records  [running total %d]",
+            i, len(chunks), cstart, cend, len(records), len(all_transfers),
+        )
+        _delay()
+
+    logger.info(
+        "JCD deed transfers: scraped %d total transfers across %s -> %s",
+        len(all_transfers), start_date, end_date,
+    )
+    return all_transfers
+
+
+# ── Deed cache I/O ────────────────────────────────────────────────────
+
+
+def export_deed_transfers_csv(transfers: list[DeedTransfer], output_path) -> str:
+    """Save deed transfers to CSV so subsequent runs can skip the 25-min
+    re-scrape. Format is round-trippable via load_deed_transfers_csv().
+    """
+    import csv as _csv
+    from pathlib import Path as _Path
+    p = _Path(output_path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    fields = ["instnum", "year", "db", "detail_url", "grantor", "grantees",
+              "primary_grantee", "legal_desc", "date_filed", "book_page"]
+    with open(p, "w", newline="", encoding="utf-8") as f:
+        w = _csv.DictWriter(f, fieldnames=fields)
+        w.writeheader()
+        for t in transfers:
+            w.writerow({
+                "instnum": t.instnum, "year": t.year, "db": t.db,
+                "detail_url": t.detail_url,
+                "grantor": t.grantor,
+                # Pipe-delimited within a single CSV cell — round-trips cleanly
+                "grantees": "|".join(t.grantees),
+                "primary_grantee": t.primary_grantee,
+                "legal_desc": t.legal_desc,
+                "date_filed": t.date_filed,
+                "book_page": t.book_page,
+            })
+    logger.info("Wrote %d deed transfers to %s", len(transfers), p)
+    return str(p.resolve())
+
+
+def load_deed_transfers_csv(input_path) -> list[DeedTransfer]:
+    """Load a previously-cached deed transfer CSV (paired with export above)."""
+    import csv as _csv
+    from pathlib import Path as _Path
+    p = _Path(input_path)
+    out: list[DeedTransfer] = []
+    with open(p, encoding="utf-8") as f:
+        for r in _csv.DictReader(f):
+            out.append(DeedTransfer(
+                instnum=r.get("instnum", ""), year=r.get("year", ""),
+                db=r.get("db", ""), detail_url=r.get("detail_url", ""),
+                grantor=r.get("grantor", ""),
+                grantees=[g for g in (r.get("grantees", "") or "").split("|") if g],
+                primary_grantee=r.get("primary_grantee", ""),
+                legal_desc=r.get("legal_desc", ""),
+                date_filed=r.get("date_filed", ""),
+                book_page=r.get("book_page", ""),
+            ))
+    logger.info("Loaded %d deed transfers from %s", len(out), p)
+    return out
+
+
+# ══════════════════════════════════════════════════════════════════════
 # Phase 2b — Owner-name search & mortgage history
 # ══════════════════════════════════════════════════════════════════════
 #
