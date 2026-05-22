@@ -96,6 +96,15 @@ class NoticeData:
     decision_maker_3_name: str = ""
     decision_maker_3_relationship: str = ""
     decision_maker_3_status: str = ""       # "verified_living", "unverified"
+    # Obituary-extracted name context (NAME-03) — feeds the name-variant
+    # resolver so PVA/deeds search the maiden/prior-married forms a property
+    # may be titled under (e.g. Jackson -> GREATHOUSE returns 0 rows under the
+    # married surname). Set by obituary_enricher._apply_obituary_match when the
+    # LLM extracts them; read downstream via getattr so they degrade to "" when
+    # obituary didn't run. Stored as flat strings for CSV serialization;
+    # prior surnames are semicolon-delimited.
+    decedent_obit_maiden_name: str = ""     # Obituary-confirmed maiden surname
+    decedent_obit_prior_surnames: str = ""  # Semicolon-delimited prior/aka surnames
     # Obituary/heir metadata
     obituary_source_type: str = ""          # "full_page" or "snippet"
     heir_search_depth: str = ""             # "0" (none), "1" (survivors checked), "2" (2nd gen)
