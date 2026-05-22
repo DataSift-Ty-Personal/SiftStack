@@ -104,7 +104,7 @@ See `notice_parser.NoticeData` for the full ~60-field schema.
 
 ### What deep-prospect DOES NOT do
 
-- **Skip trace (Tracerfy + Trestle phone scoring) is NOT auto-invoked by `deep-prospect`.** Level 1 only checks if phone fields are already populated. To actually pull phones for the DM, run Tracerfy separately (it normally runs during the daily scrape pipeline) or do a manual TruePeopleSearch / FastPeopleSearch / Radaris waterfall.
+- **Skip trace (Tracerfy + Trestle phone scoring) now AUTO-runs for qualified leads in BOTH the daily/Apify pipeline AND `deep-prospect`** (Phase 5: `deep_prospector._run_level_1` calls `batch_skip_trace([notice])` when the DM has no phones, then the death/identity guard). It is gated by the Phase 4 wholesale-fit score (only fit leads are traced) and protected by the death/identity guard (dead/wrong-person phones are suppressed, not dialed). Use `--no-skip-trace` to opt out (suppresses Tracerfy in both the daily pipeline and deep-prospect). For manual augmentation you can still run a TruePeopleSearch / FastPeopleSearch / Radaris waterfall.
 - DataSift upload — separate `--upload-datasift` flag on the daily/historical commands
 
 ## Architecture

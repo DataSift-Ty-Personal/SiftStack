@@ -28,6 +28,28 @@ from notice_parser import NoticeData
 
 logger = logging.getLogger(__name__)
 
+# Canonical DM phone-field list — single source of truth lives in phone_validator.
+# Import it defensively; do NOT inline a 6-field subset. The OLD level-1 stub
+# counted only 6 fields and so re-traced (wasting Tracerfy credits) any record
+# whose only phones were mobile_4 / mobile_5 / landline_3. Counting the full 9
+# fixes that undercount (2g-1).
+try:
+    from phone_validator import DM_PHONE_FIELDS
+except ImportError:  # pragma: no cover - phone_validator is always present in-tree
+    DM_PHONE_FIELDS = [
+        "primary_phone", "mobile_1", "mobile_2", "mobile_3", "mobile_4",
+        "mobile_5", "landline_1", "landline_2", "landline_3",
+    ]
+
+# DM #1 email block (flat fields) counted alongside phones.
+_DM_EMAIL_FIELDS = ["email_1", "email_2", "email_3", "email_4", "email_5"]
+
+# Skip-trace seams — module-level so tests can inject network-free fakes.
+# Imported lazily inside _run_level_1 at call time (kept here as names for the
+# test harness to monkeypatch; the real imports happen on demand).
+batch_skip_trace = None
+guard_traced_contacts = None
+
 DEPTH_NAMES = {
     1: "Enhanced Skip Tracing",
     2: "Ownership Verification",
@@ -126,26 +148,88 @@ def _record_to_notice(row: dict) -> NoticeData:
 
 # ── Level execution ───────────────────────────────────────────────────
 
-async def _run_level_1(notice: NoticeData, result: ProspectResult) -> None:
-    """Level 1: Enhanced Skip Tracing."""
-    # Check existing skip trace data
-    phones = sum(1 for attr in ["primary_phone", "mobile_1", "mobile_2", "mobile_3",
-                                 "landline_1", "landline_2"]
-                 if getattr(notice, attr, ""))
-    emails = sum(1 for attr in ["email_1", "email_2", "email_3"]
-                 if getattr(notice, attr, ""))
+def _count_phones(notice: NoticeData) -> int:
+    """Count populated DM #1 flat phones across the FULL canonical 9-field set."""
+    return sum(1 for attr in DM_PHONE_FIELDS if getattr(notice, attr, ""))
+
+
+def _count_emails(notice: NoticeData) -> int:
+    """Count populated DM #1 flat emails (email_1..email_5)."""
+    return sum(1 for attr in _DM_EMAIL_FIELDS if getattr(notice, attr, ""))
+
+
+async def _run_level_1(notice: NoticeData, result: ProspectResult,
+                       skip_trace: bool = True) -> None:
+    """Level 1: Enhanced Skip Tracing.
+
+    If the DM already has phones/emails (counted over the full canonical
+    DM_PHONE_FIELDS set — no 6-field undercount), use them as-is. Otherwise,
+    when skip_trace is enabled and Tracerfy is configured, run a real
+    single-record ``batch_skip_trace([notice])`` and then the death/identity
+    guard (so the deep-prospect path gets the same protection as the daily
+    pipeline — T-05-07) before counting (2g-1, CONTACT-01).
+    """
+    phones = _count_phones(notice)
+    emails = _count_emails(notice)
 
     if phones > 0 or emails > 0:
         result.phones_found = phones
         result.emails_found = emails
         result.skip_trace_provider = "existing"
         result.notes += "Skip trace data already present. "
-    else:
-        # Would call tracerfy here in production
-        result.notes += "Needs skip trace — no phone/email on file. "
+        result.depth_completed = 1
+        result.recommended_action = "Score phones via Trestle"
+        return
+
+    # No phones on file — this is the path the old stub never serviced.
+    if not skip_trace:
+        result.notes += "Skip trace suppressed (--no-skip-trace). "
+        result.depth_completed = 1
+        result.recommended_action = "Skip trace disabled — no phones pulled"
+        return
+
+    if not getattr(config, "TRACERFY_API_KEY", ""):
+        result.notes += "Tracerfy not configured — no phones. "
+        result.depth_completed = 1
+        result.recommended_action = "Configure TRACERFY_API_KEY to pull phones"
+        return
+
+    # Run a real single-record Tracerfy batch, then the death/identity guard.
+    # Resolve the seams from module attributes (tests inject fakes) or import
+    # them lazily. batch_skip_trace is sync; calling it inside this async fn is
+    # fine (it blocks) — keep the change minimal (no asyncio.to_thread).
+    try:
+        global batch_skip_trace, guard_traced_contacts
+        if batch_skip_trace is None:
+            from tracerfy_skip_tracer import batch_skip_trace as _bst
+            batch_skip_trace = _bst
+        if guard_traced_contacts is None:
+            from skip_trace_guard import guard_traced_contacts as _gtc
+            guard_traced_contacts = _gtc
+
+        batch_skip_trace([notice])
+        # Guard the freshly-traced record BEFORE counting/surfacing any phone.
+        try:
+            guard_traced_contacts(notice)
+        except Exception as ge:  # never crash the trace pass
+            logger.warning("Level 1 guard pass failed for %s: %s — continuing",
+                           notice.address, ge)
+
+        phones = _count_phones(notice)
+        emails = _count_emails(notice)
+        result.phones_found = phones
+        result.emails_found = emails
+        result.skip_trace_provider = "tracerfy"
+        result.notes += f"Tracerfy skip trace: {phones} phone(s), {emails} email(s) (guarded). "
+    except Exception as e:
+        logger.warning("Level 1 skip trace failed for %s: %s", notice.address, e)
+        result.notes += "Skip trace failed — no phones pulled. "
 
     result.depth_completed = 1
-    result.recommended_action = "Run Tracerfy batch skip trace" if phones == 0 else "Score phones via Trestle"
+    result.recommended_action = (
+        "Score phones via Trestle" if result.phones_found > 0
+        else "No phones found — try manual people-search waterfall"
+    )
 
 
 async def _run_level_2(notice: NoticeData, result: ProspectResult) -> None:
@@ -236,22 +320,31 @@ async def _run_level_4(notice: NoticeData, result: ProspectResult) -> None:
     result.depth_completed = 4
 
 
-async def prospect_record(notice: NoticeData, target_depth: int = 3) -> ProspectResult:
-    """Run deep prospecting on a single record up to target depth."""
+async def prospect_record(notice: NoticeData, target_depth: int = 3,
+                          skip_trace: bool = True) -> ProspectResult:
+    """Run deep prospecting on a single record up to target depth.
+
+    ``skip_trace`` threads down to Level 1 — when False (``--no-skip-trace``),
+    Level 1 does NOT call Tracerfy.
+    """
     result = ProspectResult(
         address=notice.address,
         owner_name=notice.owner_name,
         depth_target=target_depth,
     )
 
+    # Levels 2-4 use the dict dispatch; Level 1 takes the skip_trace flag.
     level_runners = {
-        1: _run_level_1,
         2: _run_level_2,
         3: _run_level_3,
         4: _run_level_4,
     }
 
     for level in range(1, target_depth + 1):
+        if level == 1:
+            await _run_level_1(notice, result, skip_trace=skip_trace)
+            logger.debug("Level 1 complete for %s", notice.address)
+            continue
         runner = level_runners.get(level)
         if runner:
             await runner(notice, result)
@@ -264,12 +357,17 @@ async def prospect_record(notice: NoticeData, target_depth: int = 3) -> Prospect
 
 async def run_deep_prospecting(csv_path: str, depth: int = 3,
                                max_records: int = 0,
-                               output_path: str = "") -> dict:
+                               output_path: str = "",
+                               skip_trace: bool = True) -> dict:
     """Run deep prospecting on a batch of records.
+
+    ``skip_trace`` (default True) controls whether Level 1 auto-runs Tracerfy;
+    set False to honor ``--no-skip-trace``.
 
     Returns dict with results and report path.
     """
-    logger.info("Starting deep prospecting (depth %d) on %s", depth, csv_path)
+    logger.info("Starting deep prospecting (depth %d, skip_trace=%s) on %s",
+                depth, skip_trace, csv_path)
 
     records = _load_records(csv_path, max_records)
     if not records:
@@ -281,7 +379,7 @@ async def run_deep_prospecting(csv_path: str, depth: int = 3,
     results = []
     for i, row in enumerate(records):
         notice = _record_to_notice(row)
-        result = await prospect_record(notice, depth)
+        result = await prospect_record(notice, depth, skip_trace=skip_trace)
         results.append(result)
         if (i + 1) % 10 == 0:
             logger.info("Processed %d/%d records", i + 1, len(records))

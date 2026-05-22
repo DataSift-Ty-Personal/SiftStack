@@ -1301,7 +1301,7 @@ def cli_main() -> None:
     parser.add_argument(
         "--no-skip-trace",
         action="store_true",
-        help="Skip DataSift skip trace after upload",
+        help="Skip DataSift skip trace after upload (also suppresses Tracerfy in deep-prospect)",
     )
     parser.add_argument(
         "--notify-slack",
@@ -1746,6 +1746,8 @@ def cli_main() -> None:
         result = asyncio.run(run_deep_prospecting(
             csv_path=csv_path, depth=args.depth,
             max_records=args.max_notices if hasattr(args, "max_notices") else 0,
+            # Phase 5: --no-skip-trace also suppresses Tracerfy in deep-prospect.
+            skip_trace=not getattr(args, "no_skip_trace", False),
         ))
         if "error" in result:
             logger.error("Deep prospecting failed: %s", result["error"])
