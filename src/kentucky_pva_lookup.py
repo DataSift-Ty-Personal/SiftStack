@@ -701,6 +701,14 @@ def _lookup_one(session: requests.Session, notice: "NoticeData") -> None:
         query = v.value
         rows = search_by_owner(session, query)
 
+        # Score each row against the VARIANT VALUE, not the original target.
+        # A maiden/prior-titled property is owned under a different surname
+        # (Jackson -> "GREATHOUSE DOROTHY"), so score_match(original, row)
+        # is 0 (surnames differ) and the maiden case would never resolve.
+        # The variant carries the correct surname, so scoring against it is
+        # what realizes the maiden/prior-name payoff. The accept floor and
+        # the 0.85 strong-hit break are unchanged.
+
         # Multi-parcel disambiguation guard (NAME-02): when a single variant
         # returns 2+ rows that each clear the accept floor, the same name maps
         # to multiple people/parcels. Run the corroboration guard rather than
@@ -708,7 +716,7 @@ def _lookup_one(session: requests.Session, notice: "NoticeData") -> None:
         # unresolved (manual queue) — never auto-attach a wrong-person parcel.
         scoring_rows = [
             row for row in rows
-            if score_match(primary_target, row.owner) >= _MIN_MATCH_SCORE
+            if score_match(query, row.owner) >= _MIN_MATCH_SCORE
         ]
         if len(scoring_rows) >= 2:
             candidates = [
@@ -720,7 +728,7 @@ def _lookup_one(session: requests.Session, notice: "NoticeData") -> None:
             ]
             known = [a for a in (notice.address.strip(),) if a]
             picked = disambiguate(
-                primary_target, candidates,
+                query, candidates,
                 known_addresses=known or None, min_score=0.6,
             )
             if picked is None:
@@ -739,7 +747,7 @@ def _lookup_one(session: requests.Session, notice: "NoticeData") -> None:
             continue
 
         for row in rows:
-            score = score_match(primary_target, row.owner)
+            score = score_match(query, row.owner)
             if score >= _MIN_MATCH_SCORE and (not best or score > best[0]):
                 best = (score, row, query)
         if best and best[0] >= 0.85:
@@ -928,7 +936,9 @@ def _heir_lookup_one(session: requests.Session, notice: "NoticeData") -> None:
             continue
         rows = search_by_owner(session, query)
         for row in rows:
-            score = score_match(heir, row.owner)
+            # Score against the variant value (carries the correct surname
+            # for maiden/prior forms), not the original heir string.
+            score = score_match(query, row.owner)
             if score >= _MIN_MATCH_SCORE and (not best or score > best[0]):
                 best = (score, row)
         if best and best[0] >= 0.85:
