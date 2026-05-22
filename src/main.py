@@ -144,6 +144,13 @@ def _preflight_check(mode: str, active_searches: list | None = None) -> list[str
 
 # ── Apify Actor mode ─────────────────────────────────────────────────
 
+# Named key-value store for cross-run STATE (dedup caches, last_run_date,
+# re-poll queue). Apify recreates the per-run DEFAULT store fresh on every run,
+# so state written there does not survive to the next scheduled run. A NAMED
+# store persists across runs, so daily dedup works. Per-run RESULTS (output.csv,
+# datasift_*.csv, deep-prospecting PDFs) intentionally stay in the default store.
+STATE_STORE_NAME = "siftstack-state"
+
 
 async def actor_main() -> None:
     """Run as an Apify Actor — full automated pipeline.
@@ -328,70 +335,74 @@ async def actor_main() -> None:
 
         try:
             kvs = await Actor.open_key_value_store()
+            # Cross-run STATE lives in a NAMED store so it survives between
+            # scheduled runs (the default `kvs` above is per-run / ephemeral).
+            # See STATE_STORE_NAME note above. Results stay on `kvs`.
+            state_kvs = await Actor.open_key_value_store(name=STATE_STORE_NAME)
 
-            # ── Load last_run_date from Apify KVS (persists between runs) ──
+            # ── Load last_run_date from state store (persists between runs) ──
             if mode == "daily" and not since_date_override:
-                stored = await kvs.get_value("last_run_date")
+                stored = await state_kvs.get_value("last_run_date")
                 if stored:
                     since_date_override = stored
                     Actor.log.info("Daily mode: using stored last_run_date = %s", stored)
                 else:
                     Actor.log.info("Daily mode: no stored last_run_date, defaulting to 7 days")
 
-            # ── Load cross-run seen-ID cache from KVS (makes daily re-runs idempotent) ──
-            seen_ids = await kvs.get_value("seen_notice_ids") or {}
-            Actor.log.info("Loaded %d previously-seen notice IDs from KVS", len(seen_ids))
+            # ── Load cross-run seen-ID cache (makes daily re-runs idempotent) ──
+            seen_ids = await state_kvs.get_value("seen_notice_ids") or {}
+            Actor.log.info("Loaded %d previously-seen notice IDs from state store", len(seen_ids))
 
-            # ── Load KCOJ seen-case cache from KVS (independent from TNPN seen_ids) ──
+            # ── Load KCOJ seen-case cache (independent from TNPN seen_ids) ──
             # KCOJ dockets recur probate cases across many days; without this,
             # the daily scheduled Apify run would resend every still-open case
             # to DataSift every morning.
-            kcoj_seen_cases = await kvs.get_value("kcoj_seen_cases") or {}
-            Actor.log.info("Loaded %d previously-seen KCOJ case numbers from KVS", len(kcoj_seen_cases))
+            kcoj_seen_cases = await state_kvs.get_value("kcoj_seen_cases") or {}
+            Actor.log.info("Loaded %d previously-seen KCOJ case numbers from state store", len(kcoj_seen_cases))
 
-            # ── Load JCD lis-pendens seen-instrument cache from KVS ────────────
+            # ── Load JCD lis-pendens seen-instrument cache ────────────────────
             # Mirrors kcoj_seen_cases exactly. JCD lis pendens recur in the
             # rolling daily window; without this, the daily scheduled Apify run
             # would resend every still-open instrument to DataSift every morning
-            # (and re-pay the PDF/OCR cost). KVS is the cloud source of truth.
-            jcd_seen = await kvs.get_value("jcd_seen_instruments") or {}
-            Actor.log.info("Loaded %d previously-seen JCD instruments from KVS", len(jcd_seen))
+            # (and re-pay the PDF/OCR cost). The state store is the source of truth.
+            jcd_seen = await state_kvs.get_value("jcd_seen_instruments") or {}
+            Actor.log.info("Loaded %d previously-seen JCD instruments from state store", len(jcd_seen))
 
-            # ── Load re-poll queue from KVS (Phase 6 / COVER-01) ──────────────
+            # ── Load re-poll queue (Phase 6 / COVER-01) ───────────────────────
             # Mirrors kcoj_seen_cases exactly. Fresh 0-row leads (CourtNet 0 parties /
             # obituary not posted) + Phase 5's credits-exhausted records are enqueued
             # here and re-searched at the START of a later run (drain in scraper.py).
-            kcoj_repoll_queue = await kvs.get_value("kcoj_repoll_queue") or {}
-            Actor.log.info("Loaded %d re-poll queue entries from KVS", len(kcoj_repoll_queue))
+            kcoj_repoll_queue = await state_kvs.get_value("kcoj_repoll_queue") or {}
+            Actor.log.info("Loaded %d re-poll queue entries from state store", len(kcoj_repoll_queue))
 
             async def persist_seen_ids(ids: dict) -> None:
                 """Mid-run persistence — if a later search crashes, progress is kept."""
                 try:
-                    await kvs.set_value("seen_notice_ids", ids)
-                    await kvs.set_value(
+                    await state_kvs.set_value("seen_notice_ids", ids)
+                    await state_kvs.set_value(
                         "last_run_date",
                         datetime.now().strftime("%Y-%m-%d"),
                     )
                 except Exception as e:
-                    Actor.log.warning("Failed to persist seen_notice_ids to KVS: %s", e)
+                    Actor.log.warning("Failed to persist seen_notice_ids to state store: %s", e)
 
             async def persist_kcoj_seen_cases(cases: dict) -> None:
                 try:
-                    await kvs.set_value("kcoj_seen_cases", cases)
+                    await state_kvs.set_value("kcoj_seen_cases", cases)
                 except Exception as e:
-                    Actor.log.warning("Failed to persist kcoj_seen_cases to KVS: %s", e)
+                    Actor.log.warning("Failed to persist kcoj_seen_cases to state store: %s", e)
 
             async def persist_jcd_seen(seen: dict) -> None:
                 try:
-                    await kvs.set_value("jcd_seen_instruments", seen)
+                    await state_kvs.set_value("jcd_seen_instruments", seen)
                 except Exception as e:
-                    Actor.log.warning("Failed to persist jcd_seen_instruments to KVS: %s", e)
+                    Actor.log.warning("Failed to persist jcd_seen_instruments to state store: %s", e)
 
             async def persist_kcoj_repoll_queue(queue: dict) -> None:
                 try:
-                    await kvs.set_value("kcoj_repoll_queue", queue)
+                    await state_kvs.set_value("kcoj_repoll_queue", queue)
                 except Exception as e:
-                    Actor.log.warning("Failed to persist kcoj_repoll_queue to KVS: %s", e)
+                    Actor.log.warning("Failed to persist kcoj_repoll_queue to state store: %s", e)
 
             # ── Scrape ────────────────────────────────────────────────
             notices = await scrape_all(
@@ -408,12 +419,20 @@ async def actor_main() -> None:
                 jcd_seen=jcd_seen,
                 on_jcd_search_complete=persist_jcd_seen,
             )
-            # Handle async probate lookup before pipeline (requires await)
-            probate_notices = [n for n in notices if n.notice_type == "probate" and n.decedent_name and not n.address]
+            # Handle async probate lookup before pipeline (requires await).
+            # property_lookup is the TN-only assessor module (Knox/KGIS, Blount/TPAD).
+            # KY/Jefferson probate addresses are resolved later in the pipeline by
+            # Step 3d (kentucky_pva_lookup), so exclude Jefferson here — otherwise it
+            # logs a misleading "0 found / N skipped" no-op for every KY run.
+            probate_notices = [
+                n for n in notices
+                if n.notice_type == "probate" and n.decedent_name and not n.address
+                and n.county.lower() in ("knox", "blount")
+            ]
             if probate_notices:
                 try:
                     from property_lookup import lookup_decedent_properties
-                    Actor.log.info("Looking up property addresses for %d probate notices...", len(probate_notices))
+                    Actor.log.info("Looking up property addresses for %d TN probate notices...", len(probate_notices))
                     await lookup_decedent_properties(probate_notices)
                 except ImportError:
                     Actor.log.warning("property_lookup module not found -- skipping property lookup")
@@ -534,7 +553,7 @@ async def actor_main() -> None:
                                     enqueue_repoll(kcoj_repoll_queue, k, reason="credits_exhausted")
                                     bridged += 1
                         save_repoll_queue(kcoj_repoll_queue)
-                        await kvs.set_value("kcoj_repoll_queue", kcoj_repoll_queue)
+                        await state_kvs.set_value("kcoj_repoll_queue", kcoj_repoll_queue)
                         Actor.log.info(
                             "Phase 5→6 bridge: enqueued %d repoll_after notice(s) into kcoj_repoll_queue",
                             bridged,
@@ -715,13 +734,13 @@ async def actor_main() -> None:
                 except Exception as e:
                     Actor.log.warning("Slack notification failed: %s", e)
 
-            # ── Save last_run_date + seen_notice_ids + kcoj_seen_cases + jcd_seen_instruments to KVS ─────
-            await kvs.set_value("last_run_date", datetime.now().strftime("%Y-%m-%d"))
-            await kvs.set_value("seen_notice_ids", seen_ids)
-            await kvs.set_value("kcoj_seen_cases", kcoj_seen_cases)
-            await kvs.set_value("jcd_seen_instruments", jcd_seen)
+            # ── Save cross-run state to the NAMED state store (survives to next run) ─────
+            await state_kvs.set_value("last_run_date", datetime.now().strftime("%Y-%m-%d"))
+            await state_kvs.set_value("seen_notice_ids", seen_ids)
+            await state_kvs.set_value("kcoj_seen_cases", kcoj_seen_cases)
+            await state_kvs.set_value("jcd_seen_instruments", jcd_seen)
             Actor.log.info(
-                "Saved last_run_date + %d seen_notice_ids + %d kcoj_seen_cases + %d jcd_seen_instruments to KVS for next run",
+                "Saved last_run_date + %d seen_notice_ids + %d kcoj_seen_cases + %d jcd_seen_instruments to state store for next run",
                 len(seen_ids), len(kcoj_seen_cases), len(jcd_seen),
             )
 
