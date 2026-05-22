@@ -30,6 +30,12 @@ PHOTO_STATE_FILE = PROJECT_ROOT / "photo_state.json"
 # by case_number keeps DataSift uploads from duplicating on the daily Apify run.
 KCOJ_SEEN_CASES_FILE = PROJECT_ROOT / "kcoj_seen_cases.json"
 KCOJ_SEEN_CASES_PRUNE_DAYS = 90
+# Re-poll queue (Phase 6 / COVER-01): fresh CourtNet/obit filings that
+# return 0 rows are enqueued here and re-searched after a delay instead of
+# being dropped. Mirrors the kcoj_seen_cases plumbing; different key.
+KCOJ_REPOLL_FILE = PROJECT_ROOT / "kcoj_repoll_queue.json"
+REPOLL_DELAY_BUSINESS_DAYS = 4   # business days to wait before re-searching a 0-row lead
+REPOLL_MAX_ATTEMPTS = 3          # cap re-polls, then drop with an audit note
 
 # ── Dropbox Watcher ────────────────────────────────────────────────────
 DROPBOX_POLL_INTERVAL = int(os.getenv("DROPBOX_POLL_INTERVAL", "900"))  # seconds (default 15 min)
