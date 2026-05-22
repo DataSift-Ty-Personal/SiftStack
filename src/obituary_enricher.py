@@ -29,12 +29,73 @@ logger = logging.getLogger(__name__)
 
 MODEL = "claude-haiku-4-5-20251001"
 MAX_TOKENS = 1024
-SEARCH_DELAY_MIN = 0.5
-SEARCH_DELAY_MAX = 1.0
-PARALLEL_WORKERS = 6  # Concurrent heir verifications
+SEARCH_DELAY_MIN = 2.0
+SEARCH_DELAY_MAX = 4.0
+PARALLEL_WORKERS = 3  # Concurrent heir verifications (was 6 — reduced to dial back search burstiness)
+
+# ── Brave Search rate-limit guards ────────────────────────────────────
+# Brave throttled aggressively after ~50 records under the old config,
+# wiping obituary search quality on later notices in a batch. The
+# semaphore + last-call lock serialize Brave calls across all worker
+# threads with a minimum 2s gap; the retry helper handles transient 429s
+# with exponential backoff. Applies to the Brave-only fallback DDGS call
+# in `_search_obituary` — DDG-primary calls bypass these guards.
+_brave_semaphore = threading.Semaphore(1)
+_brave_lock = threading.Lock()
+_brave_last_call: float = 0.0
+MIN_BRAVE_GAP_SECONDS = 2.0
+BRAVE_RETRY_WAITS = (10.0, 20.0, 40.0)  # Exponential backoff: 10s, 20s, 40s
+
 FETCH_TIMEOUT = 20
 MAX_OBITUARY_TEXT = 6000
 MAX_ADDRESS_TEXT = 15000  # Larger limit for people search pages (CBC has 250+ results)
+
+
+def _brave_search_with_retry(query: str, max_results: int = 8) -> list[dict]:
+    """DDGS Brave-only search with semaphore, min-gap, and 429 retry.
+
+    Returns the raw DDGS result list (may be empty). Never raises —
+    exhausted retries log at WARNING and return [].
+    """
+    with _brave_semaphore:
+        # Enforce minimum gap since the last Brave call across all
+        # workers. Holding the lock briefly is fine; the sleep happens
+        # outside the lock so other workers can queue at the semaphore.
+        with _brave_lock:
+            global _brave_last_call
+            wait_for_gap = MIN_BRAVE_GAP_SECONDS - (time.time() - _brave_last_call)
+        if wait_for_gap > 0:
+            time.sleep(wait_for_gap)
+
+        for attempt, wait_base in enumerate(BRAVE_RETRY_WAITS, start=1):
+            try:
+                results = DDGS().text(query, max_results=max_results, backend="brave")
+                with _brave_lock:
+                    _brave_last_call = time.time()
+                return list(results)
+            except Exception as e:
+                msg = str(e)
+                is_rate_limited = "429" in msg or "rate" in msg.lower() or "ratelimit" in msg.lower()
+                if not is_rate_limited:
+                    logger.debug("Brave search non-429 error for '%s': %s", query, e)
+                    with _brave_lock:
+                        _brave_last_call = time.time()
+                    return []
+                if attempt >= len(BRAVE_RETRY_WAITS):
+                    logger.warning(
+                        "Brave 429 rate limited, retries exhausted for '%s' — returning empty",
+                        query,
+                    )
+                    with _brave_lock:
+                        _brave_last_call = time.time()
+                    return []
+                wait = wait_base + random.uniform(0.0, 3.0)
+                logger.warning(
+                    "Brave 429 rate limited, retry %d/%d after %.1fs",
+                    attempt, len(BRAVE_RETRY_WAITS), wait,
+                )
+                time.sleep(wait)
+        return []
 
 # Maximum years between DOD and notice filing date to accept an obituary match.
 # Probate is typically filed within 1-2 years of death. 3 years gives margin.
@@ -418,7 +479,12 @@ def _state_name(code: str) -> str:
 
 
 def _search_obituary(name: str, city: str, extra_terms: str = "", state: str = "Tennessee") -> list[dict]:
-    """Search DuckDuckGo for obituary pages matching the person.
+    """Search DuckDuckGo first, Brave as fallback, for obituary pages.
+
+    Two-stage search to cut Brave volume roughly in half: try DDG-only;
+    only escalate to Brave (with rate-limit guards) if DDG returned zero
+    obituary-domain hits. The old single combined-backend call was the
+    main driver of the 429-after-~50-records pattern.
 
     Args:
         name: Person's full name.
@@ -432,39 +498,57 @@ def _search_obituary(name: str, city: str, extra_terms: str = "", state: str = "
     keyword = extra_terms if extra_terms else "obituary"
     query = f'{name} {keyword} {state}' if not city else f'{name} {keyword} {city} {state}'
 
+    # Stage 1: DDG-only primary.
     try:
-        results = DDGS().text(query, max_results=8, backend="google,duckduckgo,brave")
+        ddg_results = list(DDGS().text(query, max_results=8, backend="duckduckgo"))
     except Exception as e:
-        logger.debug("Search failed for '%s': %s", query, e)
-        return []
+        logger.debug("DDG search failed for '%s': %s", query, e)
+        ddg_results = []
 
-    obituary_results = []
-    for r in results:
-        url = r.get("href", "")
-        if _is_obituary_url(url):
-            obituary_results.append({
-                "url": url,
-                "title": r.get("title", ""),
-                "snippet": r.get("body", ""),
-            })
+    def _collect_obit_results(raw: list[dict]) -> list[dict]:
+        collected: list[dict] = []
+        for r in raw:
+            url = r.get("href", "")
+            if _is_obituary_url(url):
+                collected.append({
+                    "url": url,
+                    "title": r.get("title", ""),
+                    "snippet": r.get("body", ""),
+                })
+        # Also include non-obituary-domain results that mention obit
+        # signal words in the title/snippet.
+        for r in raw:
+            url = r.get("href", "")
+            if url in [o["url"] for o in collected]:
+                continue
+            title = r.get("title", "").lower()
+            snippet = r.get("body", "").lower()
+            if ("obituary" in title or "obituary" in snippet or "passed away" in snippet
+                    or "death notice" in title or "death notice" in snippet
+                    or "funeral" in title or "funeral" in snippet):
+                collected.append({
+                    "url": url,
+                    "title": r.get("title", ""),
+                    "snippet": r.get("body", ""),
+                })
+        return collected
 
-    # Also include non-obituary-domain results that mention "obituary" in title/snippet
-    for r in results:
-        url = r.get("href", "")
-        if url in [o["url"] for o in obituary_results]:
-            continue
-        title = r.get("title", "").lower()
-        snippet = r.get("body", "").lower()
-        if ("obituary" in title or "obituary" in snippet or "passed away" in snippet
-                or "death notice" in title or "death notice" in snippet
-                or "funeral" in title or "funeral" in snippet):
-            obituary_results.append({
-                "url": url,
-                "title": r.get("title", ""),
-                "snippet": r.get("body", ""),
-            })
+    obituary_results = _collect_obit_results(ddg_results)
+    ddg_obit_domain_count = sum(1 for r in ddg_results if _is_obituary_url(r.get("href", "")))
 
-    return obituary_results[:8]  # Process all DDG results (was 5, raised for coverage)
+    # Stage 2: Brave fallback — only if DDG produced no obituary-domain
+    # hits. Brave call is serialized via semaphore + min-gap + 429 retry.
+    if ddg_obit_domain_count == 0:
+        time.sleep(1.0)  # 1s gap between DDG and Brave per the runbook
+        brave_results = _brave_search_with_retry(query, max_results=8)
+        if brave_results:
+            existing_urls = {o["url"] for o in obituary_results}
+            for extra in _collect_obit_results(brave_results):
+                if extra["url"] not in existing_urls:
+                    obituary_results.append(extra)
+                    existing_urls.add(extra["url"])
+
+    return obituary_results[:8]  # Process all results (DDG + optional Brave fallback)
 
 
 def _extract_structured_text(html: str, url: str) -> str:
