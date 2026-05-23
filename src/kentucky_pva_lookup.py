@@ -621,6 +621,45 @@ def probate_property_lookup(notices: list["NoticeData"]) -> None:
         _logout(session)
 
 
+def lis_pendens_property_lookup(notices: list["NoticeData"]) -> None:
+    """For KY lis-pendens records missing a usable address, resolve the owner's
+    property via PVA.
+
+    LP filings frequently resolve only to a legal description (subdivision/lot,
+    no street number, no ZIP), which Step 9b validation would drop. The named
+    owner is the current titleholder, so the same guarded ``_lookup_one`` path
+    used for probate (deed-chain current holder → owner name, with the NAME-02
+    disambiguation guard) fills a mailable address + ZIP.
+
+    Trigger is a missing ZIP rather than a missing address, because the failing
+    records carry a junk legal-description ``address``. ``_apply_to_notice``
+    overwrites it when a confident PVA match is found; non-matches are left as-is
+    (and will still be dropped by validation — never auto-attached to the wrong
+    parcel). Mutates notices in place; one login per call.
+    """
+    candidates = [
+        n for n in notices
+        if n.notice_type == "lis_pendens"
+        and n.county.lower() == "jefferson"
+        and not n.zip.strip()
+        and (n.owner_name.strip() or (n.current_property_holder or "").strip())
+    ]
+    if not candidates:
+        return
+
+    logger.info("  [PVA] Starting lis-pendens lookup for %d owner(s)", len(candidates))
+    session = _make_session()
+    if not _login(session):
+        logger.warning("  [PVA] Could not authenticate; skipping all %d records", len(candidates))
+        return
+
+    try:
+        for notice in candidates:
+            _lookup_one(session, notice)
+    finally:
+        _logout(session)
+
+
 # Tokens that mark a name as a non-individual entity. When the search
 # target contains these, we use the verbatim string as the primary query
 # rather than splitting into LAST/FIRST variations (which would garble
@@ -671,6 +710,11 @@ def _lookup_one(session: requests.Session, notice: "NoticeData") -> None:
     elif notice.decedent_name.strip():
         primary_target = notice.decedent_name
         target_source = "decedent name"
+    elif notice.owner_name.strip():
+        # Non-probate (e.g. lis pendens): the named owner IS the current
+        # titleholder, so owner-name search is the resolution target.
+        primary_target = notice.owner_name
+        target_source = "owner name"
     else:
         return
 

@@ -568,6 +568,31 @@ def run_enrichment_pipeline(
     # chain analysis, which catches the heir-recent / trust / estate
     # paths in a single search.
 
+    # ── Step 3d-LP: Lis-Pendens Property Lookup (Jefferson) ──────────
+    # LP filings often resolve only to a legal description (subdivision/lot,
+    # no street number, no ZIP) — which Step 9b validation would drop. Resolve
+    # a mailable address via PVA using the same guarded path probate uses
+    # (deed-chain current holder from Step 3c, falling back to owner name).
+    # Trigger is a MISSING ZIP, since the failing records carry a junk
+    # legal-description address rather than an empty one.
+    lp_no_zip = [
+        n for n in notices
+        if n.notice_type == "lis_pendens"
+        and n.county.lower() == "jefferson"
+        and not n.zip.strip()
+    ]
+    if lp_no_zip:
+        logger.info("── Step 3d-LP: Lis-Pendens Property Lookup (%d candidates) ──", len(lp_no_zip))
+        try:
+            from kentucky_pva_lookup import lis_pendens_property_lookup as _ky_lp_lookup
+            _ky_lp_lookup(lp_no_zip)
+            found = sum(1 for n in lp_no_zip if n.zip.strip())
+            logger.info("  [Jefferson] LP address found: %d/%d", found, len(lp_no_zip))
+        except ImportError:
+            logger.warning("  [Jefferson] kentucky_pva_lookup not available — skipping")
+        except Exception as e:
+            logger.warning("  [Jefferson] LP property lookup failed: %s", e)
+
     # ── Step 3e: KY Equity Estimator ─────────────────────────────────
     # Compute estimated_equity + equity_percent for Jefferson records from
     # the PVA assessed value (Step 3c) and mortgage balance (Step 3d). Uses
