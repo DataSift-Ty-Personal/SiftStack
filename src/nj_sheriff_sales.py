@@ -314,15 +314,26 @@ def scrape_county(county: str) -> list[NoticeData]:
     return notices
 
 
-async def scrape_civilview_notices(counties: list[str] | None = None) -> list[NoticeData]:
+async def scrape_civilview_notices(
+    counties: list[str] | None = None,
+    enrich_details: bool = True,
+) -> list[NoticeData]:
     """Async wrapper around scrape_all for modal_app.py fan-out.
 
-    CivilView is plain blocking HTTP (requests), so we push it to a thread
-    so nj_weekly_all can gather() all scrapers in parallel without blocking
-    the event loop.
+    CivilView listing pages are plain blocking HTTP (requests), so the
+    scrape itself runs in a worker thread. Detail-page enrichment uses
+    Playwright (the /SaleDetails endpoint needs a real browser session)
+    and runs after — pass `enrich_details=False` to skip when testing.
+
+    Detail enrichment may drop records whose case_disposition resolves
+    to Sold / Redeemed / Cancelled (per nj_sheriff_detail spec).
     """
     import asyncio
-    return await asyncio.to_thread(scrape_all, counties)
+    notices = await asyncio.to_thread(scrape_all, counties)
+    if enrich_details and notices:
+        from nj_sheriff_detail import enrich_sheriff_records
+        notices = await enrich_sheriff_records(notices)
+    return notices
 
 
 def scrape_all(counties: list[str] | None = None) -> list[NoticeData]:

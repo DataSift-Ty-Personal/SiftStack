@@ -520,6 +520,10 @@ async def scrape_somerset_notices(
             county="Somerset",
             source_url=r.get("pdf_url", ""),
             raw_text=" | ".join(raw_bits),
+            # Somerset sales are PDF-detail-only; the CivilView HTML
+            # detail enricher skips them and downstream operators know
+            # to expect a sparser record set.
+            enrichment_pending="yes",
         ))
     return notices
 
