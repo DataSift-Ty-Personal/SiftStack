@@ -289,6 +289,43 @@ def lookup_by_address(
     return parcels
 
 
+def lookup_by_block_lot(
+    county: str,
+    block: str,
+    lot: str,
+    qualifier: str = "",
+    page_size: int = 25,
+) -> list[Parcel]:
+    """Find parcels in `county` matching the given block / lot / qualifier.
+
+    County-wide search (district = COUNTY_ALL_DISTRICT) — block/lot pairs
+    are NOT unique across municipalities within a county, so callers
+    that already know which municipality the parcel sits in should
+    filter the result list themselves (e.g. by `property_location` city
+    match, or `district_code` if they have the MOD-IV district map).
+
+    Essex is intentionally unsupported here — its MOD-IV data lives on
+    taxdatahub.com instead of taxrecords-nj.com (see COUNTY_CODES).
+    Callers should branch to a different resolver for Essex records or
+    treat the empty list as "not resolvable from this source."
+
+    Returns: parsed Parcel rows (may be empty / multiple).
+    """
+    block = (block or "").strip()
+    lot = (lot or "").strip()
+    qualifier = (qualifier or "").strip()
+    if not (block and lot) or county not in COUNTY_CODES:
+        return []
+    parcels = _post_search(
+        county, block=block, lot=lot, qual=qualifier, page_size=page_size,
+    )
+    logger.info(
+        "taxrecords-nj %s: block=%s lot=%s qual=%s -> %d parcels",
+        county, block, lot, qualifier or "<none>", len(parcels),
+    )
+    return parcels
+
+
 def lookup_executor_family(
     executor_name: str,
     decedent_last_name: str,

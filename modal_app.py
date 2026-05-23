@@ -1066,10 +1066,19 @@ async def nj_tax_sale_recovery(
         modal run modal_app.py::nj_tax_sale_recovery
         modal run modal_app.py::nj_tax_sale_recovery --counties '["Middlesex"]'
         modal run modal_app.py::nj_tax_sale_recovery --no-fetch-details
+
+    Output CSV schema is RAW TaxSaleRecord fields (NOT the 74-col Sift
+    format): block, lot, qualifier, municipality, owner_name, etc.
+    stay as separate columns so the resolver script
+    (scripts/resolve_block_lot.py) can read them directly. To upload to
+    DataSift, run the resolver first, then funnel the resolved rows
+    through the normal enrichment pipeline.
     """
+    import csv as _csv
     import logging
     import os
     import sys
+    from dataclasses import asdict, fields
     from datetime import datetime
     from pathlib import Path
 
@@ -1082,8 +1091,8 @@ async def nj_tax_sale_recovery(
     )
     logger = logging.getLogger("nj_tax_sale_recovery")
 
-    from nj_tax_sale_monitor import scrape_nj_tax_sale_notices
-    from data_formatter import write_csv
+    from nj_tax_sale_monitor import scrape_nj_tax_sales, TaxSaleRecord
+    from config import OUTPUT_DIR
 
     target_counties = counties or ["Middlesex", "Essex", "Somerset", "Union"]
     logger.info(
@@ -1091,20 +1100,38 @@ async def nj_tax_sale_recovery(
         target_counties, fetch_details,
     )
 
-    notices = await scrape_nj_tax_sale_notices(
+    # Use the raw-records entry point (not scrape_nj_tax_sale_notices)
+    # so we keep block/lot/qualifier/municipality as separate fields
+    # instead of having them packed into NoticeData.raw_text and dropped
+    # by the 74-col Sift CSV writer.
+    records = await scrape_nj_tax_sales(
         counties=target_counties,
         fetch_details=fetch_details,
     )
-    logger.info("Raw scrape returned %d tax-sale notices", len(notices))
+    logger.info("Raw scrape returned %d tax-sale records", len(records))
 
-    if not notices:
+    if not records:
         logger.warning("No records scraped — nothing to write")
         return {"success": True, "count": 0, "csv": None}
 
     ts = datetime.now().strftime("%Y-%m-%d_%H%M%S")
     date_folder = datetime.now().strftime("%Y-%m-%d")
-    csv_path = write_csv(notices, f"nj_tax_sale_recovery_{ts}.csv")
-    logger.info("Wrote local CSV: %s (%d records)", csv_path, len(notices))
+    csv_path = Path(OUTPUT_DIR) / f"nj_tax_sale_recovery_{ts}.csv"
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Schema = every TaxSaleRecord field (24 cols) — block/lot/municipality
+    # all preserved. records may be dicts or dataclasses; normalize.
+    fieldnames = [f.name for f in fields(TaxSaleRecord)]
+    with open(csv_path, "w", newline="", encoding="utf-8") as f:
+        w = _csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
+        w.writeheader()
+        for r in records:
+            row = asdict(r) if hasattr(r, "__dataclass_fields__") else dict(r)
+            w.writerow({k: row.get(k, "") for k in fieldnames})
+    logger.info(
+        "Wrote rich-schema recovery CSV: %s (%d records, %d cols)",
+        csv_path, len(records), len(fieldnames),
+    )
 
     # Persist to Modal Volume so it survives container shutdown.
     volume_out_dir = Path(f"{TRACKING_MOUNT}/output/{date_folder}")
