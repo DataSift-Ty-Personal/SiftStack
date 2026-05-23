@@ -54,7 +54,6 @@ _LABEL_TO_FIELD = {
     "minimum bid": "minimum_bid",
     "attorney": "plaintiff_attorney",
     "attorney phone": "plaintiff_attorney_phone",
-    "attorney file #": "attorney_file_number",
     "parcel #": "parcel_number",
     "property note": "property_note",
 }
@@ -147,9 +146,13 @@ def derive_fields(parsed: dict, today: date) -> dict:
             parsed_dates.append(datetime.strptime(h["date"], "%m/%d/%Y").date())
         except (KeyError, ValueError):
             continue
-    out["days_since_first_scheduled"] = (
-        str((today - min(parsed_dates)).days) if parsed_dates else ""
-    )
+    if parsed_dates:
+        earliest = min(parsed_dates)
+        out["first_scheduled_date"] = earliest.isoformat()  # YYYY-MM-DD
+        out["days_since_first_scheduled"] = str((today - earliest).days)
+    else:
+        out["first_scheduled_date"] = ""
+        out["days_since_first_scheduled"] = ""
 
     cs = (parsed.get("current_status") or "").lower()
     disposition = ""
@@ -171,12 +174,12 @@ async def enrich_sheriff_records(
     """Fetch & merge detail-page data for each CivilView sheriff record.
 
     Records with no CivilView PropertyId in their source_url (e.g.
-    Somerset PDF-hosted sales) get `enrichment_pending="yes"` and pass
-    through unchanged. Records whose case_disposition resolves to a
-    drop bucket (Sold / Redeemed / Cancelled) are removed.
+    Somerset PDF-hosted sales) pass through unchanged with blank
+    detail fields. Records whose case_disposition resolves to a drop
+    bucket (Sold / Redeemed / Cancelled) are removed.
 
     Returns the surviving list (CivilView-enriched + non-CivilView
-    passthroughs, in original order).
+    passthroughs).
     """
     if not notices:
         return notices
@@ -191,12 +194,11 @@ async def enrich_sheriff_records(
         if PROPERTY_ID_RE.search(n.source_url or ""):
             civilview.append(n)
         else:
-            n.enrichment_pending = "yes"
             other.append(n)
 
     logger.info(
         "Sheriff detail enrichment: %d CivilView records to enrich, "
-        "%d non-CivilView marked enrichment_pending",
+        "%d non-CivilView passthroughs",
         len(civilview), len(other),
     )
     if not civilview:

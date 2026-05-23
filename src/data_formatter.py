@@ -97,23 +97,22 @@ SIFT_COLUMNS = [
     # Pipeline metadata
     "run_id",
     # CivilView sheriff-sale detail-page enrichment (set by
-    # nj_sheriff_detail.enrich_sheriff_records). enrichment_pending
-    # signals Somerset PDF records that bypass HTML detail scraping.
+    # nj_sheriff_detail.enrich_sheriff_records). Somerset PDF records
+    # bypass the enricher — their detail fields stay blank.
     "court_case_number",
     "approx_judgment",
     "minimum_bid",
     "plaintiff_attorney",
     "plaintiff_attorney_phone",
-    "attorney_file_number",
     "parcel_number",
     "property_note",
     "current_status",
-    "status_history_json",
     "adjournment_count",
+    "first_scheduled_date",
     "days_since_first_scheduled",
     "case_disposition",
     "is_open",
-    "enrichment_pending",
+    "status_history_json",
 ]
 
 
@@ -312,16 +311,15 @@ def write_csv(notices: list[NoticeData], filename: str | None = None) -> Path:
                 "minimum_bid": notice.minimum_bid,
                 "plaintiff_attorney": notice.plaintiff_attorney,
                 "plaintiff_attorney_phone": notice.plaintiff_attorney_phone,
-                "attorney_file_number": notice.attorney_file_number,
                 "parcel_number": notice.parcel_number,
                 "property_note": notice.property_note,
                 "current_status": notice.current_status,
-                "status_history_json": notice.status_history_json,
                 "adjournment_count": notice.adjournment_count,
+                "first_scheduled_date": _format_date_sift(notice.first_scheduled_date),
                 "days_since_first_scheduled": notice.days_since_first_scheduled,
                 "case_disposition": notice.case_disposition,
                 "is_open": notice.is_open,
-                "enrichment_pending": notice.enrichment_pending,
+                "status_history_json": notice.status_history_json,
             }
             writer.writerow(row)
             written += 1

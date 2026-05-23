@@ -55,22 +55,21 @@ class NoticeData:
     address_raw: str = ""           # Original pre-flag address (preserved when flagged)
     # CivilView sheriff-sale detail-page enrichment (populated post-scrape
     # by nj_sheriff_detail.enrich_sheriff_records). Somerset PDF-based
-    # sales skip this and get enrichment_pending="yes" instead.
+    # sales bypass the enricher — their detail fields stay blank.
     court_case_number: str = ""        # e.g. "F00566323"
     approx_judgment: str = ""          # numeric str, $ + commas stripped
     minimum_bid: str = ""              # numeric str, $ + commas stripped (often blank)
     plaintiff_attorney: str = ""
     plaintiff_attorney_phone: str = ""
-    attorney_file_number: str = ""
     parcel_number: str = ""            # "LOT 9 BLOCK 589" from CivilView
     property_note: str = ""            # often blank
     current_status: str = ""           # most recent Status History entry
-    status_history_json: str = ""      # JSON array of {"status","date"} objects
     adjournment_count: str = ""        # int as str — # of "Adjourned" history entries
-    days_since_first_scheduled: str = ""  # int as str — today minus earliest history date
+    first_scheduled_date: str = ""     # YYYY-MM-DD — earliest date in status history
+    days_since_first_scheduled: str = ""  # int as str — today minus first_scheduled_date
     case_disposition: str = ""         # Open / Sold / Redeemed / Bankruptcy / Cancelled
     is_open: str = ""                  # "yes" if current_status starts with Scheduled
-    enrichment_pending: str = ""       # "yes" for Somerset PDF records (no HTML detail to scrape)
+    status_history_json: str = ""      # JSON array of {"status","date"} objects
     # Zillow property enrichment fields (populated post-scrape)
     mls_status: str = ""           # "Active", "Pending", "Sold", "Off Market"
     mls_listing_price: str = ""    # Current list price or last sold price
