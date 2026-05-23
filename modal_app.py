@@ -1032,6 +1032,102 @@ async def nj_scrape_manual(counties: list[str] | None = None):
 @app.function(
     image=image,
     secrets=[secrets],
+    timeout=3600,  # 1 hr — 46 municipalities × Playwright preview-table + detail pages
+    volumes={TRACKING_MOUNT: tracking_volume},
+)
+async def nj_tax_sale_recovery(
+    counties: list[str] | None = None,
+    fetch_details: bool = True,
+):
+    """Re-scrape NJ tax sales with dedup + enrichment BYPASSED.
+
+    Built as a one-off recovery after the 2026-05-21 weekly run lost
+    ~1000 tax_sale records: the vacant-land filter dropped them because
+    their addresses were block/lot descriptions, and the only combined
+    CSV lived on the ephemeral container. Tracker has IDs but no
+    property data — full re-scrape is the only path back.
+
+    What this function DOES:
+      - Calls scrape_nj_tax_sale_notices() against the same 4-county
+        config the weekly cron uses (override via `counties` arg).
+      - Writes the raw NoticeData list (block/lot text intact) to
+        nj_tax_sale_recovery_{ts}.csv in the local output/ folder.
+      - Copies that CSV to the Modal Volume at
+        /tracking/output/{date}/ so `modal volume get` pulls it.
+
+    What this function does NOT do:
+      - Touch dedup state (read-only — IDs stay in the tracker so the
+        regular weekly run still treats them as already-processed).
+      - Run enrichment (no Smarty / Zillow / obit / Tracerfy cost).
+      - Upload to DataSift (operator runs that manually after cleaning).
+      - Update tracking timestamps.
+
+    Run via:
+        modal run modal_app.py::nj_tax_sale_recovery
+        modal run modal_app.py::nj_tax_sale_recovery --counties '["Middlesex"]'
+        modal run modal_app.py::nj_tax_sale_recovery --no-fetch-details
+    """
+    import logging
+    import os
+    import sys
+    from datetime import datetime
+    from pathlib import Path
+
+    sys.path.insert(0, "/app/src")
+    os.chdir("/app")
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    )
+    logger = logging.getLogger("nj_tax_sale_recovery")
+
+    from nj_tax_sale_monitor import scrape_nj_tax_sale_notices
+    from data_formatter import write_csv
+
+    target_counties = counties or ["Middlesex", "Essex", "Somerset", "Union"]
+    logger.info(
+        "Tax-sale recovery scrape starting (counties=%s, fetch_details=%s)",
+        target_counties, fetch_details,
+    )
+
+    notices = await scrape_nj_tax_sale_notices(
+        counties=target_counties,
+        fetch_details=fetch_details,
+    )
+    logger.info("Raw scrape returned %d tax-sale notices", len(notices))
+
+    if not notices:
+        logger.warning("No records scraped — nothing to write")
+        return {"success": True, "count": 0, "csv": None}
+
+    ts = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+    date_folder = datetime.now().strftime("%Y-%m-%d")
+    csv_path = write_csv(notices, f"nj_tax_sale_recovery_{ts}.csv")
+    logger.info("Wrote local CSV: %s (%d records)", csv_path, len(notices))
+
+    # Persist to Modal Volume so it survives container shutdown.
+    volume_out_dir = Path(f"{TRACKING_MOUNT}/output/{date_folder}")
+    volume_out_dir.mkdir(parents=True, exist_ok=True)
+    volume_dst = volume_out_dir / csv_path.name
+    volume_dst.write_bytes(csv_path.read_bytes())
+    await tracking_volume.commit.aio()
+    rel = volume_dst.relative_to(TRACKING_MOUNT).as_posix()
+    logger.info("Persisted recovery CSV to volume: %s", rel)
+
+    return {
+        "success": True,
+        "count": len(notices),
+        "counties": target_counties,
+        "fetch_details": fetch_details,
+        "csv": csv_path.name,
+        "volume_path": rel,
+    }
+
+
+@app.function(
+    image=image,
+    secrets=[secrets],
     timeout=600,
     volumes={TRACKING_MOUNT: tracking_volume},
 )
