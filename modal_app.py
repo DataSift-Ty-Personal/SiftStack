@@ -1036,10 +1036,14 @@ async def nj_scrape_manual(counties: list[str] | None = None):
     volumes={TRACKING_MOUNT: tracking_volume},
 )
 async def nj_tax_sale_recovery(
-    counties: list[str] | None = None,
+    counties: str = "Middlesex,Essex,Somerset,Union",
     fetch_details: bool = True,
 ):
     """Re-scrape NJ tax sales with dedup + enrichment BYPASSED.
+
+    `counties` is comma-separated (e.g. "Middlesex,Somerset") rather
+    than list[str] because Modal's CLI parser rejects union-type
+    annotations like list[str] | None.
 
     Built as a one-off recovery after the 2026-05-21 weekly run lost
     ~1000 tax_sale records: the vacant-land filter dropped them because
@@ -1064,7 +1068,8 @@ async def nj_tax_sale_recovery(
 
     Run via:
         modal run modal_app.py::nj_tax_sale_recovery
-        modal run modal_app.py::nj_tax_sale_recovery --counties '["Middlesex"]'
+        modal run modal_app.py::nj_tax_sale_recovery --counties Middlesex
+        modal run modal_app.py::nj_tax_sale_recovery --counties Middlesex,Somerset
         modal run modal_app.py::nj_tax_sale_recovery --no-fetch-details
 
     Output CSV schema is RAW TaxSaleRecord fields (NOT the 74-col Sift
@@ -1094,7 +1099,7 @@ async def nj_tax_sale_recovery(
     from nj_tax_sale_monitor import scrape_nj_tax_sales, TaxSaleRecord
     from config import OUTPUT_DIR
 
-    target_counties = counties or ["Middlesex", "Essex", "Somerset", "Union"]
+    target_counties = [c.strip() for c in counties.split(",") if c.strip()]
     logger.info(
         "Tax-sale recovery scrape starting (counties=%s, fetch_details=%s)",
         target_counties, fetch_details,
