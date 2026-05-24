@@ -412,14 +412,35 @@ async def nj_weekly_all():
     # it); otherwise we fall back to the webhook (summary only, no files).
     try:
         import config
+        # Tax Sale gets a special-case "BLOCKED" line — newjerseytaxsale
+        # AWS-ELB started 403'ing cloud IPs in May 2026, so any failure
+        # here is almost certainly the IP block. _safe already catches
+        # the exception and returns 0 records; we just need to surface
+        # an actionable warning instead of the generic "errors: [...]"
+        # tuple line that would otherwise lump it together.
+        tax_sale_blocked = any(label == "Tax Sale" for label, _ in errors)
         lines = ["*NJ Weekly All — combined Wednesday run*"]
         for label in ("NJLP", "Middlesex Probate", "Somerset Probate", "Somerset Sheriff", "Tax Sale", "CivilView Sheriff"):
+            if label == "Tax Sale" and tax_sale_blocked:
+                lines.append(
+                    "  :warning: Tax Sales: BLOCKED (cloud IP rejected) — "
+                    "run local recovery script"
+                )
+                continue
             n, s = new_counts.get(label, 0), skipped_counts.get(label, 0)
             stale = stale_dropped_counts.get(label, 0)
             stale_suffix = f" / {stale} stale auctions filtered" if stale else ""
             lines.append(f"  {label}: {n} new / {s} skipped (already processed){stale_suffix}")
-        cf_blocked = [label for label, err in errors if err == "cloudflare_block"]
-        other_errors = [(label, err) for label, err in errors if err != "cloudflare_block"]
+        # Exclude Tax Sale from cf_blocked / other_errors — already shown
+        # above as the dedicated BLOCKED line, no double-reporting.
+        cf_blocked = [
+            label for label, err in errors
+            if err == "cloudflare_block" and label != "Tax Sale"
+        ]
+        other_errors = [
+            (label, err) for label, err in errors
+            if err != "cloudflare_block" and label != "Tax Sale"
+        ]
         if cf_blocked:
             lines.append(f"  :warning: BLOCKED: {', '.join(cf_blocked)} (Cloudflare)")
         if other_errors:
