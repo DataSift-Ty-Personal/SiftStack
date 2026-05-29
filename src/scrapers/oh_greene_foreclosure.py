@@ -159,9 +159,7 @@ class Scraper(NoticeScraper):
 
         soup = self._fetch_list_page()
         if soup is None:
-            logger.warning(
-                "Greene portal unreachable after retries — returning empty list"
-            )
+            # _fetch_list_page already logged the appropriate WARNING.
             return []
 
         foreclosure_rows = self._parse_grid(
@@ -220,6 +218,13 @@ class Scraper(NoticeScraper):
         The Greene ASP.NET app intermittently 302-redirects every request to
         `/error/error.html`. We detect the error-page title and retry up to
         MAX_RETRIES times with the configured backoff schedule.
+
+        Note: as of 2026-05-29 the entire apps.greenecountyohio.gov server is
+        returning this error page on every request — not just the sheriff
+        module. When all retries fail, we log a WARNING (not just info) so the
+        daily Slack summary surfaces the outage.  The RealAuction source
+        (oh_greene_realauction.py) covers the same auction data independently;
+        this scraper is secondary / resilience-only.
         """
         session = requests.Session()
         session.headers.update({
@@ -230,6 +235,7 @@ class Scraper(NoticeScraper):
             "Upgrade-Insecure-Requests": "1",
         })
 
+        error_count = 0
         for attempt in range(config.MAX_RETRIES):
             backoff = RETRY_BACKOFF_SECS[min(attempt, len(RETRY_BACKOFF_SECS) - 1)]
             try:
@@ -240,6 +246,7 @@ class Scraper(NoticeScraper):
                         LIST_URL, resp.status_code, attempt + 1,
                     )
                 elif ERROR_PAGE_TITLE in resp.text or "unable to process" in resp.text.lower():
+                    error_count += 1
                     logger.info(
                         "Greene portal returned error page (attempt %d/%d) — "
                         "ASP.NET app likely throwing; will retry in %ds",
@@ -254,6 +261,20 @@ class Scraper(NoticeScraper):
                 )
             if attempt < config.MAX_RETRIES - 1:
                 time.sleep(backoff)
+
+        if error_count >= config.MAX_RETRIES:
+            logger.warning(
+                "Greene ASP.NET sheriff portal (%s) returned error page on all %d "
+                "attempts — server-level outage suspected. Returning 0 records. "
+                "Greene RealAuction source (oh_greene_realauction.py) provides "
+                "coverage while this portal is down.",
+                LIST_URL, config.MAX_RETRIES,
+            )
+        else:
+            logger.warning(
+                "Greene portal unreachable after %d retries — returning empty list",
+                config.MAX_RETRIES,
+            )
         return None
 
     # ── Grid parsing ───────────────────────────────────────────────────

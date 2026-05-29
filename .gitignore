@@ -11,6 +11,7 @@ captcha_failed_ids.json
 cookies.json
 datasift_cookies.json
 realauction_cookies.json
+realauction_cookies_*.json
 dropbox_state.json
 photo_state.json
 *.tmp
