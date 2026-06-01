@@ -18,12 +18,27 @@ Workflow
   the set. Returns (fresh_records, duplicates).
 - After successful upload: append the uploaded addresses to the set + persist.
 
-Address normalization
----------------------
-Lowercased, stripped, single-spaced, with the state appended. e.g.
-"123  Main St., Columbus, OH 43215" → "123 main st columbus oh 43215".
-This matches addresses across casing/punctuation but stays distinct between
-truly different properties (different ZIPs / streets).
+Dedup key
+---------
+Lowercased, stripped, single-spaced address with notice_type appended.
+e.g. "123 Main St., Columbus, OH 43215" + probate notice
+     → "123 main st columbus oh 43215|probate".
+
+Why notice_type is part of the key
+----------------------------------
+The same property progresses through multiple distress events over its
+lifecycle — probate filed, then 60 days later a foreclosure case, then a
+sheriff sale, then a redemption window. Each is a legitimately new lead
+with different decision-maker, different cadence, different conversation.
+A pure address key collapsed all of those into a single "uploaded once,
+silenced forever" state — every progression after the first was dropped.
+
+Pre-2026-06-01 the seed file (`src/data/seed_uploaded_addresses.json`,
+176 entries) and the persistent KV store (`siftstack-dedup`, ~461 net
+adds) hold *plain address strings* without the |notice_type suffix. Those
+old entries become inert under the new keying — they never match a
+new-format key — and are harmless to keep around. Resetting the KV store
+is recommended for cleanliness but not required for correctness.
 """
 
 from __future__ import annotations
@@ -56,10 +71,18 @@ _WS_RE = re.compile(r"\s+")
 
 
 def normalize_address(notice: NoticeData) -> str | None:
-    """Return a normalized address key, or None if address is unusable.
+    """Return a normalized dedup key, or None if address is unusable.
 
-    Format: "{street} {city} {state} {zip}" all lowercased, single-spaced,
-    punctuation stripped. Returns None if any of street/city/zip missing.
+    Format: "{street} {city} {state} {zip}|{notice_type}" all lowercased,
+    single-spaced, punctuation stripped. Returns None if any of
+    street/city/zip missing.
+
+    The |notice_type suffix is what lets the same property re-appear as a
+    new lead type — see module docstring "Why notice_type is part of the
+    key" for the lifecycle rationale.
+
+    Records with no notice_type fall back to "{...address...}|" (empty
+    suffix), distinguishable from pre-fix plain-address keys.
     """
     street = (notice.address or "").strip()
     city = (notice.city or "").strip()
@@ -70,7 +93,8 @@ def normalize_address(notice: NoticeData) -> str | None:
     raw = f"{street} {city} {state} {zip_code}"
     raw = _PUNCT_RE.sub(" ", raw)
     raw = _WS_RE.sub(" ", raw).strip().lower()
-    return raw
+    notice_type = (notice.notice_type or "").strip().lower()
+    return f"{raw}|{notice_type}"
 
 
 def _is_apify() -> bool:
