@@ -23,10 +23,15 @@ def chat_json(
     system: str = "",
     max_tokens: int = 1024,
     api_key: str | None = None,
+    model: str | None = None,
 ) -> dict | None:
     """Send prompt, get parsed JSON response. Routes to configured backend.
 
     Returns parsed dict on success, None on failure.
+
+    model: optional per-call Anthropic model override (e.g. a higher-quality
+    model for accuracy-critical extraction). Defaults to config.LLM_MODEL.
+    Ignored by the ollama / openrouter backends (they have their own model config).
     """
     backend = getattr(cfg, "LLM_BACKEND", "anthropic")
     if backend == "ollama":
@@ -34,7 +39,7 @@ def chat_json(
     elif backend == "openrouter":
         return _chat_openrouter(prompt, system, max_tokens)
     else:
-        return _chat_anthropic(prompt, system, max_tokens, api_key)
+        return _chat_anthropic(prompt, system, max_tokens, api_key, model)
 
 
 def chat_json_async(
@@ -42,6 +47,7 @@ def chat_json_async(
     system: str = "",
     max_tokens: int = 1024,
     api_key: str | None = None,
+    model: str | None = None,
 ):
     """Async version — returns a coroutine. For llm_parser.py compatibility."""
     import asyncio
@@ -51,7 +57,7 @@ def chat_json_async(
     elif backend == "openrouter":
         return _chat_openrouter_async(prompt, system, max_tokens)
     else:
-        return _chat_anthropic_async(prompt, system, max_tokens, api_key)
+        return _chat_anthropic_async(prompt, system, max_tokens, api_key, model)
 
 
 # ── Anthropic backend ────────────────────────────────────────────────
@@ -59,8 +65,9 @@ def chat_json_async(
 
 def _chat_anthropic(
     prompt: str, system: str, max_tokens: int, api_key: str | None,
+    model: str | None = None,
 ) -> dict | None:
-    """Call Claude Haiku via Anthropic API (sync)."""
+    """Call Claude via Anthropic API (sync). model overrides config.LLM_MODEL."""
     import anthropic
 
     key = api_key or cfg.ANTHROPIC_API_KEY
@@ -68,7 +75,7 @@ def _chat_anthropic(
         logger.warning("No Anthropic API key — skipping LLM call")
         return None
 
-    model = getattr(cfg, "LLM_MODEL", "claude-haiku-4-5-20251001")
+    model = model or getattr(cfg, "LLM_MODEL", "claude-haiku-4-5-20251001")
     try:
         client = anthropic.Anthropic(api_key=key)
         response = client.messages.create(
@@ -79,15 +86,21 @@ def _chat_anthropic(
         )
         result_text = response.content[0].text.strip()
         return _parse_json(result_text)
+    except anthropic.NotFoundError as e:
+        # Almost always a bad/retired model id. Surface loudly: silently returning
+        # None here makes downstream extraction (e.g. heir maps) collapse to empty.
+        logger.error("Anthropic rejected model %r (NotFoundError): %s", model, e)
+        return None
     except Exception as e:
-        logger.warning("Anthropic LLM call failed: %s", e)
+        logger.warning("Anthropic LLM call failed (model=%s): %s", model, e)
         return None
 
 
 async def _chat_anthropic_async(
     prompt: str, system: str, max_tokens: int, api_key: str | None,
+    model: str | None = None,
 ) -> dict | None:
-    """Call Claude Haiku via Anthropic API (async)."""
+    """Call Claude via Anthropic API (async). model overrides config.LLM_MODEL."""
     import anthropic
 
     key = api_key or cfg.ANTHROPIC_API_KEY
@@ -95,7 +108,7 @@ async def _chat_anthropic_async(
         logger.warning("No Anthropic API key — skipping LLM call")
         return None
 
-    model = getattr(cfg, "LLM_MODEL", "claude-haiku-4-5-20251001")
+    model = model or getattr(cfg, "LLM_MODEL", "claude-haiku-4-5-20251001")
     try:
         client = anthropic.AsyncAnthropic(api_key=key)
         response = await client.messages.create(
@@ -106,8 +119,11 @@ async def _chat_anthropic_async(
         )
         result_text = response.content[0].text.strip()
         return _parse_json(result_text)
+    except anthropic.NotFoundError as e:
+        logger.error("Anthropic rejected model %r (NotFoundError): %s", model, e)
+        return None
     except Exception as e:
-        logger.warning("Anthropic async LLM call failed: %s", e)
+        logger.warning("Anthropic async LLM call failed (model=%s): %s", model, e)
         return None
 
 
