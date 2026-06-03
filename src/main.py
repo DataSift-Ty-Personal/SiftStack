@@ -428,10 +428,44 @@ async def actor_main() -> None:
             # deceased owners with heir/DM info, or records with signing chains.
             # Basic records (just address + owner) don't need a PDF.
             pdf_urls = []
-            dp_candidates = [
+
+            # Filter to deep-prospecting-qualified records.
+            all_dp_qualified = [
                 n for n in notices
                 if n.owner_deceased == "yes" or n.heir_map_json or n.decision_maker_name
             ]
+
+            # PDF dedup: don't regenerate PDFs for records Mike has already
+            # seen on a prior daily run. Same persistence as the upload-side
+            # dedup (datasift_dedup), keyed on normalized address + notice
+            # type. Saves Mike the cognitive load of re-reading PDFs he's
+            # already worked. Note: pre-2026-06-01 dedup entries used the
+            # plain-address key (no notice_type suffix) and will no longer
+            # match — those records will get one extra PDF on first re-scrape
+            # post-fix, then settle into the new keying.
+            already_delivered_keys: set[str] = set()
+            _normalize = None
+            try:
+                from datasift_dedup import (
+                    load_uploaded_addresses,
+                    normalize_address as _normalize,
+                )
+                already_delivered_keys = await load_uploaded_addresses()
+            except Exception as e:
+                Actor.log.warning(
+                    "PDF dedup: could not load delivered-records set (%s) "
+                    "— generating PDFs for all DP candidates", e,
+                )
+
+            if _normalize is not None and already_delivered_keys:
+                dp_candidates = [
+                    n for n in all_dp_qualified
+                    if _normalize(n) not in already_delivered_keys
+                ]
+                dp_already_delivered = len(all_dp_qualified) - len(dp_candidates)
+            else:
+                dp_candidates = all_dp_qualified
+                dp_already_delivered = 0
 
             # Score every phone with Trestle (all records, not just DP).
             # The dedup cache means cached records' phones are already tier-
@@ -472,8 +506,10 @@ async def actor_main() -> None:
                         url = f"https://api.apify.com/v2/key-value-stores/{kvs_id}/records/{key}"
                         pdf_urls.append({"address": n.address, "url": url})
 
-                    Actor.log.info("Generated %d deep prospecting PDFs (%d records skipped — no DP data)",
-                                   len(pdf_urls), total - len(dp_candidates))
+                    Actor.log.info(
+                        "Generated %d NEW deep prospecting PDFs (%d already delivered on prior runs, %d records skipped — no DP data)",
+                        len(pdf_urls), dp_already_delivered, total - len(all_dp_qualified),
+                    )
                 except Exception as e:
                     Actor.log.warning("PDF generation failed: %s — continuing", e)
             else:
