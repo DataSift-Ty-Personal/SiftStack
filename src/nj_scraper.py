@@ -540,7 +540,7 @@ async def run_nj_scrape(
             if hasattr(opts, flag):
                 setattr(opts, flag, True)
 
-    enriched = run_enrichment_pipeline(notices, opts)
+    enriched, health = run_enrichment_pipeline(notices, opts, return_health=True)
 
     timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
     output_path = write_csv(enriched, f"nj_lp_{timestamp}.csv")
@@ -577,6 +577,17 @@ async def run_nj_scrape(
             )
             if upload_datasift:
                 msg += "\nDataSift: uploaded + enrich + skip trace started"
+
+            # Enrichment health
+            from enrichment_pipeline import evaluate_enrichment_health
+            health_lines, hard_breach, soft_breach = evaluate_enrichment_health(health)
+            if health_lines:
+                msg += "\n\n*Enrichment Health:*\n" + "\n".join(health_lines)
+                if hard_breach:
+                    msg = "⚠️ ENRICHMENT HEALTH WARNING\n" + msg
+                elif soft_breach:
+                    msg = "📊 Enrichment health note\n" + msg
+
             _send_webhook(msg)
             logger.info("Slack notification sent")
         except Exception as e:

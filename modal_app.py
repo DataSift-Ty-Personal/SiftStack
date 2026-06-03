@@ -105,7 +105,6 @@ async def nj_weekly_all():
         scrape_middlesex_probates, scrape_somerset_probates, CloudflareBlockError,
     )
     from nj_somerset_sheriff import scrape_somerset_notices
-    from nj_tax_sale_monitor import scrape_nj_tax_sale_notices
     from nj_sheriff_sales import scrape_civilview_notices
 
     async def _safe(coro, label):
@@ -142,10 +141,6 @@ async def nj_weekly_all():
         # days of file-date is the natural cron window.
         _safe(scrape_somerset_probates(days_back=30), "Somerset Probate"),
         _safe(scrape_somerset_notices(include_bankruptcy=True, max_records=0), "Somerset Sheriff"),
-        _safe(scrape_nj_tax_sale_notices(
-            counties=["Middlesex", "Essex", "Somerset", "Union"],
-            fetch_details=True,
-        ), "Tax Sale"),
         _safe(scrape_civilview_notices(counties=["Essex", "Middlesex", "Union"]), "CivilView Sheriff"),
     )
     per_source = {label: notices for label, notices, _ in results}
@@ -163,7 +158,7 @@ async def nj_weekly_all():
     }
 
     if not any(per_source.values()):
-        msg = "All 6 scrapers returned 0 records"
+        msg = "All 5 scrapers returned 0 records"
         if errors:
             msg += f" (errors: {errors})"
         logger.error(msg)
@@ -171,12 +166,11 @@ async def nj_weekly_all():
         raise RuntimeError(msg)
 
     logger.info(
-        "Raw scrape: NJLP=%d, MidProbate=%d, SomProbate=%d, SomSheriff=%d, TaxSale=%d, CivilView=%d",
+        "Raw scrape: NJLP=%d, MidProbate=%d, SomProbate=%d, SomSheriff=%d, CivilView=%d",
         len(per_source.get("NJLP", [])),
         len(per_source.get("Middlesex Probate", [])),
         len(per_source.get("Somerset Probate", [])),
         len(per_source.get("Somerset Sheriff", [])),
-        len(per_source.get("Tax Sale", [])),
         len(per_source.get("CivilView Sheriff", [])),
     )
 
@@ -192,28 +186,25 @@ async def nj_weekly_all():
         per_source.get("Somerset Probate", []), "somerset_probate", tracking,
     )
     new_somerset, skipped_somerset = filter_new(per_source.get("Somerset Sheriff", []), "somerset", tracking)
-    new_taxsale, skipped_taxsale = filter_new(per_source.get("Tax Sale", []), "tax_sale", tracking)
     new_civilview, skipped_civilview = filter_new(per_source.get("CivilView Sheriff", []), "civilview_sheriff", tracking)
 
     logger.info(
         "Dedup: NJLP %d new / %d skipped, MidProbate %d new / %d skipped, "
         "SomProbate %d new / %d skipped, SomSheriff %d new / %d skipped, "
-        "TaxSale %d new / %d skipped, CivilView %d new / %d skipped",
+        "CivilView %d new / %d skipped",
         len(new_lp), skipped_lp,
         len(new_probate), skipped_probate,
         len(new_som_probate), skipped_som_probate,
         len(new_somerset), skipped_somerset,
-        len(new_taxsale), skipped_taxsale,
         len(new_civilview), skipped_civilview,
     )
 
-    combined = new_lp + new_probate + new_som_probate + new_somerset + new_taxsale + new_civilview
+    combined = new_lp + new_probate + new_som_probate + new_somerset + new_civilview
     skipped_counts = {
         "NJLP": skipped_lp,
         "Middlesex Probate": skipped_probate,
         "Somerset Probate": skipped_som_probate,
         "Somerset Sheriff": skipped_somerset,
-        "Tax Sale": skipped_taxsale,
         "CivilView Sheriff": skipped_civilview,
     }
     new_counts = {
@@ -221,7 +212,6 @@ async def nj_weekly_all():
         "Middlesex Probate": len(new_probate),
         "Somerset Probate": len(new_som_probate),
         "Somerset Sheriff": len(new_somerset),
-        "Tax Sale": len(new_taxsale),
         "CivilView Sheriff": len(new_civilview),
     }
 
@@ -230,7 +220,7 @@ async def nj_weekly_all():
         # since nothing changed) and notify that it was a clean quiet week.
         save_tracking(tracking, TRACKING_FILE)
         await tracking_volume.commit.aio()
-        msg = (f"All {skipped_lp + skipped_probate + skipped_som_probate + skipped_somerset + skipped_taxsale + skipped_civilview} records were "
+        msg = (f"All {skipped_lp + skipped_probate + skipped_som_probate + skipped_somerset + skipped_civilview} records were "
                f"previously processed — nothing new to enrich or upload")
         logger.info(msg)
         try:
@@ -245,13 +235,10 @@ async def nj_weekly_all():
         return {"success": True, "total": 0, "skipped": skipped_counts, "new": new_counts, "errors": errors}
 
     # Persist the pre-enrichment RAW scrape to the Modal Volume BEFORE
-    # enrichment starts. The 2026-05-21 incident lost ~1000 tax_sale
-    # records because the vacant-land filter dropped them and the only
-    # combined-CSV copy lived on the ephemeral container, which dies
-    # when the function exits. RAW snapshot here means any future
-    # enrichment failure / OOM / preemption can still recover scraped
-    # data. Same ts / date_folder / volume_out_dir get reused below for
-    # the per-list persistence step so all outputs share one timestamp.
+    # enrichment starts. RAW snapshot means any future enrichment
+    # failure / OOM / preemption can still recover scraped data. Same
+    # ts / date_folder / volume_out_dir get reused below for the per-
+    # list persistence step so all outputs share one timestamp.
     from data_formatter import write_csv
     ts = datetime.now().strftime("%Y-%m-%d_%H%M%S")
     date_folder = datetime.now().strftime("%Y-%m-%d")
@@ -295,9 +282,9 @@ async def nj_weekly_all():
         # heir_map_json + signing_chain_count + signing_chain_names.
         skip_heir_verification=False,
         skip_parcel_lookup=True,
-        source_label="NJ Weekly All (NJLP + Middlesex Probate + Somerset Probate + Somerset Sheriff + Tax Sale + CivilView Sheriff)",
+        source_label="NJ Weekly All (NJLP + Middlesex Probate + Somerset Probate + Somerset Sheriff + CivilView Sheriff)",
     )
-    enriched = run_enrichment_pipeline(combined, opts)
+    enriched, health = run_enrichment_pipeline(combined, opts, return_health=True)
 
     # One combined CSV (all records, including paused types — for manual review).
     # ts already defined above (hoisted so the RAW pre-enrichment CSV
@@ -329,7 +316,7 @@ async def nj_weekly_all():
         held_csv_path = None
 
     # Per-list CSVs — one file per DataSift list category (Probate,
-    # Sheriff Sale, Notice of Default (Lis Pendens), Tax Sale, etc.).
+    # Sheriff Sale, Notice of Default (Lis Pendens), etc.).
     # upload_ready records + held_back records are split independently so
     # each review stream stays separate.
     by_list_ready = write_csv_by_list(upload_ready, prefix="upload_ready") if upload_ready else []
@@ -399,11 +386,10 @@ async def nj_weekly_all():
     # up we'd rather redo the dedup work next week than lose records.
     save_tracking(tracking, TRACKING_FILE)
     await tracking_volume.commit.aio()
-    logger.info("Tracking saved: %d NJLP / %d probate / %d somerset / %d tax_sale / %d civilview total IDs",
+    logger.info("Tracking saved: %d NJLP / %d probate / %d somerset / %d civilview total IDs",
                 len(tracking.get("njlp", {})),
                 len(tracking.get("probate", {})),
                 len(tracking.get("somerset", {})),
-                len(tracking.get("tax_sale", {})),
                 len(tracking.get("civilview_sheriff", {})))
 
     # Build summary text, post it, then attach per-list CSVs as threaded
@@ -412,34 +398,17 @@ async def nj_weekly_all():
     # it); otherwise we fall back to the webhook (summary only, no files).
     try:
         import config
-        # Tax Sale gets a special-case "BLOCKED" line — newjerseytaxsale
-        # AWS-ELB started 403'ing cloud IPs in May 2026, so any failure
-        # here is almost certainly the IP block. _safe already catches
-        # the exception and returns 0 records; we just need to surface
-        # an actionable warning instead of the generic "errors: [...]"
-        # tuple line that would otherwise lump it together.
-        tax_sale_blocked = any(label == "Tax Sale" for label, _ in errors)
         lines = ["*NJ Weekly All — combined Wednesday run*"]
-        for label in ("NJLP", "Middlesex Probate", "Somerset Probate", "Somerset Sheriff", "Tax Sale", "CivilView Sheriff"):
-            if label == "Tax Sale" and tax_sale_blocked:
-                lines.append(
-                    "  :warning: Tax Sales: BLOCKED (cloud IP rejected) — "
-                    "run local recovery script"
-                )
-                continue
+        for label in ("NJLP", "Middlesex Probate", "Somerset Probate", "Somerset Sheriff", "CivilView Sheriff"):
             n, s = new_counts.get(label, 0), skipped_counts.get(label, 0)
             stale = stale_dropped_counts.get(label, 0)
             stale_suffix = f" / {stale} stale auctions filtered" if stale else ""
             lines.append(f"  {label}: {n} new / {s} skipped (already processed){stale_suffix}")
-        # Exclude Tax Sale from cf_blocked / other_errors — already shown
-        # above as the dedicated BLOCKED line, no double-reporting.
         cf_blocked = [
-            label for label, err in errors
-            if err == "cloudflare_block" and label != "Tax Sale"
+            label for label, err in errors if err == "cloudflare_block"
         ]
         other_errors = [
-            (label, err) for label, err in errors
-            if err != "cloudflare_block" and label != "Tax Sale"
+            (label, err) for label, err in errors if err != "cloudflare_block"
         ]
         if cf_blocked:
             lines.append(f"  :warning: BLOCKED: {', '.join(cf_blocked)} (Cloudflare)")
@@ -447,6 +416,19 @@ async def nj_weekly_all():
             lines.append(f"  errors: {other_errors}")
         lines.append(f"Enriched total: {len(enriched)}")
         lines.append(f"Combined CSV: {csv_path.name}")
+
+        # Enrichment health — per-field fill rates with hard/soft floors.
+        # Read-only monitoring; pipeline behavior unchanged.
+        from enrichment_pipeline import evaluate_enrichment_health
+        health_lines, hard_breach, soft_breach = evaluate_enrichment_health(health)
+        if health_lines:
+            lines.append("")
+            lines.append("*Enrichment Health:*")
+            lines.extend(health_lines)
+            if hard_breach:
+                lines[0] = "⚠️ ENRICHMENT HEALTH WARNING\n" + lines[0]
+            elif soft_breach:
+                lines[0] = "📊 Enrichment health note\n" + lines[0]
 
         # Per-list breakdown — the actual CSVs attach as thread replies
         # when bot token is configured, so these lines are just a roster.
@@ -937,7 +919,7 @@ async def nj_probate_manual(mx_days_back: int = 180, som_days_back: int = 30):
         skip_parcel_lookup=True,
         source_label=f"NJ Probate Manual (Middlesex {mx_days_back}d + Somerset {som_days_back}d)",
     )
-    enriched = run_enrichment_pipeline(combined, opts)
+    enriched, health = run_enrichment_pipeline(combined, opts, return_health=True)
 
     ts = datetime.now().strftime("%Y-%m-%d_%H%M%S")
     csv_path = write_csv(enriched, f"nj_probate_manual_{ts}.csv")
@@ -992,6 +974,19 @@ async def nj_probate_manual(mx_days_back: int = 180, som_days_back: int = 30):
                 )
             if errors:
                 lines.append(f"errors: {errors}")
+
+            # Enrichment health
+            from enrichment_pipeline import evaluate_enrichment_health
+            health_lines, hard_breach, soft_breach = evaluate_enrichment_health(health)
+            if health_lines:
+                lines.append("")
+                lines.append("*Enrichment Health:*")
+                lines.extend(health_lines)
+                if hard_breach:
+                    lines[0] = "⚠️ ENRICHMENT HEALTH WARNING\n" + lines[0]
+                elif soft_breach:
+                    lines[0] = "📊 Enrichment health note\n" + lines[0]
+
             try:
                 from cost_estimator import tally_notices, slack_summary_line
                 cost_line = slack_summary_line(tally_notices(enriched))
@@ -1053,58 +1048,32 @@ async def nj_scrape_manual(counties: list[str] | None = None):
 @app.function(
     image=image,
     secrets=[secrets],
-    timeout=3600,  # 1 hr — 46 municipalities × Playwright preview-table + detail pages
+    # Same envelope as nj_probate_manual — obit + Ancestry SSDI + DM
+    # address waterfall + heir map can run 60-90 min for a busy county
+    # week. Generous 2hr ceiling.
+    timeout=7200,
+    retries=modal.Retries(
+        max_retries=3, initial_delay=10.0, backoff_coefficient=1.0,
+    ),
     volumes={TRACKING_MOUNT: tracking_volume},
 )
-async def nj_tax_sale_recovery(
-    counties: str = "Middlesex,Essex,Somerset,Union",
-    fetch_details: bool = True,
+async def _manual_probate_intake_remote(
+    county: str,
+    filename: str,
+    payload: bytes,
 ):
-    """Re-scrape NJ tax sales with dedup + enrichment BYPASSED.
+    """Cloud half of the probate-runner intake flow.
 
-    `counties` is comma-separated (e.g. "Middlesex,Somerset") rather
-    than list[str] because Modal's CLI parser rejects union-type
-    annotations like list[str] | None.
-
-    Built as a one-off recovery after the 2026-05-21 weekly run lost
-    ~1000 tax_sale records: the vacant-land filter dropped them because
-    their addresses were block/lot descriptions, and the only combined
-    CSV lived on the ephemeral container. Tracker has IDs but no
-    property data — full re-scrape is the only path back.
-
-    What this function DOES:
-      - Calls scrape_nj_tax_sale_notices() against the same 4-county
-        config the weekly cron uses (override via `counties` arg).
-      - Writes the raw NoticeData list (block/lot text intact) to
-        nj_tax_sale_recovery_{ts}.csv in the local output/ folder.
-      - Copies that CSV to the Modal Volume at
-        /tracking/output/{date}/ so `modal volume get` pulls it.
-
-    What this function does NOT do:
-      - Touch dedup state (read-only — IDs stay in the tracker so the
-        regular weekly run still treats them as already-processed).
-      - Run enrichment (no Smarty / Zillow / obit / Tracerfy cost).
-      - Upload to DataSift (operator runs that manually after cleaning).
-      - Update tracking timestamps.
-
-    Run via:
-        modal run modal_app.py::nj_tax_sale_recovery
-        modal run modal_app.py::nj_tax_sale_recovery --counties Middlesex
-        modal run modal_app.py::nj_tax_sale_recovery --counties Middlesex,Somerset
-        modal run modal_app.py::nj_tax_sale_recovery --no-fetch-details
-
-    Output CSV schema is RAW TaxSaleRecord fields (NOT the 74-col Sift
-    format): block, lot, qualifier, municipality, owner_name, etc.
-    stay as separate columns so the resolver script
-    (scripts/resolve_block_lot.py) can read them directly. To upload to
-    DataSift, run the resolver first, then funnel the resolved rows
-    through the normal enrichment pipeline.
+    Reads bytes that the local_entrypoint shipped up, normalizes them to
+    NoticeData via probate_intake.parse_runner_workbook, dedups against
+    the shared tracking volume, runs the standard probate enrichment
+    pass, persists per-list CSVs to the volume, and posts a Slack
+    summary. Does NOT auto-upload to DataSift — operator policy says
+    probate output gets manual review before ingest.
     """
-    import csv as _csv
     import logging
     import os
     import sys
-    from dataclasses import asdict, fields
     from datetime import datetime
     from pathlib import Path
 
@@ -1115,67 +1084,228 @@ async def nj_tax_sale_recovery(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
-    logger = logging.getLogger("nj_tax_sale_recovery")
+    logger = logging.getLogger("manual_probate_intake")
 
-    from nj_tax_sale_monitor import scrape_nj_tax_sales, TaxSaleRecord
-    from config import OUTPUT_DIR
+    from probate_intake import parse_runner_workbook
+    from dedup_tracker import load_tracking, save_tracking, filter_new
+    from enrichment_pipeline import PipelineOptions, run_enrichment_pipeline
+    from data_formatter import write_csv, write_csv_by_list
+    import config
 
-    target_counties = [c.strip() for c in counties.split(",") if c.strip()]
+    county_canonical = county.strip().title()
     logger.info(
-        "Tax-sale recovery scrape starting (counties=%s, fetch_details=%s)",
-        target_counties, fetch_details,
+        "Probate runner intake: county=%s, file=%s, size=%d bytes",
+        county_canonical, filename, len(payload),
     )
 
-    # Use the raw-records entry point (not scrape_nj_tax_sale_notices)
-    # so we keep block/lot/qualifier/municipality as separate fields
-    # instead of having them packed into NoticeData.raw_text and dropped
-    # by the 74-col Sift CSV writer.
-    records = await scrape_nj_tax_sales(
-        counties=target_counties,
-        fetch_details=fetch_details,
-    )
-    logger.info("Raw scrape returned %d tax-sale records", len(records))
-
-    if not records:
-        logger.warning("No records scraped — nothing to write")
-        return {"success": True, "count": 0, "csv": None}
-
+    # 1) Stage the raw file on the volume so an operator can pull it
+    # back via `modal volume get siftstack-tracking input/...` if the
+    # parse later needs to be retried with a fixed parser. Volumes are
+    # cheap; PII-containing runner files live elsewhere too so we keep
+    # them around for one week's worth of debug.
     ts = datetime.now().strftime("%Y-%m-%d_%H%M%S")
     date_folder = datetime.now().strftime("%Y-%m-%d")
-    csv_path = Path(OUTPUT_DIR) / f"nj_tax_sale_recovery_{ts}.csv"
-    csv_path.parent.mkdir(parents=True, exist_ok=True)
+    raw_dir = Path(f"{TRACKING_MOUNT}/input/{date_folder}")
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    safe_name = Path(filename).name or f"runner_{county_canonical}_{ts}.xlsx"
+    raw_dst = raw_dir / safe_name
+    raw_dst.write_bytes(payload)
+    await tracking_volume.commit.aio()
+    logger.info("Staged runner XLSX to volume: %s", raw_dst.relative_to(TRACKING_MOUNT))
 
-    # Schema = every TaxSaleRecord field (24 cols) — block/lot/municipality
-    # all preserved. records may be dicts or dataclasses; normalize.
-    fieldnames = [f.name for f in fields(TaxSaleRecord)]
-    with open(csv_path, "w", newline="", encoding="utf-8") as f:
-        w = _csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
-        w.writeheader()
-        for r in records:
-            row = asdict(r) if hasattr(r, "__dataclass_fields__") else dict(r)
-            w.writerow({k: row.get(k, "") for k in fieldnames})
+    # 2) Parse the XLSX. Sentinel "no files available" → graceful skip.
+    notices, stats = parse_runner_workbook(payload, county_canonical)
+    if stats["sentinel_hit"] and not notices:
+        msg = (
+            f":information_source: *Probate Runner Intake: {county_canonical}* — "
+            f"file flagged 'no files available'; nothing to enrich."
+        )
+        logger.info("Sentinel skip: %s", msg)
+        try:
+            if config.SLACK_WEBHOOK_URL:
+                from slack_notifier import _send_webhook
+                _send_webhook(msg)
+        except Exception as e:
+            logger.warning("Slack notify failed: %s", e)
+        return {
+            "success": True, "county": county_canonical, "skipped": "sentinel",
+            "stats": stats,
+        }
+    if not notices:
+        msg = (
+            f":warning: *Probate Runner Intake: {county_canonical}* — "
+            f"0 parseable rows from {safe_name}. Check header layout."
+        )
+        logger.warning(msg)
+        try:
+            if config.SLACK_WEBHOOK_URL:
+                from slack_notifier import _send_webhook
+                _send_webhook(msg)
+        except Exception:
+            pass
+        return {
+            "success": False, "county": county_canonical, "reason": "no_rows",
+            "stats": stats,
+        }
+
+    # 3) Cross-run dedup using the shared volume. Source bucket is
+    # `probate_runner` for all 4 counties — the dedup key is
+    # `{county}-{docket}` so county-collisions are impossible.
+    await tracking_volume.reload.aio()
+    tracking = load_tracking(TRACKING_FILE)
+    new_notices, skipped = filter_new(notices, "probate_runner", tracking)
     logger.info(
-        "Wrote rich-schema recovery CSV: %s (%d records, %d cols)",
-        csv_path, len(records), len(fieldnames),
+        "Dedup: %d new / %d already processed for %s",
+        len(new_notices), skipped, county_canonical,
     )
 
-    # Persist to Modal Volume so it survives container shutdown.
+    if not new_notices:
+        save_tracking(tracking, TRACKING_FILE)
+        await tracking_volume.commit.aio()
+        msg = (
+            f":bookmark_tabs: *Probate Runner Intake: {county_canonical}* — "
+            f"{len(notices)} records, 0 new, {skipped} already processed, "
+            f"0 obituaries found"
+        )
+        logger.info(msg)
+        try:
+            if config.SLACK_WEBHOOK_URL:
+                from slack_notifier import _send_webhook
+                _send_webhook(msg)
+        except Exception as e:
+            logger.warning("Slack notify failed: %s", e)
+        return {
+            "success": True, "county": county_canonical, "total": len(notices),
+            "new": 0, "skipped": skipped, "stats": stats,
+        }
+
+    # 4) Standard probate enrichment pass — obit + Ancestry SSDI + DM
+    # address waterfall + heir map. Mirrors nj_probate_manual exactly
+    # so the runner pipeline has the same enrichment surface as the
+    # Bluestone-scrape pipeline.
+    opts = PipelineOptions(
+        skip_filter_sold=False,
+        skip_tax=True,
+        skip_obituary=False,
+        skip_ancestry=False,
+        skip_dm_address=False,
+        skip_heir_verification=False,
+        skip_parcel_lookup=True,
+        source_label=f"Probate Runner ({county_canonical})",
+    )
+    enriched, health = run_enrichment_pipeline(new_notices, opts, return_health=True)
+
+    # 5) CSV outputs. Combined + per-list, both to the volume so
+    # `modal volume get siftstack-tracking output/{date}/...` picks them
+    # up. No auto-DataSift upload — manual review per policy.
+    csv_path = write_csv(
+        enriched, f"probate_runner_{county_canonical.lower()}_{ts}.csv",
+    )
+    by_list = write_csv_by_list(
+        enriched, prefix=f"probate_runner_{county_canonical.lower()}",
+    )
+
     volume_out_dir = Path(f"{TRACKING_MOUNT}/output/{date_folder}")
     volume_out_dir.mkdir(parents=True, exist_ok=True)
-    volume_dst = volume_out_dir / csv_path.name
-    volume_dst.write_bytes(csv_path.read_bytes())
+    persisted: list[str] = []
+    for src_path in [csv_path] + [p for _l, p, _c in by_list]:
+        try:
+            dst = volume_out_dir / src_path.name
+            dst.write_bytes(src_path.read_bytes())
+            persisted.append(dst.relative_to(TRACKING_MOUNT).as_posix())
+        except Exception as e:
+            logger.warning("Failed to persist %s: %s", src_path.name, e)
+
+    # 6) Save tracking ONLY after enrichment + write succeeded — if
+    # anything above crashed we want to retry the same records, not
+    # mark them as processed and lose them.
+    save_tracking(tracking, TRACKING_FILE)
     await tracking_volume.commit.aio()
-    rel = volume_dst.relative_to(TRACKING_MOUNT).as_posix()
-    logger.info("Persisted recovery CSV to volume: %s", rel)
+
+    # 7) Slack summary in the operator-requested format.
+    obit_found = sum(
+        1 for n in enriched if n.owner_deceased == "yes" and n.obituary_url
+    )
+    msg_lines = [
+        f":bookmark_tabs: *Probate Runner Intake: {county_canonical}* — "
+        f"{len(notices)} records, {len(new_notices)} new, "
+        f"{skipped} already processed, {obit_found} obituaries found",
+        f"  Stats: parsed={stats['rows_parsed']}, "
+        f"blank={stats['rows_skipped_blank']}, sentinel={stats['sentinel_hit']}",
+        f"  Combined CSV: {csv_path.name}",
+    ]
+    if persisted:
+        msg_lines.append(f"  Volume: output/{date_folder}/")
+
+    # Enrichment health
+    from enrichment_pipeline import evaluate_enrichment_health
+    health_lines, hard_breach, soft_breach = evaluate_enrichment_health(health)
+    if health_lines:
+        msg_lines.append("")
+        msg_lines.append("*Enrichment Health:*")
+        msg_lines.extend(health_lines)
+        if hard_breach:
+            msg_lines[0] = "⚠️ ENRICHMENT HEALTH WARNING\n" + msg_lines[0]
+        elif soft_breach:
+            msg_lines[0] = "📊 Enrichment health note\n" + msg_lines[0]
+    try:
+        if config.SLACK_WEBHOOK_URL:
+            from slack_notifier import _send_webhook
+            _send_webhook("\n".join(msg_lines))
+    except Exception as e:
+        logger.warning("Slack notify failed: %s", e)
 
     return {
         "success": True,
-        "count": len(notices),
-        "counties": target_counties,
-        "fetch_details": fetch_details,
+        "county": county_canonical,
+        "total": len(notices),
+        "new": len(new_notices),
+        "skipped": skipped,
+        "enriched": len(enriched),
+        "obit_found": obit_found,
         "csv": csv_path.name,
-        "volume_path": rel,
+        "per_list": [p.name for _l, p, _c in by_list],
+        "volume_paths": persisted,
+        "stats": stats,
     }
+
+
+@app.local_entrypoint()
+def manual_probate_intake(county: str, file: str):
+    """Local-side: read the runner XLSX from disk, ship it to the cloud.
+
+    Usage:
+        modal run modal_app.py::manual_probate_intake \\
+            --county essex --file ~/Desktop/SiftStack/input/Essex_Week20.xlsx
+
+    `county` is one of essex / middlesex / somerset / union (case-
+    insensitive). `file` is a local filesystem path; we read its bytes
+    here and pass them up so the cloud container doesn't need any host
+    mount or upload-step. The cloud function then stages the bytes to
+    the tracking volume, runs probate enrichment, writes CSVs, and
+    posts a Slack summary.
+    """
+    from pathlib import Path
+
+    valid_counties = {"essex", "middlesex", "somerset", "union"}
+    county_lc = county.strip().lower()
+    if county_lc not in valid_counties:
+        raise SystemExit(
+            f"Invalid county {county!r}. Expected one of: {sorted(valid_counties)}"
+        )
+
+    path = Path(file).expanduser().resolve()
+    if not path.exists():
+        raise SystemExit(f"File not found: {path}")
+    if not path.is_file():
+        raise SystemExit(f"Not a file: {path}")
+
+    payload = path.read_bytes()
+    print(f"Uploading {path.name} ({len(payload):,} bytes, county={county_lc}) to Modal…")
+    result = _manual_probate_intake_remote.remote(
+        county=county_lc, filename=path.name, payload=payload,
+    )
+    print(f"Done: {result}")
 
 
 @app.function(
@@ -1260,7 +1390,7 @@ async def nj_probate_dry_run(days_back: int = 7):
       - Per-list CSV split
 
     Skips:
-      - The other 4 scrapers (NJLP, Somerset, Tax Sale, CivilView)
+      - The other scrapers (NJLP, Somerset, CivilView)
       - Cross-run dedup (so already-seen records are re-enriched)
       - DataSift upload
       - Slack notification

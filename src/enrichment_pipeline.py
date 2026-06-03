@@ -60,6 +60,130 @@ class PipelineOptions:
     source_label: str = ""
 
 
+# ── Enrichment Health Monitoring ─────────────────────────────────────
+#
+# Per-field fill rates surface in Slack at the end of every run. If a
+# field drops below its hard floor, the Slack message gets prefixed
+# with a HEALTH WARNING so operators see the regression immediately
+# instead of via spot-checking the CSV. Soft floor breach is an
+# informational note; hard floor breach is a flag-it-now signal.
+#
+# Floors are starting points — tune after observing 2-3 weeks of real
+# data. Tighten when a field is consistently above its current soft;
+# loosen when a known external API is rate-limited or noisy.
+
+# {field_name: (soft_floor_pct, hard_floor_pct)}
+ENRICHMENT_FLOORS: dict[str, tuple[int, int]] = {
+    "smarty_usps_confirmed":     (80, 60),
+    "zillow_enriched":           (60, 40),
+    "estimated_value":           (60, 40),
+    "mls_status":                (50, 30),
+    "decision_maker_identified": (90, 70),
+    "mailable":                  (90, 80),
+}
+
+
+def compute_enrichment_health(notices: list["NoticeData"]) -> dict:
+    """Compute per-field fill rates for monitoring.
+
+    Returns {field: {count, total, pct}}. Fields that don't apply to
+    the batch (e.g. decision_maker for a sheriff-only run) are omitted
+    entirely — better to skip the row than alarm on a structural 0%.
+
+    This is read-only: it only inspects already-enriched notices and
+    never mutates them. Safe to call from any caller without risking
+    pipeline behavior change.
+    """
+    total = len(notices)
+    if total == 0:
+        return {}
+
+    def _stat(count: int, denom: int) -> dict:
+        return {
+            "count": count,
+            "total": denom,
+            "pct": round(count / denom * 100, 1) if denom else 0.0,
+        }
+
+    health: dict = {}
+
+    # Universal fields — apply to every record in the batch.
+    smarty_hit = sum(1 for n in notices if n.dpv_match_code == "Y")
+    health["smarty_usps_confirmed"] = _stat(smarty_hit, total)
+
+    zillow_hit = sum(1 for n in notices if n.estimated_value)
+    health["zillow_enriched"] = _stat(zillow_hit, total)
+    health["estimated_value"] = _stat(zillow_hit, total)
+
+    mls_hit = sum(1 for n in notices if n.mls_status)
+    health["mls_status"] = _stat(mls_hit, total)
+
+    mailable_hit = sum(1 for n in notices if n.mailable == "yes")
+    health["mailable"] = _stat(mailable_hit, total)
+
+    # Conditional field: DM identification only fires for probate or
+    # obit-confirmed-deceased records. A pure sheriff-sale batch would
+    # show 0/N and trigger a false hard-floor alarm — exclude instead.
+    dm_eligible = sum(
+        1
+        for n in notices
+        if n.notice_type == "probate" or n.owner_deceased == "yes"
+    )
+    if dm_eligible > 0:
+        dm_hit = sum(1 for n in notices if n.decision_maker_name)
+        health["decision_maker_identified"] = _stat(dm_hit, dm_eligible)
+
+    return health
+
+
+def evaluate_enrichment_health(
+    health: dict,
+    floors: dict[str, tuple[int, int]] | None = None,
+) -> tuple[list[str], bool, bool]:
+    """Compare health stats against floors.
+
+    Returns:
+        (lines, has_hard_breach, has_soft_breach)
+
+        lines: Slack-ready strings, e.g.
+            "  smarty_usps_confirmed: 42/47 (89.4%) ✓"
+            "  zillow_enriched: 27/47 (57.4%) — below 60% soft floor ⚠️"
+        has_hard_breach: any field below its hard floor
+        has_soft_breach: any field below its soft floor (independent
+                          of hard — both can be True simultaneously)
+
+    Fields present in `floors` but missing from `health` are skipped
+    (e.g. sheriff-only run won't have decision_maker_identified).
+    """
+    if floors is None:
+        floors = ENRICHMENT_FLOORS
+
+    lines: list[str] = []
+    has_hard = False
+    has_soft = False
+
+    for field, (soft, hard) in floors.items():
+        stats = health.get(field)
+        if not stats:
+            continue
+        pct = stats["pct"]
+        count = stats["count"]
+        total = stats["total"]
+
+        if pct < hard:
+            marker = f"— below {hard}% hard floor 🔴"
+            has_hard = True
+        elif pct < soft:
+            marker = f"— below {soft}% soft floor ⚠️"
+            has_soft = True
+        else:
+            marker = "✓"
+
+        lines.append(f"  {field}: {count}/{total} ({pct}%) {marker}")
+
+    return lines, has_hard, has_soft
+
+
 # ── Smart detection ──────────────────────────────────────────────────
 
 
@@ -305,7 +429,9 @@ def _validate_records(notices: list[NoticeData]) -> list[NoticeData]:
 def run_enrichment_pipeline(
     notices: list[NoticeData],
     opts: PipelineOptions,
-) -> list[NoticeData]:
+    *,
+    return_health: bool = False,
+) -> list[NoticeData] | tuple[list[NoticeData], dict]:
     """Run the full enrichment pipeline on a list of notices.
 
     Steps (canonical order):
@@ -322,7 +448,22 @@ def run_enrichment_pipeline(
      11. Log summary
 
     Returns the (possibly filtered) list, modified in-place.
+
+    When `return_health=True`, returns a tuple `(notices, health)`
+    where `health` is the per-field fill-rate dict from
+    `compute_enrichment_health()`. Default is the historical
+    list-only return so existing callers (main.py, nj_scraper,
+    nj_middlesex_probate, dropbox_watcher, scripts, tests) keep
+    working without modification.
     """
+    # Closure that wraps each return point — `return_health` is a
+    # keyword-only arg, so this stays in scope for all 5 returns
+    # without threading it through.
+    def _finalize(ns: list[NoticeData]):
+        if return_health:
+            return ns, compute_enrichment_health(ns)
+        return ns
+
     from data_formatter import deduplicate
 
     # ── Step 1: Filter Sold ──────────────────────────────────────────
@@ -378,7 +519,7 @@ def run_enrichment_pipeline(
         logger.info("  %d records after filter", len(notices))
     if not notices:
         logger.warning("No records remaining after filtering")
-        return notices
+        return _finalize(notices)
 
     # ── Step 3a: Entity Research ──────────────────────────────────
     if not opts.skip_entity_research:
@@ -406,7 +547,7 @@ def run_enrichment_pipeline(
         logger.info("── Step 3b: Entity Owner Filter (skipped) ──")
     if not notices:
         logger.warning("No records remaining after filtering")
-        return notices
+        return _finalize(notices)
 
     # ── Step 3c: Probate Property Lookup ────────────────────────────
     # For probate records without a property address, search Knox Tax API
@@ -512,7 +653,7 @@ def run_enrichment_pipeline(
         logger.info("  %d records after filter", len(notices))
         if not notices:
             logger.warning("No records remaining after filtering")
-            return notices
+            return _finalize(notices)
     else:
         logger.info("── Step 6a: Commercial Property Filter (skipped) ──")
 
@@ -617,7 +758,7 @@ def run_enrichment_pipeline(
     logger.info("  %d records after validation", len(notices))
     if not notices:
         logger.warning("No records remaining after validation")
-        return notices
+        return _finalize(notices)
 
     # ── Step 10: Compute Mailable Flag ───────────────────────────────
     logger.info("── Step 10: Compute Mailable Flag ──")
@@ -633,7 +774,7 @@ def run_enrichment_pipeline(
     # ── Step 11: Summary ─────────────────────────────────────────────
     _log_summary(notices, opts)
 
-    return notices
+    return _finalize(notices)
 
 
 # ── Summary ──────────────────────────────────────────────────────────
