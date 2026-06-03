@@ -254,7 +254,7 @@ def export_mail_list(records: list[dict], output_path: str = "") -> str:
             mail_city = (rec.get("owner_city") or rec.get("decision_maker_city") or
                          rec.get("city") or rec.get("Property City") or "")
             mail_state = (rec.get("owner_state") or rec.get("decision_maker_state") or
-                          rec.get("state") or "TN")
+                          rec.get("state") or "OH")  # OH operations — TN is legacy
             mail_zip = (rec.get("owner_zip") or rec.get("decision_maker_zip") or
                         rec.get("zip") or rec.get("Property ZIP") or "")
 

@@ -42,11 +42,11 @@ Return ONLY a JSON object with these exact keys:
 - "owner_name": the Personal Representative, Executor, or Administrator name. This is the person appointed to manage the estate. Use ALL CAPS as written. Do NOT include their title (e.g. drop "Administratrix", "Co-Administrator", "Executor").
 - "owner_street": the PR/Executor's mailing street address (e.g. "2004 Shangri-La Drive"). This is where creditors send claims.
 - "owner_city": the city of the PR's mailing address
-- "owner_state": the state of the PR's mailing address (usually "TN")
+- "owner_state": the state of the PR's mailing address (usually "OH"; verify from the notice text)
 - "owner_zip": the 5-digit zip code of the PR's mailing address
 - "address": leave as empty string "" (probate notices do not contain the decedent's property address)
 - "city": leave as empty string ""
-- "state": "TN"
+- "state": "OH"
 - "zip": leave as empty string ""
 
 If a field cannot be determined from the text, use an empty string "".

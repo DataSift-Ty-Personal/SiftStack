@@ -488,7 +488,7 @@ def _build_heir_summary(notice: NoticeData) -> str:
             street = h.get("street", "")
             if street:
                 city = h.get("city", "")
-                state = h.get("state", "TN")
+                state = h.get("state", "OH")  # OH operations — see tracerfy_skip_tracer
                 zip_code = h.get("zip", "")
                 addr_parts = [street]
                 if city:
@@ -772,7 +772,7 @@ def _build_row(notice: NoticeData, notes_override: str | None = None) -> dict:
         # ── Core auto-mapped ──
         "Property Street Address": notice.address,
         "Property City": notice.city,
-        "Property State": notice.state or "TN",
+        "Property State": notice.state or "OH",  # OH operations — TN is legacy
         "Property ZIP Code": notice.zip,
         "Owner First Name": contact["first"],
         "Owner Last Name": contact["last"],

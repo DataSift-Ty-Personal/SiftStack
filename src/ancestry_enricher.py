@@ -259,7 +259,7 @@ async def close_browser(pw, context):
 # ── Search: SSDI ────────────────────────────────────────────────────
 
 
-async def _search_ssdi(page, first_name: str, last_name: str, state: str = "TN",
+async def _search_ssdi(page, first_name: str, last_name: str, state: str = "OH",
                        middle_initial: str = "", city: str = "") -> dict | None:
     """Search SSDI death index. Returns structured result or None."""
     if not _can_load_page() or _circuit_broken:
@@ -290,7 +290,7 @@ async def _search_ssdi(page, first_name: str, last_name: str, state: str = "TN",
     if state:
         loc_el = await page.query_selector("#sfs__SelfResidencePlace")
         if loc_el and await loc_el.is_visible():
-            state_name = {"TN": "Tennessee", "AL": "Alabama"}.get(state, state)
+            state_name = {"OH": "Ohio", "TN": "Tennessee", "AL": "Alabama"}.get(state, state)
             await loc_el.fill(state_name)
             await _delay(1, 2)
             # Wait for autocomplete dropdown and select first match
@@ -499,7 +499,7 @@ async def _parse_ssdi_results(page) -> list[dict]:
 # ── Search: Ancestry obituary collection ────────────────────────────
 
 
-async def _search_obituaries(page, first_name: str, last_name: str, state: str = "TN",
+async def _search_obituaries(page, first_name: str, last_name: str, state: str = "OH",
                              city: str = "", middle_initial: str = "") -> dict | None:
     """Search Ancestry obituary collection via direct URL. Returns result or None."""
     if not _can_load_page() or _circuit_broken:
@@ -624,7 +624,7 @@ async def _search_obituaries(page, first_name: str, last_name: str, state: str =
     }
 
 
-async def _search_newspapers(page, first_name: str, last_name: str, state: str = "TN",
+async def _search_newspapers(page, first_name: str, last_name: str, state: str = "OH",
                               city: str = "", middle_initial: str = "") -> dict | None:
     """Search Newspapers.com obituary index via All-Access SSO (Tier 3).
 
@@ -640,7 +640,7 @@ async def _search_newspapers(page, first_name: str, last_name: str, state: str =
     # Build search URL with obituary category filter
     # Newspapers.com search URL format: /search/?query=FIRSTNAME+LASTNAME&t=4268
     # t=4268 = Obituaries category (from the category dropdown)
-    state_abbr_to_full = {"TN": "Tennessee", "AL": "Alabama"}
+    state_abbr_to_full = {"OH": "Ohio", "TN": "Tennessee", "AL": "Alabama"}
     state_full = state_abbr_to_full.get(state, state)
 
     query_parts = [first_name, last_name]
@@ -1064,7 +1064,7 @@ def _name_matches(first: str, last: str, full_name: str, middle_initial: str = "
     return True
 
 
-def _location_matches(location: str, state: str = "TN", city: str = "") -> tuple[bool, int]:
+def _location_matches(location: str, state: str = "OH", city: str = "") -> tuple[bool, int]:
     """Check if an SSDI result location matches our target area.
 
     Returns (matches, score):

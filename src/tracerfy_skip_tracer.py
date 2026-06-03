@@ -171,7 +171,10 @@ def _lookup_missing_heir_addresses(
         if addr and addr.get("street"):
             heir["street"] = addr.get("street", "")
             heir["city"] = addr.get("city", "") or city_hint
-            heir["state"] = addr.get("state", "") or "TN"
+            # OH operations — default state when Tracerfy doesn't return one.
+            # Most heirs of OH decedents still live in OH; out-of-state heirs
+            # come back with an explicit state from Tracerfy.
+            heir["state"] = addr.get("state", "") or "OH"
             heir["zip"] = addr.get("zip", "")
             heir["address_source"] = addr.get("source", "")
             filled += 1
@@ -276,7 +279,8 @@ def batch_skip_trace(
     writer.writerow(["first_name", "last_name", "address", "city", "state",
                      "zip", "mail_address", "mail_city", "mail_state"])
     for notice_ref, first, last, address, city, zip_code, _ in lookup_map:
-        state = notice_ref.state or "TN"
+        # OH operations — fall back to OH when notice has no state set.
+        state = notice_ref.state or "OH"
         writer.writerow([first, last, address, city, state, zip_code, "", "", ""])
     csv_content = csv_buffer.getvalue()
     csv_buffer.close()
