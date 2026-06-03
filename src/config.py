@@ -149,6 +149,14 @@ SCRAPER_SOURCES: list[ScraperSource] = [
                   notes="Clark County Probate Court (Henschen CaseLook PHP). "
                         "Image CAPTCHA — requires CAPTCHA_API_KEY (2Captcha). "
                         "Day-loop search strategy; expects ~83 estate filings/month."),
+    ScraperSource("Miami", "probate", "scrapers.oh_miami_probate",
+                  needs_account=True,
+                  notes="Miami County Probate Court (Henschen CaseLook PHP, agency 5503; "
+                        "court markets it as 'RCAS'). Image CAPTCHA — requires "
+                        "CAPTCHA_API_KEY. ~60 estate filings/month estimate. Note: "
+                        "Miami publishes filings BEFORE fiduciary appointment, so many "
+                        "fresh records have no fiduciary yet — they need a re-scrape "
+                        "1-2 weeks later for the executor info."),
 ]
 
 # Legacy aliases — keep older imports working until all call sites migrate to ScraperSource.
