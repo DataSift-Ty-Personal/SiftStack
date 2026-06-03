@@ -141,6 +141,14 @@ SCRAPER_SOURCES: list[ScraperSource] = [
                   notes="RealAuction (greene.sheriffsaleauction.ohio.gov) — "
                         "alternate auction-stage source; runs alongside ASP.NET apps.greenecountyohio.gov. "
                         "Requires REALAUCTION_EMAIL/PASSWORD."),
+    # Columbus + west probate expansion (2026-06-03). Henschen CaseLook
+    # platform — Clark is the first build; Miami + Madison will follow as
+    # thin subclasses once a shared base class is refactored out.
+    ScraperSource("Clark", "probate", "scrapers.oh_clark_probate",
+                  needs_account=True,
+                  notes="Clark County Probate Court (Henschen CaseLook PHP). "
+                        "Image CAPTCHA — requires CAPTCHA_API_KEY (2Captcha). "
+                        "Day-loop search strategy; expects ~83 estate filings/month."),
 ]
 
 # Legacy aliases — keep older imports working until all call sites migrate to ScraperSource.
