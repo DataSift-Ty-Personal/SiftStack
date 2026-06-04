@@ -7,23 +7,31 @@ extracts the supplementary fields the listing leaves out: docket #,
 judgment amount, attorney + phone + file #, parcel id, status history,
 disposition. Used by nj_sheriff_sales.scrape_civilview_notices().
 
-Site quirks:
+Site quirks (HARD-WON — direct GET does NOT work):
   - The page is server-rendered ASP-ish HTML with a clean
     `<div class="sale-detail-label">LABEL:</div>` immediately followed
     by `<div class="sale-detail-value">VALUE</div>` for each field.
   - The Status History is a `<table>` with [Status, Date] rows. Most
     recent status is the first data row.
-  - Direct HTTP to /SaleDetails bounces to the directory page unless
-    the request comes from a session that already visited /SalesSearch
-    (AWS-ELB session cookie path). We use Playwright with a one-time
-    /SalesSearch warmup to set the cookie, then reuse the page.
-  - Completed / cancelled PropertyIds get retired from the site and
-    redirect to the directory — those parse to empty result; we keep
-    the record with whatever listing-page data we already had.
+  - **Direct `page.goto(SaleDetails URL)` redirects to /Home/Index
+    even with a fresh AWS-ELB cookie + matching Referer header.** The
+    only consistently-working flow is: navigate to the county listing
+    → locate the `a[href*="PropertyId=N"]` link → click it. We re-
+    navigate to the listing before every click; trying to chain clicks
+    from a single listing render bounces after a few hits.
+  - Completed / cancelled PropertyIds get retired from the listing
+    between weekly cycles. Records that no longer appear in the live
+    listing pass through with no detail data — UNKNOWN tier downstream.
 
 Auto-skip: records whose case_disposition resolves to Sold / Redeemed /
 Cancelled are dropped from the returned list — these auctions are over
 and not worth marketing.
+
+Status row format: CivilView puts the adjournment trigger in the status
+itself, e.g. "Adjourned - Plaintiff" or "Adjourned - Court". We split on
+" - " into status + reason so the downstream tier logic can count only
+PLAINTIFF adjournments against NJ's 2-adjournment cap (court adjournments
+are unlimited and don't count against the homeowner's option).
 """
 
 from __future__ import annotations
@@ -41,9 +49,26 @@ from notice_parser import NoticeData
 
 logger = logging.getLogger(__name__)
 
-DETAIL_DELAY_MIN = 1.5
-DETAIL_DELAY_MAX = 2.0
+DETAIL_DELAY_MIN = 1.8
+DETAIL_DELAY_MAX = 2.5
 PROPERTY_ID_RE = re.compile(r"PropertyId=(\d+)")
+
+# AWS-ELB sometimes rotates session affinity mid-run, causing the
+# county-switch listing navigation to bounce to /Home/Index. Detect and
+# recover instead of silently failing every record in that county. Set
+# above zero so we still ship if recovery exhausts.
+_LISTING_RECOVERY_MAX_ATTEMPTS = 3
+_LISTING_RECOVERY_DELAY_S = 4.0
+
+# Per-county fill counters — read by modal_app/nj_sheriff_sales for
+# the weekly Slack summary so 0% county failures surface immediately
+# instead of being hidden inside the aggregate sheriff count.
+LAST_DETAIL_RESULTS_BY_COUNTY: dict[str, dict] = {}
+
+# Resolve our county labels to CivilView's countyId URL param. PropertyId
+# alone doesn't tell us which county — we rely on the NoticeData.county
+# field set by the listing scraper.
+_COUNTY_TO_CIVILVIEW_ID = {"Essex": 2, "Middlesex": 73, "Union": 15}
 
 # Map detail-page labels (lowercased, trimmed of trailing ":") to
 # NoticeData field names. Add new labels here as the site evolves.
@@ -59,13 +84,17 @@ _LABEL_TO_FIELD = {
 }
 
 # Case-disposition buckets — keyword in lowercased current_status →
-# bucket. Order matters: more-specific keywords first.
+# bucket. Order matters: more-specific keywords first. "Adjourn" cases
+# stay Open — the auction is just deferred to a future date.
 _CASE_DISPOSITION_RULES = (
     ("scheduled", "Open"),
+    ("adjourn", "Open"),         # Plaintiff/Defendant/Court adjournment → still active
+    ("on hold", "Open"),
     ("purchased", "Sold"),
     ("sold", "Sold"),
     ("redeemed", "Redeemed"),
     ("bankruptcy", "Bankruptcy"),
+    ("bankuptcy", "Bankruptcy"),  # CivilView typo in some counties
     ("cancelled", "Cancelled"),
     ("canceled", "Cancelled"),
 )
@@ -79,6 +108,34 @@ def _parse_money(s: str) -> str:
     return s
 
 
+def _split_status(raw: str) -> tuple[str, str]:
+    """Split CivilView's status cell into (status, reason).
+
+    "Adjourned - Plaintiff"     → ("Adjourned", "Plaintiff")
+    "Adjourned - Plaintiff req." → ("Adjourned", "Plaintiff req.")
+    "Scheduled - Foreclosure"   → ("Scheduled", "Foreclosure")
+    "Scheduled"                 → ("Scheduled", "")
+    """
+    raw = (raw or "").strip()
+    if not raw:
+        return "", ""
+    parts = raw.split(" - ", 1)
+    if len(parts) == 1:
+        return parts[0].strip(), ""
+    return parts[0].strip(), parts[1].strip()
+
+
+def _iso_date(raw: str) -> str:
+    """CivilView dates are M/D/YYYY. Convert to YYYY-MM-DD; passthrough on failure."""
+    raw = (raw or "").strip()
+    if not raw:
+        return ""
+    try:
+        return datetime.strptime(raw, "%m/%d/%Y").date().isoformat()
+    except ValueError:
+        return raw
+
+
 def parse_detail_html(html: str) -> dict:
     """Parse a CivilView SaleDetails HTML page into a flat dict.
 
@@ -86,6 +143,11 @@ def parse_detail_html(html: str) -> dict:
     in the HTML are omitted (callers should treat absence as blank).
     Always returns `status_history_json` and `current_status` — both
     empty strings if no history table is present.
+
+    status_history_json is a list of {"date","status","reason"} dicts,
+    dates in ISO format. The current_status field carries the full
+    original CivilView label (e.g. "Adjourned - Plaintiff") so the
+    case_disposition keyword matching keeps working.
     """
     soup = BeautifulSoup(html, "html.parser")
     out: dict = {}
@@ -104,48 +166,102 @@ def parse_detail_html(html: str) -> dict:
         out[field] = value
 
     # Status History — first <table>, header row [Status, Date, ...].
+    # CivilView orders rows chronologically (oldest first) at least for
+    # Union — `current_status` is the row with the latest date, not the
+    # first row encountered. We track the latest separately rather than
+    # assuming row position.
     history: list[dict] = []
+    raw_status_by_date: list[tuple[str, str]] = []  # (date_str, raw_status)
     table = soup.find("table")
     if table is not None:
         for tr in table.find_all("tr"):
             cells = tr.find_all(["td", "th"])
             if len(cells) < 2:
                 continue
-            status = cells[0].get_text(" ", strip=True)
-            date_str = cells[1].get_text(" ", strip=True)
+            raw_status = cells[0].get_text(" ", strip=True)
+            raw_date = cells[1].get_text(" ", strip=True)
             # Skip header + the [Collapse All] toggle row variants.
-            if not status or not date_str:
+            if not raw_status or not raw_date:
                 continue
-            if status.lower() == "status" and date_str.lower() == "date":
+            if raw_status.lower() == "status" and raw_date.lower() == "date":
                 continue
-            if status.startswith("[") and status.endswith("]"):
+            if raw_status.startswith("[") and raw_status.endswith("]"):
                 continue
-            history.append({"status": status, "date": date_str})
+            iso = _iso_date(raw_date)
+            status, reason = _split_status(raw_status)
+            history.append({
+                "date": iso,
+                "status": status,
+                "reason": reason,
+            })
+            raw_status_by_date.append((iso, raw_status))
+
+    # current_status = the raw status of the entry with the latest ISO
+    # date. Falls back to the last row encountered if dates failed to
+    # parse (passthrough form).
+    current_status = ""
+    if raw_status_by_date:
+        try:
+            parseable = [
+                (datetime.strptime(d, "%Y-%m-%d").date(), s)
+                for d, s in raw_status_by_date
+                if re.match(r"\d{4}-\d{2}-\d{2}$", d)
+            ]
+            if parseable:
+                current_status = max(parseable, key=lambda t: t[0])[1]
+            else:
+                current_status = raw_status_by_date[-1][1]
+        except ValueError:
+            current_status = raw_status_by_date[-1][1]
 
     out["status_history_json"] = json.dumps(history) if history else ""
-    out["current_status"] = history[0]["status"] if history else ""
+    out["current_status"] = current_status
     return out
 
 
 def derive_fields(parsed: dict, today: date) -> dict:
-    """Compute adjournment_count, days_since_first_scheduled,
-    case_disposition, is_open from a parsed detail dict."""
+    """Compute derived fields from a parsed detail dict.
+
+    `adjournment_count` is the TOTAL number of adjournments across all
+    reasons (plaintiff + court + bankruptcy etc.). The downstream
+    `apply_priority_tiers` recomputes plaintiff-only counts from the
+    same history JSON for adjournments_remaining — see
+    `nj_sheriff_sales.apply_priority_tiers` for why.
+    """
     out: dict = {}
     try:
         history = json.loads(parsed.get("status_history_json") or "[]")
     except json.JSONDecodeError:
         history = []
 
+    # Match "adjourn" prefix to catch both inflections CivilView uses:
+    # - Essex/Middlesex: "Adjourned - Plaintiff"
+    # - Union: "Plaintiff Adjournment" / "Defendant Adjournment" /
+    #          "Adjourned per Court Order"
+    # Counts ALL adjournments across all reasons; the plaintiff-only
+    # subset is computed downstream in apply_priority_tiers.
     out["adjournment_count"] = str(
-        sum(1 for h in history if "adjourned" in h.get("status", "").lower())
+        sum(
+            1 for h in history
+            if "adjourn" in (
+                ((h.get("status", "") or "") + " " + (h.get("reason", "") or ""))
+                .lower()
+            )
+        )
     )
 
     parsed_dates = []
     for h in history:
-        try:
-            parsed_dates.append(datetime.strptime(h["date"], "%m/%d/%Y").date())
-        except (KeyError, ValueError):
-            continue
+        # status_history_json dates are already ISO (YYYY-MM-DD) after
+        # parse_detail_html normalization. Tolerate the old M/D/YYYY in
+        # case a re-import hits cached data.
+        raw_d = h.get("date", "")
+        for fmt in ("%Y-%m-%d", "%m/%d/%Y"):
+            try:
+                parsed_dates.append(datetime.strptime(raw_d, fmt).date())
+                break
+            except ValueError:
+                continue
     if parsed_dates:
         earliest = min(parsed_dates)
         out["first_scheduled_date"] = earliest.isoformat()  # YYYY-MM-DD
@@ -178,6 +294,12 @@ async def enrich_sheriff_records(
     detail fields. Records whose case_disposition resolves to a drop
     bucket (Sold / Redeemed / Cancelled) are removed.
 
+    Uses click-from-listing rather than direct page.goto — see module
+    docstring. We group records by county, then for each record we
+    navigate to that county's listing page, locate the PropertyId
+    anchor, and click. Per-record cost is ~4-5s including the throttle
+    sleep; a typical week of ~400 records runs ~25-30 min on Modal.
+
     Returns the surviving list (CivilView-enriched + non-CivilView
     passthroughs).
     """
@@ -204,6 +326,17 @@ async def enrich_sheriff_records(
     if not civilview:
         return notices
 
+    # Group by county so we can use each listing as the click launchpad.
+    # Records with an unknown county name fall back to Middlesex's listing
+    # — most reliable + the link locator still works as long as the
+    # PropertyId appears somewhere on a CivilView listing render.
+    by_county: dict[str, list[NoticeData]] = {}
+    for n in civilview:
+        county = (n.county or "").strip().title()
+        if county not in _COUNTY_TO_CIVILVIEW_ID:
+            county = "Middlesex"  # safe fallback for unmapped records
+        by_county.setdefault(county, []).append(n)
+
     kept: list[NoticeData] = []
     dropped = 0
     parse_failures = 0
@@ -225,48 +358,220 @@ async def enrich_sheriff_records(
         )
         page = await ctx.new_page()
 
-        # Session warmup: hit a county search so AWS-ELB sets the
-        # session cookie before we navigate to SaleDetails directly.
-        try:
-            await page.goto(
-                "https://salesweb.civilview.com/Sales/SalesSearch?countyId=73",
-                wait_until="domcontentloaded", timeout=20000,
-            )
-            await page.wait_for_timeout(1500)
-        except Exception as e:
-            logger.warning("CivilView session warmup failed: %s", e)
+        async def _navigate_to_listing(target_url: str) -> int:
+            """Navigate to a county listing; return PropertyId link count.
 
-        for i, n in enumerate(civilview, start=1):
+            Returns -1 on hard navigation failure (bounce to /Home/Index
+            or 0 links visible). Caller decides whether to retry/re-warm.
+            """
             try:
-                await page.goto(n.source_url, wait_until="domcontentloaded", timeout=20000)
-                await page.wait_for_timeout(600)
-                html = await page.content()
-                parsed = parse_detail_html(html)
-                if not parsed.get("current_status") and not parsed.get("court_case_number"):
-                    # PropertyId retired / page redirected to directory.
+                await page.goto(target_url, wait_until="domcontentloaded", timeout=20000)
+                await page.wait_for_timeout(500)
+            except Exception as e:
+                logger.warning("Listing nav failed (%s): %s", target_url, e)
+                return -1
+            # AWS-ELB session bounce — direct symptom is landing on
+            # /Home/Index instead of /Sales/SalesSearch. Always check
+            # before trusting the page state.
+            cur_url = page.url
+            if "Home/Index" in cur_url or "aspxerrorpath" in cur_url:
+                return -1
+            total_links = await page.locator('a[href*="PropertyId="]').count()
+            if total_links == 0:
+                return -1
+            return total_links
+
+        async def _warm_session_for_county(target_cid: int) -> bool:
+            """Re-warm AWS-ELB session for a specific county.
+
+            CivilView's session affinity can rotate mid-run; the cookie
+            we set at function start may be stale by the time we switch
+            counties. Hit the county listing fresh and confirm we
+            actually got a real listing back (not the directory bounce).
+            """
+            target_url = (
+                f"https://salesweb.civilview.com/Sales/SalesSearch?countyId={target_cid}"
+            )
+            for attempt in range(1, _LISTING_RECOVERY_MAX_ATTEMPTS + 1):
+                links = await _navigate_to_listing(target_url)
+                if links > 0:
+                    if attempt > 1:
+                        logger.info(
+                            "Re-warm countyId=%d succeeded on attempt %d (%d links)",
+                            target_cid, attempt, links,
+                        )
+                    return True
+                logger.warning(
+                    "Re-warm countyId=%d attempt %d/%d landed on bounce page",
+                    target_cid, attempt, _LISTING_RECOVERY_MAX_ATTEMPTS,
+                )
+                await asyncio.sleep(_LISTING_RECOVERY_DELAY_S * attempt)
+            return False
+
+        # Initial warmup — visit every county listing once to seed the
+        # AWS-ELB session cookies. Each county's batch will re-warm
+        # before it starts, because the cookie set here may be stale
+        # by the time we get to county #3 of a long run.
+        for cid in (2, 73, 15):
+            try:
+                await page.goto(
+                    f"https://salesweb.civilview.com/Sales/SalesSearch?countyId={cid}",
+                    wait_until="domcontentloaded", timeout=20000,
+                )
+                await page.wait_for_timeout(1000)
+            except Exception as e:
+                logger.warning("Warmup countyId=%d failed: %s", cid, e)
+
+        # Reset module-level per-county counters for this run. Cleared
+        # at start (not end) so a crashed run still shows partial state.
+        LAST_DETAIL_RESULTS_BY_COUNTY.clear()
+
+        i = 0
+        for county, records in by_county.items():
+            cid = _COUNTY_TO_CIVILVIEW_ID[county]
+            listing_url = f"https://salesweb.civilview.com/Sales/SalesSearch?countyId={cid}"
+
+            # Per-county session re-warm. The first time through this is
+            # mostly redundant with the initial warmup; on county #2 and
+            # #3 it's the recovery point that catches AWS-ELB session
+            # rotation. If recovery fails after 3 tries, we mark every
+            # record in this county as a parse failure and skip — better
+            # than spending 4 minutes silently clicking nothing.
+            logger.info(
+                "Sheriff detail enrichment: %s — starting %d records",
+                county, len(records),
+            )
+            warm_ok = await _warm_session_for_county(cid)
+            if not warm_ok:
+                logger.error(
+                    "⚠️ %s: listing-page recovery exhausted (%d attempts). "
+                    "Skipping %d records — detail fields will be empty. "
+                    "Likely cause: AWS-ELB session/IP rotation.",
+                    county, _LISTING_RECOVERY_MAX_ATTEMPTS, len(records),
+                )
+                for n in records:
                     parse_failures += 1
                     kept.append(n)
-                else:
-                    for k, v in {**parsed, **derive_fields(parsed, today)}.items():
-                        setattr(n, k, v)
-                    if n.case_disposition in _DROP_DISPOSITIONS:
-                        dropped += 1
-                        continue
-                    kept.append(n)
-            except Exception as e:
-                logger.warning("Detail fetch failed (%s): %s", n.source_url, e)
-                kept.append(n)
+                LAST_DETAIL_RESULTS_BY_COUNTY[county] = {
+                    "enriched": 0,
+                    "dropped": 0,
+                    "parse_failures": len(records),
+                    "total": len(records),
+                    "listing_bounce": True,
+                }
+                continue
 
-            if i < len(civilview):
+            county_enriched = 0
+            county_dropped = 0
+            county_parse_failures = 0
+
+            for n in records:
+                i += 1
+                m = PROPERTY_ID_RE.search(n.source_url or "")
+                if not m:
+                    parse_failures += 1
+                    county_parse_failures += 1
+                    kept.append(n)
+                    continue
+                pid = m.group(1)
+
+                try:
+                    # Bounce back to the listing before each click — chaining
+                    # clicks from one render bounces after a few hits.
+                    links = await _navigate_to_listing(listing_url)
+                    if links < 0:
+                        # Session bounced mid-county. Try re-warming once;
+                        # if that fails, drop this record but don't kill
+                        # the rest of the batch.
+                        logger.warning(
+                            "%s: listing bounce mid-batch at record %d/%d — re-warming",
+                            county, len(kept) + 1, len(records),
+                        )
+                        if not await _warm_session_for_county(cid):
+                            parse_failures += 1
+                            county_parse_failures += 1
+                            kept.append(n)
+                            continue
+                        links = await _navigate_to_listing(listing_url)
+                        if links < 0:
+                            parse_failures += 1
+                            county_parse_failures += 1
+                            kept.append(n)
+                            continue
+
+                    # Use the un-`.first` locator for count() — Playwright's
+                    # `.first.count()` returns unreliable values in headless
+                    # mode (intermittently 0 even when the element exists).
+                    # An untrimmed locator's count() returns total matches.
+                    selector = f'a[href*="PropertyId={pid}"]'
+                    target_count = await page.locator(selector).count()
+                    if target_count == 0:
+                        # PropertyId retired between listing scrape + detail
+                        # fetch — auction likely completed.
+                        parse_failures += 1
+                        county_parse_failures += 1
+                        kept.append(n)
+                    else:
+                        await page.locator(selector).first.click()
+                        await page.wait_for_load_state("domcontentloaded", timeout=20000)
+                        await page.wait_for_timeout(500)
+                        html = await page.content()
+                        parsed = parse_detail_html(html)
+                        if not parsed.get("current_status") and not parsed.get("court_case_number"):
+                            parse_failures += 1
+                            county_parse_failures += 1
+                            kept.append(n)
+                        else:
+                            for k, v in {**parsed, **derive_fields(parsed, today)}.items():
+                                setattr(n, k, v)
+                            county_enriched += 1
+                            if n.case_disposition in _DROP_DISPOSITIONS:
+                                dropped += 1
+                                county_dropped += 1
+                                continue
+                            kept.append(n)
+                except Exception as e:
+                    logger.warning("Detail fetch failed (%s): %s", n.source_url, e)
+                    county_parse_failures += 1
+                    kept.append(n)
+
+                if i % 25 == 0:
+                    logger.info("  [%d/%d] detail pages fetched", i, len(civilview))
+                # Throttle between every click (last record included is
+                # fine — total runtime is dominated by enrichment, not
+                # this final 2s).
                 await asyncio.sleep(random.uniform(DETAIL_DELAY_MIN, DETAIL_DELAY_MAX))
-            if i % 25 == 0:
-                logger.info("  [%d/%d] detail pages fetched", i, len(civilview))
+
+            # Per-county summary — visible in logs + stashed for Slack.
+            pct = (100 * county_enriched / len(records)) if records else 0.0
+            LAST_DETAIL_RESULTS_BY_COUNTY[county] = {
+                "enriched": county_enriched,
+                "dropped": county_dropped,
+                "parse_failures": county_parse_failures,
+                "total": len(records),
+                "listing_bounce": False,
+            }
+            if county_enriched == 0 and len(records) > 5:
+                # 0% on a batch of any meaningful size = systemic
+                # failure for that county. Loud warning so it surfaces
+                # in Modal logs + Slack monitoring.
+                logger.error(
+                    "⚠️ %s: 0/%d enriched (%.0f%%) — likely systemic failure",
+                    county, len(records), pct,
+                )
+            else:
+                logger.info(
+                    "%s detail enrichment: %d/%d enriched (%.0f%%), "
+                    "%d dropped (resolved), %d parse-failures",
+                    county, county_enriched, len(records), pct,
+                    county_dropped, county_parse_failures,
+                )
 
         await browser.close()
 
     logger.info(
         "Sheriff detail enrichment complete: %d kept / %d dropped (resolved cases) "
-        "/ %d parse-failures (retired PropertyIds)",
+        "/ %d parse-failures (retired PropertyIds or missing links)",
         len(kept), dropped, parse_failures,
     )
     return kept + other

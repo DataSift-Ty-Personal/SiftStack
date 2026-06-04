@@ -152,10 +152,15 @@ async def nj_weekly_all():
     # go?" in the weekly Slack summary.
     import nj_sheriff_sales as _civilview_mod
     import nj_somerset_sheriff as _somerset_sheriff_mod
+    import nj_sheriff_detail as _civilview_detail_mod
     stale_dropped_counts = {
         "CivilView Sheriff": _civilview_mod.LAST_STALE_DROPPED,
         "Somerset Sheriff": _somerset_sheriff_mod.LAST_STALE_DROPPED,
     }
+    # Per-county CivilView detail-enrichment results from the most
+    # recent enrich_sheriff_records() pass. Surfaces 0% county-level
+    # failures (the June 3 Middlesex regression) in the Slack summary.
+    civilview_detail_by_county = dict(_civilview_detail_mod.LAST_DETAIL_RESULTS_BY_COUNTY)
 
     if not any(per_source.values()):
         msg = "All 5 scrapers returned 0 records"
@@ -429,6 +434,32 @@ async def nj_weekly_all():
                 lines[0] = "⚠️ ENRICHMENT HEALTH WARNING\n" + lines[0]
             elif soft_breach:
                 lines[0] = "📊 Enrichment health note\n" + lines[0]
+
+        # CivilView detail-enrichment per-county breakdown — catches
+        # county-specific listing-bounce failures that the aggregate
+        # CivilView Sheriff number hides.
+        if civilview_detail_by_county:
+            lines.append("")
+            lines.append("*CivilView Detail Enrichment:*")
+            cv_hard_breach = False
+            for cty in sorted(civilview_detail_by_county):
+                r = civilview_detail_by_county[cty]
+                pct = (100 * r["enriched"] / r["total"]) if r["total"] else 0
+                if r.get("listing_bounce"):
+                    marker = "🔴 — listing bounce (session/IP rotated)"
+                    cv_hard_breach = True
+                elif r["enriched"] == 0 and r["total"] > 5:
+                    marker = "🔴 — systemic failure"
+                    cv_hard_breach = True
+                elif pct < 70:
+                    marker = "⚠️ — degraded"
+                else:
+                    marker = "✓"
+                lines.append(
+                    f"  {cty}: {r['enriched']}/{r['total']} ({pct:.0f}%) {marker}"
+                )
+            if cv_hard_breach and not lines[0].startswith("⚠️"):
+                lines[0] = "⚠️ ENRICHMENT HEALTH WARNING\n" + lines[0]
 
         # Per-list breakdown — the actual CSVs attach as thread replies
         # when bot token is configured, so these lines are just a roster.
