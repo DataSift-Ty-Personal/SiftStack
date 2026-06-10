@@ -5,8 +5,8 @@ Stores a JSON index of already-processed record IDs per source, keyed by:
   - `probate`           — Middlesex surrogate case (Bluestone Q_PK_ID)
   - `somerset_probate`  — Somerset surrogate case (Bluestone Q_PK_ID, separate bucket from Middlesex)
   - `somerset`          — Somerset County sheriff-sale number (5-digit)
-  - `tax_sale`          — RealAuction cert composite: {subdomain}{adv_number}{tax_year}
   - `civilview_sheriff` — salesweb.civilview.com Sheriff# (Essex/Middlesex/Union)
+  - `probate_runner`    — manual XLSX intake from county runner ({county}-{docket})
 
 Used by modal_app.py to skip records already uploaded to DataSift in
 a previous run, so the Wednesday cron only enriches + uploads new
@@ -24,7 +24,10 @@ from notice_parser import NoticeData
 
 logger = logging.getLogger(__name__)
 
-_SOURCES = ("njlp", "probate", "somerset_probate", "somerset", "tax_sale", "civilview_sheriff")
+_SOURCES = (
+    "njlp", "probate", "somerset_probate", "somerset",
+    "civilview_sheriff", "probate_runner",
+)
 
 
 def _empty_tracking() -> dict:
@@ -60,14 +63,18 @@ _NJLP_DOCKET_RE = re.compile(r"Docket:\s*(F[-‐–]\d{6}[-‐–]\d{2})", re.IG
 _PROBATE_DOCKET_RE = re.compile(r"Docket:\s*(\d{5,})")
 _SOMERSET_SALE_RE = re.compile(r"Sale#:\s*(\d{4,})")
 _PROBATE_PK_RE = re.compile(r"Q_PK_ID=(\d+)")
-_TAX_SALE_ADV_RE = re.compile(r"ADV:\s*([^\s|]+)")
-_TAX_SALE_SUBDOMAIN_RE = re.compile(r"Subdomain:\s*([^\s|]+)")
-_TAX_SALE_YEAR_RE = re.compile(r"Tax Year:\s*(\d{4})")
 # CivilView: "Sheriff# F-24001837" or "Sheriff# CH-25001605" etc. Prefix is
 # stable per-court and the digits carry the year + sequence.
 _CIVILVIEW_SHERIFF_RE = re.compile(r"Sheriff#\s*([A-Z]+[-‐–]?\d+)", re.IGNORECASE)
 # URL fallback: /Sales/SaleDetails?PropertyId=NNN — unique per county-year.
 _CIVILVIEW_PROPERTY_ID_RE = re.compile(r"PropertyId=(\d+)")
+# Probate runner: source_url like "probate_runner://essex/2026-1086".
+# County + docket together because docket formats overlap across counties
+# (e.g. Middlesex bare-number "295526" could collide with a future
+# year-prefixed scheme).
+_PROBATE_RUNNER_URL_RE = re.compile(
+    r"probate_runner://([a-z]+)/([^/\s]+)", re.IGNORECASE,
+)
 
 
 def extract_id(notice: NoticeData, source: str) -> str | None:
@@ -92,17 +99,6 @@ def extract_id(notice: NoticeData, source: str) -> str | None:
     if source == "somerset":
         m = _SOMERSET_SALE_RE.search(raw)
         return m.group(1) if m else None
-    if source == "tax_sale":
-        # Composite key: {subdomain}{adv_number}{tax_year}
-        # ADV# is unique per sale cycle; subdomain and year disambiguate
-        # across municipalities and years (same ADV# reused annually).
-        sub = _TAX_SALE_SUBDOMAIN_RE.search(raw)
-        adv = _TAX_SALE_ADV_RE.search(raw)
-        yr = _TAX_SALE_YEAR_RE.search(raw)
-        if not (sub and adv):
-            return None
-        year = yr.group(1) if yr else ""
-        return f"{sub.group(1)}-{adv.group(1)}-{year}"
     if source == "civilview_sheriff":
         # Prefer Sheriff# (stable across re-listings); fall back to the
         # numeric PropertyId in source_url if the raw_text is thin.
@@ -111,6 +107,17 @@ def extract_id(notice: NoticeData, source: str) -> str | None:
             return m.group(1).upper().replace("‐", "-").replace("–", "-")
         m = _CIVILVIEW_PROPERTY_ID_RE.search(url)
         return m.group(1) if m else None
+    if source == "probate_runner":
+        # source_url is probate_runner://{county}/{docket} — emitted by
+        # probate_intake.parse_runner_workbook. Drop "unknown" dockets
+        # (no docket in the row) since we can't dedup them reliably.
+        m = _PROBATE_RUNNER_URL_RE.search(url)
+        if not m:
+            return None
+        county, docket = m.group(1).lower(), m.group(2)
+        if not docket or docket.lower() == "unknown":
+            return None
+        return f"{county}-{docket}"
     return None
 
 

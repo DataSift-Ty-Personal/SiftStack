@@ -3,6 +3,10 @@
 input.json
 input_foreclosure_daily.json
 
+# Runner XLSX staging directory (weekly probate intake — never commit
+# runner-supplied PII to git).
+input/
+
 # State files (generated at runtime)
 last_run.json
 seen_ids.json
