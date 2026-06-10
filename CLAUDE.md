@@ -90,7 +90,10 @@ All source files are in `src/` and imports assume `src/` is the working director
 - **dropbox_watcher.py** — Cursor-based Dropbox folder polling. Downloads new photos, resolves county + notice_type from folder path (`/Knox/eviction/photo.jpg`), processes through photo_importer, deletes from Dropbox after success. State persisted to `dropbox_state.json` + `photo_state.json`.
 - **report_generator.py** — Generates per-record PDF deep prospecting reports using reportlab. Includes property summary, signing chain with phone tiers, valuation, deceased owner detection. Output to `output/reports/`.
 - **extract_market_finder.py** — Playwright automation to extract ALL ZIP code + neighborhood data from DataSift Market Finder. Handles styled-component dropdowns, pagination (20 rows/page), Beamer popup dismissal. Outputs JSON. See "Market Finder Extraction Patterns" below.
-- **nj_sheriff_sales.py** — Plain-HTTP scraper for salesweb.civilview.com (Essex countyId=2, Middlesex=73, Union=15). One-page HTML table per county, 6 or 7 cells (Middlesex has extra Status column — parse cells right-to-left for structure independence). Address parser splits at last street-suffix token, peels UNIT/APT/# descriptors back into street. No Playwright, no auth, no pagination. Somerset uses a different site and is NOT covered.
+- **nj_sheriff_sales.py** — Plain-HTTP scraper for salesweb.civilview.com (Essex countyId=2, Middlesex=73, Union=15). One-page HTML table per county, 6 or 7 cells (Middlesex has extra Status column — parse cells right-to-left for structure independence). Address parser splits at last street-suffix token, peels UNIT/APT/# descriptors back into street. No Playwright, no auth, no pagination. Stale-auction filter drops any sale date older than `SHERIFF_SALE_MAX_AGE_DAYS` (env, default 90); count surfaces in Slack as `N stale auctions filtered`. When called via `scrape_civilview_notices(enrich_details=True)` it follows up with `nj_sheriff_detail.enrich_sheriff_records()` for per-record SaleDetails enrichment. Somerset uses a different site — see `nj_somerset_sheriff.py`.
+- **nj_somerset_sheriff.py** — Somerset County sheriff sales (different host than CivilView). Imports + reuses `SHERIFF_SALE_MAX_AGE_DAYS` from `nj_sheriff_sales`; exports its own `LAST_STALE_DROPPED` counter. `filter_active_sales` uses the shared cutoff and reports drops the same way.
+- **nj_sheriff_detail.py** — CivilView SaleDetails-page enrichment for CivilView records (Essex/Middlesex/Union). Playwright with a one-time `/SalesSearch?countyId=N` warmup so the AWS-ELB session cookie is set before `/SaleDetails` (direct hits redirect to the directory). Parses `<div class="sale-detail-label">/...value` pairs (court_case_number, approx_judgment, minimum_bid, plaintiff_attorney, plaintiff_attorney_phone, parcel_number, property_note) + the Status History `<table>` (current_status, status_history_json, adjournment_count, first_scheduled_date, days_since_first_scheduled). Derives `case_disposition` (Open/Sold/Redeemed/Bankruptcy/Cancelled) + `is_open`. **Auto-drops** records whose disposition ends up in `_DROP_DISPOSITIONS = {Sold, Redeemed, Cancelled}` — those auctions are over. Completed PropertyIds get retired from the site (page redirects) and parse to empty; we keep the listing-page row but skip enrichment. Rate-limited 1.5–2.0s with jitter, anti-bot stealth args set, UA spoof.
+- **nj_taxrecords.py** — HTTP wrapper around taxrecords-nj.com (Vital Communications `inf.cgi` backend). `lookup_by_block_lot(county, block, lot, qualifier="")` POSTs `select_cc/district/block/lot/qual` and returns candidate rows. Covers Middlesex / Somerset / Union — **Essex is on a different backend** and is not supported. Used by `obituary_enricher.py` (DM address waterfall) and the `deep_prospecting/` package; NOT a tax-sale scraper — name is a historical accident. The dedicated `newjerseytaxsale.com` scraper was removed in May 2026 (cloud-IP blocking + most records lacked addresses).
 - **nj_newark_code_violations.py** — PARKED. Newark CKAN portal (data.ci.newark.nj.us) returns Cloudflare-passthrough 503 (origin down as of 2026-04-17). Module is complete (Playwright + stealth patches + Open Complaints schema) and ready to reactivate when the portal comes back online.
 - **nj_scraper.py** — NJ Lis Pendens scraper for njlispendens.com (aMember Pro auth; primary NJ source for pre-foreclosure filings across Essex/Middlesex/Somerset/Union). Hybrid HTML+CSV approach because the results page renders street addresses as anti-scrape `<img src="/member/property/graphicaladdress?pid=...">` — only city/state/zip is plain text. Flow: (1) login with `NJLISPENDENS_EMAIL`/`PASSWORD` (cookies cached in `nj_lp_cookies.json`); (2) navigate to `/member/property` with filters as URL params (`County[]=...&date_added=7&per_page=50&cp=N`) — no form-click; (3) paginate HTML, parse each `<div class="mb_div-table">` block for Docket No, File Date, Defendant, Plaintiff, Orig Mortgage, Mortgage Date, Attorney, Attorney Phone, Lot-Block, County, city/state/zip tail, pid; (4) export CSV from same search → 5-col `Name, Address, City, State, Zip`; (5) **join CSV↔HTML by (sorted-token name key + zip)** — HTML uses `Last, First`, CSV uses `First Last`, so the normalizer strips punctuation and sorts tokens (verified 70/70 match). Rich fields packed into `NoticeData.raw_text` as `"Docket: X | Plaintiff: Y | Attorney: Z | Orig Mortgage: $N | Lot-Block: ...").
 - **nj_middlesex_probate.py** — Middlesex County surrogate probate scraper (Bluestone Public Search at surrogatesearch.co.middlesex.nj.us). No auth, no captcha. Filter is per-day DOD (not a range), so the scraper loops day-by-day through `--days-back` values (default 30). Each day's search returns a grid of probate rows; cells carry `column="<name>"` attrs (full_name, instr_num, ix_date_1/2/4/5 = filed/DOD/DOB/issued) so we parse by column name, not position. Detail pages use stable GET URLs (`web_case_detail_middlesex.aspx?Q_PK_ID=N`) — no ViewState, so we fetch them concurrently with plain `requests` to grab decedent's mailing address + the `ASPxGridView2` parties grid (Name/Type/Relation/Status). `_pick_executor` prefers type=Executor + status=Accept, falls back to Administrator, then any fiduciary. NoticeData: `owner_name`=executor (the DM), `decedent_name`=deceased, address/city/zip from decedent's mailing address, `decision_maker_relationship` from parties grid, `dm_confidence="high"` (court-named). NJ municipal suffixes (Borough/Township/City) are stripped from the city field so Zillow/Smarty lookups work.
@@ -157,6 +160,40 @@ apify push
 - `Dockerfile` — Based on `apify/actor-python-playwright:3.12`
 - `src/drive_uploader.py` — Google Drive upload via base64-encoded service account key
 - `input.json` — Local test input (gitignored, contains credentials)
+
+## NJ Modal Cloud Pipeline (build 1.0.30+)
+
+The NJ stack runs as a Modal app (`modal_app.py`). Local-CLI commands above (`nj-scrape`, `nj-sheriff`, `nj-probate`) are dev/manual paths; production is Modal.
+
+**Schedule**: `nj_weekly_all` cron = `0 10 * * 3` (Wednesdays 10:00 UTC ≈ 5/6am ET). Slack summary fires at end of each run.
+
+**Parallel scraper isolation (`_safe` wrapper)**: All scrapers run via `asyncio.gather` and wrapped in `_safe(coro, label)` that returns `(label, notices, error)`. `CloudflareBlockError` (raised by Bluestone-based scrapers when IPs get challenged) is caught and surfaced as `error="cloudflare_block"` — one scraper failing does not abort the others. Records from failed scrapers are NOT marked as seen in the dedup tracker, so they re-enter on the next successful run.
+
+**RAW CSV persistence**: The combined pre-enrichment scrape is written to `/tracking/raw/{date_folder}/raw_combined_{ts}.csv` on the `siftstack-tracking` Modal volume **before** enrichment runs. If enrichment crashes, the raw rows are recoverable. `ts`/`date_folder`/`volume_out_dir` are hoisted to the top of the post-scrape block specifically so the RAW write happens before any enrichment can fail.
+
+**Sheriff stale auctions**: `SHERIFF_SALE_MAX_AGE_DAYS` (default 90) drops sales whose date is older than today − N days. Both `nj_sheriff_sales.py` and `nj_somerset_sheriff.py` honor it and export a `LAST_STALE_DROPPED` count surfaced in Slack as `N stale auctions filtered`.
+
+**Sheriff disposition auto-drop**: After CivilView detail enrichment, records whose `case_disposition` ∈ {Sold, Redeemed, Cancelled} are dropped from the export (`_DROP_DISPOSITIONS` in `nj_sheriff_detail.py`). "Open" / "Bankruptcy" / "" pass through. Disposition is derived from lowercased `current_status` via `_CASE_DISPOSITION_RULES` (`scheduled→Open`, `purchased/sold→Sold`, `redeemed→Redeemed`, `bankruptcy→Bankruptcy`, `cancelled/canceled→Cancelled`).
+
+**Block/lot address flag**: Records arriving with a block/lot description instead of a street address are flagged `needs_manual_address="yes"` at Step 2b of enrichment (`enrichment_pipeline._flag_block_lot_addresses`). The vacant-land filter keeps them; Smarty skips them. This step was primarily exercised by the (now-removed) NJ tax-sale scraper; it remains in the pipeline as a no-op for current sources and a safety net for any future block/lot-only intake.
+
+**Dedup tracker** (`tracking/processed_ids_modal.json` on the Modal volume): stores `{record_id: ISO-timestamp}` per source in `_SOURCES = ("njlp", "probate", "somerset_probate", "somerset", "civilview_sheriff", "probate_runner")`. Only ID + timestamp is stored — **lost records cannot be reconstructed from the tracker**; recovery requires a re-scrape with dedup bypassed.
+
+**SIFT_COLUMNS = 91** (in `data_formatter.py`). Sheriff detail fields are appended at the end after `run_id` — existing column order is preserved. Sheriff-sale priority tiers (adjournments_remaining, days_until_auction, priority_tier) come last, stamped by `nj_sheriff_sales.apply_priority_tiers()` after detail enrichment based purely on adjournments + auction proximity (judgment amount alone isn't a real equity signal, so it stays as a raw column only).
+
+### Recovery Scripts
+
+When a scraper fails or its IP is blocked, run these locally on a residential connection:
+
+```bash
+python scripts/nj_probate_local_backfill.py             # mirrors Bluestone probate when Cloudflare challenges
+```
+
+Triggers a fresh scrape, bypasses the dedup tracker, writes the rich-schema CSV. Upload that CSV through the normal DataSift pipeline.
+
+### Modal-CLI Gotcha
+
+Modal's argparse-based CLI does NOT accept PEP-604 union types on entrypoint signatures (`list[str] | None` → ValidationError). Use comma-separated `str = "Middlesex,Essex,Somerset,Union"` and split internally.
 
 ## Courthouse Photo Pipeline (build 1.0.28+)
 
@@ -437,3 +474,5 @@ plugin-name.plugin (ZIP containing):
 - **Daily summaries:** Send to Slack via `SLACK_WEBHOOK_URL`
 - **Data source:** NJLisPendens — weekly CSV/XLSX file drops, not a scrapable website. Use `csv-import` as the primary data path (no Playwright scraping for this source)
 - **CRM:** DataSift (same upload/enrich/skip-trace pipeline as TN data)
+- **Production run:** Modal `nj_weekly_all`, Wednesdays 10:00 UTC. Slack summary auto-fires on completion. Manual re-trigger: `modal run modal_app.py::nj_weekly_all`.
+- **When a scraper fails on Modal:** Don't refactor. Run the matching local recovery script (`scripts/nj_probate_local_backfill.py`) from a residential connection, then upload the rich-schema CSV through the normal DataSift pipeline.
