@@ -346,23 +346,47 @@ async def enrich_sheriff_records(
             headless=headless,
             args=["--disable-blink-features=AutomationControlled"] if headless else [],
         )
-        ctx = await browser.new_context(
-            user_agent=(
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/120.0.0.0 Safari/537.36"
-            )
+        ctx = None
+        page = None
+        _UA = (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/120.0.0.0 Safari/537.36"
         )
-        await ctx.add_init_script(
-            "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
-        )
-        page = await ctx.new_page()
 
-        async def _navigate_to_listing(target_url: str) -> int:
+        async def _new_context() -> None:
+            """(Re)create a fresh browser context + page.
+
+            CivilView binds the AWS-ELB session to the FIRST county loaded
+            on a given context; navigating that same context to a
+            different countyId keeps serving the original county's
+            listing (no error, no bounce — just stale results). A fresh
+            context (new cookies → new session) is the only reliable way
+            to bind a new county, so we recreate one per county batch.
+            """
+            nonlocal ctx, page
+            if ctx is not None:
+                try:
+                    await ctx.close()
+                except Exception:
+                    pass
+            ctx = await browser.new_context(user_agent=_UA)
+            await ctx.add_init_script(
+                "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
+            )
+            page = await ctx.new_page()
+
+        async def _navigate_to_listing(
+            target_url: str, expected_pids: "set[str] | None" = None
+        ) -> int:
             """Navigate to a county listing; return PropertyId link count.
 
             Returns -1 on hard navigation failure (bounce to /Home/Index
-            or 0 links visible). Caller decides whether to retry/re-warm.
+            or 0 links visible). Returns -2 when the listing loads fine
+            but is the WRONG county — none of `expected_pids` appear in
+            the DOM, which is the sticky-session symptom that previously
+            caused silent 100% parse-failures for Middlesex/Union.
+            Positive return = PropertyId link count.
             """
             try:
                 await page.goto(target_url, wait_until="domcontentloaded", timeout=20000)
@@ -376,51 +400,57 @@ async def enrich_sheriff_records(
             cur_url = page.url
             if "Home/Index" in cur_url or "aspxerrorpath" in cur_url:
                 return -1
-            total_links = await page.locator('a[href*="PropertyId="]').count()
+            hrefs = await page.locator('a[href*="PropertyId="]').evaluate_all(
+                "els => els.map(e => e.getAttribute('href'))"
+            )
+            total_links = len(hrefs)
             if total_links == 0:
                 return -1
+            # County-identity check: a real listing for the WRONG county
+            # (sticky session) still has anchors, so count > 0 is not
+            # enough. Confirm at least one record we're about to enrich
+            # is actually present on this listing.
+            if expected_pids:
+                present = {
+                    m.group(1)
+                    for h in hrefs
+                    if (m := PROPERTY_ID_RE.search(h or ""))
+                }
+                if not (present & expected_pids):
+                    return -2
             return total_links
 
-        async def _warm_session_for_county(target_cid: int) -> bool:
-            """Re-warm AWS-ELB session for a specific county.
+        async def _warm_session_for_county(
+            target_cid: int, expected_pids: "set[str] | None" = None
+        ) -> bool:
+            """Establish a fresh AWS-ELB session bound to `target_cid`.
 
-            CivilView's session affinity can rotate mid-run; the cookie
-            we set at function start may be stale by the time we switch
-            counties. Hit the county listing fresh and confirm we
-            actually got a real listing back (not the directory bounce).
+            Recreates the browser context on every attempt so each try
+            gets a clean session — required because a context already
+            bound to another county keeps serving that county no matter
+            how many times we navigate. Confirms the listing really is
+            this county via `expected_pids` (catches the sticky-session
+            wrong-county page that a plain link-count check misses).
             """
             target_url = (
                 f"https://salesweb.civilview.com/Sales/SalesSearch?countyId={target_cid}"
             )
             for attempt in range(1, _LISTING_RECOVERY_MAX_ATTEMPTS + 1):
-                links = await _navigate_to_listing(target_url)
+                await _new_context()
+                links = await _navigate_to_listing(target_url, expected_pids)
                 if links > 0:
-                    if attempt > 1:
-                        logger.info(
-                            "Re-warm countyId=%d succeeded on attempt %d (%d links)",
-                            target_cid, attempt, links,
-                        )
+                    logger.info(
+                        "Warm countyId=%d ok on attempt %d (%d links)",
+                        target_cid, attempt, links,
+                    )
                     return True
+                reason = "wrong-county listing" if links == -2 else "bounce page"
                 logger.warning(
-                    "Re-warm countyId=%d attempt %d/%d landed on bounce page",
-                    target_cid, attempt, _LISTING_RECOVERY_MAX_ATTEMPTS,
+                    "Warm countyId=%d attempt %d/%d landed on %s",
+                    target_cid, attempt, _LISTING_RECOVERY_MAX_ATTEMPTS, reason,
                 )
                 await asyncio.sleep(_LISTING_RECOVERY_DELAY_S * attempt)
             return False
-
-        # Initial warmup — visit every county listing once to seed the
-        # AWS-ELB session cookies. Each county's batch will re-warm
-        # before it starts, because the cookie set here may be stale
-        # by the time we get to county #3 of a long run.
-        for cid in (2, 73, 15):
-            try:
-                await page.goto(
-                    f"https://salesweb.civilview.com/Sales/SalesSearch?countyId={cid}",
-                    wait_until="domcontentloaded", timeout=20000,
-                )
-                await page.wait_for_timeout(1000)
-            except Exception as e:
-                logger.warning("Warmup countyId=%d failed: %s", cid, e)
 
         # Reset module-level per-county counters for this run. Cleared
         # at start (not end) so a crashed run still shows partial state.
@@ -430,18 +460,27 @@ async def enrich_sheriff_records(
         for county, records in by_county.items():
             cid = _COUNTY_TO_CIVILVIEW_ID[county]
             listing_url = f"https://salesweb.civilview.com/Sales/SalesSearch?countyId={cid}"
+            # PropertyIds we expect on THIS county's listing — drives the
+            # wrong-county detection in _navigate_to_listing so a sticky
+            # session serving another county's results is caught instead
+            # of silently parse-failing every record.
+            expected_pids = {
+                m.group(1)
+                for n in records
+                if (m := PROPERTY_ID_RE.search(n.source_url or ""))
+            }
 
-            # Per-county session re-warm. The first time through this is
-            # mostly redundant with the initial warmup; on county #2 and
-            # #3 it's the recovery point that catches AWS-ELB session
-            # rotation. If recovery fails after 3 tries, we mark every
-            # record in this county as a parse failure and skip — better
-            # than spending 4 minutes silently clicking nothing.
+            # Per-county session: _warm_session_for_county spins up a
+            # FRESH browser context bound to this countyId. Without the
+            # fresh context the session stays bound to the first county
+            # (Essex) and every Middlesex/Union PropertyId silently misses
+            # → 0% enriched. If recovery fails after 3 tries, mark every
+            # record in this county as a parse failure and skip.
             logger.info(
                 "Sheriff detail enrichment: %s — starting %d records",
                 county, len(records),
             )
-            warm_ok = await _warm_session_for_county(cid)
+            warm_ok = await _warm_session_for_county(cid, expected_pids)
             if not warm_ok:
                 logger.error(
                     "⚠️ %s: listing-page recovery exhausted (%d attempts). "
@@ -478,21 +517,24 @@ async def enrich_sheriff_records(
                 try:
                     # Bounce back to the listing before each click — chaining
                     # clicks from one render bounces after a few hits.
-                    links = await _navigate_to_listing(listing_url)
+                    links = await _navigate_to_listing(listing_url, expected_pids)
                     if links < 0:
-                        # Session bounced mid-county. Try re-warming once;
-                        # if that fails, drop this record but don't kill
-                        # the rest of the batch.
+                        # Session bounced (or rotated to the wrong county)
+                        # mid-batch. Re-warm with a fresh context once; if
+                        # that fails, drop this record but don't kill the
+                        # rest of the batch.
                         logger.warning(
-                            "%s: listing bounce mid-batch at record %d/%d — re-warming",
-                            county, len(kept) + 1, len(records),
+                            "%s: listing %s mid-batch at record %d/%d — re-warming",
+                            county,
+                            "wrong-county" if links == -2 else "bounce",
+                            len(kept) + 1, len(records),
                         )
-                        if not await _warm_session_for_county(cid):
+                        if not await _warm_session_for_county(cid, expected_pids):
                             parse_failures += 1
                             county_parse_failures += 1
                             kept.append(n)
                             continue
-                        links = await _navigate_to_listing(listing_url)
+                        links = await _navigate_to_listing(listing_url, expected_pids)
                         if links < 0:
                             parse_failures += 1
                             county_parse_failures += 1
