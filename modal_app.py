@@ -291,6 +291,12 @@ async def nj_weekly_all():
     )
     enriched, health = run_enrichment_pipeline(combined, opts, return_health=True)
 
+    # Niche cohort tagging (read-only) — stamps NoticeData.niche on the
+    # high-value probate slice before any CSV is written. Non-probate rows
+    # (sheriff/NOD) never qualify (gate 3 requires notice_type=="probate").
+    from niche_cohort import tag_niche_leads, niche_slack_line
+    niche_stats = tag_niche_leads(enriched)
+
     # One combined CSV (all records, including paused types — for manual review).
     # ts already defined above (hoisted so the RAW pre-enrichment CSV
     # could be persisted before this step ran).
@@ -421,6 +427,7 @@ async def nj_weekly_all():
             lines.append(f"  errors: {other_errors}")
         lines.append(f"Enriched total: {len(enriched)}")
         lines.append(f"Combined CSV: {csv_path.name}")
+        lines.append(niche_slack_line(niche_stats))
 
         # Enrichment health — per-field fill rates with hard/soft floors.
         # Read-only monitoring; pipeline behavior unchanged.
@@ -952,6 +959,10 @@ async def nj_probate_manual(mx_days_back: int = 180, som_days_back: int = 30):
     )
     enriched, health = run_enrichment_pipeline(combined, opts, return_health=True)
 
+    # Niche cohort tagging (read-only) — high-value probate slice.
+    from niche_cohort import tag_niche_leads, niche_slack_line
+    niche_stats = tag_niche_leads(enriched)
+
     ts = datetime.now().strftime("%Y-%m-%d_%H%M%S")
     csv_path = write_csv(enriched, f"nj_probate_manual_{ts}.csv")
 
@@ -997,6 +1008,7 @@ async def nj_probate_manual(mx_days_back: int = 180, som_days_back: int = 30):
                 f"  Somerset Probate: {len(new_som)} new / {skipped_som} skipped (already processed)",
                 f"Enriched total: {len(enriched)}",
                 f"Combined CSV: {csv_path.name}",
+                niche_slack_line(niche_stats),
             ]
             if held_csv_path:
                 lines.append(
@@ -1226,6 +1238,13 @@ async def _manual_probate_intake_remote(
     )
     enriched, health = run_enrichment_pipeline(new_notices, opts, return_health=True)
 
+    # 4b) Niche cohort tagging — read-only; stamps NoticeData.niche on the
+    # high-value slice (equity >40% + single family + out-of-state P heir).
+    # Runs after enrichment (needs equity_percent + property_type) and
+    # before CSV write so the tag lands in the output.
+    from niche_cohort import tag_niche_leads, niche_slack_line
+    niche_stats = tag_niche_leads(enriched)
+
     # 5) CSV outputs. Combined + per-list, both to the volume so
     # `modal volume get siftstack-tracking output/{date}/...` picks them
     # up. No auto-DataSift upload — manual review per policy.
@@ -1263,6 +1282,7 @@ async def _manual_probate_intake_remote(
         f"{skipped} already processed, {obit_found} obituaries found",
         f"  Stats: parsed={stats['rows_parsed']}, "
         f"blank={stats['rows_skipped_blank']}, sentinel={stats['sentinel_hit']}",
+        niche_slack_line(niche_stats),
         f"  Combined CSV: {csv_path.name}",
     ]
     if persisted:

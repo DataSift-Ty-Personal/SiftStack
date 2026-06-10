@@ -76,6 +76,10 @@ class NoticeData:
     adjournments_remaining: str = ""   # int as str — max(0, 2 - adjournment_count); "" if unknown
     days_until_auction: str = ""       # int as str — auction_date minus today; "" if unknown
     priority_tier: str = ""            # HOT / WARM / URGENT_NO_OPTIONS / LONG_RUNWAY / PAST_DUE / UNKNOWN
+    # Niche cohort tag (set post-enrichment by niche_cohort.tag_niche_leads):
+    # "Niche Week NN YYYY" when a probate record clears all three gates
+    # (equity >40%, single family, out-of-state P heir); "" otherwise.
+    niche: str = ""
     # Zillow property enrichment fields (populated post-scrape)
     mls_status: str = ""           # "Active", "Pending", "Sold", "Off Market"
     mls_listing_price: str = ""    # Current list price or last sold price

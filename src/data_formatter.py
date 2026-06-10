@@ -119,6 +119,10 @@ SIFT_COLUMNS = [
     "adjournments_remaining",
     "days_until_auction",
     "priority_tier",
+    # Niche cohort tag — "Niche Week NN YYYY" for probate records that
+    # clear all three gates (equity >40%, single family, out-of-state P
+    # heir). Set by niche_cohort.tag_niche_leads after enrichment.
+    "niche",
 ]
 
 
@@ -329,6 +333,7 @@ def write_csv(notices: list[NoticeData], filename: str | None = None) -> Path:
                 "adjournments_remaining": notice.adjournments_remaining,
                 "days_until_auction": notice.days_until_auction,
                 "priority_tier": notice.priority_tier,
+                "niche": notice.niche,
             }
             writer.writerow(row)
             written += 1
