@@ -1039,42 +1039,6 @@ def _run_nj_probate(args) -> None:
         sys.exit(1)
 
 
-def _run_nj_tax_sale(args) -> None:
-    """Check ~35 RealAuction municipality subdomains for seasonal tax sales.
-
-    Sites only go live ~30 days before each municipality's annual tax sale
-    (typically May-June). Offline sites are skipped silently; live sites get
-    their Preview Items table scraped + optional detail popups for property
-    address / valuation / owner info.
-    """
-    import asyncio
-    from nj_tax_sale_monitor import scrape_nj_tax_sale_notices
-
-    raw_counties = getattr(args, "counties", None)
-    counties = ["Middlesex", "Essex", "Somerset", "Union"]
-    if raw_counties and raw_counties.lower() != "all":
-        counties = [c.strip() for c in raw_counties.split(",")]
-
-    fetch_details = not getattr(args, "no_details", False)
-    max_details = getattr(args, "max_details", 0) or 0
-    headless = not getattr(args, "visible", False)
-
-    notices = asyncio.run(scrape_nj_tax_sale_notices(
-        counties=counties,
-        fetch_details=fetch_details,
-        max_detail_records=max_details,
-        headless=headless,
-    ))
-    if not notices:
-        logging.info("No live tax sale sites. Quiet week.")
-        return
-
-    from data_formatter import deduplicate as _dedupe, write_csv as _write_csv
-    notices = _dedupe(notices)
-    csv_path = _write_csv(notices)
-    logging.info("NJ tax sales: %d records written to %s", len(notices), csv_path)
-
-
 def _run_phone_validate(args) -> None:
     """Run phone validation via Trestle API with DataSift export/upload."""
     import json as _json
@@ -1219,7 +1183,7 @@ def cli_main() -> None:
         "mode",
         choices=[
             "pdf-import", "photo-import", "dropbox-watch",
-            "csv-import", "nj-scrape", "nj-sheriff", "nj-somerset-sheriff", "nj-probate", "nj-tax-sale", "phone-validate", "manage-sold", "manage-presets",
+            "csv-import", "nj-scrape", "nj-sheriff", "nj-somerset-sheriff", "nj-probate", "phone-validate", "manage-sold", "manage-presets",
             # New analysis & workflow modes
             "comp", "rehab", "analyze-deal", "market-analysis", "buyer-prospect",
             "deep-prospect", "lead-manage", "setup-sequences", "niche-sequential",
@@ -1228,7 +1192,7 @@ def cli_main() -> None:
         help=(
             "pdf-import/photo-import = import from files; "
             "dropbox-watch = poll Dropbox; csv-import = re-enrich CSV; "
-            "nj-scrape/nj-sheriff/nj-somerset-sheriff/nj-probate/nj-tax-sale = NJ data sources; "
+            "nj-scrape/nj-sheriff/nj-somerset-sheriff/nj-probate = NJ data sources; "
             "phone-validate = Trestle scoring; manage-sold/manage-presets = DataSift ops; "
             "comp = comparable sales ARV; rehab = rehab cost estimate; "
             "analyze-deal = full deal analysis; market-analysis = zip code scoring; "
@@ -1507,20 +1471,7 @@ def cli_main() -> None:
     parser.add_argument(
         "--visible",
         action="store_true",
-        help="Run browser in visible (headed) mode for nj-somerset-sheriff / nj-tax-sale debugging",
-    )
-
-    # NJ tax-sale arguments (RealAuction municipality subdomains)
-    parser.add_argument(
-        "--no-details",
-        action="store_true",
-        help="Skip detail-popup scraping for nj-tax-sale (faster, no property address/valuation)",
-    )
-    parser.add_argument(
-        "--max-details",
-        type=int,
-        default=0,
-        help="Max detail lookups per municipality for nj-tax-sale (0 = all)",
+        help="Run browser in visible (headed) mode for nj-somerset-sheriff debugging",
     )
 
     parser.add_argument(
@@ -1960,11 +1911,6 @@ def cli_main() -> None:
     # Middlesex NJ surrogate probate scrape (Bluestone portal)
     if args.mode == "nj-probate":
         _run_nj_probate(args)
-        return
-
-    # NJ tax sales — seasonal RealAuction municipality subdomains
-    if args.mode == "nj-tax-sale":
-        _run_nj_tax_sale(args)
         return
 
     # All other modes (comp/rehab/deal-analyzer/etc.) return via their
