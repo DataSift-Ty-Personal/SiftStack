@@ -313,11 +313,34 @@ def _pick_executor(parties: list[dict]) -> dict | None:
     return None
 
 
-def _fetch_detail(url: str, session: requests.Session) -> tuple[dict, list[dict]]:
-    """GET detail page and parse fields + parties grid."""
-    resp = session.get(url, timeout=DETAIL_TIMEOUT)
-    resp.raise_for_status()
-    return _parse_detail_fields(resp.text), _parse_parties(resp.text)
+def _fetch_detail(url: str) -> tuple[dict, list[dict]]:
+    """GET a detail page and parse its form fields + parties grid.
+
+    Uses a PER-CALL requests.Session, never a shared one: this runs inside
+    a thread pool (run_in_executor) and requests.Session is not
+    thread-safe. Sharing one across the concurrent detail fetches produced
+    truncated response bodies that silently lost the late-document fields
+    — Date of Death sits ~32% into the ~170KB page, after name/address
+    (~15-18%), so a clipped body still built a usable record but with an
+    empty DOD. That was the real cause of the 28% DOD fill rate.
+
+    A complete page ends with </html>; if it doesn't, the body came back
+    short, so we retry once with a fresh connection before giving up.
+    """
+    html = ""
+    for attempt in range(2):
+        with requests.Session() as s:
+            s.headers.update({"User-Agent": USER_AGENT})
+            resp = s.get(url, timeout=DETAIL_TIMEOUT)
+            resp.raise_for_status()
+            html = resp.text
+        if "</html>" in html.lower():
+            break  # complete body — no retry needed
+        logger.warning(
+            "Detail page truncated (%d bytes, no </html>) — retry %d: %s",
+            len(html), attempt + 1, url,
+        )
+    return _parse_detail_fields(html), _parse_parties(html)
 
 
 def _to_iso_date(s: str) -> str:
@@ -531,10 +554,9 @@ async def scrape_bluestone_probates(
     if not unique_rows:
         return []
 
-    # 2) Fetch detail pages in parallel via requests (no ViewState needed)
-    session = requests.Session()
-    session.headers.update({"User-Agent": USER_AGENT})
-
+    # 2) Fetch detail pages in parallel via requests (no ViewState needed).
+    # Each fetch opens its own Session inside _fetch_detail — sharing one
+    # across these threads is not safe and truncated bodies (dropping DOD).
     loop = asyncio.get_event_loop()
     sem = asyncio.Semaphore(max_detail_workers)
 
@@ -542,7 +564,7 @@ async def scrape_bluestone_probates(
         async with sem:
             try:
                 fields, parties = await loop.run_in_executor(
-                    None, _fetch_detail, row["detail_url"], session
+                    None, _fetch_detail, row["detail_url"]
                 )
             except Exception as e:
                 logger.warning("%s detail fetch failed pk=%s: %s", cfg.name, row["pk_id"], e)
