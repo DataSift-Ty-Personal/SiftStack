@@ -152,6 +152,13 @@ _HEADER_ALIASES = {
     "phone 1 tag": "phone_1_tag",
     "owner deceased": "dod",
     "docket number": "docket",
+    # Union County's runner XLSX labels this column "Case Number" instead
+    # of "Docket Number". Without this alias the docket lands nowhere, so
+    # dedup_tracker can't build a probate_runner ID and every Union record
+    # logs "no dedup ID ... not tracked". Map both (+ "#" shorthands).
+    "case number": "docket",
+    "docket #": "docket",
+    "case #": "docket",
     "file date": "file_date",
 }
 
