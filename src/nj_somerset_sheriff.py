@@ -521,6 +521,12 @@ async def scrape_somerset_notices(
             source_url=r.get("pdf_url", ""),
             raw_text=" | ".join(raw_bits),
         ))
+    # Somerset has no detail-page enrichment, so adjournment_count stays
+    # blank and priority_tier resolves to UNKNOWN — but we still stamp
+    # days_until_auction from auction_date so downstream filters can
+    # sort Somerset records by recency.
+    from nj_sheriff_sales import apply_priority_tiers
+    apply_priority_tiers(notices)
     return notices
 
 

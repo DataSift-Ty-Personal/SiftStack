@@ -113,6 +113,12 @@ SIFT_COLUMNS = [
     "case_disposition",
     "is_open",
     "status_history_json",
+    # Sheriff-sale priority tiering (set by nj_sheriff_sales.apply_priority_tiers
+    # after detail enrichment runs). Somerset records get UNKNOWN tier
+    # because they skip the CivilView detail page.
+    "adjournments_remaining",
+    "days_until_auction",
+    "priority_tier",
 ]
 
 
@@ -320,6 +326,9 @@ def write_csv(notices: list[NoticeData], filename: str | None = None) -> Path:
                 "case_disposition": notice.case_disposition,
                 "is_open": notice.is_open,
                 "status_history_json": notice.status_history_json,
+                "adjournments_remaining": notice.adjournments_remaining,
+                "days_until_auction": notice.days_until_auction,
+                "priority_tier": notice.priority_tier,
             }
             writer.writerow(row)
             written += 1

@@ -17,6 +17,7 @@ Columns per row:
   [5] Address            — "{street} [MAILING ADDRESS OF {alt}] CITY NJ ZIP"
 """
 
+import json
 import logging
 import os
 import re
@@ -80,6 +81,121 @@ def _filter_stale_auctions(notices: list[NoticeData]) -> list[NoticeData]:
             dropped, SHERIFF_SALE_MAX_AGE_DAYS, cutoff.isoformat(),
         )
     return kept
+
+# NJ caps PLAINTIFF adjournments at 2. Court / bankruptcy / judge
+# adjournments don't count against that limit, so we filter the status
+# history by reason rather than total count. Detail enrichment
+# (nj_sheriff_detail.parse_detail_html) stamps status_history_json with
+# {"date","status","reason"} entries; we read the "reason" field here.
+_MAX_PLAINTIFF_ADJOURNMENTS = 2
+
+
+def _count_plaintiff_adjournments(status_history_json: str) -> int | None:
+    """Count adjournments where status/reason mentions "plaintiff".
+
+    CivilView's row format varies by county:
+      - Essex/Middlesex: "Adjourned - Plaintiff" → reason="Plaintiff"
+      - Union:           "Plaintiff Adjournment" → status="Plaintiff Adjournment"
+    We search the combined status+reason text for both "plaintiff" and
+    "adjourn" so non-adjournment rows mentioning plaintiff (rare) don't
+    get counted.
+
+    Returns None when the history JSON is missing / malformed — caller
+    treats that as "unknown" (priority_tier = UNKNOWN). Returns 0 when
+    history exists but no plaintiff adjournments are recorded — that's
+    the common case for a freshly-scheduled sale.
+    """
+    if not status_history_json:
+        return None
+    try:
+        history = json.loads(status_history_json)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(history, list):
+        return None
+    count = 0
+    for h in history:
+        if not isinstance(h, dict):
+            continue
+        combined = (
+            (h.get("status", "") or "") + " " + (h.get("reason", "") or "")
+        ).lower()
+        if "plaintiff" in combined and "adjourn" in combined:
+            count += 1
+    return count
+
+
+def _classify_priority(adjournments_remaining: int | None,
+                       days_until_auction: int | None) -> str:
+    """Implement the tier ladder (CLAUDE.md / nj_sheriff_sales docstring).
+
+    Returns one of: HOT / WARM / URGENT_NO_OPTIONS / LONG_RUNWAY / PAST_DUE / UNKNOWN.
+    First match wins; order matches the operator spec verbatim so the
+    edge cases (e.g. adj==0 + past auction → URGENT, not PAST_DUE) stay
+    consistent with how the team thinks about the leads.
+    """
+    if adjournments_remaining is None or days_until_auction is None:
+        return "UNKNOWN"
+    if adjournments_remaining >= 1 and 0 < days_until_auction <= 30:
+        return "HOT"
+    if adjournments_remaining >= 1 and days_until_auction > 30:
+        return "WARM"
+    if adjournments_remaining == 0 and days_until_auction <= 14:
+        return "URGENT_NO_OPTIONS"
+    if adjournments_remaining == 0 and 15 <= days_until_auction <= 30:
+        return "URGENT_NO_OPTIONS"
+    if adjournments_remaining == 0 and days_until_auction > 30:
+        return "LONG_RUNWAY"
+    if days_until_auction <= 0:
+        return "PAST_DUE"
+    return "UNKNOWN"
+
+
+def apply_priority_tiers(notices: list[NoticeData],
+                         today: "datetime | None" = None) -> None:
+    """Stamp priority_tier + adjournments_remaining + days_until_auction
+    on each sheriff_sale record in place.
+
+    Runs AFTER detail enrichment so status_history_json is populated for
+    CivilView records. adjournments_remaining is computed from PLAINTIFF
+    adjournments only (per NJ's 2-cap rule) — court/bankruptcy adjournments
+    are unlimited and don't burn options. Somerset records (no detail
+    page) leave status_history_json blank and tier as UNKNOWN.
+
+    days_until_auction is signed: negative for past auctions (lets
+    PAST_DUE catch them correctly). days==0 means today's auction —
+    still URGENT_NO_OPTIONS / HOT, not PAST_DUE, because the sale
+    hasn't started yet in calendar terms.
+    """
+    now = (today or datetime.now()).date()
+    for n in notices:
+        if (n.notice_type or "").lower() != "sheriff_sale":
+            continue
+
+        # adjournments_remaining: count plaintiff-only adjournments from
+        # status history JSON (populated by detail enrichment). Missing
+        # history → None → UNKNOWN tier downstream.
+        plaintiff_used = _count_plaintiff_adjournments(n.status_history_json)
+        if plaintiff_used is None:
+            rem = None
+        else:
+            rem = max(0, _MAX_PLAINTIFF_ADJOURNMENTS - plaintiff_used)
+        n.adjournments_remaining = "" if rem is None else str(rem)
+
+        # days_until_auction — signed, so negative = past.
+        days: int | None
+        if not n.auction_date:
+            days = None
+        else:
+            try:
+                auction_dt = datetime.strptime(n.auction_date, "%Y-%m-%d").date()
+                days = (auction_dt - now).days
+            except ValueError:
+                days = None
+        n.days_until_auction = "" if days is None else str(days)
+
+        n.priority_tier = _classify_priority(rem, days)
+
 
 USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -333,6 +449,9 @@ async def scrape_civilview_notices(
     if enrich_details and notices:
         from nj_sheriff_detail import enrich_sheriff_records
         notices = await enrich_sheriff_records(notices)
+    # Priority tiering runs AFTER detail enrichment so it can read the
+    # adjournment_count + auction_date fields that enrichment populates.
+    apply_priority_tiers(notices)
     return notices
 
 

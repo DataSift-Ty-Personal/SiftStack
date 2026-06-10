@@ -70,6 +70,12 @@ class NoticeData:
     case_disposition: str = ""         # Open / Sold / Redeemed / Bankruptcy / Cancelled
     is_open: str = ""                  # "yes" if current_status starts with Scheduled
     status_history_json: str = ""      # JSON array of {"status","date"} objects
+    # Sheriff-sale priority tiering (derived post-enrichment in
+    # nj_sheriff_sales.apply_priority_tiers — runs after detail enrichment).
+    # Somerset records skip detail enrichment, so they tier as UNKNOWN.
+    adjournments_remaining: str = ""   # int as str — max(0, 2 - adjournment_count); "" if unknown
+    days_until_auction: str = ""       # int as str — auction_date minus today; "" if unknown
+    priority_tier: str = ""            # HOT / WARM / URGENT_NO_OPTIONS / LONG_RUNWAY / PAST_DUE / UNKNOWN
     # Zillow property enrichment fields (populated post-scrape)
     mls_status: str = ""           # "Active", "Pending", "Sold", "Off Market"
     mls_listing_price: str = ""    # Current list price or last sold price
