@@ -102,7 +102,8 @@ async def nj_weekly_all():
 
     from nj_scraper import scrape_nj_lp_notices
     from nj_middlesex_probate import (
-        scrape_middlesex_probates, scrape_somerset_probates, CloudflareBlockError,
+        scrape_middlesex_probates, scrape_somerset_probates,
+        scrape_ocean_probates, CloudflareBlockError,
     )
     from nj_somerset_sheriff import scrape_somerset_notices
     from nj_sheriff_sales import scrape_civilview_notices
@@ -140,6 +141,9 @@ async def nj_weekly_all():
         # Somerset Bluestone supports File Date filtering directly, so 30
         # days of file-date is the natural cron window.
         _safe(scrape_somerset_probates(days_back=30), "Somerset Probate"),
+        # Ocean runs the same Bluestone deployment as Middlesex (Death Date
+        # filter only), so it uses the same wide 180-day window.
+        _safe(scrape_ocean_probates(days_back=180), "Ocean Probate"),
         _safe(scrape_somerset_notices(include_bankruptcy=True, max_records=0), "Somerset Sheriff"),
         _safe(scrape_civilview_notices(counties=["Essex", "Middlesex", "Union"]), "CivilView Sheriff"),
     )
@@ -163,7 +167,7 @@ async def nj_weekly_all():
     civilview_detail_by_county = dict(_civilview_detail_mod.LAST_DETAIL_RESULTS_BY_COUNTY)
 
     if not any(per_source.values()):
-        msg = "All 5 scrapers returned 0 records"
+        msg = "All 6 scrapers returned 0 records"
         if errors:
             msg += f" (errors: {errors})"
         logger.error(msg)
@@ -171,10 +175,11 @@ async def nj_weekly_all():
         raise RuntimeError(msg)
 
     logger.info(
-        "Raw scrape: NJLP=%d, MidProbate=%d, SomProbate=%d, SomSheriff=%d, CivilView=%d",
+        "Raw scrape: NJLP=%d, MidProbate=%d, SomProbate=%d, OceanProbate=%d, SomSheriff=%d, CivilView=%d",
         len(per_source.get("NJLP", [])),
         len(per_source.get("Middlesex Probate", [])),
         len(per_source.get("Somerset Probate", [])),
+        len(per_source.get("Ocean Probate", [])),
         len(per_source.get("Somerset Sheriff", [])),
         len(per_source.get("CivilView Sheriff", [])),
     )
@@ -190,25 +195,30 @@ async def nj_weekly_all():
     new_som_probate, skipped_som_probate = filter_new(
         per_source.get("Somerset Probate", []), "somerset_probate", tracking,
     )
+    new_ocean_probate, skipped_ocean_probate = filter_new(
+        per_source.get("Ocean Probate", []), "ocean_probate", tracking,
+    )
     new_somerset, skipped_somerset = filter_new(per_source.get("Somerset Sheriff", []), "somerset", tracking)
     new_civilview, skipped_civilview = filter_new(per_source.get("CivilView Sheriff", []), "civilview_sheriff", tracking)
 
     logger.info(
         "Dedup: NJLP %d new / %d skipped, MidProbate %d new / %d skipped, "
-        "SomProbate %d new / %d skipped, SomSheriff %d new / %d skipped, "
-        "CivilView %d new / %d skipped",
+        "SomProbate %d new / %d skipped, OceanProbate %d new / %d skipped, "
+        "SomSheriff %d new / %d skipped, CivilView %d new / %d skipped",
         len(new_lp), skipped_lp,
         len(new_probate), skipped_probate,
         len(new_som_probate), skipped_som_probate,
+        len(new_ocean_probate), skipped_ocean_probate,
         len(new_somerset), skipped_somerset,
         len(new_civilview), skipped_civilview,
     )
 
-    combined = new_lp + new_probate + new_som_probate + new_somerset + new_civilview
+    combined = new_lp + new_probate + new_som_probate + new_ocean_probate + new_somerset + new_civilview
     skipped_counts = {
         "NJLP": skipped_lp,
         "Middlesex Probate": skipped_probate,
         "Somerset Probate": skipped_som_probate,
+        "Ocean Probate": skipped_ocean_probate,
         "Somerset Sheriff": skipped_somerset,
         "CivilView Sheriff": skipped_civilview,
     }
@@ -216,6 +226,7 @@ async def nj_weekly_all():
         "NJLP": len(new_lp),
         "Middlesex Probate": len(new_probate),
         "Somerset Probate": len(new_som_probate),
+        "Ocean Probate": len(new_ocean_probate),
         "Somerset Sheriff": len(new_somerset),
         "CivilView Sheriff": len(new_civilview),
     }
@@ -225,7 +236,7 @@ async def nj_weekly_all():
         # since nothing changed) and notify that it was a clean quiet week.
         save_tracking(tracking, TRACKING_FILE)
         await tracking_volume.commit.aio()
-        msg = (f"All {skipped_lp + skipped_probate + skipped_som_probate + skipped_somerset + skipped_civilview} records were "
+        msg = (f"All {skipped_lp + skipped_probate + skipped_som_probate + skipped_ocean_probate + skipped_somerset + skipped_civilview} records were "
                f"previously processed — nothing new to enrich or upload")
         logger.info(msg)
         try:
@@ -402,9 +413,10 @@ async def nj_weekly_all():
     # up we'd rather redo the dedup work next week than lose records.
     save_tracking(tracking, TRACKING_FILE)
     await tracking_volume.commit.aio()
-    logger.info("Tracking saved: %d NJLP / %d probate / %d somerset / %d civilview total IDs",
+    logger.info("Tracking saved: %d NJLP / %d probate / %d ocean_probate / %d somerset / %d civilview total IDs",
                 len(tracking.get("njlp", {})),
                 len(tracking.get("probate", {})),
+                len(tracking.get("ocean_probate", {})),
                 len(tracking.get("somerset", {})),
                 len(tracking.get("civilview_sheriff", {})))
 
@@ -415,7 +427,7 @@ async def nj_weekly_all():
     try:
         import config
         lines = ["*NJ Weekly All — combined Wednesday run*"]
-        for label in ("NJLP", "Middlesex Probate", "Somerset Probate", "Somerset Sheriff", "CivilView Sheriff"):
+        for label in ("NJLP", "Middlesex Probate", "Somerset Probate", "Ocean Probate", "Somerset Sheriff", "CivilView Sheriff"):
             n, s = new_counts.get(label, 0), skipped_counts.get(label, 0)
             stale = stale_dropped_counts.get(label, 0)
             stale_suffix = f" / {stale} stale auctions filtered" if stale else ""
@@ -854,17 +866,22 @@ async def nj_somerset_sheriff_manual(
     ),
     volumes={TRACKING_MOUNT: tracking_volume},
 )
-async def nj_probate_manual(mx_days_back: int = 180, som_days_back: int = 30):
-    """On-demand Middlesex + Somerset probate scrape.
+async def nj_probate_manual(
+    mx_days_back: int = 180, som_days_back: int = 30, ocean_days_back: int = 180,
+):
+    """On-demand Middlesex + Somerset + Ocean probate scrape.
 
-    Mirrors the probate slice of nj_weekly_all: parallel scrape both
+    Mirrors the probate slice of nj_weekly_all: parallel scrape all three
     counties, cross-run dedup via the siftstack-tracking volume, single
     enrichment pass, split by DataSift list, Slack summary. Probate is
     in SIFTSTACK_UPLOAD_PAUSED_TYPES so records are held for cleaning
     rather than auto-uploaded.
 
+    Ocean runs the same Bluestone deployment as Middlesex (Death Date filter
+    only), so it shares the wide default window.
+
     Run with:
-      modal run modal_app.py::nj_probate_manual                       # 180d + 30d defaults
+      modal run modal_app.py::nj_probate_manual                       # 180d + 30d + 180d defaults
       modal run modal_app.py::nj_probate_manual --mx-days-back 90
     """
     import asyncio
@@ -884,7 +901,8 @@ async def nj_probate_manual(mx_days_back: int = 180, som_days_back: int = 30):
     logger = logging.getLogger("modal_nj_probate_manual")
 
     from nj_middlesex_probate import (
-        scrape_middlesex_probates, scrape_somerset_probates, CloudflareBlockError,
+        scrape_middlesex_probates, scrape_somerset_probates,
+        scrape_ocean_probates, CloudflareBlockError,
     )
     from dedup_tracker import load_tracking, save_tracking, filter_new
     from enrichment_pipeline import PipelineOptions, run_enrichment_pipeline
@@ -907,18 +925,19 @@ async def nj_probate_manual(mx_days_back: int = 180, som_days_back: int = 30):
             return label, [], str(e)
 
     logger.info(
-        "Probate manual: Middlesex %dd DoD + Somerset %dd file-date",
-        mx_days_back, som_days_back,
+        "Probate manual: Middlesex %dd DoD + Somerset %dd file-date + Ocean %dd DoD",
+        mx_days_back, som_days_back, ocean_days_back,
     )
     results = await asyncio.gather(
         _safe(scrape_middlesex_probates(days_back=mx_days_back), "Middlesex Probate"),
         _safe(scrape_somerset_probates(days_back=som_days_back), "Somerset Probate"),
+        _safe(scrape_ocean_probates(days_back=ocean_days_back), "Ocean Probate"),
     )
     per_source = {label: n for label, n, _ in results}
     errors = [(label, err) for label, _, err in results if err]
 
     if not any(per_source.values()):
-        msg = "Both probate scrapers returned 0 records"
+        msg = "All probate scrapers returned 0 records"
         if errors:
             msg += f" (errors: {errors})"
         logger.error(msg)
@@ -932,16 +951,21 @@ async def nj_probate_manual(mx_days_back: int = 180, som_days_back: int = 30):
     new_som, skipped_som = filter_new(
         per_source.get("Somerset Probate", []), "somerset_probate", tracking,
     )
+    new_ocean, skipped_ocean = filter_new(
+        per_source.get("Ocean Probate", []), "ocean_probate", tracking,
+    )
     logger.info(
-        "Dedup: Middlesex %d new / %d skipped, Somerset %d new / %d skipped",
+        "Dedup: Middlesex %d new / %d skipped, Somerset %d new / %d skipped, "
+        "Ocean %d new / %d skipped",
         len(new_mx), skipped_mx, len(new_som), skipped_som,
+        len(new_ocean), skipped_ocean,
     )
 
-    combined = new_mx + new_som
+    combined = new_mx + new_som + new_ocean
     if not combined:
         save_tracking(tracking, TRACKING_FILE)
         await tracking_volume.commit.aio()
-        msg = f"All {skipped_mx + skipped_som} records previously processed — nothing new to enrich"
+        msg = f"All {skipped_mx + skipped_som + skipped_ocean} records previously processed — nothing new to enrich"
         logger.info(msg)
         try:
             if config.SLACK_WEBHOOK_URL:
@@ -950,8 +974,9 @@ async def nj_probate_manual(mx_days_back: int = 180, som_days_back: int = 30):
         except Exception:
             pass
         return {
-            "success": True, "scraped": skipped_mx + skipped_som, "new": 0,
+            "success": True, "scraped": skipped_mx + skipped_som + skipped_ocean, "new": 0,
             "skipped_middlesex": skipped_mx, "skipped_somerset": skipped_som,
+            "skipped_ocean": skipped_ocean,
         }
 
     opts = PipelineOptions(
@@ -1004,9 +1029,10 @@ async def nj_probate_manual(mx_days_back: int = 180, som_days_back: int = 30):
     save_tracking(tracking, TRACKING_FILE)
     await tracking_volume.commit.aio()
     logger.info(
-        "Tracking saved: %d probate / %d somerset_probate total IDs",
+        "Tracking saved: %d probate / %d somerset_probate / %d ocean_probate total IDs",
         len(tracking.get("probate", {})),
         len(tracking.get("somerset_probate", {})),
+        len(tracking.get("ocean_probate", {})),
     )
 
     # Slack summary
@@ -1014,9 +1040,10 @@ async def nj_probate_manual(mx_days_back: int = 180, som_days_back: int = 30):
         if config.SLACK_WEBHOOK_URL:
             from slack_notifier import _send_webhook
             lines = [
-                f"*NJ Probate Manual — Middlesex {mx_days_back}d + Somerset {som_days_back}d*",
+                f"*NJ Probate Manual — Middlesex {mx_days_back}d + Somerset {som_days_back}d + Ocean {ocean_days_back}d*",
                 f"  Middlesex Probate: {len(new_mx)} new / {skipped_mx} skipped (already processed)",
                 f"  Somerset Probate: {len(new_som)} new / {skipped_som} skipped (already processed)",
+                f"  Ocean Probate: {len(new_ocean)} new / {skipped_ocean} skipped (already processed)",
                 f"Enriched total: {len(enriched)}",
                 f"Combined CSV: {csv_path.name}",
                 niche_slack_line(niche_stats),

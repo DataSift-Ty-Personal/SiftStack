@@ -608,6 +608,25 @@ async def scrape_middlesex_probates(
     )
 
 
+async def scrape_ocean_probates(
+    days_back: int = 30,
+    headless: bool = True,
+    max_detail_workers: int = 4,
+) -> list[NoticeData]:
+    """Scrape Ocean surrogate probates via the Bluestone Public View portal.
+
+    Ocean runs the same Bluestone deployment as Middlesex (single-day Death
+    Date input, direct detail-page URLs, parties grid for the court-named
+    executor), so it reuses the Middlesex scrape path verbatim — only the
+    OCEAN config (host + detail_aspx) differs. Like Middlesex, the form has
+    only a Death Date filter (no File Date), so callers use a wide window.
+    """
+    return await scrape_bluestone_probates(
+        OCEAN, days_back=days_back, headless=headless,
+        max_detail_workers=max_detail_workers,
+    )
+
+
 async def scrape_somerset_probates(
     days_back: int = 30,
     headless: bool = True,

@@ -25,7 +25,7 @@ from notice_parser import NoticeData
 logger = logging.getLogger(__name__)
 
 _SOURCES = (
-    "njlp", "probate", "somerset_probate", "somerset",
+    "njlp", "probate", "somerset_probate", "ocean_probate", "somerset",
     "civilview_sheriff", "probate_runner",
 )
 
@@ -87,9 +87,9 @@ def extract_id(notice: NoticeData, source: str) -> str | None:
     if source == "njlp":
         m = _NJLP_DOCKET_RE.search(raw)
         return m.group(1).replace("‐", "-").replace("–", "-") if m else None
-    if source in ("probate", "somerset_probate"):
-        # Both Middlesex + Somerset use the same Bluestone query param
-        # (Q_PK_ID) — they live in separate buckets in _SOURCES so the
+    if source in ("probate", "somerset_probate", "ocean_probate"):
+        # Middlesex + Somerset + Ocean all use the same Bluestone query
+        # param (Q_PK_ID) — they live in separate buckets in _SOURCES so the
         # numeric IDs can't collide across counties.
         m = _PROBATE_PK_RE.search(url)
         if m:
