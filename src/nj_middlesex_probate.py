@@ -140,7 +140,25 @@ SOMERSET = BluestoneCountyConfig(
     show_dates_button_selector='[id$="SEARCHLAYOUT_button_show_dates"]',
     search_button_selector='[id$="SEARCHLAYOUT_button_search"]',
 )
-ALL_BLUESTONE_COUNTIES: tuple[BluestoneCountyConfig, ...] = (MIDDLESEX, SOMERSET)
+# Ocean shares Middlesex's exact DevExpress layout — search_path, the
+# death-date input, the search button, and always-visible date fields all
+# match the BluestoneCountyConfig defaults (verified against
+# output/ocean_recon/03_search_form.html: title "Bluestone Search",
+# ContentPlaceHolder1_ASPxSplitterDefaultMain_ASPxTextBox_to_date_I +
+# _ASPxButton_search present, web_case_detail_ocean.aspx links present).
+# Only the host + detail filename differ, so the entry is as minimal as
+# Middlesex's.
+#
+# A fresh-context cold-start test (scripts/ocean_coldstart_test.py) confirmed
+# default.aspx serves the search form directly — Ocean's root disclaimer
+# (Web_ocean_disclamer.aspx) does NOT gate the form, so no disclaimer click or
+# extra config field is needed. Config-only, like Middlesex.
+OCEAN = BluestoneCountyConfig(
+    name="Ocean",
+    base_url="https://surrogateweb.co.ocean.nj.us/BluestoneWeb/",
+    detail_aspx="web_case_detail_ocean.aspx",
+)
+ALL_BLUESTONE_COUNTIES: tuple[BluestoneCountyConfig, ...] = (MIDDLESEX, SOMERSET, OCEAN)
 
 
 # Backwards-compat aliases — Middlesex constants used to be module-level
