@@ -297,6 +297,11 @@ async def nj_weekly_all():
     from niche_cohort import tag_niche_leads, niche_slack_line
     niche_stats = tag_niche_leads(enriched)
 
+    # Ownership verification breakdown — records already flagged during
+    # enrichment (Step 8b); just read the stats for the Slack summary.
+    from ownership_verifier import ownership_stats, ownership_slack_line
+    ownership_st = ownership_stats(enriched)
+
     # One combined CSV (all records, including paused types — for manual review).
     # ts already defined above (hoisted so the RAW pre-enrichment CSV
     # could be persisted before this step ran).
@@ -428,6 +433,8 @@ async def nj_weekly_all():
         lines.append(f"Enriched total: {len(enriched)}")
         lines.append(f"Combined CSV: {csv_path.name}")
         lines.append(niche_slack_line(niche_stats))
+        if ownership_st["probate_total"]:
+            lines.append(ownership_slack_line(ownership_st))
 
         # Enrichment health — per-field fill rates with hard/soft floors.
         # Read-only monitoring; pipeline behavior unchanged.
@@ -963,6 +970,10 @@ async def nj_probate_manual(mx_days_back: int = 180, som_days_back: int = 30):
     from niche_cohort import tag_niche_leads, niche_slack_line
     niche_stats = tag_niche_leads(enriched)
 
+    # Ownership verification breakdown (flagged during enrichment, Step 8b).
+    from ownership_verifier import ownership_stats, ownership_slack_line
+    ownership_st = ownership_stats(enriched)
+
     ts = datetime.now().strftime("%Y-%m-%d_%H%M%S")
     csv_path = write_csv(enriched, f"nj_probate_manual_{ts}.csv")
 
@@ -1009,6 +1020,7 @@ async def nj_probate_manual(mx_days_back: int = 180, som_days_back: int = 30):
                 f"Enriched total: {len(enriched)}",
                 f"Combined CSV: {csv_path.name}",
                 niche_slack_line(niche_stats),
+                ownership_slack_line(ownership_st),
             ]
             if held_csv_path:
                 lines.append(
@@ -1245,6 +1257,10 @@ async def _manual_probate_intake_remote(
     from niche_cohort import tag_niche_leads, niche_slack_line
     niche_stats = tag_niche_leads(enriched)
 
+    # Ownership verification breakdown (flagged during enrichment, Step 8b).
+    from ownership_verifier import ownership_stats, ownership_slack_line
+    ownership_st = ownership_stats(enriched)
+
     # 5) CSV outputs. Combined + per-list, both to the volume so
     # `modal volume get siftstack-tracking output/{date}/...` picks them
     # up. No auto-DataSift upload — manual review per policy.
@@ -1283,6 +1299,7 @@ async def _manual_probate_intake_remote(
         f"  Stats: parsed={stats['rows_parsed']}, "
         f"blank={stats['rows_skipped_blank']}, sentinel={stats['sentinel_hit']}",
         niche_slack_line(niche_stats),
+        ownership_slack_line(ownership_st),
         f"  Combined CSV: {csv_path.name}",
     ]
     if persisted:

@@ -43,6 +43,7 @@ class PipelineOptions:
     skip_zillow: bool = False
     skip_obituary: bool = False
     skip_ancestry: bool = False
+    skip_ownership_verification: bool = False
 
     # Obituary sub-options
     skip_heir_verification: bool = False
@@ -80,6 +81,9 @@ ENRICHMENT_FLOORS: dict[str, tuple[int, int]] = {
     "mls_status":                (50, 30),
     "decision_maker_identified": (90, 70),
     "mailable":                  (90, 80),
+    # Probate ownership: verified / (verified + mismatch). Soft 55%, hard 40%
+    # — Week 25 baseline was ~53% real owners among checkable records.
+    "ownership_verified":        (55, 40),
 }
 
 
@@ -132,6 +136,17 @@ def compute_enrichment_health(notices: list["NoticeData"]) -> dict:
     if dm_eligible > 0:
         dm_hit = sum(1 for n in notices if n.decision_maker_name)
         health["decision_maker_identified"] = _stat(dm_hit, dm_eligible)
+
+    # Conditional field: probate ownership pass rate (verified of checkable).
+    # ownership_health() returns None for batches with nothing determinable
+    # (sheriff-only, or all-Essex probate), so the row is omitted then.
+    try:
+        from ownership_verifier import ownership_health
+        oh = ownership_health(notices)
+        if oh is not None:
+            health["ownership_verified"] = oh
+    except Exception:  # pragma: no cover — never let monitoring break the run
+        pass
 
     return health
 
@@ -711,6 +726,29 @@ def run_enrichment_pipeline(
         )
     elif opts.skip_zillow:
         logger.info("── Step 8: Zillow (skipped) ──")
+
+    # ── Step 8b: Probate Ownership Verification ─────────────────────
+    # Cross-check probate decedents against the MOD-IV owner of record
+    # (taxrecords-nj, Middlesex/Somerset/Union) and flag verified /
+    # mismatch / unknown. Flag only — never drops. No-op for batches with
+    # no eligible probate records (sheriff/NOD runs).
+    if not getattr(opts, "skip_ownership_verification", False):
+        probate_eligible = [
+            n for n in notices
+            if "probate" in (n.notice_type or "").lower() and n.address.strip()
+        ]
+        if probate_eligible:
+            logger.info(
+                "── Step 8b: Ownership Verification (%d probate candidates) ──",
+                len(probate_eligible),
+            )
+            try:
+                from ownership_verifier import enrich_ownership
+                enrich_ownership(notices)
+            except ImportError:
+                logger.warning("  ownership_verifier not available — skipping")
+            except Exception as e:
+                logger.warning("  Ownership verification failed: %s", e)
 
     # ── Step 9: Obituary Enrichment ──────────────────────────────────
     if not opts.skip_obituary and not opts.has_obituary:

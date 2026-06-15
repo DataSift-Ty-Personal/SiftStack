@@ -107,6 +107,7 @@ class NoticeData:
     # Deceased owner detection
     deceased_indicator: str = ""       # "life_estate", "personal_rep", "trustee", "care_of", "et_al", or ""
     tax_owner_name: str = ""           # Raw owner name from county tax API
+    ownership_status: str = ""         # "verified"/"mismatch"/"unknown" — decedent vs owner of record (probate)
     # Obituary-confirmed deceased owner
     owner_deceased: str = ""                # "yes" or "" — confirmed via obituary search
     date_of_death: str = ""                 # YYYY-MM-DD from obituary

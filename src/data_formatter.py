@@ -123,6 +123,10 @@ SIFT_COLUMNS = [
     # clear all three gates (equity >40%, single family, out-of-state P
     # heir). Set by niche_cohort.tag_niche_leads after enrichment.
     "niche",
+    # Ownership verification — decedent vs MOD-IV owner of record for probate
+    # runner records. "verified"/"mismatch"/"unknown". Flag only, never drops.
+    # Set by ownership_verifier.enrich_ownership during enrichment.
+    "ownership_status",
 ]
 
 
@@ -334,6 +338,7 @@ def write_csv(notices: list[NoticeData], filename: str | None = None) -> Path:
                 "days_until_auction": notice.days_until_auction,
                 "priority_tier": notice.priority_tier,
                 "niche": notice.niche,
+                "ownership_status": notice.ownership_status,
             }
             writer.writerow(row)
             written += 1
