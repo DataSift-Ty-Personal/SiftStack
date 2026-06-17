@@ -122,14 +122,33 @@ def _score_reason(row: dict) -> PillarScore:
                        reason="no clear distress signal")
 
 
+def _norm_date(raw: str) -> str:
+    """Normalize a date string (ISO or Sift M/D/YYYY) to YYYY-MM-DD, else ''."""
+    raw = (raw or "").strip()
+    if not raw:
+        return ""
+    for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%m/%d/%y"):
+        try:
+            return datetime.strptime(raw[:10] if fmt == "%Y-%m-%d" else raw, fmt).strftime("%Y-%m-%d")
+        except ValueError:
+            continue
+    return ""
+
+
 def _score_timeline(row: dict) -> PillarScore:
     """Score the Timeline pillar — how urgently do they need to sell?"""
-    auction_date = row.get("auction_date") or row.get("Foreclosure Date") or ""
-    date_added = row.get("date_added") or row.get("Date Added") or ""
+    auction_date = _norm_date(row.get("auction_date") or row.get("Foreclosure Date") or "")
+    # Freshness = when the notice was PUBLISHED, not when we added the record.
+    # date_added is now the run/import date (same for every record in a run), so
+    # prefer date_published / "Notice Publish Date", falling back to date_added.
+    freshness = _norm_date(
+        row.get("date_published") or row.get("Notice Publish Date")
+        or row.get("date_added") or row.get("Date Added") or ""
+    )
 
     if auction_date:
         try:
-            auction = datetime.strptime(auction_date[:10], "%Y-%m-%d")
+            auction = datetime.strptime(auction_date, "%Y-%m-%d")
             days_until = (auction - datetime.now()).days
             if days_until <= AUCTION_HOT_DAYS:
                 return PillarScore(name="Timeline", temperature="hot", score=3,
@@ -140,9 +159,9 @@ def _score_timeline(row: dict) -> PillarScore:
         except ValueError:
             pass
 
-    if date_added:
+    if freshness:
         try:
-            added = datetime.strptime(date_added[:10], "%Y-%m-%d")
+            added = datetime.strptime(freshness, "%Y-%m-%d")
             days_since = (datetime.now() - added).days
             if days_since < 14:
                 return PillarScore(name="Timeline", temperature="hot", score=3,

@@ -49,7 +49,10 @@ def _dod_sanity_check(dod_str: str, notice: "NoticeData") -> bool:
     if not dod_str or not dod_str.strip():
         return True  # No DOD to check — let other signals decide
 
-    reference_date = notice.date_added or ""
+    # Compare DOD against the notice's PUBLICATION date (the filing proxy), not
+    # date_added (now the run date). Fall back to date_added for imports that
+    # carry no publication date.
+    reference_date = notice.date_published or notice.date_added or ""
     if not reference_date:
         return True  # No filing date to compare against
 
@@ -2234,6 +2237,7 @@ def enrich_obituary_data(
     skip_dm_address: bool = False,
     tracerfy_tier1: bool = False,
     skip_ancestry: bool = False,
+    deep_heirs: bool = False,
 ) -> None:
     """Search for obituaries and enrich notices with deceased owner data.
 
@@ -2242,6 +2246,10 @@ def enrich_obituary_data(
       Phase B: For each confirmed deceased, verify heirs alive/dead,
                rank decision-makers, and apply joint-owner fallback
                for snippet-only matches without survivors.
+
+    When ``deep_heirs`` is set (and Enformion creds are configured), Phase B
+    resolves the heir set from the Enformion relatives graph FIRST (grounded,
+    no hallucination), falling back to the obituary-survivor waterfall on a miss.
 
     Updates notices in-place.
     """
@@ -2682,6 +2690,7 @@ def enrich_obituary_data(
 
     heir_verified_count = 0
     joint_owner_dm_count = 0
+    enformion_dm_count = 0
     research_dm_count = 0
     snippet_dm_count = 0
     no_dm_possible_count = 0
@@ -2783,8 +2792,36 @@ def enrich_obituary_data(
                 j, len(matches), notice.owner_name, notice.owner_street,
             )
 
+        # Path E: Enformion deep-heir resolution (opt-in via --deep-heirs).
+        # Runs only for a confirmed-deceased owner that no cheaper high-confidence
+        # path already resolved (Path -1 surviving co-owner on title, Path 0 court
+        # executor). Replaces the hallucination-prone Haiku survivor extraction
+        # with the grounded provider relatives graph. Falls through on miss.
+        if deep_heirs and not ranked_dms and not parsed.get("_probate_preset"):
+            try:
+                from enformion_heir import resolve_heirs_enformion
+
+                # Deceased name: obituary-confirmed full name, else parsed owner name.
+                enf_names = (
+                    parse_tax_owner_name(raw_name) if is_tax_name
+                    else _parse_notice_owner_name(raw_name)
+                )
+                deceased_name = parsed.get("full_name") or (enf_names[0] if enf_names else "")
+                enf_result = resolve_heirs_enformion(notice, parsed, deceased_name=deceased_name)
+            except Exception as e:
+                logger.warning("  [%d/%d] Enformion heir resolution failed: %s", j, len(matches), e)
+                enf_result = None
+            if enf_result:
+                ranked_dms, error_info = enf_result
+                enformion_dm_count += 1
+                _enf_dm = ranked_dms[0]["name"] if ranked_dms else "(none)"
+                logger.info(
+                    "  [%d/%d] Enformion DM: %s (%d heirs)",
+                    j, len(matches), _enf_dm, len(ranked_dms),
+                )
+
         # Path 1: Full-page match with survivors → run heir verification
-        # Skip if Path -1 (joint co-owner) or Path 0 (probate) already set DM
+        # Skip if Path -1 (joint co-owner), Path 0 (probate), or Path E (Enformion) set DM
         if has_survivors and not skip_heir_verification and not ranked_dms:
             logger.info(
                 "  [%d/%d] Verifying heirs for %s (%d survivors)...",
@@ -3152,6 +3189,8 @@ def enrich_obituary_data(
                 dm_identified, confirmed, 100 * dm_identified / confirmed if confirmed else 0)
     logger.info("  DM verified living:     %d", dm_verified_living)
     logger.info("  Heir-verified records:  %d", heir_verified_count)
+    if enformion_dm_count:
+        logger.info("  Enformion heir sets:    %d", enformion_dm_count)
     logger.info("  Joint-owner DM added:   %d", joint_owner_dm_count)
     logger.info("  Re-search DM added:     %d", research_dm_count)
     logger.info("  Snippet DM added:       %d", snippet_dm_count)

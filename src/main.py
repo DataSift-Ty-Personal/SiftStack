@@ -178,8 +178,13 @@ async def actor_main() -> None:
         drive_key_b64 = actor_input.get("google_service_account_key", "")
 
         # Pipeline toggles
-        do_tracerfy = actor_input.get("run_tracerfy", True)
+        do_tracerfy = actor_input.get("run_tracerfy", False)
         do_notify_slack = actor_input.get("notify_slack", True)
+        # Deep prospecting (obituary/heir/DM resolution -> skip trace -> DP PDFs) is
+        # OFF by default: the daily run uploads data + screenshots straight to
+        # DataSift, and a separate pipeline handles deep prospecting. Flip
+        # resolve_heirs on to deep-prospect inline. All modules stay in the tree.
+        resolve_heirs = actor_input.get("resolve_heirs", False)
 
         # Buy box / filter toggles
         include_vacant = actor_input.get("include_vacant", False)
@@ -227,6 +232,10 @@ async def actor_main() -> None:
 
         # Track seen notice IDs for incremental dedup
         seen_ids: set[str] = set()
+        # One business-tz run date for the whole run so every dataset row shares
+        # it (no midnight straddle across incremental pushes) and the run-window
+        # cutoff matches the enrichment date_added stamp.
+        run_today = config.run_date()
 
         def _notice_id(url: str) -> str:
             import re
@@ -244,9 +253,11 @@ async def actor_main() -> None:
                     seen_ids.add(nid)
                 unique.append(n)
             if unique:
+                _today = run_today  # one business-tz date for the whole run
                 await Actor.push_data([
                     {
-                        "date_added": n.date_added,
+                        "date_added": n.date_added or _today,
+                        "date_published": n.date_published,
                         "address": n.address,
                         "city": n.city,
                         "state": n.state,
@@ -315,10 +326,7 @@ async def actor_main() -> None:
                 """Mid-run persistence — if a later search crashes, progress is kept."""
                 try:
                     await kvs.set_value("seen_notice_ids", ids)
-                    await kvs.set_value(
-                        "last_run_date",
-                        datetime.now().strftime("%Y-%m-%d"),
-                    )
+                    await kvs.set_value("last_run_date", run_today)
                 except Exception as e:
                     Actor.log.warning("Failed to persist seen_notice_ids to KVS: %s", e)
 
@@ -351,6 +359,7 @@ async def actor_main() -> None:
                 skip_vacant_filter=include_vacant,
                 skip_commercial_filter=include_commercial,
                 skip_entity_filter=include_entities,
+                skip_obituary=not resolve_heirs,  # deep prospecting off by default
                 source_label="Apify Actor",
             )
             notices = run_enrichment_pipeline(notices, opts)
@@ -416,7 +425,7 @@ async def actor_main() -> None:
                 try:
                     from report_generator import generate_record_pdf
                     kvs = await Actor.open_key_value_store()
-                    kvs_id = kvs._id if hasattr(kvs, '_id') else ''
+                    kvs_id = getattr(kvs, 'id', None) or getattr(kvs, '_id', '')
                     report_dir = Path("output/reports")
 
                     for n in dp_candidates:
@@ -465,6 +474,35 @@ async def actor_main() -> None:
             elif drive_folder_id:
                 Actor.log.warning("google_drive_folder_id set but google_service_account_key missing — skipping Drive upload")
 
+            # ── Host notice screenshots (proof-of-source) ─────────────
+            # Push each foreclosure's notice screenshot to the KVS and set a
+            # shareable URL so the DataSift Notes link + "Notice Screenshot"
+            # field travel with the record. Mirrors the PDF KVS pattern above.
+            try:
+                shots = [n for n in notices if getattr(n, "notice_screenshot_path", "")]
+                if shots:
+                    if not kvs:
+                        kvs = await Actor.open_key_value_store()
+                    kvs_id = getattr(kvs, 'id', None) or getattr(kvs, '_id', '')
+                    hosted = 0
+                    for n in shots:
+                        p = Path(n.notice_screenshot_path)
+                        if not p.exists():
+                            continue
+                        with open(p, "rb") as f:
+                            await kvs.set_value(p.name, f.read(), content_type="image/png")
+                        # Only publish a URL when we have a real store id; a blank
+                        # id would yield a 404 image. Degrade to local path (no
+                        # inline image) rather than a broken Slack image block.
+                        if kvs_id:
+                            n.notice_screenshot_url = (
+                                f"https://api.apify.com/v2/key-value-stores/{kvs_id}/records/{p.name}"
+                            )
+                        hosted += 1
+                    Actor.log.info("Hosted %d notice screenshots in KVS", hosted)
+            except Exception as e:
+                Actor.log.warning("Notice screenshot hosting failed: %s, continuing", e)
+
             # ── DataSift CSVs → KVS (manual upload) ─────────────────
             # Generate DataSift-formatted CSVs and save to Apify KVS
             # for manual download + upload to DataSift (more reliable than
@@ -480,7 +518,7 @@ async def actor_main() -> None:
                     with open(info["path"], "rb") as f:
                         await kvs.set_value(key, f.read(), content_type="text/csv")
                     # Build public download URL
-                    kvs_id = kvs._id if hasattr(kvs, '_id') else ''
+                    kvs_id = getattr(kvs, 'id', None) or getattr(kvs, '_id', '')
                     url = f"https://api.apify.com/v2/key-value-stores/{kvs_id}/records/{key}"
                     datasift_csv_urls.append({"label": info["label"], "url": url, "records": info.get("count", "?")})
                     Actor.log.info("DataSift CSV (%s) saved to KVS: %s", info["label"], key)
@@ -514,7 +552,9 @@ async def actor_main() -> None:
 
             if do_notify_slack and config.SLACK_WEBHOOK_URL:
                 try:
-                    from slack_notifier import send_slack_notification, _send_webhook
+                    from slack_notifier import (
+                        send_slack_notification, send_record_package, _send_webhook,
+                    )
 
                     # Send standard run summary with cost breakdown
                     send_slack_notification(
@@ -522,6 +562,10 @@ async def actor_main() -> None:
                         elapsed_min=elapsed_min,
                         cost_breakdown=cost_breakdown,
                     )
+
+                    # Send the per-record Sift upload package: details + inline
+                    # notice screenshots (hosted to KVS above), chunked into batches.
+                    send_record_package(notices)
 
                     # Send DataSift CSV download links as a follow-up message
                     if datasift_csv_urls:
@@ -548,7 +592,7 @@ async def actor_main() -> None:
                     Actor.log.warning("Slack notification failed: %s", e)
 
             # ── Save last_run_date + seen_notice_ids to Apify KVS for next run ─────
-            await kvs.set_value("last_run_date", datetime.now().strftime("%Y-%m-%d"))
+            await kvs.set_value("last_run_date", run_today)
             await kvs.set_value("seen_notice_ids", seen_ids)
             Actor.log.info(
                 "Saved last_run_date + %d seen_notice_ids to KVS for next daily run",
@@ -645,6 +689,7 @@ def _run_pdf_import(args) -> None:
         max_heir_depth=args.max_heir_depth,
         skip_dm_address=args.skip_dm_address,
         tracerfy_tier1=getattr(args, "tracerfy_tier1", False),
+        deep_heirs=getattr(args, "deep_heirs", False),
         source_label=f"PDF import ({pdf_path.name})",
     )
     notices = run_enrichment_pipeline(notices, opts)
@@ -721,6 +766,7 @@ def _run_photo_import(args) -> None:
         max_heir_depth=args.max_heir_depth,
         skip_dm_address=args.skip_dm_address,
         tracerfy_tier1=getattr(args, "tracerfy_tier1", False),
+        deep_heirs=getattr(args, "deep_heirs", False),
         source_label=f"Photo import ({folder.name})",
     )
     notices = run_enrichment_pipeline(notices, opts)
@@ -821,6 +867,7 @@ def _run_csv_import(args) -> None:
         max_heir_depth=args.max_heir_depth,
         skip_dm_address=args.skip_dm_address,
         tracerfy_tier1=getattr(args, "tracerfy_tier1", False),
+        deep_heirs=getattr(args, "deep_heirs", False),
         source_label=f"CSV import ({primary_name})",
     )
     detect_existing_enrichment(notices, opts)
@@ -1211,6 +1258,12 @@ def cli_main() -> None:
         "--tracerfy-tier1",
         action="store_true",
         help="Use Tracerfy as primary DM address lookup ($0.02/record)",
+    )
+    parser.add_argument(
+        "--deep-heirs",
+        action="store_true",
+        help="Resolve deceased-owner heirs via Enformion Person Search (grounded "
+             "relatives graph, ~$0.35/match) instead of obituary survivor parsing",
     )
     parser.add_argument(
         "--skip-tracerfy",
@@ -1755,6 +1808,7 @@ def _run_scrape_pipeline(args, searches) -> None:
         max_heir_depth=args.max_heir_depth,
         skip_dm_address=args.skip_dm_address,
         tracerfy_tier1=getattr(args, "tracerfy_tier1", False),
+        deep_heirs=getattr(args, "deep_heirs", False),
         source_label=f"CLI {args.mode}",
     )
     notices = run_enrichment_pipeline(notices, opts)
@@ -1806,6 +1860,29 @@ def _run_scrape_pipeline(args, searches) -> None:
                                      len(tiers_map), len(dp_cands))
                     except Exception as e:
                         logging.warning("Per-record Trestle scoring failed: %s", e)
+
+    # Host notice screenshots (proof-of-source) so the link travels with the
+    # record into DataSift (Notes + "Notice Screenshot" field). Uses Google
+    # Drive when configured, otherwise references the local PNG path.
+    try:
+        from notice_screenshot import (
+            host_screenshots_via_drive,
+            set_local_screenshot_urls,
+        )
+        captured = sum(1 for n in notices if n.notice_screenshot_path)
+        if captured:
+            hosted = host_screenshots_via_drive(
+                notices,
+                config.GOOGLE_DRIVE_FOLDER_ID,
+                config.GOOGLE_SERVICE_ACCOUNT_KEY,
+            )
+            local_only = set_local_screenshot_urls(notices)
+            logging.info(
+                "Notice screenshots: %d captured, %d hosted on Drive, %d local-only",
+                captured, hosted, local_only,
+            )
+    except Exception:
+        logging.exception("Notice screenshot hosting failed, continuing")
 
     # Write output
     if args.split:

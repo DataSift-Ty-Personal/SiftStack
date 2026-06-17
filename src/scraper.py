@@ -49,6 +49,80 @@ async def delay() -> None:
     await asyncio.sleep(wait)
 
 
+# ── Scrapfly detail backend ───────────────────────────────────────────
+# When config.SCRAPE_BACKEND == "scrapfly", the gated notice detail fetch
+# (anti-bot, reCAPTCHA, and the proof-of-source screenshot) runs through the
+# Scrapfly API instead of Playwright + 2Captcha. Playwright still drives the
+# saved-search navigation and supplies each notice ID; on any Scrapfly failure
+# the code falls back to the in-house 2Captcha path, so the swap is safe.
+
+_scrapfly_client = None
+_scrapfly_login_ok: bool | None = None
+_SCRAPFLY_SESSION = "tnpn-scrape"
+
+
+def _get_scrapfly_client():
+    """Lazily create + log in a Scrapfly client (cached). Returns None on failure."""
+    global _scrapfly_client, _scrapfly_login_ok
+    if _scrapfly_login_ok is False:
+        return None  # already tried and failed this run; don't hammer login
+    if _scrapfly_client is None:
+        try:
+            from scrapfly_client import ScrapflyNoticeClient
+            _scrapfly_client = ScrapflyNoticeClient()
+        except Exception:
+            logger.error("Scrapfly client init failed; using Playwright path", exc_info=True)
+            _scrapfly_login_ok = False
+            return None
+    if _scrapfly_login_ok is None:
+        _scrapfly_login_ok = _scrapfly_client.login(session=_SCRAPFLY_SESSION)
+        if not _scrapfly_login_ok:
+            logger.error("Scrapfly login failed; using Playwright path")
+            return None
+    return _scrapfly_client
+
+
+async def _scrapfly_notice(notice_id: str, source_url: str, search, llm_api_key):
+    """Fetch + parse one notice via Scrapfly (content + screenshot).
+
+    Returns a NoticeData on success, or None to signal the caller should fall
+    back to the Playwright + 2Captcha path.
+    """
+    client = _get_scrapfly_client()
+    if client is None:
+        return None
+    want_shot = (
+        config.CAPTURE_NOTICE_SCREENSHOTS
+        and search.notice_type in config.NOTICE_SCREENSHOT_TYPES
+    )
+    try:
+        res = client.fetch_notice(
+            notice_id or source_url, session=_SCRAPFLY_SESSION, want_screenshot=want_shot,
+        )
+    except Exception:
+        logger.warning("  Scrapfly fetch raised for ID=%s", notice_id, exc_info=True)
+        return None
+    if not res.ok:
+        logger.warning("  Scrapfly fetch not ok for ID=%s: %s", notice_id, res.error)
+        return None
+
+    from notice_parser import parse_notice_html
+    notice = await parse_notice_html(
+        res.content_html, search.county, search.notice_type, source_url, llm_api_key,
+    )
+    if res.screenshot_bytes:
+        try:
+            from notice_screenshot import _screenshot_filename
+            out_dir = config.NOTICE_SCREENSHOT_DIR
+            out_dir.mkdir(parents=True, exist_ok=True)
+            shot_path = out_dir / _screenshot_filename(notice_id, notice.address)
+            shot_path.write_bytes(res.screenshot_bytes)
+            notice.notice_screenshot_path = str(shot_path)
+        except Exception:
+            logger.debug("  Saving Scrapfly screenshot failed", exc_info=True)
+    return notice
+
+
 # ── Login ─────────────────────────────────────────────────────────────
 
 
@@ -192,8 +266,13 @@ async def run_saved_search(
     max_notices: int = 0,
     seen_ids: dict[str, str] | None = None,
     captcha_failed_ids: dict[str, dict] | None = None,
+    target_ids: set[str] | None = None,
 ) -> list[NoticeData]:
     """Select a saved search from the dropdown, paginate, and scrape each notice.
+
+    When ``target_ids`` is provided (screenshot backfill), only notices whose ID
+    is in the set are opened/solved; all others are skipped before the CAPTCHA,
+    and the cross-run seen-ID skip is bypassed so already-seen targets re-process.
 
     Args:
         on_page_batch: Optional async callback(list[NoticeData]) called after each page
@@ -258,6 +337,7 @@ async def run_saved_search(
         logger.info("  Scraping page %d/%d", current_page, total_pages)
         page_notices = await _scrape_results_page(
             page, search, since_date, llm_api_key, seen_ids, captcha_failed_ids,
+            target_ids=target_ids,
         )
         notices.extend(page_notices)
 
@@ -307,6 +387,14 @@ async def run_saved_search(
 # ── Per-Page Scraping ─────────────────────────────────────────────────
 
 
+def _address_matches(target: str, addr: str) -> bool:
+    """True if the target address keyword (house# + street) appears in addr."""
+    def norm(s: str) -> str:
+        return re.sub(r"\s+", " ", (s or "").lower()).strip()
+    t = norm(target)
+    return bool(t) and t in norm(addr)
+
+
 async def _scrape_results_page(
     page: Page,
     search: SavedSearch,
@@ -314,8 +402,16 @@ async def _scrape_results_page(
     llm_api_key: str | None = None,
     seen_ids: dict[str, str] | None = None,
     captcha_failed_ids: dict[str, dict] | None = None,
+    target_ids: set[str] | None = None,
+    match_address: str | None = None,
+    stop_after: int = 0,
 ) -> list[NoticeData]:
-    """Click each View button on a results page, solve CAPTCHA, parse notice."""
+    """Click each View button on a results page, solve CAPTCHA, parse notice.
+
+    match_address (backfill): only capture notices whose property address contains
+    this keyword (robust to republished/changed notice IDs). stop_after: return as
+    soon as this many notices are captured on the page.
+    """
     notices: list[NoticeData] = []
 
     # Wait for view buttons to be stable in the DOM before interacting.
@@ -387,19 +483,72 @@ async def _scrape_results_page(
                     logger.debug("  Skipping old notice (%s < %s)", pub_date, since_date)
                     break
 
-                # Click the View button → navigates to Details.aspx
+                # Backfill: read the notice ID from the row and skip non-targets
+                # WITHOUT clicking (the ID is in the row HTML), so we avoid slow
+                # detail navigation for everything except the targets.
+                if target_ids is not None:
+                    row_html = ""
+                    try:
+                        row_html = await row.evaluate("el => el.innerHTML")
+                    except Exception:
+                        pass
+                    m = re.search(r"ID=(\d+)", row_html)
+                    if not m or m.group(1) not in target_ids:
+                        break  # not a target; move to next result without clicking
+
+                # Click the View button → navigates to Details.aspx.
+                # domcontentloaded (not networkidle): the detail page is
+                # server-rendered and networkidle often never settles through a
+                # residential proxy, causing a 60s false timeout + grid loss.
                 await btn.click()
-                await page.wait_for_load_state("networkidle")
+                await page.wait_for_load_state("domcontentloaded")
                 await delay()
 
-                # Cross-run dedup: if we've seen this notice ID before, skip CAPTCHA entirely
                 notice_id = _notice_id_from_url(page.url)
-                if seen_ids is not None and notice_id and notice_id in seen_ids:
-                    logger.info("  Skipping already-processed notice ID=%s", notice_id)
+
+                # Backfill targeting: only process the requested IDs; skip the
+                # rest before the CAPTCHA so we don't pay to solve them.
+                if target_ids is not None and notice_id and notice_id not in target_ids:
                     await page.go_back()
-                    await page.wait_for_load_state("networkidle")
+                    await page.wait_for_load_state("domcontentloaded")
                     await delay()
                     break  # next result
+
+                # Cross-run dedup: skip notices seen in prior runs (no CAPTCHA).
+                # Bypassed during backfill so already-seen targets re-process.
+                if target_ids is None and seen_ids is not None and notice_id and notice_id in seen_ids:
+                    logger.info("  Skipping already-processed notice ID=%s", notice_id)
+                    await page.go_back()
+                    await page.wait_for_load_state("domcontentloaded")
+                    await delay()
+                    break  # next result
+
+                # ── Scrapfly backend: fetch content + screenshot via API ──
+                if config.SCRAPE_BACKEND == "scrapfly":
+                    sf_notice = await _scrapfly_notice(
+                        notice_id, page.url, search, llm_api_key,
+                    )
+                    if sf_notice is not None:
+                        if pub_date:
+                            sf_notice.date_published = pub_date
+                        if seen_ids is not None and notice_id:
+                            seen_ids[notice_id] = sf_notice.date_published or datetime.now().strftime("%Y-%m-%d")
+                        if not is_valid_foreclosure(sf_notice):
+                            logger.debug("  Filtered out (not foreclosure): %s", sf_notice.source_url)
+                        elif not is_target_county(sf_notice.raw_text, search.county):
+                            logger.debug("  Filtered out (wrong county): %s", sf_notice.source_url)
+                        else:
+                            notices.append(sf_notice)
+                            logger.debug("  Kept notice (scrapfly): %s", sf_notice.source_url)
+                        await page.go_back()
+                        await page.wait_for_load_state("domcontentloaded")
+                        if "details" in page.url.lower():
+                            await page.go_back()
+                            await page.wait_for_load_state("domcontentloaded")
+                        await delay()
+                        break  # next result
+                    # Scrapfly failed: fall through to the Playwright + 2Captcha path
+                    logger.warning("  Scrapfly miss for ID=%s; falling back to 2Captcha", notice_id)
 
                 # Check if notice content is already visible (CAPTCHA previously solved in session)
                 content_visible = await page.query_selector("text='Notice Content'")
@@ -421,18 +570,35 @@ async def _scrape_results_page(
                             }
                         # Navigate back and retry
                         await page.go_back()
-                        await page.wait_for_load_state("networkidle")
+                        await page.wait_for_load_state("domcontentloaded")
                         await delay()
                         continue
 
+                # Ensure the notice body actually rendered before parsing/capturing.
+                # Through a residential proxy the View-Notice postback content can
+                # arrive after the solve returns (especially via the "gate cleared"
+                # fallback), which would otherwise parse an empty/partial notice and
+                # leave the sale date unhighlighted.
+                try:
+                    await page.wait_for_function(
+                        "() => { const e = document.querySelector('#right_content');"
+                        " return e && e.innerText && e.innerText.length > 400; }",
+                        timeout=15000,
+                    )
+                except PwTimeout:
+                    logger.warning("  Notice body slow to render for ID=%s; proceeding", notice_id)
+
                 # Parse the now-visible notice text
                 notice = await parse_notice_page(page, search.county, search.notice_type, llm_api_key)
+                # The results-grid "Published:" date is the authoritative publication
+                # date. date_added (when we added the record) is stamped later by the
+                # enrichment pipeline with the actual run date.
                 if pub_date:
-                    notice.date_added = pub_date
+                    notice.date_published = pub_date
 
                 # Record this notice ID so future runs don't re-process it
                 if seen_ids is not None and notice_id:
-                    seen_ids[notice_id] = notice.date_added or datetime.now().strftime("%Y-%m-%d")
+                    seen_ids[notice_id] = notice.date_published or datetime.now().strftime("%Y-%m-%d")
 
                 # Apply foreclosure filter
                 if not is_valid_foreclosure(notice):
@@ -441,18 +607,35 @@ async def _scrape_results_page(
                 # is actually in a different county (search false positive)
                 elif not is_target_county(notice.raw_text, search.county):
                     logger.debug("  Filtered out (wrong county): %s", notice.source_url)
+                # Backfill address match: only capture the requested property
+                elif match_address and not _address_matches(match_address, notice.address):
+                    logger.debug("  Skipping non-matching address: %s", notice.address)
                 else:
+                    # Capture a proof-of-source screenshot of the live notice
+                    # page before navigating back (foreclosures only by default).
+                    # Best-effort: never let a screenshot failure drop a record.
+                    if (config.CAPTURE_NOTICE_SCREENSHOTS
+                            and notice.notice_type in config.NOTICE_SCREENSHOT_TYPES):
+                        from notice_screenshot import capture_notice_screenshot
+                        shot = await capture_notice_screenshot(
+                            page, notice_id=notice_id, address=notice.address,
+                            owner_name=notice.owner_name, auction_date=notice.auction_date,
+                        )
+                        if shot:
+                            notice.notice_screenshot_path = str(shot)
                     notices.append(notice)
                     logger.debug("  Kept notice: %s", notice.source_url)
 
                 # Navigate back to the results page
                 await page.go_back()
-                await page.wait_for_load_state("networkidle")
+                await page.wait_for_load_state("domcontentloaded")
                 # Sometimes the back takes us to the CAPTCHA page, need another back
                 if "details" in page.url.lower():
                     await page.go_back()
-                    await page.wait_for_load_state("networkidle")
+                    await page.wait_for_load_state("domcontentloaded")
                 await delay()
+                if stop_after and len(notices) >= stop_after:
+                    return notices  # captured enough on this page; stop early
                 break  # Success — next result
 
             except PwTimeout:
@@ -460,7 +643,7 @@ async def _scrape_results_page(
                 # Try to recover by going back to results
                 try:
                     await page.go_back()
-                    await page.wait_for_load_state("networkidle")
+                    await page.wait_for_load_state("domcontentloaded")
                 except Exception:
                     pass
                 await delay()
@@ -471,7 +654,7 @@ async def _scrape_results_page(
                 if "search" not in page.url.lower():
                     try:
                         await page.go_back()
-                        await page.wait_for_load_state("networkidle")
+                        await page.wait_for_load_state("domcontentloaded")
                     except Exception:
                         pass
                 await delay()
@@ -669,6 +852,145 @@ def save_captcha_failed_ids(failed: dict[str, dict]) -> None:
 # ── Main Entry Point ─────────────────────────────────────────────────
 
 
+async def run_keyword_search(
+    page: Page,
+    keyword: str,
+    llm_api_key: str | None = None,
+    months: int = 12,
+    target_ids: set[str] | None = None,
+    seen_ids: dict[str, str] | None = None,
+    captcha_failed_ids: dict[str, dict] | None = None,
+    match_address: str | None = None,
+    stop_after: int = 0,
+) -> list[NoticeData]:
+    """Run an ad-hoc keyword search over a wide date window and scrape matches.
+
+    Used to backfill screenshots for notices that rolled off the saved search's
+    date window. The keyword (e.g. a street address) is matched against notice
+    text; target_ids narrows the capture to the exact notice(s) wanted.
+    """
+    logger.info("Keyword search: %r (last %d months)", keyword, months)
+    if not await _navigate_to_dashboard(page):
+        if not (await _try_relogin(page) and await _navigate_to_dashboard(page)):
+            return []
+
+    # Synthetic context: foreclosure + Knox (is_target_county still validates the
+    # actual property county, so Blount/Powell properties pass too).
+    search = SavedSearch(county="Knox", notice_type="foreclosure",
+                         saved_search_name=f"keyword:{keyword}")
+    try:
+        await page.fill(config.SEL_KEYWORD_SEARCH, keyword)
+        # Date-range controls live in a collapsed panel; set them via JS.
+        await page.evaluate(
+            """(m) => {
+                const r = document.querySelector('#ctl00_ContentPlaceHolder1_as1_rbLastNumMonths');
+                if (r) { r.checked = true; r.dispatchEvent(new Event('click', {bubbles: true})); }
+                const t = document.querySelector('#ctl00_ContentPlaceHolder1_as1_txtLastNumMonths');
+                if (t) { t.value = String(m); }
+            }""",
+            months,
+        )
+        async with page.expect_navigation(wait_until="domcontentloaded", timeout=40000):
+            await page.click(config.SEL_SEARCH_GO)
+    except Exception:
+        logger.error("Keyword search submit failed for %r", keyword)
+        return []
+
+    await delay()
+    if "search" not in page.url.lower():
+        logger.error("Keyword search did not reach results for %r (%s)", keyword, page.url)
+        return []
+
+    await _set_per_page(page)
+
+    notices: list[NoticeData] = []
+    current_page, total_pages = await _get_page_info(page)
+    while True:
+        page_notices = await _scrape_results_page(
+            page, search, None, llm_api_key, seen_ids, captcha_failed_ids,
+            target_ids=target_ids, match_address=match_address, stop_after=stop_after,
+        )
+        notices.extend(page_notices)
+        if target_ids and len(notices) >= len(target_ids):
+            break
+        if stop_after and len(notices) >= stop_after:
+            break
+        if current_page >= total_pages:
+            break
+        next_btn = await page.query_selector(SEL_NEXT_PAGE_BUTTON)
+        if next_btn and not await next_btn.get_attribute("disabled"):
+            await next_btn.click()
+            await page.wait_for_load_state("domcontentloaded")
+            await delay()
+            current_page, total_pages = await _get_page_info(page)
+        else:
+            break
+
+    logger.info("  Keyword %r: captured %d", keyword, len(notices))
+    return notices
+
+
+async def scrape_by_keywords(
+    targets: list[dict],
+    proxy_url: str | None = None,
+    llm_api_key: str | None = None,
+    months: int = 12,
+) -> list[NoticeData]:
+    """Log in once, then run a keyword search per target and scrape matches.
+
+    targets: list of {"keyword": str, "target_id": str|None}. Returns all
+    captured NoticeData. Never persists seen_ids / last_run (backfill only).
+    """
+    all_notices: list[NoticeData] = []
+    async with async_playwright() as p:
+        launch_opts: dict = {"headless": True}
+        if proxy_url:
+            from urllib.parse import urlparse
+            parsed = urlparse(proxy_url)
+            proxy_cfg: dict = {"server": f"{parsed.scheme}://{parsed.hostname}:{parsed.port}"}
+            if parsed.username:
+                proxy_cfg["username"] = parsed.username
+            if parsed.password:
+                proxy_cfg["password"] = parsed.password
+            launch_opts["proxy"] = proxy_cfg
+            logger.info("Using proxy: %s:%s", parsed.hostname, parsed.port)
+        browser = await p.chromium.launch(**launch_opts)
+        context = await browser.new_context(
+            user_agent=(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            )
+        )
+        context.set_default_timeout(60_000)
+        await _load_cookies(context)
+        page = await context.new_page()
+        if not await _is_session_valid(page):
+            if not await login(page):
+                logger.error("Login failed, aborting keyword backfill")
+                await browser.close()
+                return []
+            await _save_cookies(context)
+        for t in targets:
+            kw = t.get("keyword")
+            if not kw:
+                continue
+            # Capture the property's current notice by address (not by a stored
+            # ID, which may have rolled off), the first foreclosure that matches.
+            try:
+                all_notices.extend(
+                    await run_keyword_search(
+                        page, kw, llm_api_key, months,
+                        match_address=kw, stop_after=1,
+                    )
+                )
+            except Exception:
+                logger.exception("Keyword search crashed for %r", kw)
+                await _try_relogin(page)
+        await browser.close()
+    logger.info("Keyword backfill captured %d notices total", len(all_notices))
+    return all_notices
+
+
 async def scrape_all(
     mode: str = "daily",
     searches: list[SavedSearch] | None = None,
@@ -681,6 +1003,8 @@ async def scrape_all(
     seen_ids: dict[str, str] | None = None,
     captcha_failed_ids: dict[str, dict] | None = None,
     on_search_complete=None,
+    target_ids: set[str] | None = None,
+    persist_state: bool = True,
 ) -> list[NoticeData]:
     """Main entry point for scraping.
 
@@ -792,6 +1116,7 @@ async def scrape_all(
                     on_page_batch=on_batch, start_page=start_page,
                     max_notices=remaining, seen_ids=seen_ids,
                     captcha_failed_ids=captcha_failed_ids,
+                    target_ids=target_ids,
                 )
                 all_notices.extend(search_notices)
             except Exception:
@@ -803,6 +1128,7 @@ async def scrape_all(
                             page, search, since_date, llm_api_key,
                             on_page_batch=on_batch, start_page=start_page,
                             max_notices=remaining, seen_ids=seen_ids,
+                            target_ids=target_ids,
                         )
                         all_notices.extend(search_notices)
                     except Exception:
@@ -812,9 +1138,10 @@ async def scrape_all(
             # from completed searches is not lost. Covers the re-pull bug where a
             # single end-of-run save at line 722 used to silently skip on exceptions.
             try:
-                save_seen_ids(seen_ids)
-                if mode == "daily":
-                    save_last_run_date()
+                if persist_state:
+                    save_seen_ids(seen_ids)
+                    if mode == "daily":
+                        save_last_run_date()
                 if on_search_complete is not None:
                     await on_search_complete(seen_ids)
             except Exception:
@@ -826,15 +1153,14 @@ async def scrape_all(
 
         await browser.close()
 
-    if mode == "daily":
-        save_last_run_date()
-    save_seen_ids(seen_ids)
-
-    # Persist CAPTCHA failures + surface a prominent summary so operators
-    # notice silent drops. Previously these notices disappeared from the
-    # pipeline with no end-of-run signal; now they show up in the log and
-    # on disk for follow-up.
-    save_captcha_failed_ids(captcha_failed_ids)
+    # Persist run state unless this is a backfill (persist_state=False), which
+    # must not advance last_run.json or clobber the seen-ID cache.
+    if persist_state:
+        if mode == "daily":
+            save_last_run_date()
+        save_seen_ids(seen_ids)
+        # Persist CAPTCHA failures so operators can follow up on silent drops.
+        save_captcha_failed_ids(captcha_failed_ids)
     new_failed = len(captcha_failed_ids) - prior_failed
     if new_failed > 0:
         by_search: dict[str, int] = {}

@@ -387,8 +387,10 @@ def generate_record_pdf(
     notice_rows = [
         ("Notice Type", _val(notice.notice_type).replace("_", " ").title()),
         ("Date Added", _val(notice.date_added)),
-        ("Owner on Title", _val(notice.owner_name)),
     ]
+    if notice.date_published:
+        notice_rows.append(("Notice Published", _val(notice.date_published)))
+    notice_rows.append(("Owner on Title", _val(notice.owner_name)))
     if notice.auction_date:
         notice_rows.append(("Auction Date", _val(notice.auction_date)))
     if notice.source_url:

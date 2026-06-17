@@ -129,7 +129,10 @@ async def solve_captcha_and_view(page: Page) -> bool:
                 continue
 
             await view_btn.click()
-            await page.wait_for_load_state("networkidle")
+            # Use domcontentloaded, not networkidle: the notice content is
+            # server-rendered (present at DOM parse), and networkidle frequently
+            # never settles through a residential proxy (60s false timeout).
+            await page.wait_for_load_state("domcontentloaded")
 
             # Verify the notice content is now visible
             content_el = await page.query_selector("text='Notice Content'")

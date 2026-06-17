@@ -89,6 +89,7 @@ DATASIFT_COLUMNS = [
     "DM 3 Relationship",
     "Obituary URL",
     "Source URL",
+    "Notice Screenshot",
     # ── Deep prospecting fields ──
     "DM 1 Status",
     "DM 1 Source",
@@ -245,10 +246,12 @@ def _build_tags(notice: NoticeData) -> str:
     if notice.county:
         tags.append(notice.county.lower())
 
-    # Month tag from date_added
-    if notice.date_added:
+    # Month tag from the notice publication date (the meaningful cohort), falling
+    # back to date_added (the run date) when no publication date is available.
+    _month_src = notice.date_published or notice.date_added
+    if _month_src:
         try:
-            dt = datetime.strptime(notice.date_added, "%Y-%m-%d")
+            dt = datetime.strptime(_month_src, "%Y-%m-%d")
             tags.append(dt.strftime("%Y-%m"))
         except ValueError:
             pass
@@ -534,6 +537,10 @@ def _build_property_section(notice: NoticeData) -> str:
     if notice.source_url:
         parts.append(f"Source: {notice.source_url}")
 
+    # Proof-of-source: link to the screenshot of the actual published notice
+    if notice.notice_screenshot_url:
+        parts.append(f"Notice Screenshot: {notice.notice_screenshot_url}")
+
     return " | ".join(parts)
 
 
@@ -693,12 +700,17 @@ def _build_row(notice: NoticeData, notes_override: str | None = None) -> dict:
     elif notice.notice_type == "foreclosure":
         foreclosure_date = _format_date(notice.auction_date)
     elif notice.notice_type == "probate":
-        probate_open = _format_date(notice.date_added)
+        # Probate notices are published when the estate opens — use the
+        # publication date, not the run date.
+        probate_open = _format_date(notice.date_published or notice.date_added)
 
-    # Personal Representative only for probate notices
+    # Personal Representative only for probate notices. Prefer the resolved
+    # decision maker (deep prospecting), else the court-named PR that the parser
+    # puts in owner_name — so the field is populated even when deep prospecting
+    # is off (lean daily run).
     personal_rep = ""
-    if notice.notice_type == "probate" and notice.decision_maker_name:
-        personal_rep = notice.decision_maker_name
+    if notice.notice_type == "probate":
+        personal_rep = notice.decision_maker_name or notice.owner_name or ""
 
     return {
         # ── Core auto-mapped ──
@@ -765,6 +777,7 @@ def _build_row(notice: NoticeData, notes_override: str | None = None) -> dict:
         "DM 3 Relationship": notice.decision_maker_3_relationship,
         "Obituary URL": notice.obituary_url,
         "Source URL": notice.source_url,
+        "Notice Screenshot": notice.notice_screenshot_url,
         # ── Deep prospecting fields ──
         "DM 1 Status": notice.decision_maker_status,
         "DM 1 Source": notice.decision_maker_source,

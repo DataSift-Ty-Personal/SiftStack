@@ -184,17 +184,24 @@
             "editor": "checkbox"
         },
         "run_tracerfy": {
-            "title": "Run Tracerfy Skip Trace",
+            "title": "Run Tracerfy Skip Trace (deep prospecting)",
             "type": "boolean",
-            "description": "Run Tracerfy batch skip trace before DataSift upload. Populates phone/email fields in the CSV. Requires tracerfy_api_key.",
-            "default": true,
+            "description": "Run Tracerfy batch skip trace on deep-prospecting candidates. Only fires when Resolve Heirs is on. Leave OFF for the lean daily upload. Requires tracerfy_api_key.",
+            "default": false,
             "editor": "checkbox"
         },
         "notify_slack": {
             "title": "Send Slack Notification",
             "type": "boolean",
-            "description": "Send a run summary to Slack/Discord after pipeline completes. Also sends error alerts on failure. Requires slack_webhook_url.",
+            "description": "Send a run summary plus the per-record Sift upload package (details + notice screenshots) to Slack/Discord after the pipeline completes. Also sends error alerts on failure. Requires slack_webhook_url.",
             "default": true,
+            "editor": "checkbox"
+        },
+        "resolve_heirs": {
+            "title": "Resolve Heirs (deep prospecting)",
+            "type": "boolean",
+            "description": "Run obituary/deceased-owner detection and heir + decision-maker resolution during enrichment. OFF by default: the daily run uploads data + screenshots straight to DataSift, and deep prospecting is handled in a separate pipeline. Turn ON to deep-prospect inline. Requires anthropic_api_key.",
+            "default": false,
             "editor": "checkbox"
         },
         "include_vacant": {

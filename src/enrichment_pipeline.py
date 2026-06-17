@@ -49,6 +49,7 @@ class PipelineOptions:
     max_heir_depth: int = 2
     skip_dm_address: bool = False
     tracerfy_tier1: bool = False
+    deep_heirs: bool = False  # opt-in: resolve heirs via Enformion Person Search
 
     # Smart detection flags (set by detect_existing_enrichment)
     has_smarty: bool = False
@@ -226,7 +227,7 @@ def _validate_records(notices: list[NoticeData]) -> list[NoticeData]:
             issues.append("missing zip")
 
         # Date format validation (only if populated)
-        for date_field in ("date_added", "auction_date"):
+        for date_field in ("date_added", "date_published", "auction_date"):
             val = getattr(n, date_field, "")
             if val and not _DATE_RE.match(val):
                 issues.append(f"bad {date_field}: {val!r}")
@@ -290,11 +291,23 @@ def run_enrichment_pipeline(
         except Exception as e:
             logger.warning("  Filter sold failed: %s", e)
 
-    # ── Stamp run_id on all records ─────────────────────────────────
+    # ── Stamp run_id + date_added on all records ────────────────────
+    # date_added = when WE added the record (the run date), not the notice's
+    # publication date (that lives in date_published). Only stamp records that
+    # don't already carry one — PDF/photo imports and CSV re-imports set it
+    # explicitly and must be preserved.
     run_id = _generate_run_id()
+    today = config.run_date()  # business-tz date, not naive UTC (Apify runs in UTC)
+    stamped = 0
     for n in notices:
         n.run_id = run_id
-    logger.info("Pipeline run_id: %s (%d records)", run_id, len(notices))
+        if not n.date_added.strip():
+            n.date_added = today
+            stamped += 1
+    logger.info(
+        "Pipeline run_id: %s (%d records, %d date_added=%s)",
+        run_id, len(notices), stamped, today,
+    )
 
     # ── Step 2: Deduplicate ──────────────────────────────────────────
     logger.info("── Step 2: Deduplicate ──")
@@ -523,6 +536,7 @@ def run_enrichment_pipeline(
                     skip_dm_address=opts.skip_dm_address,
                     tracerfy_tier1=getattr(opts, "tracerfy_tier1", False),
                     skip_ancestry=opts.skip_ancestry,
+                    deep_heirs=getattr(opts, "deep_heirs", False),
                 )
                 confirmed = sum(1 for n in notices if n.owner_deceased)
                 logger.info(

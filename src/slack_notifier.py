@@ -10,6 +10,7 @@ Discord webhook URLs should use the /slack suffix:
 import json
 import logging
 import os
+import time
 from datetime import datetime
 
 import requests
@@ -22,21 +23,46 @@ logger = logging.getLogger(__name__)
 # ── Error & Warning Notifications ────────────────────────────────────
 
 
-def _send_webhook(text: str, webhook_url: str | None = None) -> bool:
-    """Send a plain-text message to the configured Slack/Discord webhook."""
+def _is_discord(webhook_url: str) -> bool:
+    return "discord.com" in (webhook_url or "")
+
+
+def _send_webhook(text: str, webhook_url: str | None = None, blocks: list | None = None) -> bool:
+    """Send a message to the configured Slack/Discord webhook.
+
+    blocks (Slack Block Kit, e.g. inline image blocks) are attached when provided
+    and the target is Slack. Discord's /slack compatibility endpoint ignores
+    blocks, so callers fall back to text links there.
+    """
     webhook_url = webhook_url or os.environ.get("SLACK_WEBHOOK_URL", "")
     if not webhook_url:
         return False
-    try:
-        resp = requests.post(
-            webhook_url,
-            json={"text": text},
-            headers={"Content-Type": "application/json"},
-            timeout=10,
-        )
-        return resp.status_code in (200, 204)
-    except Exception:
-        return False
+    payload: dict = {"text": text}
+    if blocks and not _is_discord(webhook_url):
+        payload["blocks"] = blocks
+    for attempt in range(2):
+        try:
+            resp = requests.post(
+                webhook_url,
+                json=payload,
+                headers={"Content-Type": "application/json"},
+                timeout=15,
+            )
+            # Honor Slack/Discord rate limiting once before giving up.
+            if resp.status_code == 429 and attempt == 0:
+                try:
+                    wait = float(resp.headers.get("Retry-After", "1") or 1)
+                except (TypeError, ValueError):
+                    wait = 1.0
+                time.sleep(min(wait, 5))
+                continue
+            if resp.status_code not in (200, 204):
+                logger.warning("Webhook post failed: HTTP %s", resp.status_code)
+                return False
+            return True
+        except Exception:
+            return False
+    return False
 
 
 def notify_error(
@@ -224,8 +250,8 @@ def build_summary(
             lines.append(f"  Low confidence: {low_conf}")
         if estate:
             lines.append(f"  Estate fallback: {estate}")
-    else:
-        lines.append("*Deceased owners found:* 0")
+    # When deep prospecting is off (lean daily), deceased_count is 0 and this
+    # block is simply omitted — no "Deceased owners: 0" noise.
 
     # Upload result
     if upload_result:
@@ -328,3 +354,114 @@ def send_slack_notification(
     else:
         logger.error("Failed to send Slack notification")
     return sent
+
+
+# ── Per-record Sift upload package (details + inline notice screenshots) ──
+
+
+def _fmt_date(d: str) -> str:
+    """Normalize a date string to M/D/YYYY (no leading zeros), platform-safe."""
+    s = (d or "").strip()
+    if not s:
+        return ""
+    for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%m-%d-%Y"):
+        try:
+            dt = datetime.strptime(s, fmt)
+            return f"{dt.month}/{dt.day}/{dt.year}"
+        except ValueError:
+            continue
+    return s
+
+
+def _record_detail_text(n: NoticeData) -> str:
+    """The Sift-upload details for one record, as Slack mrkdwn."""
+    # Slack <url|label> links break on <, >, | in the label — sanitize the address.
+    label = (n.address or "").replace("<", " ").replace(">", " ").replace("|", "-").strip()
+    title = f"<{n.source_url}|{label}>" if (n.source_url and label) else (label or "(no address)")
+    loc = " ".join(p for p in [n.city, n.state, n.zip] if p)
+    head = f"*{title}*" + (f"\n{loc}" if loc else "")
+    meta = " | ".join(p for p in [
+        (n.notice_type or "").replace("_", " ").title() or None,
+        n.county or None,
+        f"Owner: {n.owner_name}" if n.owner_name else None,
+    ] if p)
+    dates = " | ".join(p for p in [
+        f"Added {_fmt_date(n.date_added)}" if n.date_added else None,
+        f"Sale {_fmt_date(n.auction_date)}" if n.auction_date else None,
+    ] if p)
+    return "\n".join(p for p in [head, meta, dates] if p)
+
+
+def build_record_blocks(notices: list[NoticeData]) -> list[dict]:
+    """Slack Block Kit blocks: per record, a details section plus an inline
+    notice-screenshot image when the screenshot is hosted at a public https URL.
+    """
+    blocks: list[dict] = []
+    for n in notices:
+        blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": _record_detail_text(n)}})
+        url = getattr(n, "notice_screenshot_url", "") or ""
+        if url.startswith("https://"):
+            blocks.append({
+                "type": "image",
+                "image_url": url,
+                "alt_text": (n.address or "notice")[:150],
+            })
+        blocks.append({"type": "divider"})
+    return blocks
+
+
+def send_record_package(
+    notices: list[NoticeData],
+    *,
+    webhook_url: str | None = None,
+    batch_size: int = 8,
+    max_records: int = 64,
+) -> bool:
+    """Post the per-record Sift upload package (details + inline notice
+    screenshots) to Slack, chunked to stay under Block Kit / message limits. On
+    Discord (no Block Kit support) it falls back to text lines with clickable
+    screenshot links. Records without a hosted screenshot still appear (details
+    only).
+
+    Caps the number of records posted (max_records) so a large/historical run
+    can't spam the channel; the full list is always in the CSV. Paces sends ~1/s
+    to respect Slack webhook rate limits. Returns True if every batch sent.
+    """
+    webhook_url = webhook_url or os.environ.get("SLACK_WEBHOOK_URL", "")
+    if not webhook_url or not notices:
+        return False
+    recs = list(notices)
+    total = len(recs)
+    overflow = max(0, total - max_records)
+    recs = recs[:max_records]
+    discord = _is_discord(webhook_url)
+    ok = True
+    sent_any = False
+    for i in range(0, len(recs), batch_size):
+        if sent_any:
+            time.sleep(1)  # stay under the ~1 msg/sec webhook rate limit
+        batch = recs[i:i + batch_size]
+        header = f"*Records for Sift upload ({i + 1}-{min(i + batch_size, len(recs))} of {total})*"
+        if discord:
+            lines = [header]
+            for n in batch:
+                lines.append(_record_detail_text(n))
+                url = getattr(n, "notice_screenshot_url", "") or ""
+                if url.startswith("https://"):
+                    lines.append(f"Notice screenshot: {url}")
+                lines.append("")
+            ok = _send_webhook("\n".join(lines), webhook_url) and ok
+        else:
+            blocks = [
+                {"type": "section", "text": {"type": "mrkdwn", "text": header}},
+                {"type": "divider"},
+            ] + build_record_blocks(batch)
+            ok = _send_webhook(header, webhook_url, blocks=blocks) and ok
+        sent_any = True
+    if overflow:
+        time.sleep(1)
+        _send_webhook(
+            f"_...and {overflow} more record(s) not shown here; see the CSV for the full list._",
+            webhook_url,
+        )
+    return ok

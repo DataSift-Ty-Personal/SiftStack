@@ -5,10 +5,27 @@ import logging
 import os
 import re
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 
 load_dotenv()
+
+# ── Run date / timezone ────────────────────────────────────────────────
+# Stamp date_added (and other "today" values) in the operator's business
+# timezone, not the server clock. The Apify cloud container runs in UTC, so a
+# naive datetime.now() stamps tomorrow's date on any evening run. Knox and
+# Blount County, TN operate on US Eastern.
+BUSINESS_TIMEZONE = os.getenv("BUSINESS_TIMEZONE", "America/New_York")
+
+
+def run_date() -> str:
+    """Today's calendar date (YYYY-MM-DD) in the business timezone."""
+    try:
+        return datetime.now(ZoneInfo(BUSINESS_TIMEZONE)).strftime("%Y-%m-%d")
+    except Exception:
+        return datetime.now().strftime("%Y-%m-%d")
 
 # ── Paths ──────────────────────────────────────────────────────────────
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -46,6 +63,9 @@ SERPER_API_KEY = os.getenv("SERPER_API_KEY", "")              # Serper.dev Googl
 FIRECRAWL_API_KEY = os.getenv("FIRECRAWL_API_KEY", "")        # Firecrawl JS-rendered scraping
 TRACERFY_API_KEY = os.getenv("TRACERFY_API_KEY", "")          # Tracerfy skip tracing
 TRESTLE_API_KEY = os.getenv("TRESTLE_API_KEY", "")            # Trestle phone validation
+ENFORMION_AP_NAME = os.getenv("ENFORMION_AP_NAME", "")        # Enformion/Endato API access profile name
+ENFORMION_AP_PASSWORD = os.getenv("ENFORMION_AP_PASSWORD", "")  # Enformion/Endato API access profile password
+SCRAPFLY_KEY = os.getenv("SCRAPFLY_KEY", "")                  # Scrapfly web scraping API (residential proxy + ASP/CAPTCHA + screenshots)
 DATASIFT_EMAIL = os.getenv("DATASIFT_EMAIL", "")              # DataSift.ai login
 DATASIFT_PASSWORD = os.getenv("DATASIFT_PASSWORD", "")
 SLACK_WEBHOOK_URL = os.getenv("SLACK_WEBHOOK_URL", "")        # Slack/Discord webhook
@@ -54,6 +74,8 @@ ANCESTRY_PASSWORD = os.getenv("ANCESTRY_PASSWORD", "")
 DROPBOX_APP_KEY = os.getenv("DROPBOX_APP_KEY", "")            # Dropbox OAuth2 app key
 DROPBOX_APP_SECRET = os.getenv("DROPBOX_APP_SECRET", "")
 DROPBOX_REFRESH_TOKEN = os.getenv("DROPBOX_REFRESH_TOKEN", "")
+GOOGLE_DRIVE_FOLDER_ID = os.getenv("GOOGLE_DRIVE_FOLDER_ID", "")          # Drive folder for CSV/report/screenshot uploads (CLI)
+GOOGLE_SERVICE_ACCOUNT_KEY = os.getenv("GOOGLE_SERVICE_ACCOUNT_KEY", "")  # base64-encoded service account JSON (CLI)
 
 # ── LLM Backend ──────────────────────────────────────────────────────
 LLM_BACKEND = os.getenv("LLM_BACKEND", "anthropic")           # "anthropic", "ollama", or "openrouter"
@@ -82,6 +104,11 @@ SEL_LOGIN_SUBMIT = "#ctl00_ContentPlaceHolder1_AuthenticateIPA1_btnAuth"
 # Smart Search dashboard
 SEL_SAVED_SEARCHES_DROPDOWN = "#ctl00_ContentPlaceHolder1_as1_ddlSavedSearches"
 SEL_PER_PAGE_DROPDOWN = 'select[name$="ddlPerPage"]'
+# Ad-hoc keyword search builder (used by run_keyword_search for backfill).
+SEL_KEYWORD_SEARCH = "#ctl00_ContentPlaceHolder1_as1_txtSearch"
+SEL_KEYWORD_MONTHS_RADIO = "#ctl00_ContentPlaceHolder1_as1_rbLastNumMonths"
+SEL_KEYWORD_MONTHS_INPUT = "#ctl00_ContentPlaceHolder1_as1_txtLastNumMonths"
+SEL_SEARCH_GO = "#ctl00_ContentPlaceHolder1_as1_btnGo"
 
 # Search results (authenticated grid)
 SEL_RESULTS_GRID = "#ctl00_ContentPlaceHolder1_WSExtendedGrid1_GridView1"
@@ -100,10 +127,40 @@ REQUEST_DELAY_MAX = 3.0
 MAX_RETRIES = 3
 RESULTS_PER_PAGE = 50  # max the site allows
 
+# ── Scraping Backend ───────────────────────────────────────────────────
+# "playwright" = in-house Playwright + 2Captcha (drives one continuous session
+# through login -> saved search -> view, which the site requires).
+# "scrapfly" = route the detail fetch through Scrapfly. EXPERIMENTAL: Scrapfly
+# cleanly handles login, residential proxy, reCAPTCHA, and screenshots, but
+# tnpublicnotice.com detail pages need stateful search-session context (ASP.NET
+# cookieless session), so a direct Details.aspx?ID= fetch returns an empty
+# shell. Until the full in-session flow is built, default stays "playwright".
+SCRAPE_BACKEND = os.getenv("SCRAPE_BACKEND", "playwright").strip().lower()
+SCRAPFLY_COUNTRY = os.getenv("SCRAPFLY_COUNTRY", "us")          # proxy geolocation for Scrapfly
+SCRAPFLY_RENDER_WAIT_MS = int(os.getenv("SCRAPFLY_RENDER_WAIT_MS", "3500"))  # wait after View Notice click
+SCRAPFLY_TIMEOUT_MS = int(os.getenv("SCRAPFLY_TIMEOUT_MS", "90000"))         # per-call ceiling
+SCRAPFLY_MAX_RETRIES = int(os.getenv("SCRAPFLY_MAX_RETRIES", "2"))           # extra attempts on gate/CAPTCHA miss
+
 # ── Image Processing ───────────────────────────────────────────────────
 BLUR_THRESHOLD = int(os.getenv("BLUR_THRESHOLD", "100"))   # Laplacian variance; below = rejected as blurry
 TESSERACT_PSM_PDF = 3    # fully automatic — best for PDF tax sale tables
 TESSERACT_PSM_PHOTO = 4  # assume single column of variable-size text — best for terminal screen photos
+
+# ── Notice Screenshots (proof-of-source) ────────────────────────────────
+# Capture a full-page screenshot of each notice detail page during scraping so
+# the actual published notice travels with the record into DataSift (a clickable
+# link in Notes + the "Notice Screenshot" custom field). Adds legitimacy to
+# outreach. Disable by setting CAPTURE_NOTICE_SCREENSHOTS=false.
+CAPTURE_NOTICE_SCREENSHOTS = os.getenv(
+    "CAPTURE_NOTICE_SCREENSHOTS", "true"
+).strip().lower() not in ("0", "false", "no", "off", "")
+NOTICE_SCREENSHOT_DIR = OUTPUT_DIR / "notices"
+# Notice types we capture screenshots for (comma-separated env override).
+NOTICE_SCREENSHOT_TYPES = {
+    t.strip().lower()
+    for t in os.getenv("NOTICE_SCREENSHOT_TYPES", "foreclosure").split(",")
+    if t.strip()
+}
 
 # ── Notice Types ───────────────────────────────────────────────────────
 NOTICE_TYPES = ["foreclosure", "probate"]
