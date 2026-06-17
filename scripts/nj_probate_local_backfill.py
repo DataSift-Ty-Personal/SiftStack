@@ -1,12 +1,12 @@
-"""Local Middlesex + Somerset probate backfill.
+"""Local Middlesex + Somerset + Ocean probate backfill.
 
 Use when Modal's egress IPs are CF-blocked from the Bluestone portals.
-Scrapes both counties from the laptop (clean IP), combines, enriches,
+Scrapes all three counties from the laptop (clean IP), combines, enriches,
 writes a single CSV, optionally uploads to DataSift + Slack.
 
 Run with:
   PYTHONPATH=src python scripts/nj_probate_local_backfill.py \
-      --mx-days-back 180 --som-days-back 30 \
+      --mx-days-back 180 --som-days-back 30 --ocean-days-back 180 \
       --upload-datasift --notify-slack
 """
 
@@ -23,16 +23,20 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 
-async def _scrape_both(mx_days_back: int, som_days_back: int, headless: bool):
-    """Scrape Middlesex (DoD-based) + Somerset (File-Date-based) sequentially.
+async def _scrape_all(
+    mx_days_back: int, som_days_back: int, ocean_days_back: int, headless: bool,
+):
+    """Scrape Middlesex (DoD) + Somerset (File-Date) + Ocean (DoD) sequentially.
 
     Sequential rather than parallel to avoid Playwright contention in a
-    single Python process — Middlesex's 180-day scan dominates wall-clock
-    anyway, so parallelism saves <10%.
+    single Python process — the DoD scans dominate wall-clock anyway, so
+    parallelism saves <10%. Ocean is the same Bluestone deployment as
+    Middlesex (Death-Date filter), so it uses a DoD scan too.
     """
     from nj_middlesex_probate import (
         scrape_middlesex_probates,
         scrape_somerset_probates,
+        scrape_ocean_probates,
     )
 
     logger = logging.getLogger("nj_probate_backfill")
@@ -45,7 +49,11 @@ async def _scrape_both(mx_days_back: int, som_days_back: int, headless: bool):
     som = await scrape_somerset_probates(days_back=som_days_back, headless=headless)
     logger.info("Somerset: %d notices", len(som))
 
-    return mx, som
+    logger.info("Ocean: %d days DoD scan", ocean_days_back)
+    ocean = await scrape_ocean_probates(days_back=ocean_days_back, headless=headless)
+    logger.info("Ocean: %d notices", len(ocean))
+
+    return mx, som, ocean
 
 
 def main() -> int:
@@ -54,6 +62,8 @@ def main() -> int:
                    help="Middlesex DoD window (default 180)")
     p.add_argument("--som-days-back", type=int, default=30,
                    help="Somerset file-date window (default 30)")
+    p.add_argument("--ocean-days-back", type=int, default=180,
+                   help="Ocean DoD window (default 180)")
     p.add_argument("--headed", action="store_true", help="Show browser windows")
     p.add_argument("--upload-datasift", action="store_true",
                    help="Upload combined CSV to DataSift after enrichment")
@@ -68,14 +78,15 @@ def main() -> int:
     )
     logger = logging.getLogger("nj_probate_backfill")
 
-    mx, som = asyncio.run(_scrape_both(
+    mx, som, ocean = asyncio.run(_scrape_all(
         mx_days_back=args.mx_days_back,
         som_days_back=args.som_days_back,
+        ocean_days_back=args.ocean_days_back,
         headless=not args.headed,
     ))
-    combined = mx + som
+    combined = mx + som + ocean
     if not combined:
-        logger.error("Both scrapers returned 0 records — nothing to enrich")
+        logger.error("All scrapers returned 0 records — nothing to enrich")
         return 1
 
     from enrichment_pipeline import PipelineOptions, run_enrichment_pipeline
@@ -121,9 +132,10 @@ def main() -> int:
     if args.notify_slack and config.SLACK_WEBHOOK_URL:
         from slack_notifier import _send_webhook
         lines = [
-            f"*NJ Probate Local Backfill — Middlesex {args.mx_days_back}d + Somerset {args.som_days_back}d*",
+            f"*NJ Probate Local Backfill — Middlesex {args.mx_days_back}d + Somerset {args.som_days_back}d + Ocean {args.ocean_days_back}d*",
             f"  Middlesex: {len(mx)} notices",
             f"  Somerset: {len(som)} notices",
+            f"  Ocean: {len(ocean)} notices",
             f"Enriched total: {len(enriched)}",
             f"CSV: {csv_path.name}",
         ]
