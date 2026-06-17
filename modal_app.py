@@ -129,21 +129,44 @@ async def nj_weekly_all():
             logger.error("%s failed: %s", label, e)
             return label, [], str(e)
 
+    # First-run guard: new counties auto-cap to 30 days until their dedup
+    # bucket is populated, preventing backfill floods. Steady-state runs use
+    # the full 180-day window because dedup handles volume.
+    #
+    # Death-Date Bluestone counties (Middlesex, Ocean) filter by date of
+    # death, and filings cluster 30-150 days post-death — so they NEED the
+    # 180-day window to catch real filings, and at steady state dedup trims it
+    # to only the genuinely-new ones (~50/week for Middlesex). But on a
+    # never-seeded county the same 180-day window dumps the entire history as
+    # "new" in one batch (Ocean did ~1,579 on 2026-06-17, blowing the 8h
+    # enrichment timeout). So we size the window by whether the bucket exists:
+    # empty bucket → 30-day first run that seeds itself; populated → full 180.
+    from dedup_tracker import load_tracking as _load_tracking_for_window
+    await tracking_volume.reload.aio()
+    _seed_state = _load_tracking_for_window(TRACKING_FILE)
+    BLUESTONE_FULL_DAYS, BLUESTONE_FIRST_RUN_DAYS = 180, 30
+
+    def _bluestone_window(bucket: str) -> int:
+        return BLUESTONE_FULL_DAYS if _seed_state.get(bucket) else BLUESTONE_FIRST_RUN_DAYS
+
+    mid_days = _bluestone_window("probate")
+    ocean_days = _bluestone_window("ocean_probate")
+    logger.info(
+        "Bluestone windows (first-run guard): Middlesex=%dd, Ocean=%dd "
+        "(%dd once seeded, %dd first-run cap)",
+        mid_days, ocean_days, BLUESTONE_FULL_DAYS, BLUESTONE_FIRST_RUN_DAYS,
+    )
+
     logger.info("Starting combined weekly scrape via Modal...")
     results = await asyncio.gather(
         _safe(scrape_nj_lp_notices(counties=["Essex", "Middlesex", "Somerset", "Union"]), "NJLP"),
-        # Middlesex Bluestone has no File Date filter — only Death Date.
-        # 180 days catches the realistic death-to-file gap (filings cluster
-        # 30-150 days post-death; recent DoDs return 0 rows because the
-        # probate hasn't been filed yet). Dedup via siftstack-tracking
-        # volume handles the inevitable repeats from older DoDs.
-        _safe(scrape_middlesex_probates(days_back=180), "Middlesex Probate"),
+        # Middlesex/Ocean: Death-Date-only Bluestone — days_back comes from the
+        # first-run guard above (180 once seeded, 30 on a never-seeded county).
+        _safe(scrape_middlesex_probates(days_back=mid_days), "Middlesex Probate"),
         # Somerset Bluestone supports File Date filtering directly, so 30
-        # days of file-date is the natural cron window.
+        # days of file-date is its natural window (no guard needed).
         _safe(scrape_somerset_probates(days_back=30), "Somerset Probate"),
-        # Ocean runs the same Bluestone deployment as Middlesex (Death Date
-        # filter only), so it uses the same wide 180-day window.
-        _safe(scrape_ocean_probates(days_back=180), "Ocean Probate"),
+        _safe(scrape_ocean_probates(days_back=ocean_days), "Ocean Probate"),
         _safe(scrape_somerset_notices(include_bankruptcy=True, max_records=0), "Somerset Sheriff"),
         _safe(scrape_civilview_notices(counties=["Essex", "Middlesex", "Union"]), "CivilView Sheriff"),
     )
