@@ -44,6 +44,7 @@ logger = logging.getLogger(__name__)
 # Mirrors the type → tag map in datasift_formatter._build_tags
 NOTICE_TYPE_TO_FTM_TAG = {
     "foreclosure": "ftm-ss",
+    "tax_foreclosure": "ftm-tf",
     "tax_sale": "ftm-ts",
     "tax_delinquent": "ftm-lp",
     "probate": "ftm-probate",
@@ -57,6 +58,7 @@ NOTICE_TYPE_TO_FTM_TAG = {
 NOTICE_TYPE_TO_LIST_NAME = {
     "foreclosure": "Foreclosure",
     "lis_pendens": "Lis Pendens",
+    "tax_foreclosure": "Tax Foreclosure",
     "probate": "Probate",
     "tax_sale": "Tax Sale",
     "tax_delinquent": "Tax Delinquent",

@@ -224,6 +224,7 @@ def _split_name(full_name: str) -> tuple[str, str]:
 NOTICE_TYPE_TO_LIST = {
     "foreclosure": "Foreclosure",
     "lis_pendens": "Lis Pendens",
+    "tax_foreclosure": "Tax Foreclosure",
     "probate": "Probate",
     "tax_sale": "Tax Sale",
     "tax_delinquent": "Tax Delinquent",
@@ -261,7 +262,8 @@ def _build_tags(notice: NoticeData) -> str:
         # probate → ftm-probate, tax_delinquent / future lis pendens → ftm-lp
         ftm_type_map = {
             "foreclosure": "ftm-ss",          # sheriff sale (post-judgment)
-            "lis_pendens": "ftm-lp",          # foreclosure case filing (pre-judgment)
+            "lis_pendens": "ftm-lp",          # mortgage foreclosure case filing (pre-judgment)
+            "tax_foreclosure": "ftm-tf",      # tax foreclosure case filing (Treasurer/cert holder plaintiff)
             "tax_sale": "ftm-ts",
             "tax_delinquent": "ftm-lp",       # legacy alias — kept for backward-compat
             "probate": "ftm-probate",

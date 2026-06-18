@@ -139,6 +139,10 @@ All active sources live in `config.SCRAPER_SOURCES` (a list of `ScraperSource(co
 | Greene | foreclosure | [apps.greenecountyohio.gov/sheriff/sheriffsales.aspx](https://apps.greenecountyohio.gov/sheriff/sheriffsales.aspx) | ASP.NET ViewState | No |
 | Franklin | probate | [probate.franklincountyohio.gov](https://probate.franklincountyohio.gov/record-search/general-case-index) | Custom .NET | No |
 | Franklin | foreclosure | [franklin.sheriffsaleauction.ohio.gov](https://franklin.sheriffsaleauction.ohio.gov) | RealAuction | Free account (`REALAUCTION_EMAIL/PASSWORD`) |
+| Franklin | tax_foreclosure | [fcdcfcjs.co.franklin.oh.us/CaseInformationOnline](https://fcdcfcjs.co.franklin.oh.us/CaseInformationOnline/) | WebSphere CIO (rides the lis_pendens sweep, plaintiff-classified) | No |
+| Delaware | tax_foreclosure | [court.co.delaware.oh.us/eservices](https://court.co.delaware.oh.us/eservices/) | JWorks/Equivant (handshake done; CAPTCHA+search live-finish pending) | `CAPTCHA_API_KEY` (2Captcha) |
+
+> **Tax foreclosure** = Common Pleas court FILINGS classified by plaintiff (County Treasurer / tax-cert holder → `tax_foreclosure`; lender → `lis_pendens`). Distinct DataSift list "Tax Foreclosure" (tag `ftm-tf`). Does NOT capture Board-of-Revision administrative tax foreclosures (ORC 323.65-79) — court-filed only.
 
 ## Hard-Won OH Lessons
 

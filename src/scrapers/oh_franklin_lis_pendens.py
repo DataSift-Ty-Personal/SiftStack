@@ -140,6 +140,31 @@ PLACEHOLDER_DEFENDANT_PATTERNS = [
     re.compile(r"^\s*UNKNOWN\b", re.I),
 ]
 
+# Plaintiff patterns that mark a case as a TAX foreclosure (vs a lender's
+# mortgage foreclosure). In a tax foreclosure the County Treasurer brings the
+# action directly (ORC 5721.18), or a private tax-lien-certificate holder /
+# servicer who bought the lien forecloses it. We classify on PLAINTIFF — not
+# defendant — so this never collides with the government-DEFENDANT skip list
+# above (where the Treasurer is merely joined for lien priority in a *mortgage*
+# foreclosure). When the plaintiff matches one of these, the record is emitted
+# as notice_type="tax_foreclosure"; otherwise it stays "lis_pendens".
+TAX_FORECLOSURE_PLAINTIFF_PATTERNS = [
+    # ANY treasurer as PLAINTIFF = tax foreclosure. In a mortgage foreclosure the
+    # treasurer is only ever a DEFENDANT (joined for lien priority), so matching
+    # on the plaintiff is safe. Confirmed Franklin caption variants (2026-06-18):
+    # "FRANKLIN COUNTY TREASURER", "TREASURER FOR FRANKLIN COUNTY",
+    # "TREASURER OF FRANKLIN COUNTY" — one broad token covers all orderings.
+    re.compile(r"\bTREASURER\b", re.I),
+    re.compile(r"\bTAX\s*EASE\b", re.I),          # Tax Ease Ohio — Franklin bulk lien buyer
+    re.compile(r"\bWOODS\s+COVE\b", re.I),        # Woods Cove — tax cert servicer
+    re.compile(r"\bMTAG\b", re.I),                # MTAG Services
+    re.compile(r"\bATCF\b", re.I),                # ATCF II / Alterna tax certificate funds
+    re.compile(r"\bALTERNA\b", re.I),
+    re.compile(r"\bFINANCE\s+OF\s+AMERICA\s+TAX\b", re.I),
+    re.compile(r"\bTAX\s+CERTIFICATE\b", re.I),
+    re.compile(r"\bTAX\s+LIEN\b", re.I),
+]
+
 CASE_NUMBER_RE = re.compile(r"\b(\d{2})\s+(CV)\s+(\d{6})\b")
 LISTING_ROW_RE = re.compile(
     r'value="(?P<casetag>\d{2}\s+CV\s+\d{6})\s*"[^>]*/></td>'
@@ -192,10 +217,18 @@ class _CaseDetail:
 
 
 class Scraper(NoticeScraper):
-    """Franklin County Common Pleas — residential foreclosure case-filing scraper.
+    """Franklin County Common Pleas — foreclosure case-filing scraper.
 
     Each record represents one CV-FORECLOSURES case filed within the date
-    window. The case filing IS the lis pendens — `notice_type="lis_pendens"`.
+    window. The case filing IS the lis pendens. One sweep emits TWO notice
+    types, split by plaintiff (see `_classify_notice_type`):
+      * mortgage foreclosures (lender plaintiff)  → notice_type="lis_pendens"
+      * tax foreclosures (Treasurer / tax-cert holder plaintiff)
+                                                   → notice_type="tax_foreclosure"
+    `notice_type` below is the class-level DEFAULT; the real per-record value is
+    assigned in `_to_notice_data`. The registry entry carries
+    `extra_notice_types=("tax_foreclosure",)` so `--types tax_foreclosure`
+    selects this module without running it twice.
     """
 
     county = "Franklin"
@@ -250,7 +283,12 @@ class Scraper(NoticeScraper):
             )
 
         records.sort(key=lambda r: (r.date_added, r.source_url))
-        logger.info("Franklin lis pendens scrape done — %d records", len(records))
+        n_tax = sum(1 for r in records if r.notice_type == "tax_foreclosure")
+        logger.info(
+            "Franklin Common Pleas scrape done — %d records (%d lis_pendens, "
+            "%d tax_foreclosure)",
+            len(records), len(records) - n_tax, n_tax,
+        )
         return records
 
     # ── HTTP helpers ───────────────────────────────────────────────────
@@ -704,6 +742,20 @@ class Scraper(NoticeScraper):
         cleaned = re.sub(r"\s+et\.?\s*al\.?\s*$", "", cleaned, flags=re.IGNORECASE).strip()
         return cleaned.rstrip(",").strip()
 
+    # ── Classification ─────────────────────────────────────────────────
+    @staticmethod
+    def _classify_notice_type(plaintiff_name: str) -> str:
+        """Return "tax_foreclosure" if the plaintiff is a tax authority/cert
+        holder, else "lis_pendens" (mortgage foreclosure filing).
+
+        Both notice types come off the same CIO FORECLOSURES sweep — the
+        plaintiff is the discriminator. See TAX_FORECLOSURE_PLAINTIFF_PATTERNS.
+        """
+        name = plaintiff_name or ""
+        if any(p.search(name) for p in TAX_FORECLOSURE_PLAINTIFF_PATTERNS):
+            return "tax_foreclosure"
+        return "lis_pendens"
+
     # ── NoticeData conversion ──────────────────────────────────────────
     def _to_notice_data(self, detail: _CaseDetail) -> NoticeData:
         return NoticeData(
@@ -711,7 +763,9 @@ class Scraper(NoticeScraper):
             auction_date="",   # Pre-sale stage — no sheriff sale scheduled yet.
             county=self.county,
             state="OH",
-            notice_type=self.notice_type,
+            # Per-record: Treasurer/cert-holder plaintiff → tax_foreclosure;
+            # lender plaintiff → lis_pendens (the class-level default).
+            notice_type=self._classify_notice_type(detail.plaintiff_name),
             source_url=detail.detail_url,
             address=detail.property_street,
             city=detail.property_city,
