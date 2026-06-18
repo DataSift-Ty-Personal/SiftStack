@@ -36,11 +36,15 @@ STEP 2 — Anonymous CAPTCHA gate  [DEAD END — do not use]
     The anonymous public portal renders a Wicket image CAPTCHA (form id27,
     answer field `captchaPanel:challengePassword`, submit `linkFrag:beginButton`,
     image `img.captchaImg`). Code to fetch+solve it via 2Captcha is present and
-    structurally correct, BUT the image itself is a faint, washed-out ~2-3 char
-    glyph (126x60px) that 2Captcha's human solvers CANNOT reliably read. Verified
-    2026-06-18 over raw HTTP and headless Playwright (element-screenshot capture,
-    so the bound image was sent): ~15 solves, all wrong 2-char answers, gate
-    never cleared. This path is abandoned — see the BYPASS below.
+    structurally correct, BUT the anonymous flow is a confirmed DEAD END. Verified
+    2026-06-18 across ~31 solves / 3 approaches: raw HTTP, headless Playwright
+    element-screenshot, and Playwright + image preprocessing (3x upscale,
+    autocontrast, median denoise). 0/31 cleared. Decisive tell: with preprocessing
+    the solver read the visible glyphs CONSISTENTLY ("rc" every attempt) yet the
+    gate STILL rejected every one — so the failure is NOT solve quality, it's the
+    anonymous Wicket flow itself (submitted answer never validates against the
+    challenge; likely session/page-version binding). No solver improvement fixes
+    this. Path abandoned — see the BYPASS below.
 
     BYPASS (recommended) — FREE PUBLIC eServices ACCOUNT:
     Equivant/JWorks does not CAPTCHA-gate AUTHENTICATED users on each search.
