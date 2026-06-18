@@ -100,6 +100,59 @@ DEFAULT_LOOKBACK_DAYS = 14
 
 # Case Type code for Lis Pendens cases on the PRO portal.
 CASE_TYPE_LP = "LP"
+# Action-type code for MORTGAGE FORECLOSURE cases (filed as CV cases with this
+# action). This is where the REAL foreclosure population lives — both lender
+# mortgage foreclosures AND County-Treasurer TAX foreclosures are coded MF and
+# distinguished only by plaintiff (verified live 2026-06-18). The legacy LP-only
+# search missed essentially all of it (~6 LP filings vs 250+ MF/window).
+ACTION_TYPE_MF = "MF"
+
+# The PRO search caps results per query (observed 250). If a single search
+# returns this many, the window is likely truncated — narrow the date range.
+SEARCH_RESULT_CAP = 250
+
+# Plaintiff patterns marking a foreclosure as a TAX foreclosure (vs a lender's
+# mortgage foreclosure). Treasurer-as-plaintiff (ORC 5721.18) or a tax-lien-
+# certificate holder. Kept in sync with the canonical set in
+# scrapers.oh_franklin_lis_pendens.TAX_FORECLOSURE_PLAINTIFF_PATTERNS.
+# Confirmed Montgomery captions: "TREASURER FOR MONTGOMERY COUNTY",
+# "TREASURER OF MONTGOMERY COUNTY".
+TAX_FORECLOSURE_PLAINTIFF_PATTERNS = [
+    re.compile(r"\bTREASURER\b", re.I),
+    re.compile(r"\bTAX\s*EASE\b", re.I),
+    re.compile(r"\bWOODS\s+COVE\b", re.I),
+    re.compile(r"\bMTAG\b", re.I),
+    re.compile(r"\bATCF\b", re.I),
+    re.compile(r"\bALTERNA\b", re.I),
+    re.compile(r"\bTAX\s+CERTIFICATE\b", re.I),
+    re.compile(r"\bTAX\s+LIEN\b", re.I),
+]
+
+# Government / institutional DEFENDANTS whose name is not the homeowner — they're
+# joined for lien priority (incl. the Treasurer, who is a DEFENDANT in a MORTGAGE
+# foreclosure but the PLAINTIFF in a tax foreclosure). Skip when picking the
+# homeowner. Mirrors oh_franklin_lis_pendens.GOVT_DEFENDANT_PATTERNS.
+GOVT_DEFENDANT_PATTERNS = [
+    re.compile(r"\bTREASURER\b", re.I),
+    re.compile(r"\bCOUNTY\s+AUDITOR\b", re.I),
+    re.compile(r"\bSTATE\s+OF\s+OHIO\b", re.I),
+    re.compile(r"\bUNITED\s+STATES\b", re.I),
+    re.compile(r"\bINTERNAL\s+REVENUE\b", re.I),
+    re.compile(r"\bIRS\b", re.I),
+    re.compile(r"\bDEPARTMENT\s+OF\s+TAXATION\b", re.I),
+    re.compile(r"\bCITY\s+OF\s+\w+", re.I),
+    re.compile(r"\bMEDICAID\b", re.I),
+    re.compile(r"\bJOB\s+AND\s+FAMILY\b", re.I),
+    re.compile(r"\bBUREAU\s+OF\b", re.I),
+    re.compile(r"\bCHILD\s+SUPPORT\b", re.I),
+    re.compile(r"\bCSEA\b", re.I),
+]
+
+PLACEHOLDER_DEFENDANT_PATTERNS = [
+    re.compile(r"^\s*JOHN\s+DOE\s*$", re.I),
+    re.compile(r"^\s*JANE\s+DOE\s*$", re.I),
+    re.compile(r"^\s*UNKNOWN\b", re.I),
+]
 
 # Regex helpers for case detail parsing.
 CASE_NUMBER_RE = re.compile(r"\b(20\d{2})\s*(LP|CV)\s*(\d{3,7})\b", re.IGNORECASE)
@@ -116,13 +169,22 @@ ADDRESS_LINE_RE = re.compile(
 
 @dataclass
 class _CaseRow:
-    """One row from the search results listing."""
+    """One case, aggregated from the listing's per-party rows.
+
+    The PRO results table lists each case once PER PARTY (a 6-col row:
+    case_number, case_type, party_name, '', status, party_role). We aggregate
+    those rows by case_id and pull the plaintiff + homeowner from the roles —
+    far more reliable than the MF/CV detail page, which doesn't expose labeled
+    parties.
+    """
     case_id: str               # opaque id used to fetch case detail
-    case_number: str           # e.g. "2026 LP 00123"
-    case_type: str             # "LP", "CV", etc.
-    caption: str               # plaintiff vs defendant title
-    file_date: date | None
+    case_number: str           # e.g. "2026 CV 03602"
+    case_type: str             # "MORTGAGE FORECLOSURE (MF)", "LIS PENDENS (LP)", etc.
+    caption: str               # synthesized "PLAINTIFF v DEFENDANT"
+    file_date: date | None     # usually None for MF (no date col) — filled from detail
     status: str                # case status if shown ("OPEN", etc.)
+    plaintiff: str = ""        # PLAINTIFF-role party (the classification key)
+    homeowner: str = ""        # first DEFENDANT-role party (our target)
 
 
 @dataclass
@@ -142,7 +204,17 @@ class _CaseDetail:
 
 
 class Scraper(NoticeScraper):
-    """Montgomery County Common Pleas — Lis Pendens (foreclosure case filings)."""
+    """Montgomery County Common Pleas — foreclosure case filings.
+
+    Sweeps the MORTGAGE FORECLOSURE (MF) action type (the real foreclosure
+    population) plus the legacy LP case type, and emits TWO notice types split
+    by plaintiff (see `_classify_notice_type`):
+      * lender plaintiff            → notice_type="lis_pendens"
+      * Treasurer / tax-cert holder → notice_type="tax_foreclosure"
+    `notice_type` below is the class-level DEFAULT; the per-record value is
+    assigned in `_to_notice_data`. The registry entry carries
+    `extra_notice_types=("tax_foreclosure",)`.
+    """
 
     county = "Montgomery"
     notice_type = "lis_pendens"
@@ -182,38 +254,75 @@ class Scraper(NoticeScraper):
             logger.warning("Could not bootstrap PRO session — returning no records.")
             return []
 
-        # Mint a captcha token for the search request.
-        token = self._solve_captcha()
-        if not token:
-            logger.warning("CAPTCHA solve failed — returning no records.")
-            return []
+        # The foreclosure population lives under the MORTGAGE FORECLOSURE (MF)
+        # action type — both lender mortgage foreclosures AND County-Treasurer
+        # TAX foreclosures (distinguished by plaintiff in _to_notice_data). We
+        # also sweep the legacy LP case type so nothing the old behavior caught
+        # is lost. One captcha token per search (reCAPTCHA v3 tokens are
+        # single-use / action-bound), then union by case_id.
+        searches = [
+            ("MF foreclosures", "", ACTION_TYPE_MF),
+            ("LP lis pendens", CASE_TYPE_LP, ""),
+        ]
+        rows_by_id: dict[str, _CaseRow] = {}
+        for label, case_type, action_type in searches:
+            token = self._solve_captcha()
+            if not token:
+                logger.warning("CAPTCHA solve failed for %s search — skipping.", label)
+                continue
+            found = self._search(
+                session, since_date, until_date, token,
+                case_type=case_type, action_type=action_type,
+            )
+            logger.info("%s search returned %d row(s)", label, len(found))
+            if len(found) >= SEARCH_RESULT_CAP:
+                logger.warning(
+                    "%s search hit the %d-row cap — older results in this window "
+                    "may be truncated. Narrow the date range for full coverage.",
+                    label, SEARCH_RESULT_CAP,
+                )
+            for r in found:
+                rows_by_id.setdefault(r.case_id, r)
 
-        rows = self._search(session, since_date, until_date, token)
-        logger.info("Search returned %d case row(s)", len(rows))
+        rows = list(rows_by_id.values())
+        logger.info("Search returned %d unique case row(s)", len(rows))
+        if not rows:
+            return []
 
         records: list[NoticeData] = []
         for row in rows:
-            if row.file_date is None:
-                logger.debug("Row %s: no file date — skipping", row.case_number)
-                continue
-            if row.file_date < since_date or row.file_date > until_date:
-                # Defensive: server-side date filter should prevent this.
-                continue
-
+            # MF listing rows carry no file-date column — resolve it from the
+            # detail page. (LP rows may already have row.file_date.) The search
+            # is server-side date-filtered, so this is mostly a safety re-check.
             detail = self._fetch_case_detail(session, row)
+            file_date = row.file_date or (detail.file_date if detail else None)
+            if file_date is None:
+                logger.debug("Row %s: no file date (listing or detail) — skipping",
+                             row.case_number)
+                continue
+            if file_date < since_date or file_date > until_date:
+                continue
+            row.file_date = file_date  # ensure _to_notice_data uses the resolved date
+
             record = self._to_notice_data(row, detail)
             records.append(record)
             logger.info(
-                "  %s  %s  defendant=%s  addr=%s",
-                row.file_date.isoformat(),
+                "  %s  %s  %s  plaintiff=%s  owner=%s",
+                file_date.isoformat(),
                 row.case_number,
-                (detail.defendant if detail else "")[:40] or "(blank)",
-                (detail.address_raw if detail else "")[:60] or "(none)",
+                record.notice_type,
+                (row.plaintiff or "")[:30] or "(blank)",
+                (record.owner_name or "")[:30] or "(blank)",
             )
 
         # Oldest-first for downstream consistency with other OH scrapers.
         records.sort(key=lambda r: (r.date_added, r.source_url))
-        logger.info("Montgomery lis pendens scrape done — %d records", len(records))
+        n_tax = sum(1 for r in records if r.notice_type == "tax_foreclosure")
+        logger.info(
+            "Montgomery foreclosure scrape done — %d records (%d lis_pendens, "
+            "%d tax_foreclosure)",
+            len(records), len(records) - n_tax, n_tax,
+        )
         return records
 
     # ── HTTP / session helpers ─────────────────────────────────────────
@@ -301,16 +410,18 @@ class Scraper(NoticeScraper):
         since_date: date,
         until_date: date,
         token: str,
+        case_type: str = "",
+        action_type: str = "",
     ) -> list[_CaseRow]:
-        """POST the LP-typed search and parse out the result rows."""
+        """POST a search (by case_type and/or action_type) and parse result rows."""
         data = {
             "case_number": "",
             "last_name": "",
             "first_name": "",
             "company_name": "",
             "ticket_number": "",
-            "gen_case_type": CASE_TYPE_LP,
-            "gen_action_type": "",
+            "gen_case_type": case_type,
+            "gen_action_type": action_type,
             "begin_date": since_date.isoformat(),
             "end_date": until_date.isoformat(),
             "searchType": "general",
@@ -385,18 +496,23 @@ class Scraper(NoticeScraper):
                     col_index["file_date"] = i
                 elif "status" in label:
                     col_index["status"] = i
-        # Fixed-position fallback (PRO's typical layout).
+        # Fixed-position fallback (PRO's actual layout — the header row is a
+        # single merged "N Records Returned" cell, so header resolution finds
+        # nothing and we rely on these). Each row is ONE PARTY of a case:
+        #   [case_number, case_type, party_name, (date?), status, party_role]
         col_index.setdefault("case_number", 0)
         col_index.setdefault("case_type", 1)
-        col_index.setdefault("caption", 2)
+        col_index.setdefault("party_name", 2)
         col_index.setdefault("file_date", 3)
         col_index.setdefault("status", 4)
+        col_index.setdefault("role", 5)
 
-        rows: list[_CaseRow] = []
+        # Aggregate party-rows by case_id (preserve first-seen order).
+        agg: dict[str, dict] = {}
+        order: list[str] = []
         for tr in best_table.find_all("tr"):
             onclick = tr.get("onclick") or ""
             if not onclick:
-                # Some deployments wrap the click on a child td.
                 child = tr.find(attrs={"onclick": True})
                 onclick = child.get("onclick") if child else ""
             if not onclick or "case_id=" not in onclick:
@@ -416,21 +532,67 @@ class Scraper(NoticeScraper):
                     return cells[idx].get_text(" ", strip=True)
                 return ""
 
-            case_number = _cell("case_number")
-            case_type = _cell("case_type")
-            caption = _cell("caption")
-            file_date = self._parse_loose_date(_cell("file_date"))
-            status = _cell("status")
+            party_name = _cell("party_name")
+            role = _cell("role").upper()
+            fd = self._parse_loose_date(_cell("file_date"))
 
+            if case_id not in agg:
+                agg[case_id] = {
+                    "case_number": _cell("case_number"),
+                    "case_type": _cell("case_type"),
+                    "status": _cell("status"),
+                    "file_date": fd,
+                    "plaintiff": "",
+                    "defendants": [],
+                }
+                order.append(case_id)
+            rec = agg[case_id]
+            if fd and not rec["file_date"]:
+                rec["file_date"] = fd
+            if "PLAINTIFF" in role:
+                if not rec["plaintiff"]:
+                    rec["plaintiff"] = party_name
+            elif "DEFENDANT" in role:
+                if party_name:
+                    rec["defendants"].append(party_name)
+            elif party_name and not role:
+                # Role column missing/garbled — keep as a fallback party so we
+                # still surface a homeowner.
+                rec["defendants"].append(party_name)
+
+        rows: list[_CaseRow] = []
+        for cid in order:
+            r = agg[cid]
+            homeowner = self._pick_homeowner(r["defendants"])
+            caption = " v ".join(p for p in (r["plaintiff"], homeowner) if p)
             rows.append(_CaseRow(
-                case_id=case_id,
-                case_number=case_number,
-                case_type=case_type,
+                case_id=cid,
+                case_number=r["case_number"],
+                case_type=r["case_type"],
                 caption=caption,
-                file_date=file_date,
-                status=status,
+                file_date=r["file_date"],
+                status=r["status"],
+                plaintiff=r["plaintiff"],
+                homeowner=homeowner,
             ))
         return rows
+
+    @staticmethod
+    def _pick_homeowner(defendants: list[str]) -> str:
+        """First defendant that isn't a government lien-holder or placeholder.
+
+        Falls back to the first defendant if every entry is filtered out (so we
+        never lose the record entirely).
+        """
+        for name in defendants:
+            if not name:
+                continue
+            if any(p.search(name) for p in GOVT_DEFENDANT_PATTERNS):
+                continue
+            if any(p.search(name) for p in PLACEHOLDER_DEFENDANT_PATTERNS):
+                continue
+            return name
+        return defendants[0] if defendants else ""
 
     @staticmethod
     def _extract_case_id(onclick: str) -> str:
@@ -621,12 +783,29 @@ class Scraper(NoticeScraper):
         return cleaned.rstrip(",").strip()
 
     # ── NoticeData conversion ──────────────────────────────────────────
+    @staticmethod
+    def _classify_notice_type(plaintiff_text: str) -> str:
+        """Treasurer / tax-cert-holder plaintiff → tax_foreclosure, else lis_pendens.
+
+        Both come off the MF foreclosure sweep; the plaintiff is the
+        discriminator (the Montgomery PRO caption carries the plaintiff side,
+        so this works even when the detail fetch fails).
+        """
+        if any(p.search(plaintiff_text or "") for p in TAX_FORECLOSURE_PLAINTIFF_PATTERNS):
+            return "tax_foreclosure"
+        return "lis_pendens"
+
     def _to_notice_data(
         self,
         row: _CaseRow,
         detail: _CaseDetail | None,
     ) -> NoticeData:
-        owner = self._clean_defendant(detail.defendant if detail else "")
+        # Prefer the detail page's defendant; fall back to the listing-derived
+        # homeowner (the detail page often doesn't expose labeled parties for
+        # MF/CV cases, but the listing always does).
+        owner = self._clean_defendant(
+            (detail.defendant if detail and detail.defendant else "") or row.homeowner
+        )
         file_iso = row.file_date.isoformat() if row.file_date else ""
         detail_url = detail.detail_url if detail else (
             f"{LANDING_URL}?case_id={row.case_id}"
@@ -641,12 +820,18 @@ class Scraper(NoticeScraper):
             f"Defendant: {detail.defendant if detail else ''}\n"
             f"Property Address: {detail.address_raw if detail else ''}\n"
         )
+        # Classify on the PLAINTIFF ONLY — never the caption (which contains
+        # defendants; e.g. a mortgage foreclosure naming the Treasurer as a
+        # lien defendant must NOT be misread as a tax foreclosure).
+        plaintiff_text = " ".join(filter(None, [
+            row.plaintiff, detail.plaintiff if detail else "",
+        ]))
         return NoticeData(
             date_added=file_iso,
             auction_date="",
             county=self.county,
             state="OH",
-            notice_type=self.notice_type,
+            notice_type=self._classify_notice_type(plaintiff_text),
             source_url=detail_url,
             address=detail.street if detail else "",
             city=detail.city if detail else "",
