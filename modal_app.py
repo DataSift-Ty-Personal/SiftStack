@@ -61,10 +61,15 @@ SCHEDULE_CRON_UTC = "0 10 * * 3"
     # _safe() catches it per-scraper so one source's CF block can't kill
     # the parallel gather (May 2026 incident: probate CF-blocked, retry-
     # cascade wiped 56 NJLP + 402 sheriff + Somerset sheriff mid-parse).
-    # 8 retries are excessive for non-CF crashes; tune down once the new
-    # behavior is observed in one or two weekly runs.
+    # Capped at 1: retries don't help a timeout (it just re-times-out) and
+    # each attempt re-runs enrichment — on 2026-06-17 the 8-retry loop
+    # re-ran Smarty on ~1,760 records per attempt and burned through the
+    # Smarty credit pool multiple times. Dedup is now committed pre-enrichment
+    # (below) so even the one retry re-scrapes, dedups to ~0, and exits early
+    # instead of re-Smartying. One retry still covers a genuine transient
+    # container crash.
     retries=modal.Retries(
-        max_retries=8,
+        max_retries=1,
         initial_delay=10.0,
         backoff_coefficient=1.0,
     ),
@@ -295,6 +300,30 @@ async def nj_weekly_all():
     except Exception as e:
         logger.warning("Failed to persist RAW pre-enrichment CSV: %s", e)
 
+    # Commit dedup tracking NOW — after the RAW snapshot, before enrichment.
+    # filter_new already marked this batch's records "seen"; persisting here
+    # means a killed/timed-out run's retry re-scrapes, dedups to ~0 new, and
+    # exits via the "nothing new" path instead of re-running Smarty (and the
+    # rest of the 8h enrichment) on the whole batch. On 2026-06-17 the retry
+    # loop re-Smartied ~1,760 records per attempt precisely because tracking
+    # only saved on success.
+    #
+    # Trade-off: records are marked seen before delivery, so if enrichment
+    # fails they won't auto-re-enter next cron. They are NOT lost — the RAW
+    # snapshot above holds them, and scripts/nj_probate_local_backfill.py
+    # re-scrapes with dedup bypassed to recover. Smarty-credit safety is worth
+    # more than auto-redelivery now that floods are fixed and runs finish well
+    # under the timeout.
+    try:
+        save_tracking(tracking, TRACKING_FILE)
+        await tracking_volume.commit.aio()
+        logger.info(
+            "Dedup tracking committed pre-enrichment (%d records this batch marked seen)",
+            len(combined),
+        )
+    except Exception as e:
+        logger.warning("Pre-enrichment dedup commit failed: %s", e)
+
     # Single enrichment pass across all 3 sources' new notices
     from enrichment_pipeline import PipelineOptions, run_enrichment_pipeline
     opts = PipelineOptions(
@@ -432,8 +461,9 @@ async def nj_weekly_all():
     except Exception as e:
         logger.warning("DataSift upload failed: %s", e)
 
-    # Persist tracking only after enrichment+upload succeed — if they blow
-    # up we'd rather redo the dedup work next week than lose records.
+    # Final tracking commit after enrichment + upload. Dedup was already
+    # committed pre-enrichment (above) to bound Smarty on retries; this
+    # re-commit just confirms the same state after a successful run.
     save_tracking(tracking, TRACKING_FILE)
     await tracking_volume.commit.aio()
     logger.info("Tracking saved: %d NJLP / %d probate / %d ocean_probate / %d somerset / %d civilview total IDs",
