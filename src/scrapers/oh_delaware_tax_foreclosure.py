@@ -1,87 +1,49 @@
-"""Delaware County, Ohio TAX foreclosure case-filing scraper (JWorks/Equivant).
+"""Delaware County, Ohio TAX foreclosure scraper (JWorks eServices, authenticated).
 
-Pulls Court of Common Pleas FORECLOSURE case filings from Delaware County's
-Equivant/JWorks "eServices" portal and classifies each into:
-  * tax_foreclosure  — plaintiff is the County Treasurer / a tax-lien-certificate
-                       holder (ORC 5721.18 et seq.)
-  * lis_pendens      — plaintiff is a mortgage lender (ordinary foreclosure)
+Delaware's ANONYMOUS portal is gated by an image CAPTCHA that proved unsolvable
+(0/31 solves across HTTP, Playwright, and image-preprocessing — see git history).
+The working path is a court-authorized free PUBLIC eServices account
+(`DELAWARE_ESERVICES_USERNAME` / `DELAWARE_ESERVICES_PASSWORD`), which is NOT
+CAPTCHA-gated. Validated end-to-end live 2026-06.
 
-The case FILING is the earliest public signal — weeks to months before the
-property reaches the RealAuction sheriff sale captured by
-`scrapers.oh_delaware_foreclosure`. Same intent as the Franklin Common Pleas
-scraper (`scrapers.oh_franklin_lis_pendens`), but Delaware runs a completely
-different platform (JWorks, not WebSphere CIO), so the transport differs.
+Driven via **Playwright** (not requests): the search results grid and the case
+detail page are Wicket AJAX / stateful — raw HTTP returns empty shells, and the
+case-number links must be CLICKED (a direct GET returns a ~758-byte error stub).
 
-──────────────────────────────────────────────────────────────────────────
-PORTAL FACTS (reverse-engineered live, 2026-06-18 — all confirmed working)
-──────────────────────────────────────────────────────────────────────────
-Base:     https://court.co.delaware.oh.us/eservices/
-WAF:      Barracuda (sets BNES_/BNIS_ cookies on first GET — a plain
-          requests.Session carries them automatically; no special handling).
+Volume + strategy
+-----------------
+Delaware is LOW VOLUME for tax foreclosures (~10/yr, measured over 365 days) and,
+being an affluent county, the **Treasurer does NOT foreclose directly** — tax
+foreclosures come almost entirely from tax-lien-certificate buyers (Tax Ease
+Ohio) as PLAINTIFF. So we search by tax-authority / cert-holder company names and
+keep ONLY cases where that company is the PLAINTIFF. Every emitted record is
+`notice_type="tax_foreclosure"` by construction (no lis_pendens dual-emit here —
+there's no clean foreclosure-only case-type filter for mortgage foreclosures, and
+those aren't the goal for Delaware).
 
-STEP 1 — Apache Wicket BrowserInfoPage handshake  [IMPLEMENTED + TESTED]
-    GET  home.page  →  returns a BrowserInfoPage: a hidden <form id="id1"
-    method=post action=";jsessionid=...?x=<token>"> plus a 0-second
-    <meta refresh>. The form collects JS-populated browser properties.
-    We POST it with realistic values. Confirmed: the POST lands on
-    `home.page.2` (the real public portal, ~22KB) and seeds the session.
-    Hidden/posted fields (exact names, confirmed live):
-      id1_hf_0, navigatorAppName, navigatorAppVersion, navigatorAppCodeName,
-      navigatorCookieEnabled, navigatorJavaEnabled, navigatorLanguage,
-      navigatorPlatform, navigatorUserAgent, screenWidth, screenHeight,
-      screenColorDepth, utcOffset, utcDSTOffset, browserWidth, browserHeight,
-      hostname.
+Recommended cadence: **WEEKLY**, not daily — one Playwright login+search per run
+for ~1 new case/month doesn't belong in the daily critical path.
 
-STEP 2 — Anonymous CAPTCHA gate  [DEAD END — do not use]
-    The anonymous public portal renders a Wicket image CAPTCHA (form id27,
-    answer field `captchaPanel:challengePassword`, submit `linkFrag:beginButton`,
-    image `img.captchaImg`). Code to fetch+solve it via 2Captcha is present and
-    structurally correct, BUT the anonymous flow is a confirmed DEAD END. Verified
-    2026-06-18 across ~31 solves / 3 approaches: raw HTTP, headless Playwright
-    element-screenshot, and Playwright + image preprocessing (3x upscale,
-    autocontrast, median denoise). 0/31 cleared. Decisive tell: with preprocessing
-    the solver read the visible glyphs CONSISTENTLY ("rc" every attempt) yet the
-    gate STILL rejected every one — so the failure is NOT solve quality, it's the
-    anonymous Wicket flow itself (submitted answer never validates against the
-    challenge; likely session/page-version binding). No solver improvement fixes
-    this. Path abandoned — see the BYPASS below.
-
-    BYPASS (recommended) — FREE PUBLIC eServices ACCOUNT:
-    Equivant/JWorks does not CAPTCHA-gate AUTHENTICATED users on each search.
-    Register a free public account at `register.page?prtlCd=PUBLIC`, then log in
-    via `login.page` to get a captcha-free search session — same pattern as the
-    RealAuction free account. Needs DELAWARE_ESERVICES_USERNAME/PASSWORD in
-    config/.env. This is the activation path; `_SEARCH_READY` gates it.
-
-STEP 3 — Case Search submission + result paging  [SKELETON — LIVE FINISH]
-    Delaware's public portal exposes a "Smart Search" / Case Search by name and
-    by case number. The search form is a STATEFUL Wicket form: its <form action>
-    and field component-paths (e.g. "searchPanel:...:caseType") are only visible
-    on the post-CAPTCHA page, and Wicket re-issues them per page version — so
-    they MUST be read from a live solved session, not hard-coded blind. The
-    `_run_case_search` / `_parse_results` / `_parse_detail` methods below mark
-    exactly where those live values plug in. Everything up to and including the
-    CAPTCHA solve is real; this last mile is the ~2-3h live-iteration finish.
-
-REUSE NOTE: Steps 1-2 are platform-generic JWorks/Equivant. When Delaware
-probate is activated, hoist `_browserinfo_handshake` + `_solve_captcha_gate`
-into a `scrapers/jworks_base.py` and have both this module and
-`oh_delaware_probate.py` subclass it (the SOP "refactor on the 3rd instance"
-trigger — Greene would be the 3rd).
+Portal flow (reverse-engineered + validated live 2026-06)
+---------------------------------------------------------
+  login.page    POST username / password / submitLink (form id46) — captcha-free
+  search.page   form id ida7: companyName, fileDateRange:dateInputBegin / :dateInputEnd
+                (MM/DD/YYYY), submitLink
+  results       tr.roweven / tr.rowodd cells: [Pay, eFile, party_name, role,
+                case#, file_date, status, case_type]; case# is a Wicket link that
+                must be CLICKED (same-page nav to the detail).
+  detail        party blocks div.roweven / div.rowodd, each with:
+                  .ptyInfoLabel  = party name
+                  .ptyType       = "- Plaintiff" / "- Defendant"
+                  .ptyContactInfo = address (.addrLn1 street, then city/state/zip)
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
-import random
 import re
-import time
-from dataclasses import dataclass, field
-from datetime import date, timedelta
-from urllib.parse import urljoin
+from datetime import date, datetime, timedelta
 
-import requests
 from bs4 import BeautifulSoup
 
 import config
@@ -91,392 +53,350 @@ from scrapers.base import NoticeScraper
 logger = logging.getLogger(__name__)
 
 BASE_URL = "https://court.co.delaware.oh.us/eservices/"
-LANDING_URL = urljoin(BASE_URL, "home.page")
+LOGIN_URL = BASE_URL + "login.page"
+SEARCH_URL = BASE_URL + "search.page"
 
 USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15"
 )
 
-# Master switch — STEP 3 (search) is not implemented yet AND the anonymous
-# CAPTCHA path is a dead end (see _scrape_sync guard). Keep False so the daily
-# run does a cheap handshake-only health check and returns 0 without spending
-# CAPTCHA credits. Flip to True once the PUBLIC-account login + search land.
-_SEARCH_READY = False
+# Plaintiff company-name searches that surface Delaware tax foreclosures. Tax
+# Ease is the dominant (effectively only) source today; the rest are
+# future-proofing for other cert buyers / direct Treasurer foreclosures. We keep
+# only results where the searched company is the PLAINTIFF.
+TAX_PLAINTIFF_SEARCHES = ["TAX EASE", "TREASURER", "WOODS COVE", "MTAG", "ATCF"]
 
-# Tax-foreclosure plaintiff classifier. Kept in sync with the canonical set in
-# scrapers.oh_franklin_lis_pendens.TAX_FORECLOSURE_PLAINTIFF_PATTERNS — if you
-# add a Delaware-specific tax-cert servicer here, add it there too (and vice
-# versa). When a 3rd county needs this, lift it into a shared module.
-TAX_FORECLOSURE_PLAINTIFF_PATTERNS = [
-    # ANY treasurer as PLAINTIFF = tax foreclosure (treasurer is only ever a
-    # defendant in a mortgage foreclosure). Covers all caption orderings:
-    # "<COUNTY> COUNTY TREASURER", "TREASURER FOR/OF <COUNTY> COUNTY".
-    re.compile(r"\bTREASURER\b", re.I),
-    re.compile(r"\bTAX\s*EASE\b", re.I),
-    re.compile(r"\bWOODS\s+COVE\b", re.I),
-    re.compile(r"\bMTAG\b", re.I),
-    re.compile(r"\bATCF\b", re.I),
-    re.compile(r"\bALTERNA\b", re.I),
-    re.compile(r"\bTAX\s+CERTIFICATE\b", re.I),
-    re.compile(r"\bTAX\s+LIEN\b", re.I),
-]
+# Defendants that are NOT the homeowner — government lien-holders, the HOA, the
+# foreclosing tax authority itself, etc. Skipped when picking the homeowner.
+GOVT_DEFENDANT_PATTERNS = [re.compile(p, re.I) for p in [
+    r"\bTREASURER\b", r"\bAUDITOR\b", r"\bSTATE\s+OF\s+OHIO\b",
+    r"\bATTORNEY\s+GENERAL\b", r"\bPROSECUTOR\b", r"\bUNITED\s+STATES\b",
+    r"\bINTERNAL\s+REVENUE\b", r"\bIRS\b", r"\bDEPARTMENT\s+OF\b",
+    r"\bBUREAU\s+OF\b", r"\bHOMEOWNERS\s+ASSOCIATION\b", r"\bCONDOMINIUM\b",
+    r"\bTAX\s*EASE\b", r"\bWOODS\s+COVE\b",
+]]
+PLACEHOLDER_DEFENDANT_PATTERNS = [re.compile(p, re.I) for p in [
+    r"^\s*JOHN\s+DOE", r"^\s*JANE\s+DOE", r"^\s*UNKNOWN\b",
+]]
 
+# Case-number shapes seen live: "26 CV E 05 0818", "25 CV E 09 1011".
+CASE_NUMBER_RE = re.compile(r"\b\d{2}\s*CV\s*[A-Z]?\s*\d{2}\s*\d{3,5}\b")
+DATE_RE = re.compile(r"\b(\d{1,2})/(\d{1,2})/(\d{4})\b")
+ADDR_CSZ_RE = re.compile(r"([A-Za-z .'\-]+?)\s*,?\s*\b([A-Z]{2})\b\s+(\d{5}(?:-\d{4})?)")
 
-@dataclass
-class _CaseRow:
-    """One foreclosure case parsed from the Delaware search results."""
-
-    case_number: str
-    filing_date: date | None
-    plaintiff_name: str = ""
-    defendant_name: str = ""
-    property_street: str = ""
-    property_city: str = ""
-    property_zip: str = ""
-    detail_url: str = ""
-    raw_text: str = ""
+DEFAULT_LOOKBACK_DAYS = 14
 
 
 class Scraper(NoticeScraper):
-    """Delaware County Common Pleas — tax/mortgage foreclosure case filings.
+    """Delaware County Common Pleas — TAX foreclosure case filings (JWorks).
 
-    Primary notice_type is "tax_foreclosure" (the reason this module exists),
-    but, like the Franklin scraper, one sweep emits BOTH tax_foreclosure and
-    lis_pendens records — split per-record by plaintiff in `_to_notice_data`.
+    Emits only `notice_type="tax_foreclosure"` — every record is a case where a
+    tax authority / cert-holder is the plaintiff.
     """
 
     county = "Delaware"
     notice_type = "tax_foreclosure"
-    source_name = "Delaware County Common Pleas — Foreclosure Cases (JWorks)"
-    source_url = LANDING_URL
-    requires_account = True  # needs CAPTCHA_API_KEY (2Captcha) to clear the gate
+    source_name = "Delaware County Common Pleas — Tax Foreclosures (JWorks eServices)"
+    source_url = SEARCH_URL
+    requires_account = True
 
     def required_credentials(self) -> list[str]:
-        return ["CAPTCHA_API_KEY"]
+        return ["DELAWARE_ESERVICES_USERNAME", "DELAWARE_ESERVICES_PASSWORD"]
 
     async def scrape(self, since_date: date | None = None) -> list[NoticeData]:
         if since_date is None:
-            since_date = date.today() - timedelta(days=14)
-        return await asyncio.to_thread(self._scrape_sync, since_date)
-
-    # ── Orchestration ──────────────────────────────────────────────────
-    def _scrape_sync(self, since_date: date) -> list[NoticeData]:
+            since_date = date.today() - timedelta(days=DEFAULT_LOOKBACK_DAYS)
         until_date = date.today()
-        session = self._build_session()
 
-        # STEP 1 — handshake (works today; gates everything downstream).
-        if not self._browserinfo_handshake(session):
-            logger.error(
-                "Delaware tax foreclosure: BrowserInfoPage handshake failed — "
-                "portal may have changed. Returning 0."
-            )
-            return []
-        logger.info("Delaware JWorks handshake OK — public portal session seeded.")
-
-        # GUARD — do not attempt the anonymous CAPTCHA gate on the daily run.
-        # Finding (2026-06-18, verified via raw HTTP AND headless Playwright with
-        # element-screenshot capture): the anonymous-access CAPTCHA is a faint,
-        # washed-out ~2-3 char image (126x60px) that 2Captcha's human solvers
-        # cannot reliably read — ~15 solves across both transports all returned
-        # wrong 2-char answers; the gate never cleared. Retrying just burns
-        # CAPTCHA credits every run. The correct path is the FREE PUBLIC eServices
-        # account (register.page?prtlCd=PUBLIC): authenticated users are NOT
-        # CAPTCHA-gated per search (same model as the RealAuction free account).
-        # Activation plan when credentials exist:
-        #   1. Add DELAWARE_ESERVICES_USERNAME/PASSWORD to config + .env.
-        #   2. Replace `_solve_captcha_gate` with `_login_public_account` (POST
-        #      login.page form), which yields a captcha-free search session.
-        #   3. Implement `_run_case_search` (STEP 3 below).
-        # Flip _SEARCH_READY to True once 2+3 are done.
-        if not _SEARCH_READY:
+        if not (config.DELAWARE_ESERVICES_USERNAME and config.DELAWARE_ESERVICES_PASSWORD):
             logger.warning(
-                "Delaware tax foreclosure: handshake OK but search not yet "
-                "enabled. Anonymous CAPTCHA is unsolvable; needs a free PUBLIC "
-                "eServices account. Returning 0 (no CAPTCHA spend). See module "
-                "docstring + _scrape_sync guard for the activation plan."
+                "Delaware tax foreclosure: DELAWARE_ESERVICES_USERNAME/PASSWORD "
+                "not set — skipping (need the court-authorized eServices account). "
+                "0 records."
             )
             return []
 
-        # STEP 2 — CAPTCHA gate. No key → behave as an honest scaffold: we
-        # proved the portal is reachable and the handshake works, but we can't
-        # search. Surface that loudly instead of silently returning [].
-        if not config.CAPTCHA_API_KEY:
-            logger.warning(
-                "Delaware tax foreclosure: CAPTCHA_API_KEY not set — cannot pass "
-                "the image-CAPTCHA gate. Handshake verified; 0 records. Add "
-                "CAPTCHA_API_KEY=<2captcha key> to .env to enable searching."
-            )
+        try:
+            from playwright.async_api import async_playwright
+        except ImportError as e:
+            logger.error("playwright not installed: %s", e)
             return []
 
-        solver = self._load_solver()
-        if solver is None:
-            return []
+        records: list[NoticeData] = []
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            try:
+                ctx = await browser.new_context(user_agent=USER_AGENT)
+                page = await ctx.new_page()
+                if not await self._login(page):
+                    logger.error("Delaware tax foreclosure: login failed — 0 records.")
+                    return []
+                logger.info("Delaware eServices login OK.")
 
-        if not self._solve_captcha_gate(session, solver):
-            logger.error("Delaware tax foreclosure: could not clear CAPTCHA gate. 0 records.")
-            return []
+                seen: set[str] = set()
+                for company in TAX_PLAINTIFF_SEARCHES:
+                    cases = await self._search_plaintiff_cases(
+                        page, company, since_date, until_date
+                    )
+                    logger.info(
+                        "Delaware '%s' plaintiff cases in window: %d", company, len(cases)
+                    )
+                    for case in cases:
+                        if case["case_number"] in seen:
+                            continue
+                        seen.add(case["case_number"])
+                        rec = await self._fetch_and_parse_detail(page, case)
+                        if rec is not None:
+                            records.append(rec)
+            finally:
+                await browser.close()
 
-        # STEP 3 — search + parse (live-finish; see method docstrings).
-        rows = self._run_case_search(session, since_date, until_date)
-        records = [self._to_notice_data(r) for r in rows]
         records.sort(key=lambda r: (r.date_added, r.source_url))
-
-        n_tax = sum(1 for r in records if r.notice_type == "tax_foreclosure")
-        logger.info(
-            "Delaware Common Pleas scrape done — %d records (%d tax_foreclosure, "
-            "%d lis_pendens)",
-            len(records), n_tax, len(records) - n_tax,
-        )
+        logger.info("Delaware tax foreclosure scrape done — %d records", len(records))
         return records
 
-    # ── HTTP plumbing ──────────────────────────────────────────────────
-    def _build_session(self) -> requests.Session:
-        s = requests.Session()
-        s.headers.update({
-            "User-Agent": USER_AGENT,
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.9",
-        })
-        return s
-
-    def _sleep(self) -> None:
-        time.sleep(random.uniform(config.REQUEST_DELAY_MIN, config.REQUEST_DELAY_MAX))
-
-    # ── STEP 1: BrowserInfoPage handshake (confirmed working) ──────────
-    def _browserinfo_handshake(self, session: requests.Session) -> bool:
-        """GET landing, POST the Wicket BrowserInfoPage form, land on the portal.
-
-        Returns True if the post-handshake page looks like the real public
-        portal (contains the search UI + captcha chrome).
-        """
+    # ── Login ──────────────────────────────────────────────────────────
+    async def _login(self, page) -> bool:
         try:
-            r = session.get(LANDING_URL, timeout=30)
-            if r.status_code != 200 or "wicket" not in r.text.lower():
-                logger.debug("Landing GET → %d (no wicket marker)", r.status_code)
+            await page.goto(LOGIN_URL, wait_until="networkidle", timeout=60000)
+            await page.wait_for_timeout(1200)
+            await page.fill("input[name=username]", config.DELAWARE_ESERVICES_USERNAME)
+            await page.fill("input[name=password]", config.DELAWARE_ESERVICES_PASSWORD)
+            await page.click("input[name=submitLink]")
+            await page.wait_for_load_state("networkidle", timeout=30000)
+            await page.wait_for_timeout(1200)
+            body = (await page.content()).lower()
+            if "not yet been authorized" in body:
+                logger.error(
+                    "Delaware account exists but is NOT court-authorized yet "
+                    "(contact the Clerk of Courts to authorize the Portal User)."
+                )
                 return False
-
-            action = self._extract_form_action(r.text, form_id="id1")
-            if not action:
-                logger.debug("BrowserInfoPage: no postback form action found.")
-                return False
-
-            self._sleep()
-            post_url = urljoin(LANDING_URL, action)
-            r2 = session.post(post_url, data=self._browserinfo_payload(), timeout=30,
-                              headers={"Referer": LANDING_URL})
-            if r2.status_code != 200:
-                logger.debug("BrowserInfo POST → %d", r2.status_code)
-                return False
-            # Real portal exposes the captcha panel + case-search chrome.
-            body = r2.text.lower()
-            return "captcha" in body and ("search" in body or "case" in body)
-        except requests.RequestException as e:
-            logger.debug("Handshake raised: %s", e)
+            # "welcome" appears on the authenticated landing.
+            return "welcome" in body or "search" in body
+        except Exception as e:
+            logger.debug("Login raised: %s", e)
             return False
 
-    @staticmethod
-    def _browserinfo_payload() -> dict:
-        """Realistic browser-info values (field names confirmed live)."""
-        return {
-            "id1_hf_0": "",
-            "navigatorAppName": "Netscape",
-            "navigatorAppVersion": "5.0 (Macintosh; Intel Mac OS X 10_15_7)",
-            "navigatorAppCodeName": "Mozilla",
-            "navigatorCookieEnabled": "true",
-            "navigatorJavaEnabled": "false",
-            "navigatorLanguage": "en-US",
-            "navigatorPlatform": "MacIntel",
-            "navigatorUserAgent": USER_AGENT,
-            "screenWidth": "1920",
-            "screenHeight": "1080",
-            "screenColorDepth": "24",
-            "utcOffset": "-5",
-            "utcDSTOffset": "-4",
-            "browserWidth": "1280",
-            "browserHeight": "900",
-            "hostname": "court.co.delaware.oh.us",
-        }
+    # ── Search ─────────────────────────────────────────────────────────
+    async def _search_plaintiff_cases(
+        self, page, company: str, since_date: date, until_date: date,
+    ) -> list[dict]:
+        """Run a companyName search and return cases where it is the PLAINTIFF.
 
-    @staticmethod
-    def _extract_form_action(html: str, form_id: str) -> str | None:
-        m = re.search(
-            rf'<form[^>]*id="{re.escape(form_id)}"[^>]*action="([^"]+)"',
-            html, re.I,
+        Each returned dict: {case_number, file_date (date), plaintiff (company)}.
+        """
+        try:
+            await page.goto(SEARCH_URL, wait_until="networkidle", timeout=60000)
+            await page.wait_for_timeout(1000)
+            await page.fill("input[name=companyName]", company)
+            await page.fill(
+                'input[name="fileDateRange:dateInputBegin"]',
+                since_date.strftime("%m/%d/%Y"),
+            )
+            await page.fill(
+                'input[name="fileDateRange:dateInputEnd"]',
+                until_date.strftime("%m/%d/%Y"),
+            )
+            await page.click("input[name=submitLink]")
+            await page.wait_for_load_state("networkidle", timeout=40000)
+            await page.wait_for_timeout(1800)
+        except Exception as e:
+            logger.debug("Search for %r raised: %s", company, e)
+            return []
+
+        rows = await page.eval_on_selector_all(
+            "tr.roweven, tr.rowodd",
+            "(trs)=>trs.map(tr=>[...tr.querySelectorAll('td')]"
+            ".map(td=>td.textContent.trim()))",
         )
-        return m.group(1) if m else None
-
-    # ── STEP 2: CAPTCHA gate ───────────────────────────────────────────
-    def _load_solver(self):
-        try:
-            from twocaptcha import TwoCaptcha
-        except ImportError as e:
-            logger.error("twocaptcha-python not installed: %s", e)
-            return None
-        return TwoCaptcha(config.CAPTCHA_API_KEY)
-
-    def _solve_captcha_gate(self, session: requests.Session, solver) -> bool:
-        """Fetch the captchaImg, solve via 2Captcha, submit challengePassword.
-
-        Confirmed element facts (home.page.2):
-          image:  <img class="captchaImg" src="?x=<token>&wicket...">
-          answer field name: "captchaPanel:challengePassword"
-        The submit target is the enclosing Wicket form's action — read live from
-        the same page (we locate it relative to the captcha panel).
-        """
-        try:
-            page = session.get(urljoin(BASE_URL, "home.page.2"), timeout=30)
-            soup = BeautifulSoup(page.text, "html.parser")
-            img = soup.find("img", class_="captchaImg")
-            if not img or not img.get("src"):
-                logger.debug("No captchaImg on portal page.")
-                return False
-            img_url = urljoin(page.url, img["src"])
-
-            self._sleep()
-            img_resp = session.get(img_url, timeout=30, headers={"Referer": page.url})
-            if img_resp.status_code != 200 or not img_resp.content:
-                logger.debug("CAPTCHA image fetch failed (%d).", img_resp.status_code)
-                return False
-
-            code = self._solve_captcha(solver, img_resp.content)
-            if not code:
-                logger.debug("CAPTCHA solve returned empty.")
-                return False
-
-            # Submit the answer on the captcha form. The form action + any extra
-            # hidden Wicket fields live on this same page; collect them generically.
-            form = img.find_parent("form")
-            action = form.get("action") if form else None
-            if not action:
-                logger.debug("CAPTCHA panel has no enclosing form action.")
-                return False
-            payload = self._collect_hidden_fields(form)
-            payload["captchaPanel:challengePassword"] = code
-
-            self._sleep()
-            resp = session.post(urljoin(page.url, action), data=payload, timeout=30,
-                                headers={"Referer": page.url})
-            ok = resp.status_code == 200 and "incorrect" not in resp.text.lower()
-            if not ok:
-                logger.debug("CAPTCHA submission rejected.")
-            return ok
-        except requests.RequestException as e:
-            logger.debug("CAPTCHA gate raised: %s", e)
-            return False
-
-    def _solve_captcha(self, solver, image_bytes: bytes) -> str:
-        """Submit CAPTCHA image to 2Captcha; return text or '' on failure.
-
-        Mirrors scrapers.oh_clark_probate._solve_captcha.
-        """
-        import tempfile
-        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=True) as tmp:
-            tmp.write(image_bytes)
-            tmp.flush()
-            try:
-                result = solver.normal(tmp.name)
-                return (result or {}).get("code", "").strip()
-            except Exception as e:
-                logger.debug("2Captcha solve raised: %s", e)
-                return ""
-
-    @staticmethod
-    def _collect_hidden_fields(form) -> dict:
-        """Gather all <input> name/value pairs from a Wicket form (hidden + text)."""
-        out: dict[str, str] = {}
-        if not form:
-            return out
-        for inp in form.find_all("input"):
-            name = inp.get("name")
-            if name:
-                out[name] = inp.get("value", "")
+        out: list[dict] = []
+        for cells in rows:
+            upper = [c.upper() for c in cells]
+            if "PLAINTIFF" not in upper:
+                continue
+            case_number = next(
+                (c for c in cells if CASE_NUMBER_RE.search(c)), ""
+            )
+            if not case_number:
+                continue
+            file_date = None
+            for c in cells:
+                m = DATE_RE.search(c)
+                if m:
+                    try:
+                        file_date = date(int(m.group(3)), int(m.group(1)), int(m.group(2)))
+                        break
+                    except ValueError:
+                        pass
+            if file_date is None or not (since_date <= file_date <= until_date):
+                continue
+            out.append({
+                "case_number": self._norm_case(case_number),
+                "case_number_raw": case_number.strip(),
+                "file_date": file_date,
+                "plaintiff": company,
+            })
         return out
 
-    # ── STEP 3: Case search + parse (LIVE FINISH) ──────────────────────
-    def _run_case_search(
-        self, session: requests.Session, since_date: date, until_date: date,
-    ) -> list[_CaseRow]:
-        """Submit the Case Search form filtered to FORECLOSURE cases in window.
+    # ── Detail ─────────────────────────────────────────────────────────
+    async def _fetch_and_parse_detail(self, page, case: dict) -> NoticeData | None:
+        """Click into the case detail, parse homeowner + property, return a record."""
+        case_raw = case["case_number_raw"]
+        try:
+            link = page.locator(
+                "td.bookmarkablePageLinkPropertyColumnLink a", has_text=case_raw
+            ).first
+            if await link.count() == 0:
+                link = page.get_by_role("link", name=case_raw).first
+            await link.click()
+            await page.wait_for_load_state("networkidle", timeout=40000)
+            await page.wait_for_timeout(1500)
+            html = await page.content()
+            detail_url = page.url
+        except Exception as e:
+            logger.debug("Detail click for %s raised: %s", case_raw, e)
+            return None
+        finally:
+            # Return to results so the next case's link is clickable.
+            try:
+                await page.go_back(wait_until="networkidle", timeout=30000)
+                await page.wait_for_timeout(800)
+            except Exception:
+                pass
 
-        LIVE FINISH — the post-CAPTCHA page exposes a stateful Wicket Case Search
-        form whose component-paths must be read from that live page (they are not
-        stable enough to hard-code blind). To complete:
-          1. GET the search page; locate the search <form> + its action.
-          2. Identify the case-type/category select and choose the FORECLOSURE
-             option, set the filed-date-from / filed-date-to fields to
-             since_date / until_date, submit.
-          3. Page through results into _CaseRow objects via `_parse_results`.
-          4. For each, follow the detail link and fill plaintiff/defendant/
-             property address via `_parse_detail` (defendant address = property).
-        Until implemented, returns [] so the daily run stays green.
-        """
-        logger.warning(
-            "Delaware tax foreclosure: CAPTCHA cleared but Case Search submission "
-            "is the remaining live-finish step (Wicket form paths). Returning 0. "
-            "See _run_case_search docstring for the 4-step completion plan."
+        plaintiff, homeowner, street, city, state, zipc = self._parse_detail(html)
+        if not (plaintiff or homeowner):
+            logger.debug("Detail parse empty for %s", case_raw)
+
+        raw_text = (
+            f"Court: Delaware County Court of Common Pleas\n"
+            f"Case Number: {case['case_number_raw']}\n"
+            f"Case Type: Tax Foreclosure\n"
+            f"Date Filed: {case['file_date'].isoformat()}\n"
+            f"Plaintiff: {plaintiff or case['plaintiff']}\n"
+            f"Homeowner (Defendant): {homeowner}\n"
+            f"Property Address: {street}, {city}, {state} {zipc}\n"
         )
-        return []
-
-    def _parse_results(self, html: str) -> list[_CaseRow]:
-        """Parse the JWorks results grid into _CaseRow stubs. (LIVE FINISH)"""
-        return []
-
-    def _parse_detail(self, html: str, row: _CaseRow) -> _CaseRow:
-        """Fill plaintiff/defendant/property from a case detail page. (LIVE FINISH)"""
-        return row
-
-    # ── Classification + conversion ────────────────────────────────────
-    @staticmethod
-    def _classify_notice_type(plaintiff_name: str) -> str:
-        name = plaintiff_name or ""
-        if any(p.search(name) for p in TAX_FORECLOSURE_PLAINTIFF_PATTERNS):
-            return "tax_foreclosure"
-        return "lis_pendens"
-
-    def _to_notice_data(self, row: _CaseRow) -> NoticeData:
         return NoticeData(
-            date_added=row.filing_date.isoformat() if row.filing_date else "",
-            auction_date="",  # filing stage — no sheriff sale scheduled yet
+            date_added=case["file_date"].isoformat(),
+            auction_date="",
             county=self.county,
             state="OH",
-            notice_type=self._classify_notice_type(row.plaintiff_name),
-            source_url=row.detail_url or LANDING_URL,
-            address=row.property_street,
-            city=row.property_city,
-            zip=row.property_zip,
-            owner_name=row.defendant_name,
-            raw_text=row.raw_text,
+            notice_type="tax_foreclosure",
+            source_url=detail_url,
+            address=street,
+            city=city,
+            zip=zipc,
+            owner_name=homeowner,
+            raw_text=raw_text,
         )
+
+    def _parse_detail(self, html: str):
+        """Return (plaintiff, homeowner, street, city, state, zip) from a detail page."""
+        soup = BeautifulSoup(html, "html.parser")
+        parties = []
+        for block in soup.select("div.roweven, div.rowodd"):
+            label = block.select_one(".ptyInfoLabel")
+            rt = block.select_one(".ptyType")
+            if not label or not rt:
+                continue
+            name = self._clean(label.get_text(" ", strip=True))
+            role = rt.get_text(" ", strip=True).lstrip("-").strip().upper()
+            ci = block.select_one(".ptyContactInfo")
+            street, city, state, zipc = self._parse_party_address(ci)
+            parties.append({
+                "name": name, "role": role,
+                "street": street, "city": city, "state": state, "zip": zipc,
+            })
+
+        plaintiff = next(
+            (p["name"] for p in parties if "PLAINTIFF" in p["role"]), ""
+        )
+        # Homeowner = first DEFENDANT that isn't a govt lien-holder / placeholder.
+        homeowner_party = None
+        for p in parties:
+            if "DEFENDANT" not in p["role"]:
+                continue
+            if any(rx.search(p["name"]) for rx in GOVT_DEFENDANT_PATTERNS):
+                continue
+            if any(rx.search(p["name"]) for rx in PLACEHOLDER_DEFENDANT_PATTERNS):
+                continue
+            homeowner_party = p
+            break
+        if homeowner_party is None:
+            homeowner_party = next(
+                (p for p in parties if "DEFENDANT" in p["role"]), None
+            )
+
+        if homeowner_party is None:
+            return plaintiff, "", "", "", "", ""
+        return (
+            plaintiff,
+            homeowner_party["name"],
+            homeowner_party["street"],
+            homeowner_party["city"],
+            homeowner_party["state"],
+            homeowner_party["zip"],
+        )
+
+    def _parse_party_address(self, ci) -> tuple[str, str, str, str]:
+        """Split a .ptyContactInfo block into (street, city, state, zip)."""
+        if ci is None:
+            return "", "", "", ""
+        a1 = ci.select_one(".addrLn1")
+        street = self._clean(a1.get_text(" ", strip=True)) if a1 else ""
+        full = ci.get_text(" ", strip=True)
+        rest = full[len(a1.get_text(" ", strip=True)):] if a1 else full
+        m = ADDR_CSZ_RE.search(rest)
+        if m:
+            return street, self._clean(m.group(1)), m.group(2), m.group(3)
+        return street, "", "", ""
+
+    # ── Helpers ────────────────────────────────────────────────────────
+    @staticmethod
+    def _norm_case(s: str) -> str:
+        return re.sub(r"\s+", "", s or "").upper()
+
+    @staticmethod
+    def _clean(s: str) -> str:
+        return re.sub(r"\s+", " ", (s or "").replace("\xa0", " ")).strip().strip(",").strip()
 
 
 # ── Standalone test harness ────────────────────────────────────────────
 if __name__ == "__main__":
     import argparse
+    import asyncio
+    import csv
+    from dataclasses import asdict
+    from pathlib import Path
 
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
-
     parser = argparse.ArgumentParser(description="Test Delaware tax foreclosure scraper")
-    parser.add_argument("--days", type=int, default=14)
-    parser.add_argument("--handshake-test", action="store_true",
-                        help="Only exercise the BrowserInfoPage handshake (no CAPTCHA needed)")
+    parser.add_argument("--days", type=int, default=365,
+                        help="Look back N days (default 365 — Delaware is low-volume)")
+    parser.add_argument("--output", default="output/test_oh_delaware_tax_foreclosure.csv")
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
-
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
 
-    scraper = Scraper()
-
-    if args.handshake_test:
-        sess = scraper._build_session()
-        ok = scraper._browserinfo_handshake(sess)
-        print(f"Handshake {'OK — portal session seeded' if ok else 'FAILED'}")
-        raise SystemExit(0 if ok else 1)
-
     since = date.today() - timedelta(days=args.days)
-    records = asyncio.run(scraper.scrape(since_date=since))
-    print(f"Scraped {len(records)} Delaware foreclosure records since {since}")
+    records = asyncio.run(Scraper().scrape(since_date=since))
+    print(f"Scraped {len(records)} Delaware tax foreclosure records since {since}")
+
+    out = Path(args.output)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with open(out, "w", newline="", encoding="utf-8") as f:
+        if records:
+            w = csv.DictWriter(f, fieldnames=list(asdict(records[0]).keys()))
+            w.writeheader()
+            for r in records:
+                w.writerow(asdict(r))
+        else:
+            f.write("")
+    print(f"Wrote {out}")
