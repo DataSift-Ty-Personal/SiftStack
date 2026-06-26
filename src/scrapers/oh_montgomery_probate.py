@@ -46,7 +46,7 @@ from bs4 import BeautifulSoup
 
 import config
 from models import NoticeData
-from scrapers.base import NoticeScraper
+from scrapers.base import NoticeScraper, correct_state_against_zip
 
 logger = logging.getLogger(__name__)
 
@@ -510,6 +510,9 @@ class Scraper(NoticeScraper):
         # Parse fiduciary mailing address into street/city/state/zip when
         # the format matches "STREET, CITY, ST ZIP".
         f_street, f_city, f_state, f_zip = self._parse_address(detail.fiduciary_address)
+        # Clerk typos: if the typed state disagrees with the ZIP prefix, ZIP wins.
+        # (E.g. "GRAND ISLAND, TN 14072" → 14072 is unambiguously NY.)
+        f_state = correct_state_against_zip(f_state, f_zip)
 
         return NoticeData(
             date_added=detail.filing_date.isoformat() if detail.filing_date else "",

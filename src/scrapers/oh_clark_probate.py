@@ -74,7 +74,7 @@ from bs4 import BeautifulSoup
 
 import config
 from models import NoticeData
-from scrapers.base import NoticeScraper
+from scrapers.base import NoticeScraper, correct_state_against_zip
 
 logger = logging.getLogger(__name__)
 
@@ -589,12 +589,19 @@ def _parse_us_date(s: str) -> date | None:
 
 
 def _split_csz(s: str) -> tuple[str, str, str]:
-    """Split 'City, ST 12345' or 'City, ST 12345-6789' → (city, state, zip5)."""
+    """Split 'City, ST 12345' or 'City, ST 12345-6789' → (city, state, zip5).
+
+    If the typed state disagrees with the ZIP prefix (clerk typo at the source),
+    the ZIP wins — see `correct_state_against_zip`.
+    """
     s = (s or "").strip()
     m = _CSZ_RE.match(s)
     if not m:
         return s, "", ""
-    return m.group(1).strip().title(), m.group(2).strip().upper(), m.group(3)
+    city = m.group(1).strip().title()
+    state = m.group(2).strip().upper()
+    zip_code = m.group(3)
+    return city, correct_state_against_zip(state, zip_code), zip_code
 
 
 def _normalize_phone(s: str) -> str:

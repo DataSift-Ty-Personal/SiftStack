@@ -21,6 +21,7 @@ from datetime import datetime
 
 import config
 from models import NoticeData
+from scrapers.base import correct_state_against_zip
 
 logger = logging.getLogger(__name__)
 
@@ -252,9 +253,35 @@ def _validate_records(notices: list[NoticeData]) -> list[NoticeData]:
     """
     valid = []
     invalid_count = 0
+    state_fixes = 0
 
     for n in notices:
         issues = []
+
+        # Defense-in-depth: trust the ZIP over a clerk-typed (or stale-default)
+        # state. Source records carry free-text fiduciary/owner mailing
+        # addresses where the state is hand-keyed and sometimes wrong
+        # (e.g. "FAIRBORN, TN 45324" — 45324 is unambiguously OH). Applied to
+        # every record here so the correction is not dependent on each scraper
+        # remembering to call it. Property (state/zip), owner mailing
+        # (owner_state/owner_zip), and decision-maker mailing
+        # (decision_maker_state/decision_maker_zip).
+        for state_field, zip_field in (
+            ("state", "zip"),
+            ("owner_state", "owner_zip"),
+            ("decision_maker_state", "decision_maker_zip"),
+        ):
+            cur_state = getattr(n, state_field, "")
+            cur_zip = getattr(n, zip_field, "")
+            fixed = correct_state_against_zip(cur_state, cur_zip)
+            if fixed != cur_state:
+                logger.info(
+                    "  State corrected by ZIP [%s]: %s %r -> %r (zip %s)",
+                    n.address or n.owner_name or "(unknown)",
+                    state_field, cur_state, fixed, cur_zip,
+                )
+                setattr(n, state_field, fixed)
+                state_fixes += 1
 
         # Required fields
         if not n.address.strip():
@@ -282,6 +309,9 @@ def _validate_records(notices: list[NoticeData]) -> list[NoticeData]:
             continue
 
         valid.append(n)
+
+    if state_fixes:
+        logger.info("  Corrected %d state field(s) against ZIP", state_fixes)
 
     if invalid_count:
         logger.info("  Removed %d invalid records (validation)", invalid_count)
