@@ -107,9 +107,14 @@ async def nj_weekly_all():
 
     from nj_scraper import scrape_nj_lp_notices
     from nj_middlesex_probate import (
-        scrape_middlesex_probates, scrape_somerset_probates,
-        scrape_ocean_probates, CloudflareBlockError,
+        scrape_middlesex_probates, scrape_somerset_probates, CloudflareBlockError,
     )
+    # NOTE: scrape_ocean_probates is intentionally NOT imported/run here.
+    # Ocean is disabled from the weekly cron (Week 26) until the team has
+    # capacity to work those leads. It stays callable via nj_probate_manual
+    # and scripts/nj_probate_local_backfill.py, and its ocean_probate dedup
+    # bucket is preserved. To re-enable: add it back to the gather + downstream
+    # counts below (and restore the first-run-guard ocean_days line).
     from nj_somerset_sheriff import scrape_somerset_notices
     from nj_sheriff_sales import scrape_civilview_notices
 
@@ -138,14 +143,15 @@ async def nj_weekly_all():
     # bucket is populated, preventing backfill floods. Steady-state runs use
     # the full 180-day window because dedup handles volume.
     #
-    # Death-Date Bluestone counties (Middlesex, Ocean) filter by date of
-    # death, and filings cluster 30-150 days post-death — so they NEED the
-    # 180-day window to catch real filings, and at steady state dedup trims it
-    # to only the genuinely-new ones (~50/week for Middlesex). But on a
-    # never-seeded county the same 180-day window dumps the entire history as
-    # "new" in one batch (Ocean did ~1,579 on 2026-06-17, blowing the 8h
-    # enrichment timeout). So we size the window by whether the bucket exists:
-    # empty bucket → 30-day first run that seeds itself; populated → full 180.
+    # Death-Date Bluestone (Middlesex) filters by date of death, and filings
+    # cluster 30-150 days post-death — so it NEEDS the 180-day window to catch
+    # real filings, and at steady state dedup trims it to only the genuinely-
+    # new ones (~50/week). But on a never-seeded county the same 180-day window
+    # dumps the entire history as "new" in one batch (Ocean did ~1,579 on
+    # 2026-06-17, blowing the 8h enrichment timeout). So we size the window by
+    # whether the bucket exists: empty → 30-day first run that seeds itself;
+    # populated → full 180. (Helper kept generic so re-enabling Ocean is a
+    # one-line `_bluestone_window("ocean_probate")` restore.)
     from dedup_tracker import load_tracking as _load_tracking_for_window
     await tracking_volume.reload.aio()
     _seed_state = _load_tracking_for_window(TRACKING_FILE)
@@ -155,11 +161,10 @@ async def nj_weekly_all():
         return BLUESTONE_FULL_DAYS if _seed_state.get(bucket) else BLUESTONE_FIRST_RUN_DAYS
 
     mid_days = _bluestone_window("probate")
-    ocean_days = _bluestone_window("ocean_probate")
     logger.info(
-        "Bluestone windows (first-run guard): Middlesex=%dd, Ocean=%dd "
+        "Bluestone window (first-run guard): Middlesex=%dd "
         "(%dd once seeded, %dd first-run cap)",
-        mid_days, ocean_days, BLUESTONE_FULL_DAYS, BLUESTONE_FIRST_RUN_DAYS,
+        mid_days, BLUESTONE_FULL_DAYS, BLUESTONE_FIRST_RUN_DAYS,
     )
 
     logger.info("Starting combined weekly scrape via Modal...")
@@ -171,7 +176,7 @@ async def nj_weekly_all():
         # Somerset Bluestone supports File Date filtering directly, so 30
         # days of file-date is its natural window (no guard needed).
         _safe(scrape_somerset_probates(days_back=30), "Somerset Probate"),
-        _safe(scrape_ocean_probates(days_back=ocean_days), "Ocean Probate"),
+        # Ocean probate intentionally disabled from the weekly cron (Week 26).
         _safe(scrape_somerset_notices(include_bankruptcy=True, max_records=0), "Somerset Sheriff"),
         _safe(scrape_civilview_notices(counties=["Essex", "Middlesex", "Union"]), "CivilView Sheriff"),
     )
@@ -203,11 +208,10 @@ async def nj_weekly_all():
         raise RuntimeError(msg)
 
     logger.info(
-        "Raw scrape: NJLP=%d, MidProbate=%d, SomProbate=%d, OceanProbate=%d, SomSheriff=%d, CivilView=%d",
+        "Raw scrape: NJLP=%d, MidProbate=%d, SomProbate=%d, SomSheriff=%d, CivilView=%d",
         len(per_source.get("NJLP", [])),
         len(per_source.get("Middlesex Probate", [])),
         len(per_source.get("Somerset Probate", [])),
-        len(per_source.get("Ocean Probate", [])),
         len(per_source.get("Somerset Sheriff", [])),
         len(per_source.get("CivilView Sheriff", [])),
     )
@@ -223,30 +227,25 @@ async def nj_weekly_all():
     new_som_probate, skipped_som_probate = filter_new(
         per_source.get("Somerset Probate", []), "somerset_probate", tracking,
     )
-    new_ocean_probate, skipped_ocean_probate = filter_new(
-        per_source.get("Ocean Probate", []), "ocean_probate", tracking,
-    )
     new_somerset, skipped_somerset = filter_new(per_source.get("Somerset Sheriff", []), "somerset", tracking)
     new_civilview, skipped_civilview = filter_new(per_source.get("CivilView Sheriff", []), "civilview_sheriff", tracking)
 
     logger.info(
         "Dedup: NJLP %d new / %d skipped, MidProbate %d new / %d skipped, "
-        "SomProbate %d new / %d skipped, OceanProbate %d new / %d skipped, "
+        "SomProbate %d new / %d skipped, "
         "SomSheriff %d new / %d skipped, CivilView %d new / %d skipped",
         len(new_lp), skipped_lp,
         len(new_probate), skipped_probate,
         len(new_som_probate), skipped_som_probate,
-        len(new_ocean_probate), skipped_ocean_probate,
         len(new_somerset), skipped_somerset,
         len(new_civilview), skipped_civilview,
     )
 
-    combined = new_lp + new_probate + new_som_probate + new_ocean_probate + new_somerset + new_civilview
+    combined = new_lp + new_probate + new_som_probate + new_somerset + new_civilview
     skipped_counts = {
         "NJLP": skipped_lp,
         "Middlesex Probate": skipped_probate,
         "Somerset Probate": skipped_som_probate,
-        "Ocean Probate": skipped_ocean_probate,
         "Somerset Sheriff": skipped_somerset,
         "CivilView Sheriff": skipped_civilview,
     }
@@ -254,7 +253,6 @@ async def nj_weekly_all():
         "NJLP": len(new_lp),
         "Middlesex Probate": len(new_probate),
         "Somerset Probate": len(new_som_probate),
-        "Ocean Probate": len(new_ocean_probate),
         "Somerset Sheriff": len(new_somerset),
         "CivilView Sheriff": len(new_civilview),
     }
@@ -264,7 +262,7 @@ async def nj_weekly_all():
         # since nothing changed) and notify that it was a clean quiet week.
         save_tracking(tracking, TRACKING_FILE)
         await tracking_volume.commit.aio()
-        msg = (f"All {skipped_lp + skipped_probate + skipped_som_probate + skipped_ocean_probate + skipped_somerset + skipped_civilview} records were "
+        msg = (f"All {skipped_lp + skipped_probate + skipped_som_probate + skipped_somerset + skipped_civilview} records were "
                f"previously processed — nothing new to enrich or upload")
         logger.info(msg)
         try:
@@ -466,10 +464,9 @@ async def nj_weekly_all():
     # re-commit just confirms the same state after a successful run.
     save_tracking(tracking, TRACKING_FILE)
     await tracking_volume.commit.aio()
-    logger.info("Tracking saved: %d NJLP / %d probate / %d ocean_probate / %d somerset / %d civilview total IDs",
+    logger.info("Tracking saved: %d NJLP / %d probate / %d somerset / %d civilview total IDs",
                 len(tracking.get("njlp", {})),
                 len(tracking.get("probate", {})),
-                len(tracking.get("ocean_probate", {})),
                 len(tracking.get("somerset", {})),
                 len(tracking.get("civilview_sheriff", {})))
 
@@ -480,7 +477,7 @@ async def nj_weekly_all():
     try:
         import config
         lines = ["*NJ Weekly All — combined Wednesday run*"]
-        for label in ("NJLP", "Middlesex Probate", "Somerset Probate", "Ocean Probate", "Somerset Sheriff", "CivilView Sheriff"):
+        for label in ("NJLP", "Middlesex Probate", "Somerset Probate", "Somerset Sheriff", "CivilView Sheriff"):
             n, s = new_counts.get(label, 0), skipped_counts.get(label, 0)
             stale = stale_dropped_counts.get(label, 0)
             stale_suffix = f" / {stale} stale auctions filtered" if stale else ""
