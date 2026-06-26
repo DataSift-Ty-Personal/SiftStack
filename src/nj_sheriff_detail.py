@@ -70,6 +70,25 @@ LAST_DETAIL_RESULTS_BY_COUNTY: dict[str, dict] = {}
 # field set by the listing scraper.
 _COUNTY_TO_CIVILVIEW_ID = {"Essex": 2, "Middlesex": 73, "Union": 15}
 
+
+def _get_egress_ip() -> str:
+    """Best-effort public egress IP, for ELB-affinity diagnostics.
+
+    The Middlesex/Union detail-enrichment 0% (Essex 100%) is suspected to be
+    AWS-ELB session affinity keyed to the Modal container's egress IP. Logging
+    the IP per run lets us correlate which IP keeps landing on Essex's listing.
+    """
+    import urllib.request
+    for url in ("https://checkip.amazonaws.com", "https://api.ipify.org"):
+        try:
+            with urllib.request.urlopen(url, timeout=5) as r:
+                ip = r.read().decode().strip()
+                if ip:
+                    return ip
+        except Exception:
+            continue
+    return "unknown"
+
 # Map detail-page labels (lowercased, trimmed of trailing ":") to
 # NoticeData field names. Add new labels here as the site evolves.
 _LABEL_TO_FIELD = {
@@ -337,6 +356,37 @@ async def enrich_sheriff_records(
             county = "Middlesex"  # safe fallback for unmapped records
         by_county.setdefault(county, []).append(n)
 
+    # ── Week 26 diagnostics (Option C): confirm the ELB-affinity theory ──
+    # Map every county's expected PropertyIds so we can identify which county a
+    # listing/detail page ACTUALLY served (by PropertyId overlap), and log the
+    # egress IP. If the 07/01 logs show Middlesex/Union warm-ups consistently
+    # landing on Essex's listing from the same egress IP despite fresh
+    # contexts, that confirms IP-keyed AWS-ELB affinity → implement one-
+    # container-per-county (Option A). Read-only; changes no scrape behavior.
+    _cid_to_county = {v: k for k, v in _COUNTY_TO_CIVILVIEW_ID.items()}
+    _all_county_pids: dict[str, set[str]] = {}
+    for _cty, _recs in by_county.items():
+        _all_county_pids[_cty] = {
+            mm.group(1) for nn in _recs
+            if (mm := PROPERTY_ID_RE.search(nn.source_url or ""))
+        }
+
+    def _identify_landed_county(present_pids: "set[str]") -> str:
+        """Best guess of which county a page served, by PropertyId overlap."""
+        best, best_n = "unknown", 0
+        for _cty, _pids in _all_county_pids.items():
+            overlap = len(present_pids & _pids)
+            if overlap > best_n:
+                best, best_n = _cty, overlap
+        return best if best_n else "unknown"
+
+    egress_ip = _get_egress_ip()
+    logger.info(
+        "CivilView detail enrichment — egress IP=%s; expected PropertyIds per "
+        "county: %s",
+        egress_ip, {c: len(p) for c, p in _all_county_pids.items()},
+    )
+
     kept: list[NoticeData] = []
     dropped = 0
     parse_failures = 0
@@ -417,6 +467,17 @@ async def enrich_sheriff_records(
                     if (m := PROPERTY_ID_RE.search(h or ""))
                 }
                 if not (present & expected_pids):
+                    req_m = re.search(r"countyId=(\d+)", target_url)
+                    req_cid = int(req_m.group(1)) if req_m else -1
+                    req_county = _cid_to_county.get(req_cid, f"countyId={req_cid}")
+                    landed = _identify_landed_county(present)
+                    logger.warning(
+                        "WRONG-COUNTY listing: requested %s (countyId=%d) but page "
+                        "served %s [%d links, 0/%d expected pids present, landed-url=%s] "
+                        "— AWS-ELB affinity signal (egress IP=%s)",
+                        req_county, req_cid, landed, total_links,
+                        len(expected_pids), page.url, egress_ip,
+                    )
                     return -2
             return total_links
 
@@ -558,6 +619,28 @@ async def enrich_sheriff_records(
                         await page.wait_for_load_state("domcontentloaded", timeout=20000)
                         await page.wait_for_timeout(500)
                         html = await page.content()
+                        # Diagnostic (Option C): confirm the detail fetch landed
+                        # on a real SaleDetails page for THIS county, not a
+                        # bounce to another county's listing. WARNING only on a
+                        # bounce so Essex's many successes don't flood the log.
+                        if "SaleDetails" not in page.url:
+                            try:
+                                _hrefs = await page.locator('a[href*="PropertyId="]').evaluate_all(
+                                    "els => els.map(e => e.getAttribute('href'))"
+                                )
+                                _present = {
+                                    mm.group(1) for h in _hrefs
+                                    if (mm := PROPERTY_ID_RE.search(h or ""))
+                                }
+                                logger.warning(
+                                    "Detail fetch pid=%s (%s) bounced to %s page "
+                                    "(served county=%s, url=%s, egress IP=%s)",
+                                    pid, county,
+                                    "listing" if _present else "non-detail",
+                                    _identify_landed_county(_present), page.url, egress_ip,
+                                )
+                            except Exception:
+                                pass
                         parsed = parse_detail_html(html)
                         if not parsed.get("current_status") and not parsed.get("court_case_number"):
                             parse_failures += 1
