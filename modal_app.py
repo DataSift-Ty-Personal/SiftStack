@@ -61,15 +61,15 @@ SCHEDULE_CRON_UTC = "0 10 * * 3"
     # _safe() catches it per-scraper so one source's CF block can't kill
     # the parallel gather (May 2026 incident: probate CF-blocked, retry-
     # cascade wiped 56 NJLP + 402 sheriff + Somerset sheriff mid-parse).
-    # Capped at 1: retries don't help a timeout (it just re-times-out) and
+    # Capped at 2: retries don't help a timeout (it just re-times-out) and
     # each attempt re-runs enrichment — on 2026-06-17 the 8-retry loop
     # re-ran Smarty on ~1,760 records per attempt and burned through the
-    # Smarty credit pool multiple times. Dedup is now committed pre-enrichment
-    # (below) so even the one retry re-scrapes, dedups to ~0, and exits early
-    # instead of re-Smartying. One retry still covers a genuine transient
-    # container crash.
+    # Smarty credit pool multiple times (~$51). There's no scenario where
+    # attempt #3+ succeeds after #1-2 fail. Dedup is now committed pre-
+    # enrichment (below) so the retries re-scrape, dedup to ~0, and exit early
+    # instead of re-Smartying. 2 attempts cover a genuine transient crash.
     retries=modal.Retries(
-        max_retries=1,
+        max_retries=2,
         initial_delay=10.0,
         backoff_coefficient=1.0,
     ),
