@@ -479,13 +479,52 @@ def _state_name(code: str) -> str:
     return _STATE_NAMES.get(code.upper().strip(), "Tennessee")
 
 
-def _search_obituary(name: str, city: str, extra_terms: str = "", state: str = "Tennessee") -> list[dict]:
-    """Search DuckDuckGo first, Brave as fallback, for obituary pages.
+def _serper_obituary_search(query: str, num: int = 8) -> list[dict]:
+    """Serper.dev Google search for obituary pages, returned in DDGS shape.
 
-    Two-stage search to cut Brave volume roughly in half: try DDG-only;
-    only escalate to Brave (with rate-limit guards) if DDG returned zero
-    obituary-domain hits. The old single combined-backend call was the
-    main driver of the 429-after-~50-records pattern.
+    Replaces the Brave fallback in obituary search: Brave rate-limits Modal's
+    shared egress IPs (HTTP 429 after ~3-4 calls), which tanked decision-maker
+    identification (41.8% vs 70% floor on the 2026-06-24 run). Serper is
+    key-based — no IP throttling — and is already used for the DM address
+    waterfall. Returns [] if SERPER_API_KEY is unset (caller still has DDG).
+
+    Output dicts use DDGS keys (href/title/body) so _collect_obit_results
+    can consume Serper and DDG results interchangeably.
+    """
+    import config as cfg
+    if not cfg.SERPER_API_KEY:
+        return []
+    try:
+        resp = requests.post(
+            "https://google.serper.dev/search",
+            headers={
+                "X-API-KEY": cfg.SERPER_API_KEY,
+                "Content-Type": "application/json",
+            },
+            json={"q": query, "num": num},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as e:
+        logger.debug("Serper obituary search failed for '%s': %s", query, e)
+        return []
+    return [
+        {
+            "href": item.get("link", ""),
+            "title": item.get("title", ""),
+            "body": item.get("snippet", ""),
+        }
+        for item in data.get("organic", [])
+    ]
+
+
+def _search_obituary(name: str, city: str, extra_terms: str = "", state: str = "Tennessee") -> list[dict]:
+    """Search DuckDuckGo first, Serper (Google) as fallback, for obituary pages.
+
+    Two-stage search: try DDG-only; only escalate to Serper if DDG returned
+    zero obituary-domain hits. Serper replaced the old Brave fallback, which
+    429'd on Modal's shared egress IPs and tanked DM identification.
 
     Args:
         name: Person's full name.
@@ -537,19 +576,18 @@ def _search_obituary(name: str, city: str, extra_terms: str = "", state: str = "
     obituary_results = _collect_obit_results(ddg_results)
     ddg_obit_domain_count = sum(1 for r in ddg_results if _is_obituary_url(r.get("href", "")))
 
-    # Stage 2: Brave fallback — only if DDG produced no obituary-domain
-    # hits. Brave call is serialized via semaphore + min-gap + 429 retry.
+    # Stage 2: Serper (Google) fallback — only if DDG produced no obituary-
+    # domain hits. Replaced Brave, which 429s on Modal's shared egress IPs.
     if ddg_obit_domain_count == 0:
-        time.sleep(1.0)  # 1s gap between DDG and Brave per the runbook
-        brave_results = _brave_search_with_retry(query, max_results=8)
-        if brave_results:
+        serper_results = _serper_obituary_search(query, num=8)
+        if serper_results:
             existing_urls = {o["url"] for o in obituary_results}
-            for extra in _collect_obit_results(brave_results):
+            for extra in _collect_obit_results(serper_results):
                 if extra["url"] not in existing_urls:
                     obituary_results.append(extra)
                     existing_urls.add(extra["url"])
 
-    return obituary_results[:8]  # Process all results (DDG + optional Brave fallback)
+    return obituary_results[:8]  # Process all results (DDG + optional Serper fallback)
 
 
 def _extract_structured_text(html: str, url: str) -> str:
