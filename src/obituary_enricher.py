@@ -7,6 +7,7 @@ the decision-maker (heir/executor) for each deceased owner.
 This catches deceased owners the county tax API hasn't flagged yet.
 """
 
+import asyncio
 import json
 import logging
 import os
@@ -2313,6 +2314,27 @@ def _apply_obituary_match(
         notice.missing_data_flags = "|".join(flags)
 
 
+def _run_coro_blocking(coro):
+    """Run an async coroutine to completion from sync code, whether or not an
+    event loop is already running in this thread.
+
+    On Modal, enrich_obituary_data runs synchronously inside nj_weekly_all's
+    event loop, so a bare asyncio.run() raises "cannot be called from a
+    running event loop" and the Ancestry fallback silently never executes
+    (it just logs a warning and returns 0 hits). When a loop is already
+    running we offload to a worker thread with its own fresh loop; from the
+    local CLI (no running loop) asyncio.run() works directly.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)  # no running loop (local CLI) — safe
+    # A loop is already running in this thread (Modal): run the coroutine to
+    # completion in a separate thread with its own event loop.
+    with ThreadPoolExecutor(max_workers=1) as _pool:
+        return _pool.submit(asyncio.run, coro).result()
+
+
 def enrich_obituary_data(
     notices: list[NoticeData],
     api_key: str,
@@ -2696,7 +2718,10 @@ def enrich_obituary_data(
                 return ancestry_hits
 
             try:
-                ancestry_hits = asyncio.run(_ancestry_fallback())
+                # asyncio.run() fails here under Modal (already inside
+                # nj_weekly_all's running loop); _run_coro_blocking offloads
+                # to a worker-thread loop in that case, runs directly locally.
+                ancestry_hits = _run_coro_blocking(_ancestry_fallback())
                 if ancestry_hits:
                     confirmed += ancestry_hits
                     # Enrich Ancestry hits with DuckDuckGo obituary text for heir extraction
