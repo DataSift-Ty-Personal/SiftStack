@@ -1141,6 +1141,22 @@ _firecrawl_budget_total = int(os.environ.get("FIRECRAWL_BUDGET", "3000"))
 _firecrawl_calls_used = 0
 _firecrawl_lock = threading.Lock()
 
+# ── Week 26 Firecrawl cost controls ───────────────────────────────────
+# Hard per-run cap: once this many Firecrawl calls have been made in a run,
+# _fetch_firecrawl returns "" and callers use whatever data they already have.
+# Reset at the start of each enrich_obituary_data run. Binding constraint that
+# sits above the older soft percentage-based priority gating.
+_FIRECRAWL_MAX_CALLS_PER_RUN = int(os.environ.get("FIRECRAWL_MAX_CALLS", "100"))
+_firecrawl_cap_logged = False
+# Firecrawl for DM ADDRESS lookups is OFF by default: nj_taxrecords (Tier 1)
+# + Tracerfy already resolve NJ addresses without Firecrawl, and the people-
+# search address tier is fundamentally Firecrawl-dependent (CBC etc. 403
+# without JS render). Set FIRECRAWL_ADDRESS=1 to re-enable that tier.
+_FIRECRAWL_ADDRESS_ENABLED = os.environ.get("FIRECRAWL_ADDRESS", "0") == "1"
+# Cap heir verifications per record: no reason to verify 14 survivors when we
+# only need the top 1-2 decision-makers.
+_MAX_SURVIVORS_VERIFIED = int(os.environ.get("MAX_HEIRS_VERIFIED", "3"))
+
 
 def _fetch_firecrawl(
     url: str, wait_ms: int = 5000, max_text: int = 0, priority: str = "high"
@@ -1154,13 +1170,24 @@ def _fetch_firecrawl(
               allowed if >50% budget remains), "low" (DM address lookups, allowed
               if >75% budget remains).
     """
-    global _firecrawl_credits_exhausted, _firecrawl_calls_used
+    global _firecrawl_credits_exhausted, _firecrawl_calls_used, _firecrawl_cap_logged
     import config as cfg
     if not cfg.FIRECRAWL_API_KEY or _firecrawl_credits_exhausted:
         return ""
 
     # Budget-based priority gating (thread-safe read)
     with _firecrawl_lock:
+        # Hard per-run cap (cost control) — the binding constraint. Once hit,
+        # skip all further Firecrawl and let callers use available data.
+        if _firecrawl_calls_used >= _FIRECRAWL_MAX_CALLS_PER_RUN:
+            if not _firecrawl_cap_logged:
+                logger.warning(
+                    "Firecrawl per-run cap reached (%d calls) — skipping remaining "
+                    "Firecrawl fetches this run; callers use already-available data",
+                    _FIRECRAWL_MAX_CALLS_PER_RUN,
+                )
+                _firecrawl_cap_logged = True
+            return ""
         budget_remaining_pct = 1.0 - (_firecrawl_calls_used / max(_firecrawl_budget_total, 1))
         if priority == "medium" and budget_remaining_pct < 0.50:
             logger.debug("Firecrawl budget <50%% — skipping medium-priority fetch for %s", url)
@@ -1246,6 +1273,17 @@ def _lookup_dm_address_serper_firecrawl(
     search for additional people search sites. Uses Claude Haiku to extract
     the address from rendered page content.
     """
+    # Cost control (Week 26): this tier is fundamentally Firecrawl-dependent
+    # (CyberBackgroundChecks etc. 403 without JS render). nj_taxrecords (Tier 1)
+    # + Tracerfy already resolve NJ addresses, so skip Firecrawl here by default
+    # — only the initial obituary page fetch should burn Firecrawl. Re-enable
+    # with FIRECRAWL_ADDRESS=1 (e.g. for TN, which has no nj_taxrecords tier).
+    if not _FIRECRAWL_ADDRESS_ENABLED:
+        logger.debug(
+            "Address Firecrawl tier disabled (cost control) — skipping for %s", name
+        )
+        return None
+
     # Phase 1: Direct people search URLs (no Google search needed)
     direct_urls = _build_people_search_urls(name, city)
     for url in direct_urls:
@@ -2149,6 +2187,19 @@ def build_heir_map(
 
         to_verify.append((name, s))
 
+    # Cost control (Week 26): cap heir verifications per record. Verifying 10+
+    # survivors burns Serper/Firecrawl/Anthropic for no benefit — we only need
+    # the top 1-2 decision-makers. Obituaries list immediate family (spouse,
+    # children) first, so keep the first N and skip the rest.
+    if len(to_verify) > _MAX_SURVIVORS_VERIFIED:
+        skipped_n = len(to_verify) - _MAX_SURVIVORS_VERIFIED
+        to_verify = to_verify[:_MAX_SURVIVORS_VERIFIED]
+        error_info["missing_flags"].append(f"heir_verify_capped_{skipped_n}")
+        logger.info(
+            "  Heir verification capped at %d (skipped %d survivors) for cost control",
+            _MAX_SURVIVORS_VERIFIED, skipped_n,
+        )
+
     # Parallel depth-0 heir verification
     def _verify_depth0(args):
         vname, _ = args
@@ -2395,6 +2446,21 @@ def enrich_obituary_data(
     if not api_key:
         logger.warning("No Anthropic API key — skipping obituary enrichment")
         return
+
+    # Reset the per-run Firecrawl budget so the hard cap
+    # (_FIRECRAWL_MAX_CALLS_PER_RUN) applies to THIS run, not cumulatively
+    # across runs sharing a process (matters for local CLI; Modal is fresh).
+    global _firecrawl_calls_used, _firecrawl_credits_exhausted, _firecrawl_cap_logged
+    _firecrawl_calls_used = 0
+    _firecrawl_credits_exhausted = False
+    _firecrawl_cap_logged = False
+    logger.info(
+        "Firecrawl cost controls: max %d calls/run, address-tier Firecrawl %s, "
+        "heir verifications capped at %d",
+        _FIRECRAWL_MAX_CALLS_PER_RUN,
+        "ON" if _FIRECRAWL_ADDRESS_ENABLED else "OFF",
+        _MAX_SURVIVORS_VERIFIED,
+    )
 
     # Build candidate list: notices with owner names to search
     # Tuple: (notice, raw_name, is_tax_name)
