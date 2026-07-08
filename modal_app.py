@@ -55,6 +55,122 @@ SCHEDULE_CRON_UTC = "0 10 * * 3"
 @app.function(
     image=image,
     secrets=[secrets],
+    # One county's CivilView detail enrichment (~100-150 records at ~4-5s each
+    # ≈ 15-20 min). 1hr ceiling is generous. One retry for a transient crash.
+    timeout=3600,
+    retries=modal.Retries(max_retries=1, initial_delay=10.0, backoff_coefficient=1.0),
+)
+async def civilview_detail_county_remote(county: str, records: list) -> dict:
+    """Detail-enrich ONE CivilView county in its own Modal container.
+
+    Middlesex/Union sat at 0% detail enrichment (Essex 100%) for 4+ weeks:
+    AWS-ELB session affinity is keyed to the container's egress IP, so when all
+    three counties share one container the ELB pins the session to whichever
+    county loaded first (Essex) and every Middlesex/Union detail fetch is
+    served Essex's listing — fresh browser contexts don't help (same IP).
+    Running each county in its OWN container gives each its own egress IP →
+    its own ELB session, so each binds its own county.
+
+    Args:
+        county:  county name (logging/stats).
+        records: this county's listing records as dicts (dataclasses.asdict of
+                 NoticeData — 115 fields, round-trips cleanly across containers).
+    Returns:
+        {"county", "records": [enriched dicts], "detail_stats": {county: {...}}}
+        enrich_sheriff_records drops Sold/Redeemed/Cancelled, so `records` is
+        the surviving enriched set.
+    """
+    import logging
+    from dataclasses import asdict
+    from notice_parser import NoticeData
+    from nj_sheriff_detail import enrich_sheriff_records, LAST_DETAIL_RESULTS_BY_COUNTY
+
+    logging.getLogger().setLevel(logging.INFO)
+    logging.getLogger("civilview_detail_county").info(
+        "CivilView detail (isolated container): %s — %d listing records", county, len(records)
+    )
+    notices = [NoticeData(**d) for d in records]
+    enriched = await enrich_sheriff_records(notices)
+    return {
+        "county": county,
+        "records": [asdict(n) for n in enriched],
+        "detail_stats": dict(LAST_DETAIL_RESULTS_BY_COUNTY),
+    }
+
+
+async def _enrich_civilview_by_county(listing_records: list, logger) -> tuple:
+    """Fan CivilView detail enrichment out to one Modal container per county.
+
+    Splits listing records by county, detail-enriches each county in its OWN
+    container (in parallel), merges the enriched/surviving records back with
+    the non-CivilView passthroughs, re-applies priority tiers, and collects the
+    per-county detail stats. Returns (merged_records, detail_stats_by_county).
+    A container failure for one county keeps that county's listing rows
+    un-enriched rather than losing them or blocking the others.
+    """
+    import asyncio
+    from dataclasses import asdict
+    from notice_parser import NoticeData
+    from nj_sheriff_detail import _COUNTY_TO_CIVILVIEW_ID, PROPERTY_ID_RE
+    from nj_sheriff_sales import apply_priority_tiers
+
+    by_county: dict = {}
+    passthrough: list = []
+    for n in listing_records:
+        county = (n.county or "").strip().title()
+        if county in _COUNTY_TO_CIVILVIEW_ID and PROPERTY_ID_RE.search(n.source_url or ""):
+            by_county.setdefault(county, []).append(n)
+        else:
+            passthrough.append(n)  # Somerset PDF sales etc. — no detail page
+
+    if not by_county:
+        apply_priority_tiers(listing_records)
+        return listing_records, {}
+
+    logger.info(
+        "CivilView detail fan-out: %d counties, one container each: %s",
+        len(by_county), {c: len(r) for c, r in by_county.items()},
+    )
+
+    async def _one(county: str, recs: list) -> dict:
+        try:
+            return await civilview_detail_county_remote.remote.aio(
+                county, [asdict(n) for n in recs]
+            )
+        except Exception as e:
+            logger.error(
+                "CivilView detail container for %s failed: %s — keeping %d listing rows un-enriched",
+                county, e, len(recs),
+            )
+            return {
+                "county": county,
+                "records": [asdict(n) for n in recs],
+                "detail_stats": {county: {
+                    "enriched": 0, "dropped": 0, "parse_failures": len(recs),
+                    "total": len(recs), "container_error": str(e),
+                }},
+            }
+
+    results = await asyncio.gather(*[_one(c, r) for c, r in by_county.items()])
+
+    merged: list = list(passthrough)
+    detail_stats: dict = {}
+    for res in results:
+        merged.extend(NoticeData(**d) for d in res["records"])
+        detail_stats.update(res.get("detail_stats", {}))
+
+    # Priority tiers run AFTER detail enrichment (reads adjournment_count etc.).
+    apply_priority_tiers(merged)
+    logger.info(
+        "CivilView detail fan-out complete: %d records after enrichment (from %d listing rows)",
+        len(merged), len(listing_records),
+    )
+    return merged, detail_stats
+
+
+@app.function(
+    image=image,
+    secrets=[secrets],
     timeout=28800,  # 8 hr — obit + heir verification + Ancestry SSDI per heir
     # Function-level retries cover real crashes only (OOM, network blip,
     # unhandled exception). CloudflareBlockError no longer propagates —
@@ -178,7 +294,10 @@ async def nj_weekly_all():
         _safe(scrape_somerset_probates(days_back=30), "Somerset Probate"),
         # Ocean probate intentionally disabled from the weekly cron (Week 26).
         _safe(scrape_somerset_notices(include_bankruptcy=True, max_records=0), "Somerset Sheriff"),
-        _safe(scrape_civilview_notices(counties=["Essex", "Middlesex", "Union"]), "CivilView Sheriff"),
+        # CivilView LISTING only (plain HTTP, all counties). Detail enrichment
+        # is fanned out one-container-per-county AFTER the gather so each county
+        # gets its own egress IP + ELB session — see _enrich_civilview_by_county.
+        _safe(scrape_civilview_notices(counties=["Essex", "Middlesex", "Union"], enrich_details=False), "CivilView Sheriff"),
     )
     per_source = {label: notices for label, notices, _ in results}
     errors = [(label, err) for label, _, err in results if err]
@@ -189,18 +308,16 @@ async def nj_weekly_all():
     # go?" in the weekly Slack summary.
     import nj_sheriff_sales as _civilview_mod
     import nj_somerset_sheriff as _somerset_sheriff_mod
-    import nj_sheriff_detail as _civilview_detail_mod
     stale_dropped_counts = {
         "CivilView Sheriff": _civilview_mod.LAST_STALE_DROPPED,
         "Somerset Sheriff": _somerset_sheriff_mod.LAST_STALE_DROPPED,
     }
-    # Per-county CivilView detail-enrichment results from the most
-    # recent enrich_sheriff_records() pass. Surfaces 0% county-level
-    # failures (the June 3 Middlesex regression) in the Slack summary.
-    civilview_detail_by_county = dict(_civilview_detail_mod.LAST_DETAIL_RESULTS_BY_COUNTY)
+    # Per-county CivilView detail-enrichment results — filled by the
+    # one-container-per-county fan-out below (surfaces per-county % in Slack).
+    civilview_detail_by_county: dict = {}
 
     if not any(per_source.values()):
-        msg = "All 6 scrapers returned 0 records"
+        msg = "All 5 scrapers returned 0 records"
         if errors:
             msg += f" (errors: {errors})"
         logger.error(msg)
@@ -215,6 +332,18 @@ async def nj_weekly_all():
         len(per_source.get("Somerset Sheriff", [])),
         len(per_source.get("CivilView Sheriff", [])),
     )
+
+    # ── CivilView detail enrichment: one Modal container per county ──
+    # Each county's detail fetch runs in its OWN container (own egress IP →
+    # own AWS-ELB session), fixing the Middlesex/Union 0% caused by a shared
+    # container's ELB session pinning to Essex. Replaces the listing-only
+    # CivilView records with the enriched/surviving set (Sold/Redeemed/
+    # Cancelled dropped) before dedup.
+    _cv_listing = per_source.get("CivilView Sheriff", [])
+    if _cv_listing:
+        per_source["CivilView Sheriff"], civilview_detail_by_county = (
+            await _enrich_civilview_by_county(_cv_listing, logger)
+        )
 
     # Cross-run dedup: skip records we've already processed in a prior run.
     # Tracking lives in a Modal Volume so it survives container restarts.
