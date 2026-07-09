@@ -12,6 +12,7 @@ cookies.json
 datasift_cookies.json
 dropbox_state.json
 photo_state.json
+emailed_list_state.json
 *.tmp
 *.bak
 
@@ -63,3 +64,5 @@ _brand_tmp/
 _tmp_skill/
 autoresearch/
 .pytest_cache/
+justice_state.json
+accela_state.json
