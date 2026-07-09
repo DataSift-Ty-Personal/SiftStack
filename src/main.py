@@ -60,7 +60,7 @@ def _preflight_check(mode: str) -> list[str]:
 
     # ── Credential checks (mode-dependent) ──────────────────────────
     scrape_modes = {"daily", "historical"}
-    enrichment_modes = scrape_modes | {"pdf-import", "photo-import", "dropbox-watch", "csv-import"}
+    enrichment_modes = scrape_modes | {"pdf-import", "photo-import", "dropbox-watch", "csv-import", "list-import", "justice-scrape", "code-violations", "daily-ne"}
     datasift_modes = {"manage-presets", "manage-sold", "phone-validate"}
 
     if mode in scrape_modes:
@@ -873,6 +873,362 @@ def _run_csv_import(args) -> None:
     logging.info("Done — %d records exported", len(notices))
 
 
+def _run_list_import(args) -> None:
+    """Import emailed county distress lists (Sarpy NOD PDF, Douglas export sheet).
+
+    Manual-drop workflow: point --file at one dropped file (or --folder at a
+    directory of them). Parses → dedup → enrich → CSV, with optional DataSift upload.
+    """
+    from list_importer import import_list
+    from data_formatter import deduplicate
+    from enrichment_pipeline import PipelineOptions, run_enrichment_pipeline
+
+    # Collect target files: one --file, or every supported file in --folder.
+    targets: list[Path] = []
+    if args.file:
+        targets.append(Path(args.file))
+    if args.folder:
+        folder = Path(args.folder)
+        if not folder.is_dir():
+            logging.error("--folder not found: %s", folder)
+            sys.exit(1)
+        targets.extend(
+            sorted(p for p in folder.iterdir() if p.suffix.lower() in {".xlsx", ".xlsm", ".csv", ".pdf"})
+        )
+    if not targets:
+        logging.error("list-import requires --file <path> or --folder <dir>")
+        sys.exit(1)
+
+    # Skip files already processed (by content hash), unless --force.
+    import hashlib
+
+    state = config.load_state(config.EMAILED_LIST_STATE_FILE)
+    processed = state.get("processed", {})
+    force = getattr(args, "force", False)
+
+    notices = []
+    used_files: list[str] = []
+    for target in targets:
+        if not target.exists():
+            logging.error("List file not found: %s", target)
+            continue
+        digest = hashlib.sha256(target.read_bytes()).hexdigest()
+        if not force and digest in processed:
+            logging.info("Skipping already-imported file (use --force to re-run): %s", target.name)
+            continue
+        try:
+            batch = import_list(target, source=args.source)
+        except (ValueError, FileNotFoundError, RuntimeError) as e:
+            logging.error("Failed to import %s: %s", target.name, e)
+            continue
+        logging.info("Imported %d records from %s", len(batch), target.name)
+        notices.extend(batch)
+        processed[digest] = {"file": target.name, "count": len(batch)}
+        used_files.append(target.name)
+
+    if not notices:
+        logging.warning("No records imported")
+        return
+
+    notices = deduplicate(notices)
+    logging.info("Total after dedup: %d records from %d file(s)", len(notices), len(used_files))
+
+    opts = PipelineOptions(
+        skip_parcel_lookup=args.skip_tax,
+        skip_smarty=args.skip_smarty,
+        skip_zillow=args.skip_zillow,
+        skip_tax=args.skip_tax,
+        skip_geocode=getattr(args, "skip_geocode", False),
+        skip_obituary=args.skip_obituary,
+        skip_ancestry=getattr(args, "skip_ancestry", False),
+        skip_entity_research=not getattr(args, "research_entities", False),
+        skip_vacant_filter=getattr(args, "include_vacant", False),
+        skip_commercial_filter=getattr(args, "include_commercial", False),
+        skip_entity_filter=getattr(args, "include_entities", False),
+        skip_heir_verification=args.skip_heir_verification,
+        max_heir_depth=args.max_heir_depth,
+        skip_dm_address=args.skip_dm_address,
+        tracerfy_tier1=getattr(args, "tracerfy_tier1", False),
+        source_label=f"List import ({', '.join(used_files)})",
+    )
+    notices = run_enrichment_pipeline(notices, opts)
+
+    if not notices:
+        logging.warning("No records remaining after pipeline")
+        return
+
+    # Persist processed-file state only after a successful run.
+    state["processed"] = processed
+    config.save_state(config.EMAILED_LIST_STATE_FILE, state)
+
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+    path = write_csv(notices, filename=f"list_import_{timestamp}.csv")
+    logging.info("Output: %s", path)
+
+    if getattr(args, "upload_datasift", False):
+        from datasift_formatter import write_datasift_split_csvs
+        from datasift_uploader import upload_datasift_split, upload_to_datasift
+
+        do_enrich = not getattr(args, "no_enrich", False)
+        do_skip_trace = not getattr(args, "no_skip_trace", False)
+        csv_infos = write_datasift_split_csvs(notices)
+        if len(csv_infos) > 1:
+            upload_result = asyncio.run(
+                upload_datasift_split(csv_infos, enrich=do_enrich, skip_trace=do_skip_trace)
+            )
+        else:
+            upload_result = asyncio.run(
+                upload_to_datasift(csv_infos[0]["path"], enrich=do_enrich, skip_trace=do_skip_trace)
+            )
+        if upload_result.get("success"):
+            logging.info("DataSift upload: %s", upload_result.get("message", "OK"))
+        else:
+            logging.error("DataSift upload failed: %s", upload_result.get("message"))
+
+    logging.info("Done — %d records exported", len(notices))
+
+
+def _run_justice(args) -> None:
+    """Scrape Nebraska JUSTICE probate cases (incremental) → enrich → CSV.
+
+    No filing-date field exists in JUSTICE, so this pulls the NEWEST cases by
+    case-number sequence and dedups against previously-seen cases (state file).
+    """
+    from justice_scraper import fetch_cases, COUNTY_CODES, RECORD_TYPES
+    from enrichment_pipeline import PipelineOptions, run_enrichment_pipeline
+
+    counties = [c.strip().title() for c in (args.justice_county or "Douglas,Sarpy").split(",") if c.strip()]
+    types = [t.strip().lower() for t in (args.justice_types or "").split(",") if t.strip()]
+    year = args.year or datetime.now().year
+    date_added = datetime.now().strftime("%Y-%m-%d")
+
+    bad = [c for c in counties if c.lower() not in COUNTY_CODES] + \
+          [t for t in types if t not in RECORD_TYPES]
+    if bad:
+        logging.error("Unsupported justice county/type: %s (counties: %s; types: %s)",
+                      bad, list(COUNTY_CODES), list(RECORD_TYPES))
+        sys.exit(1)
+
+    state = config.load_state(config.JUSTICE_STATE_FILE)
+
+    # Fetch each county × record-type combo, tracking seen cases per combo.
+    notices = []
+    imported_by_key: dict[str, list[int]] = {}
+    for county in counties:
+        for rtype in types:
+            key = f"{county.lower()}_{rtype}_{year}"
+            seen = set(state.get(key, []))
+            try:
+                batch = fetch_cases(
+                    county=county, record_type=rtype, year=year, date_added=date_added,
+                    max_cases=args.max_cases, seen_case_seqs=seen,
+                    include_guardianships=getattr(args, "include_guardianships", False),
+                )
+            except (ValueError, RuntimeError) as e:
+                logging.error("JUSTICE %s %s failed: %s", county, rtype, e)
+                continue
+            notices.extend(batch)
+            imported_by_key[key] = [int(n.source_url[-7:]) for n in batch if n.source_url[-7:].isdigit()]
+
+    if not notices:
+        logging.info("No new JUSTICE cases across %s × %s", counties, types)
+        return
+
+    opts = PipelineOptions(
+        skip_parcel_lookup=args.skip_tax,
+        skip_smarty=args.skip_smarty,
+        skip_zillow=args.skip_zillow,
+        skip_tax=args.skip_tax,
+        skip_geocode=getattr(args, "skip_geocode", False),
+        skip_obituary=args.skip_obituary,
+        skip_ancestry=getattr(args, "skip_ancestry", False),
+        skip_entity_research=not getattr(args, "research_entities", False),
+        skip_vacant_filter=getattr(args, "include_vacant", False),
+        skip_commercial_filter=getattr(args, "include_commercial", False),
+        skip_entity_filter=getattr(args, "include_entities", False),
+        skip_heir_verification=args.skip_heir_verification,
+        max_heir_depth=args.max_heir_depth,
+        skip_dm_address=args.skip_dm_address,
+        tracerfy_tier1=getattr(args, "tracerfy_tier1", False),
+        source_label=f"JUSTICE {','.join(counties)} {','.join(types)} {year}",
+    )
+    notices = run_enrichment_pipeline(notices, opts)
+
+    # Persist seen case numbers per combo (keep the most recent 1000) after success.
+    for key, seqs in imported_by_key.items():
+        merged = sorted(set(state.get(key, [])) | set(seqs))[-1000:]
+        state[key] = merged
+    config.save_state(config.JUSTICE_STATE_FILE, state)
+
+    if not notices:
+        logging.warning("No records remaining after pipeline")
+        return
+
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+    path = write_csv(notices, filename=f"justice_{timestamp}.csv")
+    logging.info("Output: %s", path)
+
+    if getattr(args, "upload_datasift", False):
+        from datasift_formatter import write_datasift_split_csvs
+        from datasift_uploader import upload_datasift_split, upload_to_datasift
+
+        do_enrich = not getattr(args, "no_enrich", False)
+        do_skip_trace = not getattr(args, "no_skip_trace", False)
+        csv_infos = write_datasift_split_csvs(notices)
+        if len(csv_infos) > 1:
+            upload_result = asyncio.run(
+                upload_datasift_split(csv_infos, enrich=do_enrich, skip_trace=do_skip_trace)
+            )
+        else:
+            upload_result = asyncio.run(
+                upload_to_datasift(csv_infos[0]["path"], enrich=do_enrich, skip_trace=do_skip_trace)
+            )
+        if upload_result.get("success"):
+            logging.info("DataSift upload: %s", upload_result.get("message", "OK"))
+        else:
+            logging.error("DataSift upload failed: %s", upload_result.get("message"))
+
+    logging.info("Done — %d JUSTICE records exported (%s × %s)",
+                 len(notices), ",".join(counties), ",".join(types))
+
+
+def _run_code_violations(args) -> None:
+    """Scrape Omaha (Douglas) code violations from Accela → enrich → CSV.
+
+    Accela has no working server-side date filter, so the export returns the full
+    record-type history; we filter client-side to [--since, --until] and dedup
+    against previously-seen record numbers (state file) for incremental runs.
+    Owner is not in Accela → resolved from the parcel layer during enrichment.
+    """
+    from accela_scraper import fetch_code_violations, DEFAULT_RECORD_TYPES
+    from enrichment_pipeline import PipelineOptions, run_enrichment_pipeline
+
+    from datetime import timedelta
+    end_date = args.until or datetime.now().strftime("%Y-%m-%d")
+    start_date = args.since or (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
+    record_types = ([t.strip() for t in args.record_types.split(",")]
+                    if args.record_types else DEFAULT_RECORD_TYPES)
+
+    try:
+        notices = asyncio.run(fetch_code_violations(
+            start_date=start_date, end_date=end_date, record_types=record_types,
+        ))
+    except Exception as e:
+        logging.error("Accela scrape failed: %s", e)
+        sys.exit(1)
+
+    # Incremental dedup by Accela record number (from source_url accela://OMAHA/<rec>).
+    state = config.load_state(config.ACCELA_STATE_FILE)
+    seen = set(state.get("seen", []))
+    fresh = [n for n in notices if n.source_url.rsplit("/", 1)[-1] not in seen]
+    logging.info("Accela: %d records, %d new (of %d seen)", len(notices), len(fresh), len(seen))
+    if not fresh:
+        logging.info("No new code violations in range")
+        return
+    notices = fresh
+
+    opts = PipelineOptions(
+        skip_parcel_lookup=args.skip_tax,
+        skip_smarty=args.skip_smarty,
+        skip_zillow=args.skip_zillow,
+        skip_tax=args.skip_tax,
+        skip_geocode=getattr(args, "skip_geocode", False),
+        skip_obituary=True,   # code violations aren't deceased-owner leads
+        skip_ancestry=True,
+        skip_entity_research=not getattr(args, "research_entities", False),
+        skip_vacant_filter=getattr(args, "include_vacant", False),
+        skip_commercial_filter=getattr(args, "include_commercial", False),
+        skip_entity_filter=getattr(args, "include_entities", False),
+        skip_heir_verification=True,
+        max_heir_depth=0,
+        skip_dm_address=True,
+        tracerfy_tier1=getattr(args, "tracerfy_tier1", False),
+        source_label=f"Omaha code violations ({start_date}..{end_date})",
+    )
+    notices = run_enrichment_pipeline(notices, opts)
+
+    # Persist seen record numbers (keep most recent 5000) after success.
+    new_recs = [n.source_url.rsplit("/", 1)[-1] for n in fresh]
+    state["seen"] = sorted(seen | set(new_recs))[-5000:]
+    config.save_state(config.ACCELA_STATE_FILE, state)
+
+    if not notices:
+        logging.warning("No records remaining after pipeline")
+        return
+
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+    path = write_csv(notices, filename=f"code_violations_{timestamp}.csv")
+    logging.info("Output: %s", path)
+
+    if getattr(args, "upload_datasift", False):
+        from datasift_formatter import write_datasift_split_csvs
+        from datasift_uploader import upload_datasift_split, upload_to_datasift
+        do_enrich = not getattr(args, "no_enrich", False)
+        do_skip_trace = not getattr(args, "no_skip_trace", False)
+        csv_infos = write_datasift_split_csvs(notices)
+        if len(csv_infos) > 1:
+            upload_result = asyncio.run(upload_datasift_split(csv_infos, enrich=do_enrich, skip_trace=do_skip_trace))
+        else:
+            upload_result = asyncio.run(upload_to_datasift(csv_infos[0]["path"], enrich=do_enrich, skip_trace=do_skip_trace))
+        if upload_result.get("success"):
+            logging.info("DataSift upload: %s", upload_result.get("message", "OK"))
+        else:
+            logging.error("DataSift upload failed: %s", upload_result.get("message"))
+
+    logging.info("Done — %d code-violation records exported", len(notices))
+
+
+def _run_daily_ne(args) -> None:
+    """Combined daily Nebraska run — fire every built source in sequence.
+
+    Runs each source through its own correctly-configured pipeline (JUSTICE court
+    records, Omaha Accela code violations, and the emailed-list drop folder if
+    --folder is given). One source failing does not stop the others. Each source
+    keeps its own incremental state + writes its own CSV / DataSift upload.
+    """
+    logging.info("══════════ Nebraska daily run ══════════")
+    results: list[tuple[str, str]] = []  # (source, status)
+
+    def _step(label: str, fn) -> None:
+        logging.info("──────── %s ────────", label)
+        try:
+            fn(args)
+            results.append((label, "ok"))
+        except SystemExit as e:
+            # Runners sys.exit(1) on hard errors (missing creds, no input) — don't
+            # let that abort the whole daily run.
+            logging.error("%s stopped (exit %s)", label, getattr(e, "code", "?"))
+            results.append((label, "skipped/failed"))
+        except Exception as e:  # noqa: BLE001 — isolate each source
+            logging.exception("%s failed: %s", label, e)
+            results.append((label, "error"))
+
+    # 1. JUSTICE court records (probate / divorce / foreclosure × both counties)
+    _step("JUSTICE court records", _run_justice)
+
+    # 2. Omaha Accela code violations
+    _step("Omaha code violations", _run_code_violations)
+
+    # 3. Emailed distress-list drop folder (only if provided)
+    if getattr(args, "folder", None) or getattr(args, "file", None):
+        _step("Emailed list import", _run_list_import)
+    else:
+        logging.info("──────── Emailed list import (skipped — no --folder/--file) ────────")
+        results.append(("Emailed list import", "skipped (no input)"))
+
+    logging.info("══════════ Nebraska daily run summary ══════════")
+    for label, status in results:
+        logging.info("  %-24s %s", label, status)
+
+    if getattr(args, "notify_slack", False):
+        try:
+            from slack_notifier import _send_webhook
+            lines = "\n".join(f"• {l}: {s}" for l, s in results)
+            _send_webhook(f"*Nebraska daily run complete*\n{lines}")
+        except Exception as e:  # noqa: BLE001
+            logging.warning("Slack notify failed: %s", e)
+
+
 def _run_phone_validate(args) -> None:
     """Run phone validation via Trestle API with DataSift export/upload."""
     import json as _json
@@ -1017,7 +1373,7 @@ def cli_main() -> None:
         "mode",
         choices=[
             "daily", "historical", "pdf-import", "photo-import", "dropbox-watch",
-            "csv-import", "phone-validate", "manage-sold", "manage-presets",
+            "csv-import", "list-import", "justice-scrape", "code-violations", "daily-ne", "phone-validate", "manage-sold", "manage-presets",
             # New analysis & workflow modes
             "comp", "rehab", "analyze-deal", "market-analysis", "buyer-prospect",
             "deep-prospect", "lead-manage", "setup-sequences", "niche-sequential",
@@ -1092,6 +1448,74 @@ def cli_main() -> None:
         "--regex-only",
         action="store_true",
         help="Skip LLM parsing and use regex only (pdf-import mode)",
+    )
+    # Emailed distress-list import arguments (list-import mode)
+    parser.add_argument(
+        "--file",
+        type=str,
+        default=None,
+        help="Path to a single emailed list file (.xlsx/.csv/.pdf) for list-import mode",
+    )
+    parser.add_argument(
+        "--source",
+        type=str,
+        default=None,
+        choices=["douglas_export", "sarpy_nod"],
+        help="List source profile for list-import mode (omit to auto-detect from content)",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Re-import list files even if already processed (list-import mode)",
+    )
+    # Nebraska JUSTICE scrape arguments (justice-scrape mode)
+    parser.add_argument(
+        "--justice-county",
+        type=str,
+        default="Douglas,Sarpy",
+        dest="justice_county",
+        help="Comma-separated counties for justice-scrape (default: Douglas,Sarpy)",
+    )
+    parser.add_argument(
+        "--justice-types",
+        type=str,
+        default="probate,divorce,foreclosure",
+        dest="justice_types",
+        help="Comma-separated record types: probate,divorce,foreclosure (default: all)",
+    )
+    parser.add_argument(
+        "--year",
+        type=int,
+        default=None,
+        help="4-digit filing year for justice-scrape (default: current year)",
+    )
+    parser.add_argument(
+        "--max-cases",
+        type=int,
+        default=40,
+        dest="max_cases",
+        help="Max newest cases to pull per justice-scrape run (default: 40)",
+    )
+    parser.add_argument(
+        "--include-guardianships",
+        action="store_true",
+        dest="include_guardianships",
+        help="Include guardianship/conservatorship cases (default: deceased estates only)",
+    )
+    # Omaha Accela code-violation arguments (code-violations mode).
+    # (--since is defined globally above and reused here as the start date.)
+    parser.add_argument(
+        "--until",
+        type=str,
+        default=None,
+        help="End date YYYY-MM-DD for code-violations (default: today)",
+    )
+    parser.add_argument(
+        "--record-types",
+        type=str,
+        default=None,
+        dest="record_types",
+        help="Comma-separated Accela record types (default: Citation, Housing Inspection, Vacant/Abandoned)",
     )
     # Photo import arguments
     parser.add_argument(
@@ -1681,6 +2105,26 @@ def cli_main() -> None:
     # CSV re-import mode — separate pipeline
     if args.mode == "csv-import":
         _run_csv_import(args)
+        return
+
+    # Emailed distress-list import mode — separate pipeline
+    if args.mode == "list-import":
+        _run_list_import(args)
+        return
+
+    # Nebraska JUSTICE court-records scrape (probate) — separate pipeline
+    if args.mode == "justice-scrape":
+        _run_justice(args)
+        return
+
+    # Omaha Accela code-violation scrape — separate pipeline
+    if args.mode == "code-violations":
+        _run_code_violations(args)
+        return
+
+    # Combined daily Nebraska run — fires all built sources in sequence
+    if args.mode == "daily-ne":
+        _run_daily_ne(args)
         return
 
     # Filter saved searches

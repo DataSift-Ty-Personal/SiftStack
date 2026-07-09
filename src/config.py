@@ -54,6 +54,14 @@ ANCESTRY_PASSWORD = os.getenv("ANCESTRY_PASSWORD", "")
 DROPBOX_APP_KEY = os.getenv("DROPBOX_APP_KEY", "")            # Dropbox OAuth2 app key
 DROPBOX_APP_SECRET = os.getenv("DROPBOX_APP_SECRET", "")
 DROPBOX_REFRESH_TOKEN = os.getenv("DROPBOX_REFRESH_TOKEN", "")
+NEBRASKA_JUSTICE_USERNAME = os.getenv("NEBRASKA_JUSTICE_USERNAME", "")  # Nebraska JUSTICE subscriber (HTTP Basic Auth)
+NEBRASKA_JUSTICE_PASSWORD = os.getenv("NEBRASKA_JUSTICE_PASSWORD", "")
+
+# Nebraska JUSTICE court-records state (seen case numbers, for incremental pulls)
+JUSTICE_STATE_FILE = PROJECT_ROOT / "justice_state.json"
+
+# Omaha Accela code-violation state (seen record numbers, for incremental pulls)
+ACCELA_STATE_FILE = PROJECT_ROOT / "accela_state.json"
 
 # ── LLM Backend ──────────────────────────────────────────────────────
 LLM_BACKEND = os.getenv("LLM_BACKEND", "anthropic")           # "anthropic", "ollama", or "openrouter"
@@ -102,7 +110,25 @@ TESSERACT_PSM_PDF = 3    # fully automatic — best for PDF tax sale tables
 TESSERACT_PSM_PHOTO = 4  # assume single column of variable-size text — best for terminal screen photos
 
 # ── Notice Types ───────────────────────────────────────────────────────
-NOTICE_TYPES = ["foreclosure", "probate"]
+NOTICE_TYPES = ["foreclosure", "probate", "tax_sale"]
+
+# Default (city, state) fallback per county — used by enrichment lookups when a
+# record has no resolved city yet, so NE records aren't searched in Tennessee.
+COUNTY_LOCALE = {
+    "douglas": ("Omaha", "NE"),
+    "sarpy": ("Papillion", "NE"),
+    "knox": ("Knoxville", "TN"),
+    "blount": ("Maryville", "TN"),
+}
+
+
+def default_locale(county: str = "", state: str = "") -> tuple[str, str]:
+    """Return (default_city, default_state) for a county; state arg wins if set."""
+    city, st = COUNTY_LOCALE.get((county or "").strip().lower(), ("", ""))
+    return (city, (state or st))
+
+# Emailed distress-list import (manual drop → src/list_importer.py)
+EMAILED_LIST_STATE_FILE = PROJECT_ROOT / "emailed_list_state.json"
 
 
 @dataclass

@@ -367,6 +367,45 @@ def run_enrichment_pipeline(
         except Exception as e:
             logger.warning("  Probate property lookup failed: %s", e)
 
+    # ── Step 3d: Nebraska Owner→Address Lookup ──────────────────────
+    # Douglas/Sarpy emailed lists (foreclosure NOD, tax-sale) and probate
+    # records arrive without a street address — resolve it from the owner
+    # name via the county parcel service (ne_property_lookup).
+    if not opts.skip_parcel_lookup:
+        ne_no_addr = [
+            n for n in notices
+            if n.county.lower() in ("douglas", "sarpy")
+            and not n.address.strip()
+            and n.owner_name.strip()
+        ]
+        if ne_no_addr:
+            logger.info("── Step 3d: NE Owner→Address Lookup (%d candidates) ──", len(ne_no_addr))
+            try:
+                from ne_property_lookup import resolve_addresses
+                resolve_addresses(ne_no_addr)
+            except ImportError:
+                logger.warning("  ne_property_lookup not available — skipping")
+            except Exception as e:
+                logger.warning("  NE property lookup failed: %s", e)
+
+        # Companion: NE records with an address but NO owner (e.g. code violations)
+        # → resolve the owner from the parcel layer.
+        ne_no_owner = [
+            n for n in notices
+            if n.county.lower() in ("douglas", "sarpy")
+            and n.address.strip()
+            and not n.owner_name.strip()
+        ]
+        if ne_no_owner:
+            logger.info("── Step 3e: NE Address→Owner Lookup (%d candidates) ──", len(ne_no_owner))
+            try:
+                from ne_property_lookup import resolve_owners
+                resolve_owners(ne_no_owner)
+            except ImportError:
+                logger.warning("  ne_property_lookup not available — skipping")
+            except Exception as e:
+                logger.warning("  NE owner lookup failed: %s", e)
+
     # ── Step 4: Parcel Address Lookup ────────────────────────────────
     if not opts.skip_parcel_lookup and not opts.skip_tax:
         candidates = [
