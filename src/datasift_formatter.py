@@ -151,12 +151,59 @@ def _is_entity_name(name: str) -> bool:
     return bool(_ENTITY_SUFFIXES.search(name))
 
 
+# Surname particles that belong to the LAST name, not the middle. When one of
+# these precedes the final token we keep it attached ("Richard C. St. Leger" →
+# last name "St. Leger", not "Leger"). Everything else between first and last is
+# a middle name/initial and gets dropped (Mike: middles make texts read as bot).
+_SURNAME_PARTICLES = {
+    "st", "st.", "van", "von", "de", "del", "dela", "della", "la", "le",
+    "di", "da", "das", "dos", "du", "der", "den", "ter", "ten", "mac", "mc",
+    "o'", "san", "santa", "vander", "vanden",
+}
+
+# Generational suffixes — never a first OR last name; dropped wherever they
+# appear ("COOK, JR, PAUL JOSEPH" → Paul Cook; "Paul Cook Jr" → Paul Cook).
+_NAME_SUFFIXES = {"jr", "sr", "ii", "iii", "iv", "v", "vi"}
+
+# Role/status noise appended to courthouse names (probate fiduciaries, et al).
+# Peeled ONLY from the trailing end so mid-name words are untouched.
+# "SHATONYA WHATLEY PERSONAL REP" → Shatonya Whatley.
+_ROLE_TOKENS = {
+    "personal", "pers", "rep", "reps", "representative", "pr", "executor",
+    "executrix", "administrator", "administratrix", "admin", "fiduciary",
+    "trustee", "trustees", "guardian", "conservator", "successor", "surviving",
+    "spouse", "heir", "heirs", "estate", "dec'd", "decd", "deceased", "aka",
+    "nka", "fka", "et", "al", "etal", "the", "of",
+}
+
+
+def _split_last_name(tokens: list[str]) -> tuple[list[str], list[str]]:
+    """Given tokens AFTER the first name, split into (middles, last-name-tokens).
+
+    Last name = the final token, extended backward to include any surname
+    particles ("St.", "Van", "De"). Everything before that is middle → dropped.
+    """
+    if not tokens:
+        return ([], [])
+    start = len(tokens) - 1
+    while start > 0 and tokens[start - 1].lower().rstrip(".") in {
+        p.rstrip(".") for p in _SURNAME_PARTICLES
+    }:
+        start -= 1
+    return (tokens[:start], tokens[start:])
+
+
 def _clean_and_split_name(full_name: str) -> tuple[str, str]:
     """Clean a full name for DataSift upload and split into (first, last).
 
-    Handles patterns that cause DataSift "incomplete" records:
+    Handles patterns that cause DataSift "incomplete" or bot-looking records:
+    - Comma form "Last, First Middle" → swapped to First + Last (Mike hand-fixes
+      this today: "Yopp, Eric J" → ("Eric", "Yopp"))
     - Joint names with "&" or "AND": "John & Jane Smith" → ("John", "Smith")
     - Entity names (LLC, Trust, etc.): returns ("", "") — entity goes to Notes
+    - Middle names AND initials are DROPPED so outreach reads "Hi John", not
+      "Hi John David" (which looks like an automated blast). Surname particles
+      like "St."/"Van" are preserved on the last name.
     - Special characters: strips &, @, #, % from name parts
     """
     if not full_name:
@@ -167,6 +214,18 @@ def _clean_and_split_name(full_name: str) -> tuple[str, str]:
     # Entity names → empty (don't put business names in person fields)
     if _is_entity_name(name):
         return ("", "")
+
+    # Comma form "Last[, Suffix], First Middle" → "First Middle Last". Split on
+    # ALL commas and drop any pure-suffix segment ("COOK, JR, PAUL JOSEPH" →
+    # last="COOK", first="PAUL JOSEPH"). Segment 0 is the surname (courthouse
+    # convention is Last-first); segment 1 is the given name(s).
+    if "," in name:
+        segs = [s.strip() for s in name.split(",") if s.strip()]
+        segs = [s for s in segs if s.lower().rstrip(".") not in _NAME_SUFFIXES]
+        if len(segs) >= 2:
+            name = f"{segs[1]} {segs[0]}"
+        elif segs:
+            name = segs[0]
 
     # Split joint owners on " & " or " AND " — keep first person only
     # "John & Jane Smith" → "John Smith"
@@ -194,7 +253,7 @@ def _clean_and_split_name(full_name: str) -> tuple[str, str]:
             name = first_person
 
     # Strip remaining special characters that cause incomplete status
-    name = re.sub(r"[&@#%]", "", name)
+    name = re.sub(r"[&@#%,]", "", name)
     # Collapse multiple spaces
     name = re.sub(r"\s+", " ", name).strip()
 
@@ -202,16 +261,20 @@ def _clean_and_split_name(full_name: str) -> tuple[str, str]:
         return ("", "")
 
     parts = name.split()
+    # Drop generational suffixes anywhere (never a first/last name).
+    parts = [p for p in parts if p.lower().rstrip(".") not in _NAME_SUFFIXES]
+    # Peel trailing role/status noise ("… PERSONAL REP", "… EXECUTOR").
+    while len(parts) > 1 and parts[-1].lower().strip(".'") in _ROLE_TOKENS:
+        parts.pop()
+
+    if not parts:
+        return ("", "")
     if len(parts) == 1:
         return (parts[0], "")
-    if len(parts) >= 3:
-        # Strip middle initials (single letter + optional period) from between
-        # first and last name parts. "Eric J. Yopp" → "Eric Yopp"
-        # Keeps multi-char prefixes like "St." in "Richard C. St. Leger"
-        middle = parts[1:-1]
-        middle = [p for p in middle if not re.match(r"^[A-Za-z]\.?$", p)]
-        parts = [parts[0]] + middle + [parts[-1]]
-    return (parts[0], " ".join(parts[1:]))
+    # First name = parts[0]; last name = final token(s) incl. surname particles;
+    # everything in between (middle names + initials) is dropped.
+    _middles, last_tokens = _split_last_name(parts[1:])
+    return (parts[0], " ".join(last_tokens))
 
 
 def _split_name(full_name: str) -> tuple[str, str]:
@@ -219,19 +282,84 @@ def _split_name(full_name: str) -> tuple[str, str]:
     return _clean_and_split_name(full_name)
 
 
+def clean_street(street: str) -> str:
+    """Collapse a house-number RANGE to the first number for mailing.
+
+    Multi-unit courthouse parcels come through as "971 - 973 Lockbourne Ave"
+    (or "971-973 …"); DataSift + the mail house want one deliverable number.
+    Mike hand-fixes this today. Keeps everything after the range intact.
+    "971 - 973 Lockbourne Ave" → "971 Lockbourne Ave".
+    """
+    if not street:
+        return ""
+    s = street.strip()
+    # "971 - 973 Rest" or "971-973 Rest" → "971 Rest"
+    m = re.match(r"^(\d+)\s*-\s*\d+\b\s*(.*)$", s)
+    if m:
+        rest = m.group(2).strip()
+        s = f"{m.group(1)} {rest}".strip() if rest else m.group(1)
+    return re.sub(r"\s+", " ", s).strip()
+
+
+# Municipality names some OH portals emit with a redundant "City" suffix.
+# Explicit allowlist ONLY — never blanket-strip " City" (Grove City, OH is a
+# real, distinct municipality that must stay intact).
+_CITY_FIXUPS = {
+    "columbus city": "Columbus",
+    "dayton city": "Dayton",
+    "xenia city": "Xenia",
+    "springfield city": "Springfield",
+}
+
+
+def clean_city(city: str) -> str:
+    """Normalize known "<City> City" portal artifacts (safe allowlist)."""
+    if not city:
+        return ""
+    c = city.strip()
+    return _CITY_FIXUPS.get(c.lower(), c)
+
+
 # Map notice_type → DataSift list name for niche sequential marketing.
 # DataSift auto-creates lists from CSV if they don't exist yet.
+# Names match Mike's manual convention EXACTLY (audit source of truth,
+# 2026-07-21): foreclosure→"Sheriff Sales", tax_sale→"Tax Sales" (plural).
 NOTICE_TYPE_TO_LIST = {
-    "foreclosure": "Foreclosure",
+    "foreclosure": "Sheriff Sales",
     "lis_pendens": "Lis Pendens",
     "tax_foreclosure": "Tax Foreclosure",
     "probate": "Probate",
-    "tax_sale": "Tax Sale",
+    "tax_sale": "Tax Sales",
     "tax_delinquent": "Tax Delinquent",
     "eviction": "Eviction",
     "code_violation": "Code Violation",
     "divorce": "Divorce",
 }
+
+
+def build_lists(notice) -> str:
+    """Comma-separated DataSift lists for a record, matching Mike's manual
+    convention: every courthouse record → "FTM" + its notice-type list
+    (e.g. "FTM,Sheriff Sales"). Used by BOTH the CSV path and the API upload
+    so they flow identically."""
+    type_list = NOTICE_TYPE_TO_LIST.get(notice.notice_type, "")
+    return ",".join(x for x in ["FTM", type_list] if x)
+
+
+def build_list_names(notice) -> list[str]:
+    """Lists as a real ARRAY (["FTM", "Probate"]) for the REST add-lists
+    endpoint. The property-create endpoint stores a comma-string as ONE list
+    literally ("FTM,Probate"), so the API path must send arrays, not the
+    comma-joined build_lists() string. See [[datasift_api]] add_lists_to_property.
+    """
+    type_list = NOTICE_TYPE_TO_LIST.get(notice.notice_type, "")
+    return [x for x in ["FTM", type_list] if x]
+
+
+def build_tag_names(notice) -> list[str]:
+    """Tags as a real ARRAY for the REST add-tags endpoint (same reasoning as
+    build_list_names — create stores a comma-string as one tag)."""
+    return [t for t in _build_tags(notice).split(",") if t.strip()]
 
 
 def _build_tags(notice: NoticeData) -> str:
@@ -751,7 +879,7 @@ def _build_row(notice: NoticeData, notes_override: str | None = None) -> dict:
     """
     contact = _get_contact_info(notice)
     tags = _build_tags(notice)
-    list_name = NOTICE_TYPE_TO_LIST.get(notice.notice_type, "")
+    list_name = build_lists(notice)  # "FTM,<type list>" — matches Mike's manual convention
     notes = notes_override if notes_override is not None else _build_notes(notice)
 
     # Conditionally map auction_date to the right built-in field
@@ -772,14 +900,14 @@ def _build_row(notice: NoticeData, notes_override: str | None = None) -> dict:
 
     return {
         # ── Core auto-mapped ──
-        "Property Street Address": notice.address,
-        "Property City": notice.city,
+        "Property Street Address": clean_street(notice.address),
+        "Property City": clean_city(notice.city),
         "Property State": notice.state or "OH",  # OH operations — TN is legacy
         "Property ZIP Code": notice.zip,
         "Owner First Name": contact["first"],
         "Owner Last Name": contact["last"],
-        "Mailing Street Address": contact["street"],
-        "Mailing City": contact["city"],
+        "Mailing Street Address": clean_street(contact["street"]),
+        "Mailing City": clean_city(contact["city"]),
         "Mailing State": contact["state"],
         "Mailing ZIP Code": contact["zip"],
         # ── Phone/Email (Tracerfy → DataSift generic Phone N format) ──

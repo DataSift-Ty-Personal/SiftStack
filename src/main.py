@@ -77,13 +77,24 @@ def _filter_searches(
     """Filter SCRAPER_SOURCES by county and/or notice type."""
     sources = list(SCRAPER_SOURCES)
 
+    # Default daily sweep (no explicit filters) drops sources flagged
+    # skip_in_daily — low-volume "run weekly" sources and scaffolds that
+    # return 0 but still burn run time / CAPTCHA budget every day. An
+    # explicit --counties or --types still selects them.
+    if not counties and not types:
+        sources = [s for s in sources if not getattr(s, "skip_in_daily", False)]
+
     if counties:
         county_set = {c.lower() for c in counties}
         sources = [s for s in sources if s.county.lower() in county_set]
 
     if types:
         type_set = {t.lower() for t in types}
-        sources = [s for s in sources if s.notice_type.lower() in type_set]
+        sources = [
+            s for s in sources
+            if s.notice_type.lower() in type_set
+            or any(t.lower() in type_set for t in s.extra_notice_types)
+        ]
 
     return sources
 
@@ -170,13 +181,22 @@ async def actor_main() -> None:
             "TRACERFY_API_KEY": actor_input.get("tracerfy_api_key", ""),
             "DATASIFT_EMAIL": actor_input.get("datasift_email", ""),
             "DATASIFT_PASSWORD": actor_input.get("datasift_password", ""),
+            "DELAWARE_ESERVICES_USERNAME": actor_input.get("delaware_eservices_username", ""),
+            "DELAWARE_ESERVICES_PASSWORD": actor_input.get("delaware_eservices_password", ""),
             "SLACK_WEBHOOK_URL": actor_input.get("slack_webhook_url", ""),
             "GSHEET_WEBHOOK_URL": actor_input.get("gsheet_webhook_url", ""),
             "TRESTLE_API_KEY": actor_input.get("trestle_api_key", ""),
+            "DATASIFT_API_KEY": actor_input.get("datasift_api_key", ""),
+            "EMAIL_SMTP_USER": actor_input.get("email_smtp_user", ""),
+            "EMAIL_SMTP_PASSWORD": actor_input.get("email_smtp_password", ""),
+            "AUCTION_WATCH_RECIPIENTS": actor_input.get("auction_watch_recipients", ""),
         }
         for key, val in _cred_map.items():
-            setattr(config, key, val)
+            # Only override when the run input actually provides a value; else
+            # leave whatever came from the Actor environment variables (secrets)
+            # so env-provided creds aren't clobbered by empty input fields.
             if val:
+                setattr(config, key, val)
                 os.environ[key] = val
 
         mode = actor_input.get("mode", "daily")
@@ -496,22 +516,35 @@ async def actor_main() -> None:
                     kvs_id = kvs._id if hasattr(kvs, '_id') else ''
                     report_dir = Path("output/reports")
 
+                    # Per-record try/except: a single bad record must NOT abort
+                    # the whole batch. (Regression that shipped 5/60 PDFs — one
+                    # record threw and killed every remaining PDF.)
+                    pdf_failures = []
                     for n in dp_candidates:
-                        pdf_path = generate_record_pdf(
-                            n, output_dir=report_dir, phone_tiers=phone_tiers,
-                        )
-                        key = pdf_path.name
-                        with open(pdf_path, "rb") as f:
-                            await kvs.set_value(key, f.read(), content_type="application/pdf")
-                        url = f"https://api.apify.com/v2/key-value-stores/{kvs_id}/records/{key}"
-                        pdf_urls.append({"address": n.address, "url": url})
+                        try:
+                            pdf_path = generate_record_pdf(
+                                n, output_dir=report_dir, phone_tiers=phone_tiers,
+                            )
+                            key = pdf_path.name
+                            with open(pdf_path, "rb") as f:
+                                await kvs.set_value(key, f.read(), content_type="application/pdf")
+                            url = f"https://api.apify.com/v2/key-value-stores/{kvs_id}/records/{key}"
+                            pdf_urls.append({"address": n.address, "url": url, "path": str(pdf_path)})
+                        except Exception as pe:
+                            pdf_failures.append(getattr(n, "address", "?"))
+                            Actor.log.warning("PDF failed for %s: %s — skipping this record",
+                                              getattr(n, "address", "?"), pe)
 
                     Actor.log.info(
-                        "Generated %d NEW deep prospecting PDFs (%d already delivered on prior runs, %d records skipped — no DP data)",
-                        len(pdf_urls), dp_already_delivered, total - len(all_dp_qualified),
+                        "Generated %d/%d NEW deep prospecting PDFs (%d failed, %d already delivered on prior runs, %d records skipped — no DP data)",
+                        len(pdf_urls), len(dp_candidates), len(pdf_failures),
+                        dp_already_delivered, total - len(all_dp_qualified),
                     )
+                    if pdf_failures:
+                        Actor.log.warning("DP PDF failures (%d): %s",
+                                          len(pdf_failures), pdf_failures[:15])
                 except Exception as e:
-                    Actor.log.warning("PDF generation failed: %s — continuing", e)
+                    Actor.log.warning("PDF generation setup failed: %s — continuing", e)
             else:
                 Actor.log.info("No records need deep prospecting PDFs")
 
@@ -655,11 +688,39 @@ async def actor_main() -> None:
             #
             # CSVs are saved to Apify KVS above + Slack-linked below + backed
             # up to Google Drive. Mike downloads + uploads via DataSift wizard.
+            # ── Auto-upload to DataSift via REST API (Open API now exists) ─
+            # The reliable REST API (apiv2.reisift.io) replaces the fragile
+            # Playwright upload. Records are created already tagged (Courthouse
+            # Data + notice type, per Mike's exact convention) and quality-gated
+            # (right property/mailing address + executor name). We NEVER fire
+            # mail — records land clean + tagged for Mike, who deploys mail.
+            # Falls back to CSV-for-Mike delivery when no API key is set.
             datasift_upload_result = None
-            Actor.log.info(
-                "Auto-upload disabled (1.0.14) — %d bucket CSVs delivered to KVS for Mike",
-                len(csv_infos),
-            )
+            _ds_key = os.getenv("DATASIFT_API_KEY", "") or os.getenv("REISIFT_OPEN_API_KEY", "")
+            if _ds_key:
+                try:
+                    from datasift_api import DataSiftAPI
+                    from datasift_api_upload import upload_notices
+                    up = upload_notices(DataSiftAPI(_ds_key), datasift_upload_records)
+                    nc, ns, ne = len(up["created"]), len(up["skipped"]), len(up["errors"])
+                    npart = len(up.get("partial", []))
+                    datasift_upload_result = {"success": ne == 0 and nc > 0,
+                                              "created": nc, "skipped": ns, "errors": ne,
+                                              "partial": npart}
+                    Actor.log.info(
+                        "DataSift API upload: %d created (tagged+listed+fields), %d skipped by quality gate, %d errors, %d partial post-writes",
+                        nc, ns, ne, npart,
+                    )
+                    if up["skipped"]:
+                        Actor.log.warning("Quality-gate skips (NOT uploaded): %s",
+                                          [s["address"] for s in up["skipped"][:10]])
+                except Exception as e:
+                    Actor.log.error("DataSift API upload failed: %s — CSVs remain for manual upload", e)
+            else:
+                Actor.log.info(
+                    "No DATASIFT_API_KEY — %d bucket CSVs delivered to KVS for Mike (manual upload)",
+                    len(csv_infos),
+                )
 
             # Mark uploaded records in state so future runs can skip them
             # if unchanged. Wrapped in try so a state-write failure doesn't
@@ -812,6 +873,29 @@ async def actor_main() -> None:
                     Actor.log.info("Slack notification sent")
                 except Exception as e:
                     Actor.log.warning("Slack notification failed: %s", e)
+
+            # ── Daily Report email (to Aaron + Mike, DP PDFs attached) ─
+            # Same digest as Slack (build_summary) but as HTML email with the
+            # actual deep-prospecting PDFs zipped + attached. Independent of
+            # Slack; no-ops until EMAIL_SMTP_USER/PASSWORD are set.
+            try:
+                from daily_report_email import run_daily_report_email
+                # Full data-pull CSVs Mike used to pull from Apify storage by
+                # hand: the master output.csv (all notices, all fields) + each
+                # per-(type,county) DataSift bucket CSV. All ride in the zip.
+                daily_csv_paths = [csv_path] + [
+                    info["path"] for info in csv_infos if info.get("path")
+                ]
+                er = run_daily_report_email(
+                    notices, pdf_urls=pdf_urls, csv_paths=daily_csv_paths,
+                    cost_breakdown=cost_breakdown, elapsed_min=elapsed_min,
+                )
+                Actor.log.info(
+                    "Daily report email: sent=%s, %d PDFs + %d CSVs attached",
+                    er.get("sent"), er.get("pdfs_attached", 0), er.get("csvs_attached", 0),
+                )
+            except Exception as e:
+                Actor.log.warning("Daily report email failed: %s — continuing", e)
 
             # ── Save last_run_date + seen_notice_ids to Apify KVS for next run ─────
             await kvs.set_value("last_run_date", datetime.now().strftime("%Y-%m-%d"))
