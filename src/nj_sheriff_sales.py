@@ -8,13 +8,21 @@ county returns all active sales on a single page (no pagination). Data
 comes from the listing page directly — detail pages require session
 state and carry no REI-relevant fields not already in the listing.
 
-Columns per row:
+Columns per row (Essex/Union — 6 cells):
   [0] View Details link  — /Sales/SaleDetails?PropertyId=XXX
   [1] Sheriff #          — e.g. "F-24001837" or "CH-25001605"
   [2] Sales Date         — "M/D/YYYY"
   [3] Plaintiff          — lender
   [4] Defendant          — property owner (target contact)
   [5] Address            — "{street} [MAILING ADDRESS OF {alt}] CITY NJ ZIP"
+Middlesex (7 cells) inserts a Status column at [2] ("Scheduled -
+Foreclosure", "Purchased - 3rd Party", ...) and shifts Sales Date →
+[3], Plaintiff → [4], Defendant → [5], Address → [6]. So the tail
+(-1..-4) is layout-stable but Sheriff # must be read as cells[1].
+
+NOTE: the PropertyId in the detail link is EPHEMERAL — the backend
+rebuilds its snapshot every few minutes and reallocates every id (see
+nj_sheriff_detail module docstring). Never persist or dedup on it.
 """
 
 import json
@@ -412,7 +420,15 @@ def scrape_county(county: str) -> list[NoticeData]:
         defendant = _clean(cells[-2])
         plaintiff = _clean(cells[-3])
         sale_date = _clean(cells[-4])
-        sheriff_num = _clean(cells[-5])
+        # Sheriff # is NOT tail-stable: Middlesex inserts its extra
+        # Status column at index 2 (between Sheriff# and Sales Date), so
+        # cells[-5] there reads the STATUS ("Purchased - 3rd Party").
+        # That poisoned the "Sheriff# ..." dedup key — extract_id fell
+        # back to the EPHEMERAL PropertyId and re-shipped all of
+        # Middlesex every week — and broke the sheriff#-keyed detail
+        # matching. It is stable from the LEFT: always cells[1], right
+        # after the View Details link.
+        sheriff_num = _clean(cells[1])
 
         notice = _row_to_notice(
             url=detail_url,

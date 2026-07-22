@@ -7,21 +7,34 @@ extracts the supplementary fields the listing leaves out: docket #,
 judgment amount, attorney + phone + file #, parcel id, status history,
 disposition. Used by nj_sheriff_sales.scrape_civilview_notices().
 
-Site quirks (HARD-WON — direct GET does NOT work):
-  - The page is server-rendered ASP-ish HTML with a clean
-    `<div class="sale-detail-label">LABEL:</div>` immediately followed
-    by `<div class="sale-detail-value">VALUE</div>` for each field.
-  - The Status History is a `<table>` with [Status, Date] rows. Most
-    recent status is the first data row.
-  - **Direct `page.goto(SaleDetails URL)` redirects to /Home/Index
-    even with a fresh AWS-ELB cookie + matching Referer header.** The
-    only consistently-working flow is: navigate to the county listing
-    → locate the `a[href*="PropertyId=N"]` link → click it. We re-
-    navigate to the listing before every click; trying to chain clicks
-    from a single listing render bounces after a few hits.
-  - Completed / cancelled PropertyIds get retired from the listing
-    between weekly cycles. Records that no longer appear in the live
-    listing pass through with no detail data — UNKNOWN tier downstream.
+ROOT CAUSE OF THE 2026 "Middlesex/Union 0%" SAGA (HARD-WON, July 2026):
+**CivilView PropertyIds are EPHEMERAL.** The Vital Communications backend
+rebuilds its dataset snapshot every few minutes, reallocating every
+PropertyId from a global running counter (~1.5M/day drift; verified:
+two fetches 10 minutes apart from the SAME IP shared 0 of 167 ids).
+Consequences, all previously misdiagnosed as ELB session affinity:
+  - A PropertyId captured at listing-scrape time is dead within minutes.
+    Direct GET of SaleDetails with a stale id 302s to /Home/Index —
+    that's why "direct GET doesn't work" appeared true; with a FRESH id
+    (same snapshot) a plain GET + session cookie returns the page fine.
+  - The old click-from-listing flow keyed on scrape-time ids, so any
+    county whose batch started after a snapshot rotation went 0%.
+    Essex "worked" purely because it enriched first, inside the TTL.
+  - Fresh browser contexts, container-per-county egress IPs, and county
+    warm-up navigation were all red herrings: `SalesSearch?countyId=N`
+    is honored statelessly (no cookies needed, correct county served).
+
+Therefore this module NEVER trusts a scrape-time PropertyId. Per county
+it fetches the LIVE listing, indexes rows by sheriff # (stable, unique —
+e.g. "F-24001837"), resolves each record to its CURRENT PropertyId, and
+GETs the SaleDetails page immediately within the same requests.Session.
+If a detail fetch bounces mid-batch (snapshot rotated under us), the
+listing index is refreshed once and the record retried. Plain HTTP —
+no Playwright, no clicks, no warm-up.
+
+Records that no longer appear in the live listing have been retired
+(auction completed / removed between scrape and enrichment) — they pass
+through with no detail data, counted as parse_failures.
 
 Auto-skip: records whose case_disposition resolves to Sold / Redeemed /
 Cancelled are dropped from the returned list — these auctions are over
@@ -41,10 +54,13 @@ import json
 import logging
 import random
 import re
+import time
 from datetime import date, datetime
 
+import requests
 from bs4 import BeautifulSoup
 
+from config import NJ_CIVILVIEW_BASE
 from notice_parser import NoticeData
 
 logger = logging.getLogger(__name__)
@@ -53,12 +69,10 @@ DETAIL_DELAY_MIN = 1.8
 DETAIL_DELAY_MAX = 2.5
 PROPERTY_ID_RE = re.compile(r"PropertyId=(\d+)")
 
-# AWS-ELB sometimes rotates session affinity mid-run, causing the
-# county-switch listing navigation to bounce to /Home/Index. Detect and
-# recover instead of silently failing every record in that county. Set
-# above zero so we still ship if recovery exhausts.
-_LISTING_RECOVERY_MAX_ATTEMPTS = 3
-_LISTING_RECOVERY_DELAY_S = 4.0
+# Listing fetch retries — transient HTTP failures only (the wrong-county /
+# ELB-bounce recovery dance is gone; countyId is honored statelessly).
+_LISTING_FETCH_MAX_ATTEMPTS = 3
+_LISTING_FETCH_DELAY_S = 4.0
 
 # Per-county fill counters — read by modal_app/nj_sheriff_sales for
 # the weekly Slack summary so 0% county failures surface immediately
@@ -70,14 +84,26 @@ LAST_DETAIL_RESULTS_BY_COUNTY: dict[str, dict] = {}
 # field set by the listing scraper.
 _COUNTY_TO_CIVILVIEW_ID = {"Essex": 2, "Middlesex": 73, "Union": 15}
 
+_UA = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/120.0.0.0 Safari/537.36"
+)
+
+# Listing-row parsing (same shapes as nj_sheriff_sales; duplicated locally
+# so this module keeps zero imports from the listing scraper).
+_ROW_RE = re.compile(r"<tr[^>]*>(.*?)</tr>", re.DOTALL)
+_CELL_RE = re.compile(r"<td[^>]*>(.*?)</td>", re.DOTALL)
+_DETAIL_HREF_RE = re.compile(r'href="[^"]*SaleDetails\?PropertyId=(\d+)"')
+_TAG_RE = re.compile(r"<[^>]+>")
+
+# Sheriff # as embedded in NoticeData.raw_text by the listing scraper:
+# "Sheriff# F-24001837 | Plaintiff: ...". Everything up to the first pipe.
+_SHERIFF_NUM_RE = re.compile(r"Sheriff#\s*([^|]+)")
+
 
 def _get_egress_ip() -> str:
-    """Best-effort public egress IP, for ELB-affinity diagnostics.
-
-    The Middlesex/Union detail-enrichment 0% (Essex 100%) is suspected to be
-    AWS-ELB session affinity keyed to the Modal container's egress IP. Logging
-    the IP per run lets us correlate which IP keeps landing on Essex's listing.
-    """
+    """Best-effort public egress IP, kept for ops correlation in Slack."""
     import urllib.request
     for url in ("https://checkip.amazonaws.com", "https://api.ipify.org"):
         try:
@@ -95,6 +121,8 @@ _LABEL_TO_FIELD = {
     "court case #": "court_case_number",
     "approx. judgment*": "approx_judgment",
     "approx. judgment": "approx_judgment",  # rare variant without asterisk
+    "approx. upset*": "approx_judgment",    # Essex calls it "Approx. Upset"
+    "approx. upset": "approx_judgment",
     "minimum bid": "minimum_bid",
     "attorney": "plaintiff_attorney",
     "attorney phone": "plaintiff_attorney_phone",
@@ -300,10 +328,274 @@ def derive_fields(parsed: dict, today: date) -> dict:
     return out
 
 
+# ── Live-listing PropertyId resolution ────────────────────────────────
+
+def _norm_key(s: str) -> str:
+    """Normalize a sheriff# / address string for exact-match keying."""
+    s = (s or "").replace("‐", "-").replace("–", "-")
+    return re.sub(r"\s+", " ", s).strip().upper()
+
+
+def _strip_tags(s: str) -> str:
+    return re.sub(r"\s+", " ", _TAG_RE.sub(" ", s)).strip()
+
+
+def _parse_listing_index(html: str) -> tuple[dict[str, str], list[tuple[str, str]]]:
+    """Parse a live listing page into PropertyId lookup structures.
+
+    Returns ({normalized sheriff# → pid}, [(normalized address cell, pid)]).
+    Sheriff # is always cells[1] (right after the View Details link);
+    Middlesex's extra Status column sits at cells[2], so tail-relative
+    indexing must NOT be used for it. Address is always the last cell.
+    """
+    sheriff_map: dict[str, str] = {}
+    addr_rows: list[tuple[str, str]] = []
+    for row_match in _ROW_RE.finditer(html):
+        inner = row_match.group(1)
+        href = _DETAIL_HREF_RE.search(inner)
+        if not href:
+            continue
+        cells = _CELL_RE.findall(inner)
+        if len(cells) < 6:
+            continue
+        pid = href.group(1)
+        sheriff = _norm_key(_strip_tags(cells[1]))
+        address = _norm_key(_strip_tags(cells[-1]))
+        if sheriff and sheriff not in sheriff_map:
+            sheriff_map[sheriff] = pid
+        if address:
+            addr_rows.append((address, pid))
+    return sheriff_map, addr_rows
+
+
+def _fetch_listing_index(
+    session: requests.Session, county: str, cid: int
+) -> tuple[dict[str, str], list[tuple[str, str]]] | None:
+    """GET the county listing and build the PropertyId index; None on failure."""
+    url = f"{NJ_CIVILVIEW_BASE}/Sales/SalesSearch?countyId={cid}"
+    for attempt in range(1, _LISTING_FETCH_MAX_ATTEMPTS + 1):
+        try:
+            resp = session.get(url, timeout=30)
+            if resp.status_code == 200:
+                sheriff_map, addr_rows = _parse_listing_index(resp.text)
+                if sheriff_map or addr_rows:
+                    logger.info(
+                        "%s listing index: %d rows (attempt %d)",
+                        county, len(addr_rows), attempt,
+                    )
+                    return sheriff_map, addr_rows
+            logger.warning(
+                "%s listing fetch attempt %d/%d: HTTP %d, %d rows",
+                county, attempt, _LISTING_FETCH_MAX_ATTEMPTS,
+                resp.status_code, len(_parse_listing_index(resp.text)[1]),
+            )
+        except requests.RequestException as e:
+            logger.warning(
+                "%s listing fetch attempt %d/%d failed: %s",
+                county, attempt, _LISTING_FETCH_MAX_ATTEMPTS, e,
+            )
+        time.sleep(_LISTING_FETCH_DELAY_S * attempt)
+    return None
+
+
+def _resolve_pid(
+    n: NoticeData,
+    sheriff_map: dict[str, str],
+    addr_rows: list[tuple[str, str]],
+) -> str | None:
+    """Find the record's CURRENT PropertyId on the live listing.
+
+    Primary key: sheriff # from raw_text ("Sheriff# F-24001837 | ...").
+    Fallback: unique address-prefix match (street is the leading token
+    run of the listing's address cell). None → record retired from the
+    listing (auction completed) or unmatchable.
+    """
+    m = _SHERIFF_NUM_RE.search(n.raw_text or "")
+    if m:
+        pid = sheriff_map.get(_norm_key(m.group(1)))
+        if pid:
+            return pid
+    street = _norm_key(n.address)
+    if street:
+        hits = {pid for addr, pid in addr_rows if addr.startswith(street)}
+        if len(hits) == 1:
+            return hits.pop()
+    return None
+
+
+def _fetch_detail_html(
+    session: requests.Session, pid: str, referer: str
+) -> str | None:
+    """GET a SaleDetails page; None when the pid is stale or fetch fails.
+
+    A stale pid 302s to /Home/Index which requests follows to a 200 —
+    so validity is judged by the sale-detail-label content marker, not
+    the status code.
+    """
+    url = f"{NJ_CIVILVIEW_BASE}/Sales/SaleDetails?PropertyId={pid}"
+    try:
+        resp = session.get(url, headers={"Referer": referer}, timeout=30)
+    except requests.RequestException as e:
+        logger.warning("Detail fetch failed (pid=%s): %s", pid, e)
+        return None
+    if resp.status_code != 200 or "sale-detail-label" not in resp.text:
+        return None
+    return resp.text
+
+
+def _enrich_civilview_sync(
+    by_county: dict[str, list[NoticeData]], today: date
+) -> tuple[list[NoticeData], int, int]:
+    """Blocking enrichment engine — runs in a worker thread.
+
+    Per county: one requests.Session, one live listing fetch to build the
+    sheriff# → current-PropertyId index, then a direct SaleDetails GET per
+    record. A mid-batch snapshot rotation (detail GET bounces) triggers a
+    single index refresh + retry for that record; the refreshed index then
+    serves the rest of the batch. Returns (kept, dropped, parse_failures).
+    """
+    kept: list[NoticeData] = []
+    dropped = 0
+    parse_failures = 0
+
+    egress_ip = _get_egress_ip()
+    logger.info(
+        "CivilView detail enrichment — egress IP=%s; records per county: %s",
+        egress_ip, {c: len(r) for c, r in by_county.items()},
+    )
+
+    # Reset module-level per-county counters for this run. Cleared
+    # at start (not end) so a crashed run still shows partial state.
+    LAST_DETAIL_RESULTS_BY_COUNTY.clear()
+
+    for county, records in by_county.items():
+        cid = _COUNTY_TO_CIVILVIEW_ID[county]
+        listing_url = f"{NJ_CIVILVIEW_BASE}/Sales/SalesSearch?countyId={cid}"
+        logger.info(
+            "Sheriff detail enrichment: %s — starting %d records",
+            county, len(records),
+        )
+
+        session = requests.Session()
+        session.headers.update({"User-Agent": _UA})
+
+        index = _fetch_listing_index(session, county, cid)
+        if index is None:
+            logger.error(
+                "⚠️ %s: listing fetch exhausted (%d attempts, egress IP=%s). "
+                "Skipping %d records — detail fields will be empty.",
+                county, _LISTING_FETCH_MAX_ATTEMPTS, egress_ip, len(records),
+            )
+            for n in records:
+                parse_failures += 1
+                kept.append(n)
+            LAST_DETAIL_RESULTS_BY_COUNTY[county] = {
+                "enriched": 0,
+                "dropped": 0,
+                "parse_failures": len(records),
+                "total": len(records),
+                "listing_bounce": True,
+                "bounce_reason": "listing fetch failed",
+                "egress_ip": egress_ip,
+            }
+            continue
+        sheriff_map, addr_rows = index
+
+        county_enriched = 0
+        county_dropped = 0
+        county_parse_failures = 0
+        county_refreshes = 0
+
+        for i, n in enumerate(records, 1):
+            try:
+                pid = _resolve_pid(n, sheriff_map, addr_rows)
+                html = _fetch_detail_html(session, pid, listing_url) if pid else None
+                if html is None and pid is not None:
+                    # The snapshot rotated mid-batch and invalidated our
+                    # index's PropertyIds. Refresh the index once and
+                    # retry this record; later records reuse the fresh
+                    # index automatically.
+                    logger.info(
+                        "%s: pid %s bounced at record %d/%d — refreshing "
+                        "listing index (snapshot rotation)",
+                        county, pid, i, len(records),
+                    )
+                    fresh = _fetch_listing_index(session, county, cid)
+                    if fresh is not None:
+                        sheriff_map, addr_rows = fresh
+                        county_refreshes += 1
+                        pid = _resolve_pid(n, sheriff_map, addr_rows)
+                        if pid:
+                            html = _fetch_detail_html(session, pid, listing_url)
+
+                if html is None:
+                    # Not on the live listing (retired/completed) or the
+                    # retry also bounced — pass through un-enriched.
+                    parse_failures += 1
+                    county_parse_failures += 1
+                    kept.append(n)
+                else:
+                    parsed = parse_detail_html(html)
+                    if not parsed.get("current_status") and not parsed.get("court_case_number"):
+                        parse_failures += 1
+                        county_parse_failures += 1
+                        kept.append(n)
+                    else:
+                        for k, v in {**parsed, **derive_fields(parsed, today)}.items():
+                            setattr(n, k, v)
+                        county_enriched += 1
+                        if n.case_disposition in _DROP_DISPOSITIONS:
+                            dropped += 1
+                            county_dropped += 1
+                        else:
+                            kept.append(n)
+            except Exception as e:
+                logger.warning("Detail fetch failed (%s): %s", n.source_url, e)
+                parse_failures += 1
+                county_parse_failures += 1
+                kept.append(n)
+
+            if i % 25 == 0:
+                logger.info("  %s [%d/%d] detail pages fetched", county, i, len(records))
+            # Throttle between every fetch (last record included is
+            # fine — total runtime is dominated by enrichment, not
+            # this final 2s).
+            time.sleep(random.uniform(DETAIL_DELAY_MIN, DETAIL_DELAY_MAX))
+
+        # Per-county summary — visible in logs + stashed for Slack.
+        pct = (100 * county_enriched / len(records)) if records else 0.0
+        LAST_DETAIL_RESULTS_BY_COUNTY[county] = {
+            "enriched": county_enriched,
+            "dropped": county_dropped,
+            "parse_failures": county_parse_failures,
+            "total": len(records),
+            "listing_bounce": False,
+            "listing_refreshes": county_refreshes,
+            "egress_ip": egress_ip,
+        }
+        if county_enriched == 0 and len(records) > 5:
+            # 0% on a batch of any meaningful size = systemic
+            # failure for that county. Loud warning so it surfaces
+            # in Modal logs + Slack monitoring.
+            logger.error(
+                "⚠️ %s: 0/%d enriched (%.0f%%) — likely systemic failure",
+                county, len(records), pct,
+            )
+        else:
+            logger.info(
+                "%s detail enrichment: %d/%d enriched (%.0f%%), "
+                "%d dropped (resolved), %d parse-failures, %d index refreshes",
+                county, county_enriched, len(records), pct,
+                county_dropped, county_parse_failures, county_refreshes,
+            )
+
+    return kept, dropped, parse_failures
+
+
 async def enrich_sheriff_records(
     notices: list[NoticeData],
     *,
-    headless: bool = True,
+    headless: bool = True,  # retained for API compat; Playwright is gone
     today: date | None = None,
 ) -> list[NoticeData]:
     """Fetch & merge detail-page data for each CivilView sheriff record.
@@ -313,19 +605,18 @@ async def enrich_sheriff_records(
     detail fields. Records whose case_disposition resolves to a drop
     bucket (Sold / Redeemed / Cancelled) are removed.
 
-    Uses click-from-listing rather than direct page.goto — see module
-    docstring. We group records by county, then for each record we
-    navigate to that county's listing page, locate the PropertyId
-    anchor, and click. Per-record cost is ~4-5s including the throttle
-    sleep; a typical week of ~400 records runs ~25-30 min on Modal.
+    PropertyIds from scrape time are NEVER used to fetch (they are
+    ephemeral — see module docstring); they only serve as the marker
+    that a record is CivilView-sourced. Each record is re-resolved to
+    its current PropertyId on the live listing by sheriff # (address
+    fallback) and fetched via plain HTTP in the same session. Per-record
+    cost is ~2-3s including the throttle sleep.
 
     Returns the surviving list (CivilView-enriched + non-CivilView
     passthroughs).
     """
     if not notices:
         return notices
-
-    from playwright.async_api import async_playwright
 
     today = today or date.today()
 
@@ -345,10 +636,10 @@ async def enrich_sheriff_records(
     if not civilview:
         return notices
 
-    # Group by county so we can use each listing as the click launchpad.
+    # Group by county so each county resolves against its own listing.
     # Records with an unknown county name fall back to Middlesex's listing
-    # — most reliable + the link locator still works as long as the
-    # PropertyId appears somewhere on a CivilView listing render.
+    # — most reliable + sheriff numbers still match if the record actually
+    # belongs there.
     by_county: dict[str, list[NoticeData]] = {}
     for n in civilview:
         county = (n.county or "").strip().title()
@@ -356,347 +647,13 @@ async def enrich_sheriff_records(
             county = "Middlesex"  # safe fallback for unmapped records
         by_county.setdefault(county, []).append(n)
 
-    # ── Week 26 diagnostics (Option C): confirm the ELB-affinity theory ──
-    # Map every county's expected PropertyIds so we can identify which county a
-    # listing/detail page ACTUALLY served (by PropertyId overlap), and log the
-    # egress IP. If the 07/01 logs show Middlesex/Union warm-ups consistently
-    # landing on Essex's listing from the same egress IP despite fresh
-    # contexts, that confirms IP-keyed AWS-ELB affinity → implement one-
-    # container-per-county (Option A). Read-only; changes no scrape behavior.
-    _cid_to_county = {v: k for k, v in _COUNTY_TO_CIVILVIEW_ID.items()}
-    _all_county_pids: dict[str, set[str]] = {}
-    for _cty, _recs in by_county.items():
-        _all_county_pids[_cty] = {
-            mm.group(1) for nn in _recs
-            if (mm := PROPERTY_ID_RE.search(nn.source_url or ""))
-        }
-
-    def _identify_landed_county(present_pids: "set[str]") -> str:
-        """Best guess of which county a page served, by PropertyId overlap."""
-        best, best_n = "unknown", 0
-        for _cty, _pids in _all_county_pids.items():
-            overlap = len(present_pids & _pids)
-            if overlap > best_n:
-                best, best_n = _cty, overlap
-        return best if best_n else "unknown"
-
-    egress_ip = _get_egress_ip()
-    logger.info(
-        "CivilView detail enrichment — egress IP=%s; expected PropertyIds per "
-        "county: %s",
-        egress_ip, {c: len(p) for c, p in _all_county_pids.items()},
+    kept, dropped, parse_failures = await asyncio.to_thread(
+        _enrich_civilview_sync, by_county, today
     )
-
-    kept: list[NoticeData] = []
-    dropped = 0
-    parse_failures = 0
-
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(
-            headless=headless,
-            args=["--disable-blink-features=AutomationControlled"] if headless else [],
-        )
-        ctx = None
-        page = None
-        _UA = (
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/120.0.0.0 Safari/537.36"
-        )
-
-        async def _new_context() -> None:
-            """(Re)create a fresh browser context + page.
-
-            CivilView binds the AWS-ELB session to the FIRST county loaded
-            on a given context; navigating that same context to a
-            different countyId keeps serving the original county's
-            listing (no error, no bounce — just stale results). A fresh
-            context (new cookies → new session) is the only reliable way
-            to bind a new county, so we recreate one per county batch.
-            """
-            nonlocal ctx, page
-            if ctx is not None:
-                try:
-                    await ctx.close()
-                except Exception:
-                    pass
-            ctx = await browser.new_context(user_agent=_UA)
-            await ctx.add_init_script(
-                "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
-            )
-            page = await ctx.new_page()
-
-        async def _navigate_to_listing(
-            target_url: str, expected_pids: "set[str] | None" = None
-        ) -> int:
-            """Navigate to a county listing; return PropertyId link count.
-
-            Returns -1 on hard navigation failure (bounce to /Home/Index
-            or 0 links visible). Returns -2 when the listing loads fine
-            but is the WRONG county — none of `expected_pids` appear in
-            the DOM, which is the sticky-session symptom that previously
-            caused silent 100% parse-failures for Middlesex/Union.
-            Positive return = PropertyId link count.
-            """
-            try:
-                await page.goto(target_url, wait_until="domcontentloaded", timeout=20000)
-                await page.wait_for_timeout(500)
-            except Exception as e:
-                logger.warning("Listing nav failed (%s): %s", target_url, e)
-                return -1
-            # AWS-ELB session bounce — direct symptom is landing on
-            # /Home/Index instead of /Sales/SalesSearch. Always check
-            # before trusting the page state.
-            cur_url = page.url
-            if "Home/Index" in cur_url or "aspxerrorpath" in cur_url:
-                return -1
-            hrefs = await page.locator('a[href*="PropertyId="]').evaluate_all(
-                "els => els.map(e => e.getAttribute('href'))"
-            )
-            total_links = len(hrefs)
-            if total_links == 0:
-                return -1
-            # County-identity check: a real listing for the WRONG county
-            # (sticky session) still has anchors, so count > 0 is not
-            # enough. Confirm at least one record we're about to enrich
-            # is actually present on this listing.
-            if expected_pids:
-                present = {
-                    m.group(1)
-                    for h in hrefs
-                    if (m := PROPERTY_ID_RE.search(h or ""))
-                }
-                if not (present & expected_pids):
-                    req_m = re.search(r"countyId=(\d+)", target_url)
-                    req_cid = int(req_m.group(1)) if req_m else -1
-                    req_county = _cid_to_county.get(req_cid, f"countyId={req_cid}")
-                    landed = _identify_landed_county(present)
-                    logger.warning(
-                        "WRONG-COUNTY listing: requested %s (countyId=%d) but page "
-                        "served %s [%d links, 0/%d expected pids present, landed-url=%s] "
-                        "— AWS-ELB affinity signal (egress IP=%s)",
-                        req_county, req_cid, landed, total_links,
-                        len(expected_pids), page.url, egress_ip,
-                    )
-                    return -2
-            return total_links
-
-        async def _warm_session_for_county(
-            target_cid: int, expected_pids: "set[str] | None" = None
-        ) -> bool:
-            """Establish a fresh AWS-ELB session bound to `target_cid`.
-
-            Recreates the browser context on every attempt so each try
-            gets a clean session — required because a context already
-            bound to another county keeps serving that county no matter
-            how many times we navigate. Confirms the listing really is
-            this county via `expected_pids` (catches the sticky-session
-            wrong-county page that a plain link-count check misses).
-            """
-            target_url = (
-                f"https://salesweb.civilview.com/Sales/SalesSearch?countyId={target_cid}"
-            )
-            for attempt in range(1, _LISTING_RECOVERY_MAX_ATTEMPTS + 1):
-                await _new_context()
-                links = await _navigate_to_listing(target_url, expected_pids)
-                if links > 0:
-                    logger.info(
-                        "Warm countyId=%d ok on attempt %d (%d links)",
-                        target_cid, attempt, links,
-                    )
-                    return True
-                reason = "wrong-county listing" if links == -2 else "bounce page"
-                logger.warning(
-                    "Warm countyId=%d attempt %d/%d landed on %s",
-                    target_cid, attempt, _LISTING_RECOVERY_MAX_ATTEMPTS, reason,
-                )
-                await asyncio.sleep(_LISTING_RECOVERY_DELAY_S * attempt)
-            return False
-
-        # Reset module-level per-county counters for this run. Cleared
-        # at start (not end) so a crashed run still shows partial state.
-        LAST_DETAIL_RESULTS_BY_COUNTY.clear()
-
-        i = 0
-        for county, records in by_county.items():
-            cid = _COUNTY_TO_CIVILVIEW_ID[county]
-            listing_url = f"https://salesweb.civilview.com/Sales/SalesSearch?countyId={cid}"
-            # PropertyIds we expect on THIS county's listing — drives the
-            # wrong-county detection in _navigate_to_listing so a sticky
-            # session serving another county's results is caught instead
-            # of silently parse-failing every record.
-            expected_pids = {
-                m.group(1)
-                for n in records
-                if (m := PROPERTY_ID_RE.search(n.source_url or ""))
-            }
-
-            # Per-county session: _warm_session_for_county spins up a
-            # FRESH browser context bound to this countyId. Without the
-            # fresh context the session stays bound to the first county
-            # (Essex) and every Middlesex/Union PropertyId silently misses
-            # → 0% enriched. If recovery fails after 3 tries, mark every
-            # record in this county as a parse failure and skip.
-            logger.info(
-                "Sheriff detail enrichment: %s — starting %d records",
-                county, len(records),
-            )
-            warm_ok = await _warm_session_for_county(cid, expected_pids)
-            if not warm_ok:
-                logger.error(
-                    "⚠️ %s: listing-page recovery exhausted (%d attempts). "
-                    "Skipping %d records — detail fields will be empty. "
-                    "Likely cause: AWS-ELB session/IP rotation.",
-                    county, _LISTING_RECOVERY_MAX_ATTEMPTS, len(records),
-                )
-                for n in records:
-                    parse_failures += 1
-                    kept.append(n)
-                LAST_DETAIL_RESULTS_BY_COUNTY[county] = {
-                    "enriched": 0,
-                    "dropped": 0,
-                    "parse_failures": len(records),
-                    "total": len(records),
-                    "listing_bounce": True,
-                }
-                continue
-
-            county_enriched = 0
-            county_dropped = 0
-            county_parse_failures = 0
-
-            for n in records:
-                i += 1
-                m = PROPERTY_ID_RE.search(n.source_url or "")
-                if not m:
-                    parse_failures += 1
-                    county_parse_failures += 1
-                    kept.append(n)
-                    continue
-                pid = m.group(1)
-
-                try:
-                    # Bounce back to the listing before each click — chaining
-                    # clicks from one render bounces after a few hits.
-                    links = await _navigate_to_listing(listing_url, expected_pids)
-                    if links < 0:
-                        # Session bounced (or rotated to the wrong county)
-                        # mid-batch. Re-warm with a fresh context once; if
-                        # that fails, drop this record but don't kill the
-                        # rest of the batch.
-                        logger.warning(
-                            "%s: listing %s mid-batch at record %d/%d — re-warming",
-                            county,
-                            "wrong-county" if links == -2 else "bounce",
-                            len(kept) + 1, len(records),
-                        )
-                        if not await _warm_session_for_county(cid, expected_pids):
-                            parse_failures += 1
-                            county_parse_failures += 1
-                            kept.append(n)
-                            continue
-                        links = await _navigate_to_listing(listing_url, expected_pids)
-                        if links < 0:
-                            parse_failures += 1
-                            county_parse_failures += 1
-                            kept.append(n)
-                            continue
-
-                    # Use the un-`.first` locator for count() — Playwright's
-                    # `.first.count()` returns unreliable values in headless
-                    # mode (intermittently 0 even when the element exists).
-                    # An untrimmed locator's count() returns total matches.
-                    selector = f'a[href*="PropertyId={pid}"]'
-                    target_count = await page.locator(selector).count()
-                    if target_count == 0:
-                        # PropertyId retired between listing scrape + detail
-                        # fetch — auction likely completed.
-                        parse_failures += 1
-                        county_parse_failures += 1
-                        kept.append(n)
-                    else:
-                        await page.locator(selector).first.click()
-                        await page.wait_for_load_state("domcontentloaded", timeout=20000)
-                        await page.wait_for_timeout(500)
-                        html = await page.content()
-                        # Diagnostic (Option C): confirm the detail fetch landed
-                        # on a real SaleDetails page for THIS county, not a
-                        # bounce to another county's listing. WARNING only on a
-                        # bounce so Essex's many successes don't flood the log.
-                        if "SaleDetails" not in page.url:
-                            try:
-                                _hrefs = await page.locator('a[href*="PropertyId="]').evaluate_all(
-                                    "els => els.map(e => e.getAttribute('href'))"
-                                )
-                                _present = {
-                                    mm.group(1) for h in _hrefs
-                                    if (mm := PROPERTY_ID_RE.search(h or ""))
-                                }
-                                logger.warning(
-                                    "Detail fetch pid=%s (%s) bounced to %s page "
-                                    "(served county=%s, url=%s, egress IP=%s)",
-                                    pid, county,
-                                    "listing" if _present else "non-detail",
-                                    _identify_landed_county(_present), page.url, egress_ip,
-                                )
-                            except Exception:
-                                pass
-                        parsed = parse_detail_html(html)
-                        if not parsed.get("current_status") and not parsed.get("court_case_number"):
-                            parse_failures += 1
-                            county_parse_failures += 1
-                            kept.append(n)
-                        else:
-                            for k, v in {**parsed, **derive_fields(parsed, today)}.items():
-                                setattr(n, k, v)
-                            county_enriched += 1
-                            if n.case_disposition in _DROP_DISPOSITIONS:
-                                dropped += 1
-                                county_dropped += 1
-                                continue
-                            kept.append(n)
-                except Exception as e:
-                    logger.warning("Detail fetch failed (%s): %s", n.source_url, e)
-                    county_parse_failures += 1
-                    kept.append(n)
-
-                if i % 25 == 0:
-                    logger.info("  [%d/%d] detail pages fetched", i, len(civilview))
-                # Throttle between every click (last record included is
-                # fine — total runtime is dominated by enrichment, not
-                # this final 2s).
-                await asyncio.sleep(random.uniform(DETAIL_DELAY_MIN, DETAIL_DELAY_MAX))
-
-            # Per-county summary — visible in logs + stashed for Slack.
-            pct = (100 * county_enriched / len(records)) if records else 0.0
-            LAST_DETAIL_RESULTS_BY_COUNTY[county] = {
-                "enriched": county_enriched,
-                "dropped": county_dropped,
-                "parse_failures": county_parse_failures,
-                "total": len(records),
-                "listing_bounce": False,
-            }
-            if county_enriched == 0 and len(records) > 5:
-                # 0% on a batch of any meaningful size = systemic
-                # failure for that county. Loud warning so it surfaces
-                # in Modal logs + Slack monitoring.
-                logger.error(
-                    "⚠️ %s: 0/%d enriched (%.0f%%) — likely systemic failure",
-                    county, len(records), pct,
-                )
-            else:
-                logger.info(
-                    "%s detail enrichment: %d/%d enriched (%.0f%%), "
-                    "%d dropped (resolved), %d parse-failures",
-                    county, county_enriched, len(records), pct,
-                    county_dropped, county_parse_failures,
-                )
-
-        await browser.close()
 
     logger.info(
         "Sheriff detail enrichment complete: %d kept / %d dropped (resolved cases) "
-        "/ %d parse-failures (retired PropertyIds or missing links)",
+        "/ %d parse-failures (retired from listing or unmatchable)",
         len(kept), dropped, parse_failures,
     )
     return kept + other

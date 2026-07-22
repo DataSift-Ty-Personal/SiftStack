@@ -55,21 +55,23 @@ SCHEDULE_CRON_UTC = "0 10 * * 3"
 @app.function(
     image=image,
     secrets=[secrets],
-    # One county's CivilView detail enrichment (~100-150 records at ~4-5s each
-    # ≈ 15-20 min). 1hr ceiling is generous. One retry for a transient crash.
+    # One county's CivilView detail enrichment (~100-150 records at ~2-3s each
+    # ≈ 5-8 min, plain HTTP). 1hr ceiling is generous. One retry for a
+    # transient crash.
     timeout=3600,
     retries=modal.Retries(max_retries=1, initial_delay=10.0, backoff_coefficient=1.0),
 )
 async def civilview_detail_county_remote(county: str, records: list) -> dict:
     """Detail-enrich ONE CivilView county in its own Modal container.
 
-    Middlesex/Union sat at 0% detail enrichment (Essex 100%) for 4+ weeks:
-    AWS-ELB session affinity is keyed to the container's egress IP, so when all
-    three counties share one container the ELB pins the session to whichever
-    county loaded first (Essex) and every Middlesex/Union detail fetch is
-    served Essex's listing — fresh browser contexts don't help (same IP).
-    Running each county in its OWN container gives each its own egress IP →
-    its own ELB session, so each binds its own county.
+    HISTORY: the Middlesex/Union 0% (Essex 100%) that motivated this fan-out
+    was NOT ELB session affinity — CivilView PropertyIds are ephemeral (the
+    backend reallocates every id when its snapshot rebuilds, every few
+    minutes), so any county whose batch started after a rotation went 0%.
+    nj_sheriff_detail now re-resolves each record's CURRENT PropertyId on
+    the live listing by sheriff # and fetches via plain HTTP, which is
+    immune to rotation. The per-county fan-out is kept for parallelism and
+    per-county stats isolation, not for egress-IP separation.
 
     Args:
         county:  county name (logging/stats).
@@ -114,6 +116,15 @@ async def _enrich_civilview_by_county(listing_records: list, logger) -> tuple:
     from nj_sheriff_detail import _COUNTY_TO_CIVILVIEW_ID, PROPERTY_ID_RE
     from nj_sheriff_sales import apply_priority_tiers
 
+    # ENTRY log — fires before the split and before any early return, so
+    # "fan-out never called" is always distinguishable from "called but
+    # split/spawn produced nothing". Without it, the `not by_county`
+    # early-return below is completely silent.
+    logger.info(
+        "CivilView detail fan-out ENTRY: %d listing records received (pre-split)",
+        len(listing_records),
+    )
+
     by_county: dict = {}
     passthrough: list = []
     for n in listing_records:
@@ -124,6 +135,15 @@ async def _enrich_civilview_by_county(listing_records: list, logger) -> tuple:
             passthrough.append(n)  # Somerset PDF sales etc. — no detail page
 
     if not by_county:
+        # No record cleared the county+PropertyId gate → zero containers
+        # spawn and Slack shows no per-county section at all. Log loudly
+        # with the counties actually seen so the gate is debuggable.
+        logger.warning(
+            "CivilView detail fan-out: 0 of %d records matched the "
+            "county+PropertyId gate — spawning NO containers. Counties seen: %s",
+            len(listing_records),
+            sorted({(n.county or "?").strip() for n in listing_records}),
+        )
         apply_priority_tiers(listing_records)
         return listing_records, {}
 
@@ -650,8 +670,15 @@ async def nj_weekly_all():
             for cty in sorted(civilview_detail_by_county):
                 r = civilview_detail_by_county[cty]
                 pct = (100 * r["enriched"] / r["total"]) if r["total"] else 0
-                if r.get("listing_bounce"):
-                    marker = "🔴 — listing bounce (session/IP rotated)"
+                if r.get("container_error"):
+                    # Was previously invisible: a container that never ran
+                    # rendered as a plain 0/N, identical to a listing bounce.
+                    marker = f"🔴 — container failed: {str(r['container_error'])[:140]}"
+                    cv_hard_breach = True
+                elif r.get("listing_bounce"):
+                    why = r.get("bounce_reason") or "session/IP rotated"
+                    ip = r.get("egress_ip")
+                    marker = f"🔴 — listing bounce ({why}" + (f", egress {ip})" if ip else ")")
                     cv_hard_breach = True
                 elif r["enriched"] == 0 and r["total"] > 5:
                     marker = "🔴 — systemic failure"
