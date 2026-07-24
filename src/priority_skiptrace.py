@@ -42,9 +42,39 @@ from enformion_ftm import enf_phones, clean_owner_name, ENTITY_MARKERS  # noqa: 
 from datasift_formatter import write_datasift_split_csvs  # noqa: E402
 from sift_upload_wizard import run_upload  # noqa: E402
 from phone_scorer import score_and_tag  # noqa: E402
-from philly_pipeline import read_philly_datasift_csv  # noqa: E402
 
 OUTDIR = Path(__file__).resolve().parent.parent / "output"
+
+# Municipal/agency owners beyond enformion_ftm's ENTITY_MARKERS.
+_ENTITY_EXTRA = ("city of", "redevelopmen", "authority", "housing", "estate of", "borough")
+
+
+def _read_reisift_export(path: str) -> list[NoticeData]:
+    """Parse a REISift 'Export' CSV into owner-level NoticeData.
+
+    Columns used: First Name, Last Name, Business Name, Property address/city/state/
+    zip(5), Property county, Tags. Rows tagged Do Not Market / Do Not Call are
+    dropped. The SUBJECT PROPERTY address is the merge key back into reisift.
+    """
+    import csv as _csv
+    out: list[NoticeData] = []
+    with open(path, encoding="utf-8-sig") as fh:
+        for r in _csv.DictReader(fh):
+            tags = (r.get("Tags") or "").lower()
+            if "do not market" in tags or "do not call" in tags:
+                continue
+            first = (r.get("First Name") or "").strip()
+            last = (r.get("Last Name") or "").strip()
+            owner = f"{first} {last}".strip() or (r.get("Business Name") or "").strip()
+            out.append(NoticeData(
+                owner_name=owner,
+                address=(r.get("Property address") or "").strip(),
+                city=(r.get("Property city") or "").strip(),
+                state=(r.get("Property state") or "").strip(),
+                zip=(r.get("Property zip5") or r.get("Property zip") or "").strip(),
+                county=(r.get("Property county") or "").strip(),
+            ))
+    return out
 
 
 def _phone_count(n: NoticeData) -> int:
@@ -52,7 +82,8 @@ def _phone_count(n: NoticeData) -> int:
 
 
 def _is_entity(name: str) -> bool:
-    return any(m in f" {name.lower()} " for m in ENTITY_MARKERS)
+    low = name.lower()
+    return any(m in f" {low} " for m in ENTITY_MARKERS) or any(m in low for m in _ENTITY_EXTRA)
 
 
 async def _merge(csv_path: str, list_name: str, tags: list[str], headed: bool, label: str) -> dict:
@@ -78,7 +109,7 @@ def main() -> None:
     ap.add_argument("--headed", action="store_true", help="Show the browser during merges")
     a = ap.parse_args()
 
-    notices = read_philly_datasift_csv(a.csv)
+    notices = _read_reisift_export(a.csv)
 
     # Owner-only: drop entity/LLC owners (no person to skip trace) and blank names.
     owners: list[NoticeData] = []
