@@ -66,14 +66,16 @@ def _read_reisift_export(path: str) -> list[NoticeData]:
             first = (r.get("First Name") or "").strip()
             last = (r.get("Last Name") or "").strip()
             owner = f"{first} {last}".strip() or (r.get("Business Name") or "").strip()
-            out.append(NoticeData(
+            n = NoticeData(
                 owner_name=owner,
                 address=(r.get("Property address") or "").strip(),
                 city=(r.get("Property city") or "").strip(),
                 state=(r.get("Property state") or "").strip(),
                 zip=(r.get("Property zip5") or r.get("Property zip") or "").strip(),
                 county=(r.get("Property county") or "").strip(),
-            ))
+            )
+            n._export_tags = tags  # lowercased Tags cell, for the already-done guard
+            out.append(n)
     return out
 
 
@@ -99,8 +101,9 @@ async def _merge(csv_path: str, list_name: str, tags: list[str], headed: bool, l
 def main() -> None:
     ap = argparse.ArgumentParser(description="Priority-1 tag: 3-source owner skip trace + Trestle")
     ap.add_argument("--csv", required=True, help="DataSift export of the Priority-1 tagged segment")
-    ap.add_argument("--list", default="Priority 1", dest="list_name",
-                    help="DataSift list holding these records (merge target). Default: 'Priority 1'")
+    ap.add_argument("--list", default="Priority Skip", dest="list_name",
+                    help="Universal DataSift list all priority tiers funnel into (merge + "
+                         "score target). Default: 'Priority Skip'")
     ap.add_argument("--run", action="store_true",
                     help="Execute the billed chain (Tracerfy + Enformion merge + Trestle). "
                          "Default is a dry preview with no API calls and no CRM change.")
@@ -111,9 +114,12 @@ def main() -> None:
 
     notices = _read_reisift_export(a.csv)
 
-    # Owner-only: drop entity/LLC owners (no person to skip trace) and blank names.
+    # Owner-only: drop entity/LLC owners (no person), blank names, and records this
+    # tool has ALREADY 3-source traced (global guard tag) — so any priority tier can
+    # feed the same queue and each property is Tracerfy+Enformion traced only once ever.
+    GUARD_TAG = "3source_skiptraced"
     owners: list[NoticeData] = []
-    skipped_entity = 0
+    skipped_entity = skipped_done = 0
     for n in notices:
         name = (n.owner_name or "").strip()
         if len(name.split()) < 2:
@@ -121,14 +127,18 @@ def main() -> None:
         if _is_entity(name):
             skipped_entity += 1
             continue
+        if GUARD_TAG in getattr(n, "_export_tags", ""):
+            skipped_done += 1
+            continue
         owners.append(n)
     if a.limit:
         owners = owners[: a.limit]
 
-    print(f"Priority-1 skip trace  |  CSV: {a.csv}")
-    print(f"  records in export : {len(notices)}")
-    print(f"  entity owners skip: {skipped_entity}")
-    print(f"  owners to trace   : {len(owners)}")
+    print(f"Priority skip trace  |  CSV: {a.csv}  |  list: {a.list_name}")
+    print(f"  records in export      : {len(notices)}")
+    print(f"  entity owners skipped  : {skipped_entity}")
+    print(f"  already 3-source traced: {skipped_done} (guard tag '{GUARD_TAG}')")
+    print(f"  new owners to trace    : {len(owners)}")
     est_tracerfy = len(owners) * 0.02
     est_enformion = len(owners) * 0.35  # max rack; DataSift affiliate rate is ~$0.10, misses are free
     print(f"  est. cost         : Tracerfy ~${est_tracerfy:.2f}  +  Enformion <=${est_enformion:.2f}")
@@ -142,7 +152,9 @@ def main() -> None:
 
     iy, iw, _ = date.today().isocalendar()
     week_tag = f"{iy}-W{iw:02d}"
-    merge_tags = ["Priority 1", "Courthouse Data", f"priority1_skiptrace_{date.today():%Y-%m}", week_tag]
+    # Stamp the global guard tag so this property is skipped on every future run,
+    # in any priority tier. Plus a dated tag for reporting.
+    merge_tags = [GUARD_TAG, "Courthouse Data", f"3source_skiptrace_{date.today():%Y-%m}", week_tag]
 
     # ── Source 2: Tracerfy (mutates owner notices in place) ────────────────────
     print("\n── Tracerfy skip trace (owner) ──")

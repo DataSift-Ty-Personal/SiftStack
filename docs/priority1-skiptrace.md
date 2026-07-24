@@ -16,6 +16,19 @@ Then **Trestle** scores every unique number and tags the dial tier
 This is **owner-only** — no heir resolution. Deep prospecting's Enformion heir path
 is separate and unchanged.
 
+## Universal queue + one-trace-per-property guard
+
+All priority tiers (Priority 1, 2, 3, …) funnel into **one universal list**, default
+**`Priority Skip`** (`--list` to override). The tool stamps every record it
+processes with the global tag **`3source_skiptraced`** and **skips any record that
+already carries it** — so no matter which tier a property comes in on, it gets the
+Tracerfy + Enformion pass **exactly once, ever**. Entity/agency owners and
+`Do Not Market` / `Do Not Call` rows are always dropped.
+
+Per tier, the workflow is the same: in DataSift, filter by the tier's tag
+(`Priority 1`, `Priority 2`, …) → **Add to list `Priority Skip`** → export →
+run. New records get traced; already-done ones are skipped automatically.
+
 ---
 
 ## One-time setup
