@@ -104,9 +104,11 @@ so the merge and export clicks aren't intercepted.
   `Priority Skip` list before the next run — then already-done records carry
   `3source_skiptraced` and are skipped. A stale export re-traces them (small cost;
   reisift dedupes phones).
-- **Trestle scores the whole list each run**, so its cost scales with list size, not the
-  size of the new batch. For a big list with a small new batch, `--no-trestle` on the
-  trace run and a separate periodic scoring pass is cheaper.
+- **Trestle only bills new numbers.** It re-tiers every number on the list each run, but
+  numbers already scored are reused for free from the persistent cache
+  (`data/cache/scored_phones.json`) — so you only pay for numbers new to this run. The
+  output reads "N newly scored ($X billable; rest reused free from cache)". `--no-trestle`
+  still skips scoring entirely if you want.
 - **Not scheduled.** The export is manual and the run bills money + writes to the CRM, so
   there is no unattended schedule. Automating the export-by-tag (browser automation) is
   the piece to build first if you want that.
