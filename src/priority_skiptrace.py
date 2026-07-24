@@ -208,8 +208,9 @@ def main() -> None:
         email=config.DATASIFT_EMAIL, password=config.DATASIFT_PASSWORD,
         api_key=config.TRESTLE_API_KEY, do_upload=True,
     ))
-    print(f"Trestle: {score.get('phones_scored', 0)} phones scored, "
-          f"tiers={score.get('tier_counts', {})}, ${score.get('cost', 0):.2f} "
+    print(f"Trestle: {score.get('phones_scored', 0)} phones on list, "
+          f"{score.get('phones_new', 0)} newly scored (${score.get('cost', 0):.2f} billable; "
+          f"rest reused free from cache), tiers={score.get('tier_counts', {})} "
           f"(upload: {'OK' if score.get('upload_ok') else 'FAIL'})")
 
 
