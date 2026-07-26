@@ -271,6 +271,15 @@ async def dismiss_popups(page) -> None:
                 + '[data-testid*="nps"], [data-testid*="survey"], '
                 + '[aria-label*="survey"], [aria-label*="nps"]'
             ).forEach(el => { el.remove(); removed++; });
+            // Neutralize the filter/manage "Aside" overlay backdrop. When the
+            // filter panel is open this full-screen backdrop intercepts clicks on
+            // the filter/select controls (seen as "asideOverlay intercepts pointer
+            // events"). Do NOT remove it — the panel relies on it being present;
+            // just stop it capturing pointer events so clicks reach the controls.
+            document.querySelectorAll('#asideOverlay, [class*="AsideOverlay"]').forEach(el => {
+                el.style.pointerEvents = 'none';
+                removed++;
+            });
             // Remove inline NPS recommendation survey (blocks Next Step button at
             // bottom of upload wizard). DataSift shows "How likely are you to
             // recommend REISift?" with 0-10 rating. Only search div/section elements

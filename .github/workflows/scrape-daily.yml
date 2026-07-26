@@ -25,9 +25,9 @@ on:
         required: false
         default: '1'
       phone_scoring:
-        description: 'Run Trestle phone scoring (true/false)'
+        description: 'Run Trestle phone scoring (true/false) — OFF by default; billed per number'
         required: false
-        default: 'true'
+        default: 'false'
       enable_obituary:
         description: 'Enable obituary enrichment (off by default until p95 latency validated under 30s)'
         type: boolean
@@ -151,9 +151,14 @@ jobs:
             echo "→ Backup cron: no successful run found today, proceeding"
           fi
 
-          PHONE_FLAG=""
-          if [ "${{ inputs.phone_scoring }}" = "false" ]; then
-            PHONE_FLAG="--no-phone-scoring"
+          # Trestle scoring is OFF on scheduled runs. Step 11 scored whatever
+          # happened to have phones in the ~10 minute window after upload --
+          # mostly single-signal code violations that never get dialed. Scoring
+          # now happens downstream, against the records actually queued to call.
+          # Opt back in for a one-off via workflow_dispatch (phone_scoring=true).
+          PHONE_FLAG="--no-phone-scoring"
+          if [ "${{ inputs.phone_scoring }}" = "true" ]; then
+            PHONE_FLAG=""
           fi
 
           # Mondays add the weekly tax-delinquency delta pull (seen-state cached above)

@@ -268,6 +268,31 @@ def _dedup_notices(notices: list[NoticeData]) -> tuple[list[NoticeData], int]:
             # Expired permit flag
             if n.expired_permit == "yes" and primary.expired_permit != "yes":
                 primary.expired_permit = "yes"
+            # Owner status / violation depth. CODE_VIOLATION sits lowest in
+            # _NOTICE_TYPE_PRIORITY, so whenever a violation merges with any
+            # other source the violation record LOSES primary — taking its
+            # owner_status and violation_count_for_parcel with it. Those are
+            # exactly the stacked records worth filtering on, so carry the
+            # values onto the primary when it doesn't already have them.
+            try:
+                _src = json.loads(n.heir_map_json) if n.heir_map_json else {}
+                _dst = json.loads(primary.heir_map_json) if primary.heir_map_json else {}
+            except (json.JSONDecodeError, TypeError):
+                continue
+            _carried = False
+            if _src.get("owner_status") and not _dst.get("owner_status"):
+                _dst["owner_status"] = _src["owner_status"]
+                _carried = True
+            _sv = _src.get("violation_count_for_parcel") or 0
+            _dv = _dst.get("violation_count_for_parcel") or 0
+            try:
+                if int(_sv) > int(_dv):
+                    _dst["violation_count_for_parcel"] = int(_sv)
+                    _carried = True
+            except (ValueError, TypeError):
+                pass
+            if _carried:
+                primary.heir_map_json = json.dumps(_dst)
 
         merged.append(primary)
 
@@ -323,17 +348,27 @@ _UPLOAD_LEDGER_PATH = Path("data/cache/uploaded_ledger.json")
 
 
 def _ledger_key(n: NoticeData) -> str:
-    """Stable identity for a record: parcel_id if present, else norm address.
+    """Stable identity for a record: (parcel_id or norm address) + notice_type.
 
-    Keyed on the property, not the notice_type — once a parcel is in DataSift
-    and marketing to it, re-uploading a second signal on the same parcel would
-    still bump its date, which is exactly what we're preventing.
+    Scoped to the notice_type, not the property alone. The original property-only
+    key stopped the same violation re-uploading every day inside the lookback
+    window — still the main job, and the notice_type suffix preserves it. But it
+    also blocked a parcel that reappeared on a genuinely NEW source: a June code
+    violation that hits the tax-sale list in August was dropped at Step 3a before
+    tier scoring ran, so it never joined the Tax Sale niche list and kept its
+    day-one distress tag forever. Including notice_type lets that through, and the
+    date bump is correct there — the property really did just get hotter.
+
+    Note: this changes the key format, so keys written under the old scheme
+    ("pid:X") never match and each parcel gets one final re-upload as the ledger
+    re-seeds. One-time cost, bounded by the current ledger size.
     """
+    ntype = (getattr(n, "notice_type", "") or "").strip()
     pid = (getattr(n, "parcel_id", "") or "").strip()
     if pid:
-        return f"pid:{pid}"
+        return f"pid:{pid}:{ntype}"
     addr = re.sub(r"\s+", " ", (n.address or "").strip().lower())
-    return f"addr:{addr}"
+    return f"addr:{addr}:{ntype}"
 
 
 def _load_upload_ledger() -> set[str]:

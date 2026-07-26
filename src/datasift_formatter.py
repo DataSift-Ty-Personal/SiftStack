@@ -426,16 +426,44 @@ def _build_tags(notice: NoticeData) -> str:
     if getattr(notice, "expired_permit", "") == "yes":
         tags.append("expired_permit")
 
-    # Distress tier scoring
+    # Owner occupancy + repeat-violation depth. The scrapers compute both into
+    # heir_map_json meta but they never reached DataSift, so neither could be
+    # filtered on. Violation counts are bucketed (cumulative "N plus") rather
+    # than emitted raw, so the tag namespace stays bounded and "2+ violations"
+    # is one filter instead of an open-ended OR list.
+    try:
+        _meta = json.loads(notice.heir_map_json) if notice.heir_map_json else {}
+    except (json.JSONDecodeError, TypeError):
+        _meta = {}
+
+    _owner_status = str(_meta.get("owner_status") or "").upper()
+    if _owner_status == "ABSENTEE":
+        tags.append("absentee")
+    elif _owner_status == "OWNER_OCCUPIED":
+        tags.append("owner_occupied")
+
+    try:
+        _vcount = int(_meta.get("violation_count_for_parcel") or 0)
+    except (ValueError, TypeError):
+        _vcount = 0
+    for _threshold in (2, 3, 5):
+        if _vcount >= _threshold:
+            tags.append(f"violations_{_threshold}plus")
+
+    # Distress tier scoring.
+    # Words, not numbers: every other tier in the business reads 1 = best
+    # (Tier 1 ZIPs, Priority 1, DataSift's pyramid) while this one is derived
+    # from a signal count, so 4 = worst-off owner = best record. Naming it
+    # cold/warm/hot/critical removes the collision instead of picking a side.
     try:
         from philly_pipeline import compute_distress_tier
         tier, tier_signals = compute_distress_tier(notice)
         tier_names = {
-            0: "distress_tier_0_NoSignal",
-            1: "distress_tier_1_Cold",
-            2: "distress_tier_2_Warm",
-            3: "distress_tier_3_Hot",
-            4: "distress_tier_4_Critical",
+            0: "distress_none",
+            1: "distress_cold",
+            2: "distress_warm",
+            3: "distress_hot",
+            4: "distress_critical",
         }
         tags.append(tier_names[tier])
         tags.extend(tier_signals)
