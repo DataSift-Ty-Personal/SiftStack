@@ -393,7 +393,7 @@ def process_phones(
 
     _save_phone_cache(phone_cache)
     logger.info("Phone cache: %d hits, %d new Trestle API calls", cache_hits, api_calls)
-    return results, errors
+    return results, errors, {"api_calls": api_calls, "cache_hits": cache_hits}
 
 
 # ── Per-Notice Phone Scoring (DM + heirs) ────────────────────────────────
@@ -716,7 +716,7 @@ def run_phone_validation(
                 total_entries, unique_count, unique_count * COST_PER_PHONE)
 
     # Process through Trestle API
-    results, errors = process_phones(
+    results, errors, call_stats = process_phones(
         phones=phones,
         api_key=api_key,
         tiers=tiers,
@@ -741,6 +741,8 @@ def run_phone_validation(
     return {
         "success": True,
         "results_count": len(results),
+        "new_scored": call_stats["api_calls"],   # numbers that actually hit Trestle (billable)
+        "cache_hits": call_stats["cache_hits"],   # already-scored, reused from cache (free)
         "errors_count": len(errors),
         "tag_csv_path": tag_csv,
         "detail_csv_path": detail_csv,

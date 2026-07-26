@@ -184,11 +184,15 @@ async def score_and_tag(
         return result
 
     result["phones_scored"] = validation["results_count"]
+    result["phones_new"]    = validation.get("new_scored", validation["results_count"])
     result["tier_counts"]   = validation.get("tier_counts", {})
     result["tag_csv_path"]  = validation["tag_csv_path"]
-    result["cost"]          = result["phones_scored"] * 0.015
+    # Bill only NEW Trestle calls — already-scored numbers are reused for free from
+    # the persistent cache (data/cache/scored_phones.json).
+    result["cost"]          = result["phones_new"] * 0.015
 
-    logger.info("%s: %d phones scored, est. $%.2f", list_name, result["phones_scored"], result["cost"])
+    logger.info("%s: %d phones on list, %d newly scored, est. $%.2f",
+                list_name, result["phones_scored"], result["phones_new"], result["cost"])
 
     # Step 3: Upload tier tags
     if do_upload and result["tag_csv_path"]:
