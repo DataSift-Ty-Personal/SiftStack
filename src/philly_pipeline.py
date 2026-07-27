@@ -578,6 +578,7 @@ async def run_pipeline(
         "smarty_cache_added":   0,
         "rdi_removed":          0,
         "validation_removed":   0,
+        "already_uploaded_skipped": 0,
         "dp_candidates":        0,
         "tracerfy":             {},
         "tracerfy_cost":        0.0,
@@ -1069,11 +1070,15 @@ def _build_slack_summary(
         lines.append(f"Source CSV: {resume_from}")
 
     # Filters
+    # already-sent = the upload-ledger delta (Step 3a). It's the number that
+    # proves "only new records went up" — a large scrape with already-sent 0
+    # on a re-listing source (bid4assets) means the ledger cache was lost.
     lines.append(
         f"Filters: dedup −{stats['dedup_removed']}  "
         f"RDI −{stats['rdi_removed']}  "
         f"validation −{stats['validation_removed']}  "
         f"tier0 −{stats.get('tier0_dropped', 0)}  "
+        f"already-sent −{stats.get('already_uploaded_skipped', 0)}  "
         f"→ {stats['csv_written']} records"
     )
 
