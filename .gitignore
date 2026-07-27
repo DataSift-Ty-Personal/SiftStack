@@ -92,6 +92,13 @@ deed_*.pdf
 crop_*.png
 deed_*.png
 datasift_*.png
+login_*.png
+test_step3_*.png
+test_step3_fix.py
+
+# Local caches (regenerated on demand, large)
+smarty_parcel_cache.json
+data/
 *-001.zip
 DataSift*Playbook*.zip
 Candidate-Intake-Skill-Package.zip

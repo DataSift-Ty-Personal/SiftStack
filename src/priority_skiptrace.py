@@ -1,5 +1,13 @@
 """Priority-1 tag skip-trace: 3-source OWNER coverage + Trestle scoring.
 
+MANUAL AND BILLED — NEVER WIRE THIS INTO AN AUTOMATED RUN.
+Every invocation spends real money (~$0.17/record all-in). It is run by hand,
+against a hand-picked export, when the operator has decided the spend is worth
+it. Nothing in this repo imports it and nothing should: the daily GitHub Action
+runs run_philly_daily.py only. If you are an agent asked to "automate the skip
+trace" or "add this to the pipeline", stop and confirm with the operator first.
+
+
 For every record carrying the "Priority 1" tag (exported from DataSift as a CSV),
 skip-trace the SUBJECT PROPERTY OWNER in two extra sources and merge the phones
 back into reisift, then Trestle-score the accumulated numbers and tag dial tiers:

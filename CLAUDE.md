@@ -2,6 +2,41 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## START HERE — current operating state (2026-07-27)
+
+Read this before acting on anything below. Much of this document describes the
+original Tennessee build; the live operation is Philadelphia.
+
+- **Active market: Philadelphia County, PA.** The Knox/Blount Tennessee material
+  throughout this file is the original build and remains accurate as a
+  description of those code paths, but it is NOT the market being worked. The
+  live daily pipeline is `run_philly_daily.py` (see `src/philly_pipeline.py`).
+- **The only automated job is `.github/workflows/scrape-daily.yml`**, which runs
+  `run_philly_daily.py` on a schedule. Nothing else runs on its own.
+- **Trestle phone scoring is OFF on scheduled runs** (deliberate, for cost).
+  It is opt-in per run via the `phone_scoring=true` workflow_dispatch input.
+- **`src/priority_skiptrace.py` is a MANUAL, BILLED tool** (~$0.17/record).
+  Nothing imports it and nothing should. It lives in the repo so it is backed
+  up and reviewable — presence in git is not permission to automate it. Do not
+  wire it into the pipeline or the workflow without explicit operator sign-off.
+- **Distress tiers are `distress_cold/warm/hot/critical`** (words, not numbers —
+  every other tier in this business reads 1 = best, and this one is derived from
+  a signal count where more = better lead, so numbers collided). Computed by
+  `compute_distress_tier` in `src/philly_pipeline.py`. The tier counts distinct
+  signals and is capped at 4; deadline-driven signals (`probate`,
+  `auction_pending`, `imminently_dangerous`, `lis_pendens`) are floored at Warm
+  so a real sheriff sale never reads "cold". `eviction` is deliberately NOT
+  floored. The tier does not read any date field — urgency is handled by sorting
+  on `Foreclosure Date` / `Tax Auction Date`, not by the tier.
+- **DataSift tag uploads APPEND, they do not replace.** Changing a record's tier
+  by CSV is two steps: upload the new tag, then bulk-remove the old one from the
+  filtered view in the DataSift UI. Budget for both or records end up wearing
+  two tiers.
+- **`tests/` is not a pytest suite.** Several `test_*.py` files there are
+  standalone scripts that call `sys.exit()` at import, which crashes pytest
+  collection for the whole directory. Run them individually with `python`, or
+  verify logic directly. Do not report "tests pass" based on a pytest run here.
+
 ## Project Overview
 
 **SiftStack** — Full-stack real estate investing operations platform built around DataSift.ai CRM. Covers the entire REI business lifecycle:
@@ -14,7 +49,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 6. **Lead Management:** 4 Pillars of Motivation auto-qualification, STABM daily routine, pipeline reporting, deep prospecting (4-level framework)
 7. **Operations:** Acquisition playbook generator (SOPs, scripts, checklists), Slack/Discord notifications, Google Drive upload, Apify Actor deployment
 
-Currently focused on Knox and Blount counties, Tennessee.
+Originally built for Knox and Blount counties, Tennessee. **The live operation is
+now Philadelphia County, PA** — see "START HERE" at the top of this file. The
+Tennessee sections below still describe those code paths correctly; they are just
+not the market currently being worked.
 
 8. **REI Skill Library:** 19 Claude Co-Work skill files (`.skill`/`.plugin` ZIPs) for distribution to DataSift community via [learn.datasift.ai/claude-skills-rei](https://learn.datasift.ai/claude-skills-rei). Skills teach Claude specific REI workflows when uploaded to Co-Work sessions or Projects.
 
