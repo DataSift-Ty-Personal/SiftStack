@@ -187,7 +187,19 @@ def compute_distress_tier(notice: NoticeData) -> tuple[int, list[str]]:
     if getattr(notice, "expired_permit", "") == "yes":
         signals.append("expired_permit")
 
-    return min(len(signals), 4), signals
+    tier = min(len(signals), 4)
+
+    # Floor for time-sensitive niches. A sheriff sale with a hard auction date
+    # carries one signal and scored Cold -- below a stacked code violation --
+    # so anyone filtering "cold = skip" would bury the county's best FTM data
+    # (PA is judicial: Final Judgment / Lis Pendens are the top benchmark rows).
+    # Deadline-driven signals never rank below Warm regardless of count.
+    _DEADLINE_SIGNALS = {"probate", "auction_pending", "imminently_dangerous",
+                         "lis_pendens"}
+    if tier < 2 and _DEADLINE_SIGNALS.intersection(signals):
+        tier = 2
+
+    return tier, signals
 
 
 # Priority order for canonical notice_type when merging (higher index = higher priority)
