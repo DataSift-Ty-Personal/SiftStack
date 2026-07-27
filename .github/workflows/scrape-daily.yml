@@ -104,14 +104,24 @@ jobs:
             opa-delinquent-seen-
 
       # Cross-run upload ledger — records already sent to DataSift, so
-      # re-scraped records don't re-upload and bump their date. Always-miss
-      # key pattern like the other caches.
+      # re-scraped records don't re-upload and bump their date.
+      # NAMESPACED PER JOB: this job and bid4assets run as separate parallel
+      # workflow runs, and each saves restored-base + its own new keys. Under
+      # the old shared "upload-ledger-" prefix, whichever job saved LAST won
+      # the next restore and silently buried the other job's keys (2026-07-27:
+      # the daily save shadowed the bid4assets save, so the next bid4assets
+      # run would re-upload its full ~500-record standing inventory). Ledger
+      # keys embed notice_type and the two jobs' sources are disjoint, so
+      # separate lineages lose nothing. The bare "upload-ledger-" fallback
+      # only fires when no namespaced cache exists yet (first run after this
+      # change), seeding from the pre-split lineage; inert afterward.
       - name: Restore upload ledger
         uses: actions/cache@v4
         with:
           path: data/cache/uploaded_ledger.json
-          key: upload-ledger-${{ github.run_id }}
+          key: upload-ledger-daily-${{ github.run_id }}
           restore-keys: |
+            upload-ledger-daily-
             upload-ledger-
 
       - name: Set up Python 3.12
@@ -209,15 +219,23 @@ jobs:
           restore-keys: |
             scored-phones-
 
-      # Cross-run upload ledger — records already sent to DataSift, so
-      # re-scraped records don't re-upload and bump their date. Always-miss
-      # key pattern like the other caches.
+      # Cross-run upload ledger — see the daily job's comment for why this is
+      # namespaced per job. Bid4Assets especially needs it: the source is a
+      # full standing-inventory dump (~500 auctions every run, no date
+      # filter), so the ledger is the ONLY thing that turns it into a delta.
+      # "upload-ledger-30274401337" is a ONE-TIME seed: the exact cache key
+      # from the 2026-07-27 bid4assets run whose 753-key save was shadowed by
+      # the daily job's later save. Restoring it directly avoids one full
+      # re-upload; it goes inert once the first b4a-namespaced save exists
+      # and can be deleted from this list any time after that.
       - name: Restore upload ledger
         uses: actions/cache@v4
         with:
           path: data/cache/uploaded_ledger.json
-          key: upload-ledger-${{ github.run_id }}
+          key: upload-ledger-b4a-${{ github.run_id }}
           restore-keys: |
+            upload-ledger-b4a-
+            upload-ledger-30274401337
             upload-ledger-
 
       - name: Set up Python 3.12
