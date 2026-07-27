@@ -67,6 +67,13 @@ DEFAULT_TIERS = {
     "Drop":        (0, 20),
 }
 
+# Line types that can receive SMS. FixedVOIP (cable/business VOIP) and
+# Landline can't; Voicemail/Tollfree/Premium obviously can't. A missing
+# line_type counts as NOT textable — the whole point is never to text blind.
+TEXTABLE_LINE_TYPES = {"Mobile", "NonFixedVOIP"}
+TEXT_OK_TAG = "Text OK"
+NO_TEXT_TAG = "No Text"
+
 COST_PER_PHONE = 0.015  # Trestle phone_intel pricing
 
 # ── Trestle API Config ────────────────────────────────────────────────────
@@ -542,10 +549,22 @@ def write_datasift_tags_csv(results: list[dict], output_dir: str | Path) -> Path
 
     with open(filepath, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
-        writer.writerow(["Phone Number", "Phone Tag"])
+        # Phone Type is a mappable field in the phone-update wizard (verified
+        # 2026-07-27) — writing Trestle's line_type fixes the "Unknown" display
+        # on numbers merged from Tracerfy/Enformion.
+        writer.writerow(["Phone Number", "Phone Tag", "Phone Type"])
         for r in results:
-            if r.get("is_valid") is not False:
-                writer.writerow([r["phone_number"], r["assigned_tag"]])
+            if r.get("is_valid") is False:
+                continue
+            line_type = r.get("line_type") or ""
+            # "Unknown" (no activity_score) carries no dial signal — don't
+            # push it as a tag; the number still gets its textability tag.
+            if r.get("assigned_tag") and r["assigned_tag"] != "Unknown":
+                writer.writerow([r["phone_number"], r["assigned_tag"], line_type])
+            textable = line_type in TEXTABLE_LINE_TYPES
+            writer.writerow([r["phone_number"],
+                             TEXT_OK_TAG if textable else NO_TEXT_TAG,
+                             line_type])
 
     logger.info("DataSift phone tags CSV: %s (%d phones)", filepath, len(results))
     return filepath
