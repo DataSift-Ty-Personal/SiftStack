@@ -37,6 +37,7 @@ and pass the downloaded CSV with --csv.
 """
 import argparse
 import asyncio
+import re
 import sys
 from datetime import date
 from pathlib import Path
@@ -92,8 +93,16 @@ def _phone_count(n: NoticeData) -> int:
 
 
 def _is_entity(name: str) -> bool:
+    # Word-boundary matching: bare substring checks flagged person surnames
+    # containing a marker ("Aiftinca" -> "inc", missed on the 2026-07-24 run).
+    # "redevelopmen" keeps an open right edge to still catch "redevelopment".
     low = name.lower()
-    return any(m in f" {low} " for m in ENTITY_MARKERS) or any(m in low for m in _ENTITY_EXTRA)
+    for m in (*ENTITY_MARKERS, *_ENTITY_EXTRA):
+        m = m.strip()
+        tail = r"" if m == "redevelopmen" else r"\b"
+        if re.search(rf"\b{re.escape(m)}{tail}", low):
+            return True
+    return False
 
 
 async def _merge(csv_path: str, list_name: str, tags: list[str], headed: bool, label: str) -> dict:
@@ -116,6 +125,8 @@ def main() -> None:
                     help="Execute the billed chain (Tracerfy + Enformion merge + Trestle). "
                          "Default is a dry preview with no API calls and no CRM change.")
     ap.add_argument("--no-trestle", action="store_true", help="Skip the Trestle scoring step")
+    ap.add_argument("--no-tracerfy", action="store_true", help="Skip the Tracerfy source (Enformion only)")
+    ap.add_argument("--no-enformion", action="store_true", help="Skip the Enformion source (Tracerfy only)")
     ap.add_argument("--limit", type=int, default=0, help="Process only the first N records (testing)")
     ap.add_argument("--headed", action="store_true", help="Show the browser during merges")
     a = ap.parse_args()
@@ -165,21 +176,27 @@ def main() -> None:
     merge_tags = [GUARD_TAG, "Courthouse Data", f"3source_skiptrace_{date.today():%Y-%m}", week_tag]
 
     # ── Source 2: Tracerfy (mutates owner notices in place) ────────────────────
-    print("\n── Tracerfy skip trace (owner) ──")
-    tr_stats = batch_skip_trace(owners, lookup_heir_addresses=False)
-    tr_found = [n for n in owners if _phone_count(n) > 0]
-    print(f"Tracerfy: {len(tr_found)}/{len(owners)} owners with phones, ${tr_stats.get('cost', 0):.2f}")
-    if tr_found:
-        tr_csv = write_datasift_split_csvs(tr_found)[0]["path"]
-        print("  merge CSV:", tr_csv)
-        res = asyncio.run(_merge(tr_csv, a.list_name, merge_tags, a.headed, "tracerfy"))
-        print("  Tracerfy merge:", "OK" if res.get("success") else f"FAILED: {res.get('message')}")
+    if a.no_tracerfy:
+        print("\n── Tracerfy skip trace (owner) ── SKIPPED (--no-tracerfy)")
+    else:
+        print("\n── Tracerfy skip trace (owner) ──")
+        tr_stats = batch_skip_trace(owners, lookup_heir_addresses=False)
+        tr_found = [n for n in owners if _phone_count(n) > 0]
+        print(f"Tracerfy: {len(tr_found)}/{len(owners)} owners with phones, ${tr_stats.get('cost', 0):.2f}")
+        if tr_found:
+            tr_csv = write_datasift_split_csvs(tr_found)[0]["path"]
+            print("  merge CSV:", tr_csv)
+            res = asyncio.run(_merge(tr_csv, a.list_name, merge_tags, a.headed, "tracerfy"))
+            print("  Tracerfy merge:", "OK" if res.get("success") else f"FAILED: {res.get('message')}")
 
     # ── Source 3: Enformion / Endato (owner) — separate merge so it ACCUMULATES ─
-    print("\n── Enformion skip trace (owner) ──")
-    if not enf_configured():
+    if a.no_enformion:
+        print("\n── Enformion skip trace (owner) ── SKIPPED (--no-enformion)")
+    elif not enf_configured():
+        print("\n── Enformion skip trace (owner) ──")
         print("  ENFORMION_AP_NAME / ENFORMION_AP_PASSWORD not set — skipping Enformion source.")
     else:
+        print("\n── Enformion skip trace (owner) ──")
         enf_found: list[NoticeData] = []
         for n in owners:
             first, last = clean_owner_name(n.owner_name)
