@@ -173,7 +173,15 @@ def main() -> None:
     week_tag = f"{iy}-W{iw:02d}"
     # Stamp the global guard tag so this property is skipped on every future run,
     # in any priority tier. Plus a dated tag for reporting.
-    merge_tags = [GUARD_TAG, "Courthouse Data", f"3source_skiptrace_{date.today():%Y-%m}", week_tag]
+    #
+    # "Courthouse Data" is deliberately NOT stamped here. It marks first-to-market
+    # county-sourced data and is what the niche-sequential presets use to rank FTM
+    # above bulk -- it is a provenance fact set at INGEST, and skip tracing a record
+    # does not change where the record came from. This tool was written for the
+    # courthouse/FTM pipeline (where every record genuinely was courthouse data) and
+    # the tag rode along; once queue-prep started running it over purchased bulk
+    # lists it was falsely promoting bulk records into the FTM bucket.
+    merge_tags = [GUARD_TAG, f"3source_skiptrace_{date.today():%Y-%m}", week_tag]
 
     # ── Source 2: Tracerfy (mutates owner notices in place) ────────────────────
     if a.no_tracerfy:
