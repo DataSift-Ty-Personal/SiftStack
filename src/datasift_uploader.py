@@ -590,31 +590,38 @@ async def upload_csv(
         el = await _locate_col_element(col_name, "left")
         return el is not None
 
-    async def _map_csv_column(col_name: str) -> bool:
+    async def _map_csv_column(col_name: str, target_name: str | None = None) -> bool:
         """Map one CSV column to its DataSift target. Returns True on success.
 
         The right panel only shows Required fields by default — Tags and Lists are
         below the fold.  We use the right-panel search box to surface the target
         field before any drag/click attempt.
+
+        target_name: the DataSift field label to map onto when it differs from
+        the CSV column name (e.g. CSV "Foreclosure Date" → custom field
+        "Foreclosure Sale Date"). Defaults to col_name.
         """
+        target_name = target_name or col_name
         source = await _locate_col_element(col_name, "left")
         if not source:
             logger.debug("Column %s: not found in left panel — may already be mapped", col_name)
             return False
 
-        # Surface the target by typing col_name into the right-panel search box.
+        # Surface the target by typing target_name into the right-panel search box.
         # The right panel has two Search... inputs; the second one is on the right.
         right_search = page.locator('input[placeholder*="Search"]').last
         try:
-            await right_search.fill(col_name)
+            await right_search.fill(target_name)
             await page.wait_for_timeout(1500)
-            logger.debug("Searched right panel for: %s", col_name)
+            logger.debug("Searched right panel for: %s", target_name)
         except Exception as e:
-            logger.debug("Right-panel search failed for %s: %s — proceeding without filter", col_name, e)
+            logger.debug("Right-panel search failed for %s: %s — proceeding without filter",
+                         target_name, e)
 
-        target = await _locate_col_element(col_name, "right")
+        target = await _locate_col_element(target_name, "right")
         if not target:
-            logger.warning("Column %s: target not found in right panel after search — skipping", col_name)
+            logger.warning("Column %s: target %s not found in right panel after search — skipping",
+                           col_name, target_name)
             try:
                 await right_search.fill("")
             except Exception:
@@ -638,7 +645,7 @@ async def upload_csv(
 
         # Attempt 2: Slow incremental mouse drag.
         source2 = await _locate_col_element(col_name, "left")
-        target2 = await _locate_col_element(col_name, "right")
+        target2 = await _locate_col_element(target_name, "right")
         if source2 and target2:
             if await _drag_column(source2, target2):
                 await page.wait_for_timeout(1000)
@@ -652,7 +659,7 @@ async def upload_csv(
 
         # Attempt 3: Click source then target.
         source3 = await _locate_col_element(col_name, "left")
-        target3 = await _locate_col_element(col_name, "right")
+        target3 = await _locate_col_element(target_name, "right")
         if source3 and target3:
             try:
                 await source3.click()
@@ -673,12 +680,30 @@ async def upload_csv(
             await right_search.fill("")
         except Exception:
             pass
-        logger.error("Column %s: all 3 mapping attempts failed — Lists routing will not apply",
-                     col_name)
+        logger.error("Column %s: all 3 mapping attempts failed — %s will not be populated",
+                     col_name, target_name)
         return False
 
-    for col_name in ["Tags", "Lists"]:
-        await _map_csv_column(col_name)
+    # (csv_column, datasift_target) — target None means same name.
+    # Date columns land in the Property Debts & Encumbrances custom fields
+    # (decided 2026-07-30): the built-in foreclosure_date is owned by the data
+    # provider (historical FILING dates, overwritten on enrichment), while
+    # Foreclosure Sale Date / Tax Sale Date hold OUR scheduled auction dates.
+    # The old Misc. "Foreclosure Date" shadow field (id 8834) is deactivated —
+    # do not map to it.
+    #
+    # Probate Open Date keeps its own name: the target is the Misc. custom field
+    # (id 7255), which is the only card carrying that label in the wizard. Same
+    # rationale as above — the built-in probate_open_date is provider-supplied,
+    # so our court-scraped estate dates live in the custom field.
+    for col_name, target_name in [
+        ("Tags", None),
+        ("Lists", None),
+        ("Foreclosure Date", "Foreclosure Sale Date"),
+        ("Tax Auction Date", "Tax Sale Date"),
+        ("Probate Open Date", None),
+    ]:
+        await _map_csv_column(col_name, target_name)
 
     await _screenshot(page, "step4_after_mapping")
 

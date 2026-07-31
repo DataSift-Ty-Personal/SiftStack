@@ -353,10 +353,14 @@ def _build_tags(notice: NoticeData) -> str:
     else:
         tags.append("living")
 
-    # Upcoming auction
+    # Upcoming auction. The auction_ month tag is applied whenever the sale date
+    # parses (not just future dates) so postponed/past sales stay in their sale
+    # cohort; the bare YYYY-M tag above is the NOTICE month, which is a different
+    # thing — hence the prefix.
     if notice.auction_date:
         try:
             auction_dt = datetime.strptime(notice.auction_date, "%Y-%m-%d")
+            tags.append(f"auction_{auction_dt.strftime('%Y-%m')}")
             if auction_dt >= datetime.now():
                 tags.append("has_auction")
         except ValueError:
