@@ -183,6 +183,8 @@ def main() -> None:
     # lists it was falsely promoting bulk records into the FTM bucket.
     merge_tags = [GUARD_TAG, f"3source_skiptrace_{date.today():%Y-%m}", week_tag]
 
+    merge_csvs: list[str] = []  # phones from these get re-delivered below
+
     # ── Source 2: Tracerfy (mutates owner notices in place) ────────────────────
     if a.no_tracerfy:
         print("\n── Tracerfy skip trace (owner) ── SKIPPED (--no-tracerfy)")
@@ -196,6 +198,7 @@ def main() -> None:
             print("  merge CSV:", tr_csv)
             res = asyncio.run(_merge(tr_csv, a.list_name, merge_tags, a.headed, "tracerfy"))
             print("  Tracerfy merge:", "OK" if res.get("success") else f"FAILED: {res.get('message')}")
+            merge_csvs.append(tr_csv)
 
     # ── Source 3: Enformion / Endato (owner) — separate merge so it ACCUMULATES ─
     if a.no_enformion:
@@ -227,6 +230,41 @@ def main() -> None:
             print("  merge CSV:", enf_csv)
             res = asyncio.run(_merge(enf_csv, a.list_name, merge_tags, a.headed, "enformion"))
             print("  Enformion merge:", "OK" if res.get("success") else f"FAILED: {res.get('message')}")
+            merge_csvs.append(enf_csv)
+
+    # ── Phone delivery: 'Upload phone numbers by property address' ──────────────
+    # Guaranteed phone delivery. The Add-Data merge is supposed to carry its
+    # Phone columns, but its phone-question dropdown is click-flaky (overlay
+    # intercepts, 2026-08-05) and already-present numbers just dedupe — this
+    # purpose-built Update-Data flow writes the found numbers unconditionally.
+    delivered_addrs: set | None = None
+    if merge_csvs:
+        from datetime import datetime as _dt
+        from sift_upload_wizard import (build_phones_by_address_csv,
+                                        upload_phones_by_address)
+        pba_path = OUTDIR / f"phones_by_address_{_dt.now():%Y-%m-%d_%H%M%S}.csv"
+        pba, n_ph = build_phones_by_address_csv(merge_csvs, str(pba_path))
+        if pba:
+            import csv as _csvmod
+            with open(pba, newline="", encoding="utf-8") as fh:
+                delivered_addrs = {(r.get("Property Street Address") or "").strip()
+                                   for r in _csvmod.DictReader(fh)}
+            delivered_addrs.discard("")
+            if not delivered_addrs:  # empty set would silently skip the wait
+                print("  WARNING: no addresses parsed from phones-by-address CSV "
+                      "-- stale-export wait disabled for this run")
+            async def _deliver():
+                from datasift_core import create_browser, login
+                async with create_browser(headless=not a.headed) as (_b, _c, page):
+                    if not await login(page, config.DATASIFT_EMAIL, config.DATASIFT_PASSWORD):
+                        return {"success": False, "message": "DataSift login failed"}
+                    return await upload_phones_by_address(
+                        page, pba,
+                        shot_base=str(OUTDIR / "_priority_skiptrace" / "phones_by_addr"))
+            print(f"\n── Phone delivery (phones-by-address, {n_ph} phones) ──")
+            dres = asyncio.run(_deliver())
+            print("  delivery:", "OK" if dres.get("success")
+                  else f"FAILED: {dres.get('message')} — phones CSV kept at {pba}")
 
     # ── Trestle scoring: score every accumulated number, tag dial tiers ─────────
     if a.no_trestle:
@@ -240,6 +278,11 @@ def main() -> None:
         list_name=a.list_name,
         email=config.DATASIFT_EMAIL, password=config.DATASIFT_PASSWORD,
         api_key=config.TRESTLE_API_KEY, do_upload=True,
+        # Wait only for addresses the merges actually wrote phones to. Owners no
+        # source matched can never show phones, and demanding them stalls the
+        # whole batch's scoring forever (2026-08-05: 6/88 no-hit owners made
+        # _covers() unsatisfiable -> Trestle aborted -> no tiers, gate zeroed).
+        expect_addresses=delivered_addrs,
     ))
     print(f"Trestle: {score.get('phones_scored', 0)} phones on list, "
           f"{score.get('phones_new', 0)} newly scored (${score.get('cost', 0):.2f} billable; "

@@ -39,6 +39,29 @@ def count_phones_in_csv(csv_path: str | Path) -> int:
         return 0
 
 
+def _covers(csv_path: str | Path | None, expect_addresses: set[str] | None) -> bool:
+    """True when every expected property address has >=1 phone in the export."""
+    if not expect_addresses:
+        return True
+    if not csv_path:
+        return False
+    try:
+        with open(csv_path, encoding="utf-8-sig") as fh:
+            rows = list(csv.DictReader(fh))
+    except (OSError, csv.Error):
+        return False
+    with_phones = {
+        (r.get("Property address") or "").strip().upper()
+        for r in rows
+        if any((r.get(f"Phone {i}") or "").strip() for i in range(1, 31))
+    }
+    missing = {a.strip().upper() for a in expect_addresses if a.strip()} - with_phones
+    if missing:
+        logger.info("Export missing phones for %d/%d just-merged addresses (e.g. %s)",
+                    len(missing), len(expect_addresses), sorted(missing)[:3])
+    return not missing
+
+
 async def export_phones(
     list_name: str, email: str, password: str
 ) -> tuple[int, str | None]:
@@ -79,14 +102,20 @@ async def wait_for_phones(
     password: str,
     max_retries: int = 3,
     wait_seconds: int = 300,
+    expect_addresses: set[str] | None = None,
 ) -> tuple[int, str | None]:
     """Poll DataSift until skip trace populates phones or retries are exhausted.
 
     Returns (phone_count, csv_path). Returns (0, None) if skip trace still running.
+
+    `expect_addresses` are the properties a merge just wrote. Without it a list that
+    ALREADY has phones satisfies `count > 0` on the first export, so a merge still
+    processing in DataSift's background yields a stale export: the new numbers are
+    absent, never get Trestle-scored, and land as untagged "Unknown" phones.
     """
     for attempt in range(1, max_retries + 1):
         count, csv_path = await export_phones(list_name, email, password)
-        if count > 0:
+        if count > 0 and _covers(csv_path, expect_addresses):
             return count, csv_path
         if attempt < max_retries:
             logger.info(
@@ -130,6 +159,7 @@ async def score_and_tag(
     do_upload: bool = True,
     max_retries: int = 3,
     wait_seconds: int = 300,
+    expect_addresses: set[str] | None = None,
 ) -> dict:
     """Full phone scoring pipeline: wait → export → Trestle → upload tags.
 
@@ -163,7 +193,8 @@ async def score_and_tag(
 
     # Step 1: Wait for skip trace to populate phones
     phone_count, csv_path = await wait_for_phones(
-        list_name, email, password, max_retries=max_retries, wait_seconds=wait_seconds
+        list_name, email, password, max_retries=max_retries, wait_seconds=wait_seconds,
+        expect_addresses=expect_addresses,
     )
     result["phones_found"] = phone_count
 

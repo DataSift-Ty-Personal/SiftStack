@@ -60,9 +60,14 @@ async def _click_next(page):
     return False
 
 
-async def _fill_setup(page, list_name, existing_list=False):
+async def _fill_setup(page, list_name, existing_list=False, has_phones=False):
     """Fill the Setup step. If existing_list, select 'Adding properties to an existing
-    list' and pick the list named `list_name`; else create a new list named `list_name`."""
+    list' and pick the list named `list_name`; else create a new list named `list_name`.
+
+    `has_phones` answers "DOES DATA CONTAIN PHONE NUMBERS?". Answering No on a CSV
+    that carries Phone columns makes DataSift silently DROP the phones while still
+    applying tags/addresses (root cause of the 2026-08-04 zero-phone pool: skip-trace
+    merges reported OK, emails/tags landed, phones never did)."""
     b = page.locator('text="Add Data"')
     if await b.count() > 0:
         await b.first.click()
@@ -92,16 +97,28 @@ async def _fill_setup(page, list_name, existing_list=False):
     except Exception:
         pass
     try:
-        ph = page.locator('text="DOES DATA CONTAIN PHONE NUMBERS?"').locator('..').locator('text="Select an option"')
-        if await ph.count() > 0:
-            await ph.first.click()
-            await page.wait_for_timeout(400)
-            n = page.locator('text="No"')
+        # Label is "DOES THIS DATA CONTAIN PHONE NUMBERS?" — the old exact-text
+        # locator (without THIS) never matched, so the answer silently stayed on
+        # the form default "No, not skiptraced" on every run ever.
+        q = page.locator('text=/DOES (THIS )?DATA CONTAIN PHONE NUMBERS/i')
+        if await q.count() > 0:
+            dd = q.first.locator('..').locator('text=/Select an option|not skiptraced|skiptraced/i')
+            if await dd.count() == 0:
+                dd = q.first.locator('..')
+            await dd.last.click(force=True)
+            await page.wait_for_timeout(600)
+            want = "Yes" if has_phones else "No"
+            n = page.locator(f'text=/^{want}\\b/')
             if await n.count() > 0:
-                await n.first.click()
+                await n.first.click(force=True)
+                logger.info("Setup: DOES THIS DATA CONTAIN PHONE NUMBERS? -> %s", want)
+            else:
+                logger.warning("Setup: could not find %r option for phone question", want)
             await page.wait_for_timeout(400)
-    except Exception:
-        pass
+        else:
+            logger.warning("Setup: phone question not found on page")
+    except Exception as e:
+        logger.warning("Setup: phone-question step failed: %s", e)
     if existing_list:
         # "ASSOCIATE DATA WITH LIST" -> open the "Select a list" dropdown and pick list_name
         dropdown = page.locator('text="Select a list"')
@@ -196,6 +213,23 @@ async def upload_csv_v2(page, csv_path, list_name, tags, *, do_finish=False, exi
         "success": False, "finished": False, "list_name": list_name,
         "tags": list(tags), "tags_added": [], "message": "",
     }
+    # Does this CSV actually carry phone numbers? Drives the Setup answer and the
+    # Review-step mapping check — a phones CSV whose Phone columns didn't map must
+    # NEVER be finished silently.
+    has_phones = False
+    try:
+        import csv as _csv
+        with open(csv_path, newline="", encoding="utf-8-sig") as fh:
+            rd = _csv.DictReader(fh)
+            phone_cols = [c for c in (rd.fieldnames or []) if c.strip().lower().startswith("phone")]
+            if phone_cols:
+                for row in rd:
+                    if any((row.get(c) or "").strip() for c in phone_cols):
+                        has_phones = True
+                        break
+    except Exception as e:
+        logger.warning("Could not inspect %s for phone columns: %s", csv_path.name, e)
+    result["has_phones"] = has_phones
     setup_done = tags_done = file_done = False
 
     for i in range(16):
@@ -219,6 +253,21 @@ async def upload_csv_v2(page, csv_path, list_name, tags, *, do_finish=False, exi
                 result["message"] = f"NOT finished — tags missing at review: {missing}"
                 logger.warning(result["message"])
                 return result
+            if has_phones:
+                # The Review pane lists every MAPPED column as "csvcol / target"
+                # (e.g. "Phone 1 / Phone 1"). Match that row format specifically —
+                # a bare "Phone 1" can be leftover DOM from the Map step. If the
+                # Phone columns didn't map, finishing would upsert the records
+                # WITHOUT their phones — refuse instead of finishing.
+                phone_mapped = await page.locator('text=/Phone \\d+ \\//').count() > 0
+                result["review_phone_mapping"] = phone_mapped
+                logger.info("Review phone-mapping check: %s", "OK" if phone_mapped else "MISSING")
+                if do_finish and not phone_mapped:
+                    result["success"] = False
+                    result["message"] = ("NOT finished — CSV carries phones but Phone "
+                                         "columns are not mapped at review")
+                    logger.warning(result["message"])
+                    return result
             if do_finish:
                 await finish.first.click()
                 await page.wait_for_timeout(7000)
@@ -235,7 +284,8 @@ async def upload_csv_v2(page, csv_path, list_name, tags, *, do_finish=False, exi
 
         if (not setup_done) and await setup_marker.count() > 0:
             logger.info("Setup: list=%r (existing=%s)", list_name, existing_list)
-            await _fill_setup(page, list_name, existing_list=existing_list)
+            await _fill_setup(page, list_name, existing_list=existing_list,
+                              has_phones=has_phones)
             await _shot(page, shot_base, "setup")
             setup_done = True
             await _click_next(page)
@@ -396,3 +446,110 @@ async def run_upload(csv_path, list_name, tags, *, do_finish=False, existing_lis
             return {"success": False, "message": "Could not open the upload wizard"}
         return await upload_csv_v2(page, csv_path, list_name, tags,
                                    do_finish=do_finish, existing_list=existing_list, shot_base=shot_base)
+
+
+def build_phones_by_address_csv(merge_csvs, out_path):
+    """Union the Phone 1-9 columns of Add-Data merge CSVs into one
+    phones-by-address CSV (Property address + Phone 1..10 per address)."""
+    import csv as _csv
+    from collections import defaultdict
+    phones = defaultdict(list)
+    meta = {}
+    for f in merge_csvs:
+        with open(f, newline="", encoding="utf-8-sig") as fh:
+            for r in _csv.DictReader(fh):
+                a = (r.get("Property Street Address") or "").strip()
+                if not a:
+                    continue
+                meta[a] = (r.get("Property City"), r.get("Property State"),
+                           r.get("Property ZIP Code"))
+                for i in range(1, 10):
+                    p = (r.get(f"Phone {i}") or "").strip()
+                    if p and p not in phones[a]:
+                        phones[a].append(p)
+    if not phones:
+        return None, 0
+    maxn = min(max(len(v) for v in phones.values()), 10)
+    fields = (["Property Street Address", "Property City", "Property State",
+               "Property ZIP Code"] + [f"Phone {i}" for i in range(1, maxn + 1)])
+    with open(out_path, "w", newline="", encoding="utf-8") as fh:
+        w = _csv.DictWriter(fh, fieldnames=fields)
+        w.writeheader()
+        for a, ps in phones.items():
+            row = {"Property Street Address": a, "Property City": meta[a][0],
+                   "Property State": meta[a][1], "Property ZIP Code": meta[a][2]}
+            for i, p in enumerate(ps[:maxn], 1):
+                row[f"Phone {i}"] = p
+            w.writerow(row)
+    return out_path, sum(len(v[:maxn]) for v in phones.values())
+
+
+async def upload_phones_by_address(page, csv_path, *, shot_base=None):
+    """Update Data -> 'Upload phone numbers by property address'.
+
+    THE working path for writing phones onto existing records. The Add-Data
+    merge wizard maps Phone columns at Review yet DataSift drops them on
+    ingest (verified 2026-08-04: emails/tags from the same file land, phones
+    do not) — this purpose-built flow is what actually writes them."""
+    result = {"success": False, "message": ""}
+    await page.goto(RECORDS_URL, wait_until="domcontentloaded")
+    await page.wait_for_timeout(6000)
+    await _dismiss_popups(page)
+    ub = page.locator('text="Upload File"')
+    if await ub.count() == 0:
+        result["message"] = "no Upload File link"
+        return result
+    await ub.first.click()
+    await page.wait_for_timeout(2500)
+    await page.locator('text="Update Data"').first.click()
+    await page.wait_for_timeout(2000)
+    dd = page.locator('text="Select one or more options"')
+    if await dd.count() > 0:
+        await dd.first.click()
+        await page.wait_for_timeout(1500)
+    opt = page.locator('text="Upload phone numbers by property address"')
+    if await opt.count() == 0:
+        result["message"] = "phones-by-address option not found"
+        return result
+    await opt.first.click(force=True)
+    await page.wait_for_timeout(1200)
+    try:  # close the multi-select via the heading (Escape clears it)
+        await page.locator('text="WHAT ARE YOU GOING TO UPDATE?"').first.click()
+        await page.wait_for_timeout(500)
+    except Exception:
+        pass
+    file_done = False
+    for step in range(10):
+        await page.wait_for_timeout(1500)
+        await _dismiss_popups(page)
+        finish = page.locator('button:has-text("Finish Upload")')
+        if await finish.count() > 0:
+            mapped = await page.locator('text=/Phone \\d+ \\//').count()
+            await _shot(page, shot_base, "review")
+            if mapped == 0:
+                result["message"] = "Phone columns not mapped at review"
+                logger.warning(result["message"])
+                return result
+            await finish.first.click()
+            await page.wait_for_timeout(6000)
+            result.update(success=True,
+                          message=f"phones-by-address finished ({mapped} phone cols mapped)")
+            logger.info(result["message"])
+            return result
+        fi = page.locator('input[type="file"]')
+        if (not file_done) and await fi.count() > 0:
+            await fi.first.set_input_files(str(csv_path))
+            file_done = True
+            for _ in range(20):
+                await page.wait_for_timeout(1000)
+                if await page.locator('text="File uploaded!"').count() > 0:
+                    break
+        nb = page.locator('button:has-text("Next Step")')
+        if await nb.count() > 0:
+            await nb.first.click()
+            await page.wait_for_timeout(2500)
+        else:
+            result["message"] = f"stuck at step {step}"
+            return result
+    result["message"] = "step budget exceeded"
+    return result
