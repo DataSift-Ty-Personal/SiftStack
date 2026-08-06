@@ -454,6 +454,14 @@ def _build_tags(notice: NoticeData) -> str:
         if _vcount >= _threshold:
             tags.append(f"violations_{_threshold}plus")
 
+    # Pipeline-injected tags (e.g. auction-window from the Bid4Assets sale-date
+    # admission bands) ride in meta so pipeline stages can tag a record without
+    # growing the dataclass.
+    _extra = _meta.get("extra_tags") or []
+    if isinstance(_extra, str):
+        _extra = [t.strip() for t in _extra.split(",") if t.strip()]
+    tags.extend(t for t in _extra if t and t not in tags)
+
     # Distress tier scoring.
     # Words, not numbers: every other tier in the business reads 1 = best
     # (Tier 1 ZIPs, Priority 1, DataSift's pyramid) while this one is derived

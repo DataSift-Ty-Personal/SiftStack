@@ -1198,6 +1198,18 @@ async def _scrape_bid4assets_scrapfly(source: PhillySource, listing_url: str) ->
         opa = str(rec.get("Apn") or "")
         detail_url = f"https://www.bid4assets.com/auction/{aid}" if aid else listing_url
 
+        # Owner = DEFENDANT (the homeowner being foreclosed). The plaintiff is
+        # the foreclosing lender / the City — never the contact. Records built
+        # with owner_name=plaintiff (pre-2026-08) leaked bank names into the
+        # owner fields whenever OPA had no row to override them, and sent the
+        # obituary enricher searching for deceased Wells Fargos.
+        #
+        # Live check 2026-08-06: the inline JSON's Defendant field is EMPTY on
+        # all 393 mortgage records, so in practice owner_name is blank here and
+        # the OPA assessed owner (tax_owner_name, applied in enrich_and_filter)
+        # is the effective name source — which the formatter prefers anyway.
+        # Kept as defendant in case Bid4Assets starts populating it; records
+        # with no OPA name either are dropped by the pipeline's nameless gate.
         n = _philly_notice(
             source,
             date_added=_today(),
@@ -1205,7 +1217,7 @@ async def _scrape_bid4assets_scrapfly(source: PhillySource, listing_url: str) ->
             zip=addr_parts["zip"],
             auction_date=auction_dt,
             parcel_id=opa,
-            owner_name=_title(plaintiff),  # plaintiff = foreclosing lender
+            owner_name=_title(defendant),
             raw_text=(
                 f"{raw_addr} | OPA:{opa} | Book/Writ:{book_writ} | "
                 f"Attorney:{attorney} | Min bid:${min_bid:,.0f} | "
