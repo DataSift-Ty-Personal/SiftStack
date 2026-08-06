@@ -1,0 +1,155 @@
+{
+  "source_manifest": "middlesex_probate_manifest.json",
+  "cases": [
+    {
+      "index": 1,
+      "pk_id": "5406032",
+      "tabs": {
+        "Tab_assets": {
+          "display_name": "Assets",
+          "click_status": "ok",
+          "file": "middlesex_probate_detail_1_tab_Tab_assets.html",
+          "html_bytes": 224828
+        },
+        "TAB_ORDER": {
+          "display_name": "Order",
+          "click_status": "ERR(tab anchor for \"Order\" not found)",
+          "file": "middlesex_probate_detail_1_tab_TAB_ORDER.html",
+          "html_bytes": 224828
+        },
+        "Tab_Image": {
+          "display_name": "Image",
+          "click_status": "ok",
+          "file": "middlesex_probate_detail_1_tab_Tab_Image.html",
+          "html_bytes": 225170
+        },
+        "Tab_Doc": {
+          "display_name": "Documents",
+          "click_status": "ERR(tab anchor for \"Documents\" not found)",
+          "file": "middlesex_probate_detail_1_tab_Tab_Doc.html",
+          "html_bytes": 225170
+        }
+      }
+    },
+    {
+      "index": 2,
+      "pk_id": "5405976",
+      "tabs": {
+        "Tab_assets": {
+          "display_name": "Assets",
+          "click_status": "ok",
+          "file": "middlesex_probate_detail_2_tab_Tab_assets.html",
+          "html_bytes": 229825
+        },
+        "TAB_ORDER": {
+          "display_name": "Order",
+          "click_status": "ERR(tab anchor for \"Order\" not found)",
+          "file": "middlesex_probate_detail_2_tab_TAB_ORDER.html",
+          "html_bytes": 229825
+        },
+        "Tab_Image": {
+          "display_name": "Image",
+          "click_status": "ok",
+          "file": "middlesex_probate_detail_2_tab_Tab_Image.html",
+          "html_bytes": 230167
+        },
+        "Tab_Doc": {
+          "display_name": "Documents",
+          "click_status": "ERR(tab anchor for \"Documents\" not found)",
+          "file": "middlesex_probate_detail_2_tab_Tab_Doc.html",
+          "html_bytes": 230167
+        }
+      }
+    },
+    {
+      "index": 3,
+      "pk_id": "5406077",
+      "tabs": {
+        "Tab_assets": {
+          "display_name": "Assets",
+          "click_status": "ok",
+          "file": "middlesex_probate_detail_3_tab_Tab_assets.html",
+          "html_bytes": 226859
+        },
+        "TAB_ORDER": {
+          "display_name": "Order",
+          "click_status": "ERR(tab anchor for \"Order\" not found)",
+          "file": "middlesex_probate_detail_3_tab_TAB_ORDER.html",
+          "html_bytes": 226859
+        },
+        "Tab_Image": {
+          "display_name": "Image",
+          "click_status": "ok",
+          "file": "middlesex_probate_detail_3_tab_Tab_Image.html",
+          "html_bytes": 227201
+        },
+        "Tab_Doc": {
+          "display_name": "Documents",
+          "click_status": "ERR(tab anchor for \"Documents\" not found)",
+          "file": "middlesex_probate_detail_3_tab_Tab_Doc.html",
+          "html_bytes": 227201
+        }
+      }
+    },
+    {
+      "index": 4,
+      "pk_id": "5406052",
+      "tabs": {
+        "Tab_assets": {
+          "display_name": "Assets",
+          "click_status": "ok",
+          "file": "middlesex_probate_detail_4_tab_Tab_assets.html",
+          "html_bytes": 225338
+        },
+        "TAB_ORDER": {
+          "display_name": "Order",
+          "click_status": "ERR(tab anchor for \"Order\" not found)",
+          "file": "middlesex_probate_detail_4_tab_TAB_ORDER.html",
+          "html_bytes": 225338
+        },
+        "Tab_Image": {
+          "display_name": "Image",
+          "click_status": "ok",
+          "file": "middlesex_probate_detail_4_tab_Tab_Image.html",
+          "html_bytes": 225680
+        },
+        "Tab_Doc": {
+          "display_name": "Documents",
+          "click_status": "ERR(tab anchor for \"Documents\" not found)",
+          "file": "middlesex_probate_detail_4_tab_Tab_Doc.html",
+          "html_bytes": 225680
+        }
+      }
+    },
+    {
+      "index": 5,
+      "pk_id": "5406006",
+      "tabs": {
+        "Tab_assets": {
+          "display_name": "Assets",
+          "click_status": "ok",
+          "file": "middlesex_probate_detail_5_tab_Tab_assets.html",
+          "html_bytes": 226146
+        },
+        "TAB_ORDER": {
+          "display_name": "Order",
+          "click_status": "ERR(tab anchor for \"Order\" not found)",
+          "file": "middlesex_probate_detail_5_tab_TAB_ORDER.html",
+          "html_bytes": 226146
+        },
+        "Tab_Image": {
+          "display_name": "Image",
+          "click_status": "ok",
+          "file": "middlesex_probate_detail_5_tab_Tab_Image.html",
+          "html_bytes": 226488
+        },
+        "Tab_Doc": {
+          "display_name": "Documents",
+          "click_status": "ERR(tab anchor for \"Documents\" not found)",
+          "file": "middlesex_probate_detail_5_tab_Tab_Doc.html",
+          "html_bytes": 226488
+        }
+      }
+    }
+  ]
+}

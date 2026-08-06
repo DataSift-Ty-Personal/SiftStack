@@ -884,7 +884,11 @@ def _build_row(notice: NoticeData, notes_override: str | None = None, list_name_
     elif notice.notice_type == "foreclosure":
         foreclosure_date = _format_date(notice.auction_date)
     elif notice.notice_type == "probate":
-        probate_open = _format_date(notice.date_added)
+        # Probate Open Date = court filing/docket date. Prefer the new
+        # date_filed field (set by scrapers that expose it — e.g. Middlesex
+        # surrogate). Fall back to date_added for legacy sources (TN photo
+        # import, older probates without a filing-date column).
+        probate_open = _format_date(notice.date_filed or notice.date_added)
 
     # Personal Representative only for probate notices
     personal_rep = ""

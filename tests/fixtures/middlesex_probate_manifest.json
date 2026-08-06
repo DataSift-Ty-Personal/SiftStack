@@ -1,0 +1,53 @@
+{
+  "captured_at": "2026-08-06T15:16:22.548520",
+  "county": "Middlesex",
+  "days_back": 14,
+  "grid_file": "middlesex_probate_grid.html",
+  "details": [
+    {
+      "index": 1,
+      "pk_id": "5406032",
+      "detail_url": "https://surrogatesearch.co.middlesex.nj.us/SurrogateSearch/WebPages/web_case_detail_middlesex.aspx?Q_PK_ID=5406032",
+      "grid_row_decedent": "Pakruda Christopher",
+      "from_day": "2026-07-26",
+      "file": "middlesex_probate_detail_1.html",
+      "html_bytes": 224723
+    },
+    {
+      "index": 2,
+      "pk_id": "5405976",
+      "detail_url": "https://surrogatesearch.co.middlesex.nj.us/SurrogateSearch/WebPages/web_case_detail_middlesex.aspx?Q_PK_ID=5405976",
+      "grid_row_decedent": "Russell Kathleen",
+      "from_day": "2026-07-26",
+      "file": "middlesex_probate_detail_2.html",
+      "html_bytes": 229724
+    },
+    {
+      "index": 3,
+      "pk_id": "5406077",
+      "detail_url": "https://surrogatesearch.co.middlesex.nj.us/SurrogateSearch/WebPages/web_case_detail_middlesex.aspx?Q_PK_ID=5406077",
+      "grid_row_decedent": "Stiso Frank",
+      "from_day": "2026-07-26",
+      "file": "middlesex_probate_detail_3.html",
+      "html_bytes": 226758
+    },
+    {
+      "index": 4,
+      "pk_id": "5406052",
+      "detail_url": "https://surrogatesearch.co.middlesex.nj.us/SurrogateSearch/WebPages/web_case_detail_middlesex.aspx?Q_PK_ID=5406052",
+      "grid_row_decedent": "Benkert Joan",
+      "from_day": "2026-07-25",
+      "file": "middlesex_probate_detail_4.html",
+      "html_bytes": 225238
+    },
+    {
+      "index": 5,
+      "pk_id": "5406006",
+      "detail_url": "https://surrogatesearch.co.middlesex.nj.us/SurrogateSearch/WebPages/web_case_detail_middlesex.aspx?Q_PK_ID=5406006",
+      "grid_row_decedent": "Booker Lucretia",
+      "from_day": "2026-07-25",
+      "file": "middlesex_probate_detail_5.html",
+      "html_bytes": 226063
+    }
+  ]
+}

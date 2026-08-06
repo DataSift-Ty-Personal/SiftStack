@@ -1,0 +1,29 @@
+{
+  "county": "Somerset",
+  "cases": [
+    {
+      "index": 1,
+      "row_idx": 0,
+      "decedent_grid_row": "VanCleef , Beverly",
+      "initial_file": "somerset_probate_detail_1.html",
+      "parties_file": "somerset_probate_detail_1_tab_parties.html",
+      "parties_click_status": "ERR(tab anchor for \"Parties\" not found)"
+    },
+    {
+      "index": 2,
+      "row_idx": 1,
+      "decedent_grid_row": "Fella, James",
+      "initial_file": "somerset_probate_detail_2.html",
+      "parties_file": "somerset_probate_detail_2_tab_parties.html",
+      "parties_click_status": "ERR(tab anchor for \"Parties\" not found)"
+    },
+    {
+      "index": 3,
+      "row_idx": 2,
+      "decedent_grid_row": "Tozzi, Jeffrey",
+      "initial_file": "somerset_probate_detail_3.html",
+      "parties_file": "somerset_probate_detail_3_tab_parties.html",
+      "parties_click_status": "ERR(tab anchor for \"Parties\" not found)"
+    }
+  ]
+}

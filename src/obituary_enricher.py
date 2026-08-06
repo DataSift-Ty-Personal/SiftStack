@@ -2992,8 +2992,8 @@ def enrich_obituary_data(
                 # probate record (verified in the 2026-05-10 dry run).
                 "signing_authority": True,
                 "street": notice.owner_street,
-                "city": notice.owner_city or "Knoxville",
-                "state": "TN",
+                "city": notice.owner_city or notice.city,
+                "state": notice.owner_state or notice.state,
                 "zip": notice.owner_zip,
             }]
             error_info = {
@@ -3336,7 +3336,7 @@ def enrich_obituary_data(
                 if dm is ranked_dms[0] and dm.get("source") != "estate_fallback":
                     dm["street"] = notice.address
                     dm["city"] = notice.city or "Knoxville"
-                    dm["state"] = "TN"
+                    dm["state"] = notice.state or "TN"
                     dm["zip"] = notice.zip
                     dm_addr_sources["property_fallback"] = (
                         dm_addr_sources.get("property_fallback", 0) + 1

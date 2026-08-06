@@ -316,12 +316,28 @@ def _parse_parties(html: str) -> list[dict]:
 
 
 def _pick_executor(parties: list[dict]) -> dict | None:
-    """Pick the primary executor/administrator. Prefer type=Executor with
-    status=Accept; fall back to Administrator, then any named fiduciary."""
+    """Pick the primary decision-maker fiduciary from the parties grid.
+
+    Priority order:
+      1. Executor with status=Accept        (named in will, formally accepted)
+      2. Administrator with status=Accept   (no will, court-appointed, accepted)
+      3. Applicant with status=Accept       (person who applied to open the
+                                             estate — in NJ Middlesex, "Applicant"
+                                             is the type used when there's no will
+                                             and the applicant becomes the
+                                             administrator upon acceptance)
+      4. Executor (any status)              (edge cases: pending, renounced)
+      5. Administrator (any status)
+      6. Applicant (any status)
+      7. Anything with "fiduciary" in the type
+    """
     priorities = [
-        lambda p: p["type"].lower() == "executor" and p["status"].lower() == "accept",
+        lambda p: p["type"].lower() == "executor"      and p["status"].lower() == "accept",
+        lambda p: p["type"].lower() == "administrator" and p["status"].lower() == "accept",
+        lambda p: p["type"].lower() == "applicant"     and p["status"].lower() == "accept",
         lambda p: p["type"].lower() == "executor",
         lambda p: p["type"].lower() == "administrator",
+        lambda p: p["type"].lower() == "applicant",
         lambda p: "fiduciary" in p["type"].lower(),
     ]
     for pred in priorities:
@@ -432,7 +448,11 @@ def _build_notice(grid_row: dict, detail_fields: dict, parties: list[dict],
         source_url = cfg.search_url
 
     notice = NoticeData(
-        date_added=filed_iso or datetime.now().strftime("%Y-%m-%d"),
+        # date_added = scrape timestamp (what the enrichment/dedup layer uses).
+        # date_filed = court's actual filing date, populated separately below
+        # so grief-tier math ("days since filing") reads from the docket date,
+        # not the scrape date.
+        date_added=datetime.now().strftime("%Y-%m-%d"),
         address=addr,
         city=city,
         state="NJ",
@@ -444,6 +464,7 @@ def _build_notice(grid_row: dict, detail_fields: dict, parties: list[dict],
         raw_text=raw_text,
         decedent_name=decedent_name,
         date_of_death=dod_iso,
+        date_filed=filed_iso,
     )
     # Deep-prospecting fields the downstream pipeline reads
     if executor_name:
@@ -934,12 +955,22 @@ async def run_middlesex_probate_scrape(
     # court-named executor as DM without overriding from an obit match. This
     # keeps data safe while still surfacing additional obit URLs / heir hints
     # for deeper prospecting.
+    #
+    # skip_dm_address=False: the Middlesex surrogate portal does NOT publish
+    # the executor's mailing address anywhere on the case detail page
+    # (verified against 5 saved fixtures — see tests/fixtures/). Every probate
+    # record therefore ships with mailing = property address by default,
+    # which classifies every record as S (occupant executor) and locks them
+    # out of the P (absentee) priority tier. Routing court-named executors
+    # through the address-lookup waterfall (NJ MOD-IV → people search →
+    # Tracerfy) is the only way to surface out-of-town executors and let
+    # Priority 1 leads emerge from this feed.
     opts = PipelineOptions(
         skip_filter_sold=False,
         skip_tax=True,
         skip_obituary=False,
         skip_ancestry=True,
-        skip_dm_address=True,           # executor address needs Tracerfy; leave off by default
+        skip_dm_address=False,
         skip_heir_verification=True,
         skip_parcel_lookup=True,
         source_label="Middlesex Surrogate Probate",

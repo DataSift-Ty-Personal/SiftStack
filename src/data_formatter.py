@@ -127,6 +127,12 @@ SIFT_COLUMNS = [
     # runner records. "verified"/"mismatch"/"unknown". Flag only, never drops.
     # Set by ownership_verifier.enrich_ownership during enrichment.
     "ownership_status",
+    # Court docket date — set by scrapers that expose a real filing date on
+    # the source page (Middlesex probate "Date Filed"). Distinct from
+    # date_added (scrape timestamp) so downstream can compute "days since
+    # filing" from the actual court date. Empty for sources without a
+    # filing-date field (sheriff sales, TN photo import).
+    "date_filed",
 ]
 
 
@@ -339,6 +345,7 @@ def write_csv(notices: list[NoticeData], filename: str | None = None) -> Path:
                 "priority_tier": notice.priority_tier,
                 "niche": notice.niche,
                 "ownership_status": notice.ownership_status,
+                "date_filed": _format_date_sift(notice.date_filed),
             }
             writer.writerow(row)
             written += 1
@@ -425,7 +432,7 @@ CSV_TO_FIELD = {
 _NOTICE_FIELDS = {f.name for f in NoticeData.__dataclass_fields__.values()}
 
 # Date columns that use Sift M/D/YYYY format and need conversion back to YYYY-MM-DD
-_DATE_FIELDS = {"date_added", "auction_date", "mls_last_sold_date"}
+_DATE_FIELDS = {"date_added", "auction_date", "mls_last_sold_date", "date_filed"}
 
 
 def _parse_sift_date(sift_date: str) -> str:

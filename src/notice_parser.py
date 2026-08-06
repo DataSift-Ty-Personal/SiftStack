@@ -111,6 +111,11 @@ class NoticeData:
     # Obituary-confirmed deceased owner
     owner_deceased: str = ""                # "yes" or "" — confirmed via obituary search
     date_of_death: str = ""                 # YYYY-MM-DD from obituary
+    # Court docket date — distinct from date_added (scrape timestamp). Set by
+    # scrapers that expose a real filing/case-open date on the source page
+    # (e.g. Middlesex probate "Date Filed"). Enables grief-tier math from the
+    # actual filing date rather than "days since we scraped it".
+    date_filed: str = ""                    # YYYY-MM-DD — court filing/docket date
     obituary_url: str = ""                  # URL of confirmed obituary
     age_at_death: str = ""                  # Integer age at death extracted from obit
     obituary_snippet: str = ""              # First ~500 chars of fetched obit text (for Notes)
