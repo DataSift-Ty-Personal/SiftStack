@@ -8,8 +8,11 @@ DataSift has no public REST API, so we automate the web UI:
 Requires: DATASIFT_EMAIL and DATASIFT_PASSWORD in .env or environment.
 """
 
+import csv
 import logging
 import os
+import re
+import time
 from pathlib import Path
 
 import config
@@ -703,6 +706,14 @@ async def upload_csv(
     # (id 7255), which is the only card carrying that label in the wizard. Same
     # rationale as above — the built-in probate_open_date is provider-supplied,
     # so our court-scraped estate dates live in the custom field.
+    # Only attempt columns that exist in this CSV — overlay/minimal CSVs omit
+    # most of them, and a mapping attempt on an absent column burns ~30s of
+    # drag retries before logging a false failure.
+    try:
+        with open(csv_path, encoding="utf-8-sig") as _fh:
+            _csv_cols = set(next(csv.reader(_fh), []))
+    except OSError:
+        _csv_cols = set()
     for col_name, target_name in [
         ("Tags", None),
         ("Lists", None),
@@ -710,6 +721,8 @@ async def upload_csv(
         ("Tax Auction Date", "Tax Sale Date"),
         ("Probate Open Date", None),
     ]:
+        if _csv_cols and col_name not in _csv_cols:
+            continue
         await _map_csv_column(col_name, target_name)
 
     await _screenshot(page, "step4_after_mapping")
@@ -1124,7 +1137,76 @@ async def _select_all_records(page: Page) -> bool:
         return False
 
 
-async def enrich_records(page: Page, list_name: str) -> dict:
+async def _count_list_records(page: Page) -> int | None:
+    """Read the current record count from the header CheckboxDropdown text
+    ("Select all (N)" / "Undo select all (N)") without changing the selection
+    outcome. Returns None if the count is unreadable."""
+    try:
+        try:
+            await page.wait_for_selector('text="OWNER"', timeout=8000)
+        except Exception:
+            pass
+        container = page.locator('[data-testid="CheckboxDropdown__DropdownContainer"]').first
+        await container.wait_for(state="visible", timeout=8000)
+        await container.click()
+        await page.wait_for_timeout(1000)
+        loc = page.locator('text=/(Undo select all|Select all) \\(/').first
+        await loc.wait_for(state="visible", timeout=4000)
+        txt = await loc.inner_text()
+        await page.keyboard.press("Escape")
+        await page.wait_for_timeout(300)
+        m = re.search(r"\((\d[\d,]*)\)", txt or "")
+        return int(m.group(1).replace(",", "")) if m else None
+    except Exception as e:
+        logger.debug("List count read failed: %s", e)
+        return None
+
+
+async def _wait_for_list_count(
+    page: Page,
+    list_name: str,
+    expected: int,
+    max_wait_s: int = 600,
+    poll_s: int = 45,
+) -> int | None:
+    """Poll a list's record count until it reaches `expected` or times out.
+
+    DataSift processes uploads asynchronously; selecting records for
+    enrichment before indexing finishes silently operates on a partial set
+    (2026-08-06 run: 313 uploaded, only 208 selected). Each poll does a full
+    page.goto so the SPA remounts with clean filter state before the list
+    filter is re-applied. Leaves the page filtered to the list. Returns the
+    last count seen (None if never readable)."""
+    deadline = time.time() + max_wait_s
+    last: int | None = None
+    while True:
+        await page.goto(DATASIFT_RECORDS_URL, wait_until="domcontentloaded")
+        await page.wait_for_timeout(5000)
+        await _dismiss_beamer_nps(page)
+        await _dismiss_popups(page)
+        await _filter_by_list(page, list_name)
+        await page.wait_for_timeout(2000)
+        cnt = await _count_list_records(page)
+        if cnt is not None:
+            last = cnt
+            if cnt >= expected:
+                logger.info("List '%s': %d/%d records indexed — proceeding",
+                            list_name, cnt, expected)
+                return cnt
+        if time.time() >= deadline:
+            logger.warning(
+                "List '%s': %s/%d records after %ds — proceeding with partial set",
+                list_name, last if last is not None else "?", expected, max_wait_s,
+            )
+            return last
+        logger.info("List '%s': %s/%d records — waiting %ds for upload processing...",
+                    list_name, last if last is not None else "?", expected, poll_s)
+        await page.wait_for_timeout(poll_s * 1000)
+
+
+async def enrich_records(
+    page: Page, list_name: str, expected_count: int | None = None
+) -> dict:
     """Enrich uploaded records with DataSift's SiftMap property data.
 
     UI Flow: Records → Filter by list → Select all → Manage → Enrich Data
@@ -1136,6 +1218,9 @@ async def enrich_records(page: Page, list_name: str) -> dict:
     Args:
         page: Logged-in Playwright page.
         list_name: Name of the list to filter and enrich.
+        expected_count: Records just uploaded to the list. When set, polls the
+            list count until the upload is fully indexed (or 10 min) before
+            selecting, so enrichment can't run on a partially-indexed list.
 
     Returns:
         Dict with {success, message}.
@@ -1144,15 +1229,20 @@ async def enrich_records(page: Page, list_name: str) -> dict:
     logger.info("Starting DataSift enrichment for list: %s", list_name)
 
     try:
-        # Navigate to Records
-        await _navigate_to_records(page)
+        if expected_count:
+            # Coverage-aware wait: navigate + filter + count until indexed.
+            # Leaves the page filtered to the list.
+            await _wait_for_list_count(page, list_name, expected_count)
+        else:
+            # Navigate to Records
+            await _navigate_to_records(page)
 
-        # Filter to the uploaded list
-        filtered = await _filter_by_list(page, list_name)
-        if not filtered:
-            result["message"] = "Could not filter to list for enrichment"
-            logger.warning(result["message"])
-            # Continue anyway — may enrich whatever is showing
+            # Filter to the uploaded list
+            filtered = await _filter_by_list(page, list_name)
+            if not filtered:
+                result["message"] = "Could not filter to list for enrichment"
+                logger.warning(result["message"])
+                # Continue anyway — may enrich whatever is showing
 
         # Select all records
         selected = await _select_all_records(page)
@@ -1507,9 +1597,19 @@ async def upload_to_datasift(
 
             if result.get("success"):
 
+                # How many records the upload should index — drives the
+                # coverage-aware wait before enrichment select-all.
+                try:
+                    with open(csv_path, encoding="utf-8-sig") as _fh:
+                        _expected = max(0, sum(1 for _ in csv.reader(_fh)) - 1)
+                except OSError:
+                    _expected = 0
+
                 # Enrich property data via SiftMap
                 if enrich:
-                    enrich_result = await enrich_records(page, list_name)
+                    enrich_result = await enrich_records(
+                        page, list_name, expected_count=_expected or None
+                    )
                     result["enrich_result"] = enrich_result
                     logger.info("Enrichment: %s", enrich_result.get("message", ""))
 
@@ -1619,8 +1719,16 @@ async def upload_datasift_split(
             if all_success and csv_infos:
                 first_list = csv_infos[0]["list_name"]
 
+                try:
+                    with open(csv_infos[0]["path"], encoding="utf-8-sig") as _fh:
+                        _expected = max(0, sum(1 for _ in csv.reader(_fh)) - 1)
+                except OSError:
+                    _expected = 0
+
                 if enrich:
-                    enrich_result = await enrich_records(page, first_list)
+                    enrich_result = await enrich_records(
+                        page, first_list, expected_count=_expected or None
+                    )
                     combined["enrich_result"] = enrich_result
                     logger.info("Enrichment: %s", enrich_result.get("message", ""))
 

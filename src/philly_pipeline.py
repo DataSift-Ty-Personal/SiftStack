@@ -354,10 +354,50 @@ _NICHE_LISTS: dict[str, str] = {
 
 
 # ── Cross-run upload ledger ─────────────────────────────────────────────────
-# Persistent set of keys for every record ever uploaded, so re-scraped records
-# don't re-upload and bump their DataSift date. CWD-relative like the phone and
-# tax-delinquent caches; the GHA workflow persists it via actions/cache.
+# Persistent record of every key the pipeline has seen/uploaded, so re-scraped
+# records don't re-upload and bump their DataSift date. CWD-relative like the
+# phone and tax-delinquent caches; the GHA workflow persists it via actions/cache.
+#
+# v2 (2026-08): value is a dict per key instead of a bare membership set, so the
+# Bid4Assets job can DIFF the standing auction inventory run-over-run instead of
+# blindly skipping re-lists:
+#   uploaded        bool — record was actually uploaded to DataSift
+#   sale_date       str  — last auction date seen (auction records only)
+#   address/zip     str  — situs address, kept so overlay upserts (postponement
+#                          date bumps, gone-rechecks) can target the record by
+#                          address after the NoticeData object is long gone
+#   recheck_tagged  bool — auction-gone/past-date recheck tag already sent once
+# v1 files (flat JSON list of uploaded keys) are converted on load.
 _UPLOAD_LEDGER_PATH = Path("data/cache/uploaded_ledger.json")
+
+# ── Bid4Assets auction overlay constants ────────────────────────────────────
+# Sale-date admission bands adopted 2026-07-30: <14 days to sale is too late to
+# work a deal, 14-90 days is the workable window, >90 days waits (the record
+# re-enters banding each run until it rolls into the window). Past-date or
+# vanished listings on records we DID upload trigger a tag-only disposition
+# recheck instead of silent ledger skips.
+_AUCTION_NOTICE_TYPES = {"SHERIFF_MORTGAGE_FORECLOSURE", "TAX_SALE"}
+_AUCTION_MIN_DAYS = 14
+_AUCTION_MAX_DAYS = 90
+
+# Which scrape source feeds each auction notice_type — gone-detection only runs
+# for a notice_type when its source was scraped THIS run and returned rows
+# (otherwise a source outage would mark the whole inventory as vanished).
+_AUCTION_SOURCE_FOR_TYPE = {
+    "SHERIFF_MORTGAGE_FORECLOSURE": "bid4assets_mortgage",
+    "TAX_SALE": "bid4assets_tax",
+}
+
+
+def _days_to_sale(auction_date: str) -> int | None:
+    """Days from today to auction_date (YYYY-MM-DD); None if unparseable."""
+    if not auction_date:
+        return None
+    try:
+        dt = datetime.datetime.strptime(auction_date, "%Y-%m-%d").date()
+    except ValueError:
+        return None
+    return (dt - datetime.date.today()).days
 
 
 def _ledger_key(n: NoticeData) -> str:
@@ -384,16 +424,20 @@ def _ledger_key(n: NoticeData) -> str:
     return f"addr:{addr}:{ntype}"
 
 
-def _load_upload_ledger() -> set[str]:
+def _load_upload_ledger() -> dict[str, dict]:
     try:
-        return set(json.loads(_UPLOAD_LEDGER_PATH.read_text()))
+        data = json.loads(_UPLOAD_LEDGER_PATH.read_text())
     except (OSError, ValueError):
-        return set()
+        return {}
+    if isinstance(data, list):
+        # v1 → v2: every v1 key was an uploaded record
+        return {k: {"uploaded": True} for k in data}
+    return data if isinstance(data, dict) else {}
 
 
-def _save_upload_ledger(keys: set[str]) -> None:
+def _save_upload_ledger(ledger: dict[str, dict]) -> None:
     _UPLOAD_LEDGER_PATH.parent.mkdir(parents=True, exist_ok=True)
-    _UPLOAD_LEDGER_PATH.write_text(json.dumps(sorted(keys)))
+    _UPLOAD_LEDGER_PATH.write_text(json.dumps(ledger, sort_keys=True))
 
 
 def _write_niche_list_csvs(notices: list[NoticeData]) -> list[dict]:
@@ -423,6 +467,211 @@ def _write_niche_list_csvs(notices: list[NoticeData]) -> list[dict]:
         result.append({"path": path, "label": list_name, "list_name": list_name, "count": len(subset)})
         logger.info("Niche CSV '%s': %d records → %s", list_name, len(subset), path)
     return result
+
+
+# ── Bid4Assets auction overlay CSVs ─────────────────────────────────────────
+# Minimal Add-Data upserts targeted at the existing niche lists. Deliberately
+# tiny column sets: address (the upsert key), Tags, Lists, and — for
+# postponements only — the sale-date column, so nothing else on the record
+# (notes, phones, statuses) can be disturbed by the merge.
+
+_OVERLAY_DATE_COL = {
+    "SHERIFF_MORTGAGE_FORECLOSURE": "Foreclosure Date",
+    "TAX_SALE": "Tax Auction Date",
+}
+
+
+def _fmt_mdy(iso_date: str) -> str:
+    """YYYY-MM-DD → M/D/YYYY (DataSift date column format)."""
+    try:
+        dt = datetime.datetime.strptime(iso_date, "%Y-%m-%d")
+        return f"{dt.month}/{dt.day}/{dt.year}"
+    except (ValueError, TypeError):
+        return iso_date or ""
+
+
+def _write_auction_overlay_csvs(
+    postponed: list[dict], recheck: list[dict]
+) -> list[dict]:
+    """Write per-notice-type overlay CSVs for postponement date bumps and
+    gone/past-date rechecks.
+
+    Row dicts carry: ntype, address, city, state, zip, sale_date (postponed
+    only), tags (list). Returns [{path, label, list_name, count, kind, keys}]
+    where keys is the list of ledger keys the rows came from (committed only
+    after that CSV's upload succeeds).
+    """
+    out: list[dict] = []
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    for kind, rows in (("postponed", postponed), ("recheck", recheck)):
+        by_type: dict[str, list[dict]] = {}
+        for r in rows:
+            by_type.setdefault(r["ntype"], []).append(r)
+        for ntype, subset in by_type.items():
+            list_name = _NICHE_LISTS.get(ntype)
+            if not list_name:
+                continue
+            date_col = _OVERLAY_DATE_COL.get(ntype)
+            fieldnames = [
+                "Property Street Address", "Property City", "Property State",
+                "Property ZIP Code", "Tags", "Lists",
+            ]
+            if kind == "postponed" and date_col:
+                fieldnames.append(date_col)
+            safe = list_name.lower().replace(" ", "_")
+            path = Path("output") / f"auction_overlay_{kind}_{safe}_{len(subset)}recs_{timestamp}.csv"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with open(path, "w", newline="", encoding="utf-8") as fh:
+                w = csv.DictWriter(fh, fieldnames=fieldnames)
+                w.writeheader()
+                for r in subset:
+                    row = {
+                        "Property Street Address": r["address"],
+                        "Property City": r.get("city") or "Philadelphia",
+                        "Property State": r.get("state") or "PA",
+                        "Property ZIP Code": r.get("zip", ""),
+                        "Tags": ",".join(r["tags"]),
+                        "Lists": list_name,
+                    }
+                    if kind == "postponed" and date_col:
+                        row[date_col] = _fmt_mdy(r.get("sale_date", ""))
+                    w.writerow(row)
+            out.append({
+                "path": path,
+                "label": f"{kind} → {list_name}",
+                "list_name": list_name,
+                "count": len(subset),
+                "kind": kind,
+                "keys": [r["key"] for r in subset],
+                "sale_by_key": {r["key"]: r.get("sale_date", "") for r in subset},
+            })
+            logger.info("Auction overlay CSV (%s, %s): %d rows → %s",
+                        kind, list_name, len(subset), path)
+    return out
+
+
+def _commit_auction_seen_refresh(
+    seen_pending: dict[str, dict],
+    overlay_refresh: list[tuple[str, "NoticeData"]],
+) -> None:
+    """Commit seen-only entries and refresh uploaded entries' address/zip
+    (post-Smarty) + first-sight sale_date backfill for v1-era entries.
+
+    sale_date on entries that already have one is deliberately NOT touched
+    here — postponement bumps commit only after their overlay upload lands,
+    so a failed overlay retries next run instead of being swallowed.
+    """
+    if not seen_pending and not overlay_refresh:
+        return
+    ledger = _load_upload_ledger()
+    for k, ent in seen_pending.items():
+        ledger[k] = ent
+    for k, n in overlay_refresh:
+        ent = ledger.setdefault(k, {"uploaded": True})
+        ent["address"] = n.address
+        ent["city"]    = n.city
+        ent["state"]   = n.state
+        ent["zip"]     = n.zip
+        if not ent.get("sale_date") and n.auction_date:
+            ent["sale_date"] = n.auction_date
+    _save_upload_ledger(ledger)
+    logger.info("Upload ledger: %d seen-only entries, %d refreshed (total %d)",
+                len(seen_pending), len(overlay_refresh), len(ledger))
+
+
+async def _run_auction_overlays(
+    overlay_postponed_notices: list[dict],
+    overlay_recheck_notices: list[dict],
+    overlay_recheck_rows: list[dict],
+) -> list[dict]:
+    """Upload the auction overlay CSVs as Add-Data upserts into the existing
+    niche lists (one browser session per CSV, mirroring Step 10b). On each
+    successful upload, commits that CSV's ledger mutations: postponed rows
+    bump sale_date; recheck rows set recheck_tagged so they fire only once.
+
+    Overlays never create lists — existing_list=True only. Target addresses
+    prefer the ledger-stored (uploaded) form over the current scrape's.
+    """
+    ledger = _load_upload_ledger()
+
+    def _row(it: dict, with_sale: bool) -> dict:
+        n = it["notice"]
+        ent = ledger.get(it["key"], {})
+        r = {
+            "key": it["key"], "ntype": it["ntype"],
+            "address": ent.get("address") or n.address,
+            "city":    ent.get("city")    or n.city,
+            "state":   ent.get("state")   or n.state,
+            "zip":     ent.get("zip")     or n.zip,
+            "tags": it["tags"],
+        }
+        if with_sale:
+            r["sale_date"] = it["sale_date"]
+        return r
+
+    postponed_rows = [_row(it, True) for it in overlay_postponed_notices]
+    recheck_rows   = [_row(it, False) for it in overlay_recheck_notices]
+    recheck_rows.extend(overlay_recheck_rows)   # gone rows are already row-shaped
+
+    if not postponed_rows and not recheck_rows:
+        return []
+
+    csv_infos = _write_auction_overlay_csvs(postponed_rows, recheck_rows)
+    if not csv_infos:
+        return []
+
+    from playwright.async_api import async_playwright
+    from datasift_core import login as _ds_login
+    from datasift_uploader import upload_csv as _upload_csv
+
+    _UA = (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/120.0.0.0 Safari/537.36"
+    )
+
+    results: list[dict] = []
+    for info in csv_infos:
+        try:
+            async with async_playwright() as _pw:
+                _browser = await _pw.chromium.launch(headless=True)
+                _ctx = await _browser.new_context(
+                    viewport={"width": 1280, "height": 720}, user_agent=_UA,
+                )
+                _page = await _ctx.new_page()
+                _ok = await _ds_login(_page, config.DATASIFT_EMAIL, config.DATASIFT_PASSWORD)
+                if _ok:
+                    _r = await _upload_csv(
+                        _page, info["path"],
+                        list_name=info["list_name"],
+                        existing_list=True,
+                    )
+                else:
+                    _r = {"success": False, "message": "DataSift login failed"}
+                await _browser.close()
+        except Exception as _exc:
+            _r = {"success": False, "message": str(_exc)}
+            logger.error("Auction overlay upload '%s' error: %s", info["label"], _exc)
+
+        if _r.get("success"):
+            led = _load_upload_ledger()
+            for key in info["keys"]:
+                ent = led.setdefault(key, {"uploaded": True})
+                if info["kind"] == "postponed":
+                    new_sale = info["sale_by_key"].get(key, "")
+                    if new_sale:
+                        ent["sale_date"] = new_sale
+                else:
+                    ent["recheck_tagged"] = True
+            _save_upload_ledger(led)
+
+        _status = "OK" if _r.get("success") else f"FAILED: {_r.get('message', '')}"
+        logger.info("Auction overlay '%s' (%d rows): %s",
+                    info["label"], info["count"], _status)
+        results.append({**{k: v for k, v in info.items() if k != "sale_by_key"},
+                        "success": _r.get("success", False),
+                        "message": _r.get("message", "")})
+    return results
 
 
 # ── DataSift CSV reader (for --resume-from) ─────────────────────────────────
@@ -589,10 +838,29 @@ async def run_pipeline(
         "csv_written":          0,
         "total_cost":           0.0,
         "elapsed_s":            0.0,
+        "auction_banded_out":   {},
+        "auction_postponed":    0,
+        "auction_past_recheck": 0,
+        "auction_gone":         0,
     }
 
     # ── 1–3. Scrape / Cap / Dedup  (or resume from existing CSV) ────────────
     records_by_source: dict[str, list[NoticeData]] = {}
+
+    # Bid4Assets auction-overlay state, populated by Step 3a on real runs:
+    #   fresh_pairs               (ledger_key, notice) for every newly-admitted record
+    #   ledger_seen_pending       seen-but-not-admitted entries (banded out / nameless)
+    #   overlay_postponed_notices sale-date changes on already-uploaded records
+    #   overlay_recheck_notices   past-date-but-still-listed uploaded records
+    #   overlay_recheck_rows      uploaded records GONE from the standing inventory
+    #   overlay_refresh           (key, notice) for uploaded records seen this run —
+    #                             their ledger address/zip is refreshed post-Smarty
+    fresh_pairs: list[tuple[str, NoticeData]] = []
+    ledger_seen_pending: dict[str, dict] = {}
+    overlay_postponed_notices: list[dict] = []
+    overlay_recheck_notices: list[dict] = []
+    overlay_recheck_rows: list[dict] = []
+    overlay_refresh: list[tuple[str, NoticeData]] = []
 
     if resume_from:
         # --resume-from: skip scrape, cap, and dedup — read records directly from
@@ -652,20 +920,134 @@ async def run_pipeline(
         # genuinely-new records (Trestle still scores that bucket — untouched).
         # Skipped for --resume-from (records already came from a prior upload)
         # and dry runs (limit set / upload disabled), which must not consume it.
-        ledger_keys_new: list[str] = []
         if upload_datasift and limit is None:
+            from datasift_formatter import _get_contact_info
+            from philadelphia_scrapers import _set_meta
+
             ledger = _load_upload_ledger()
             fresh: list[NoticeData] = []
+            skipped = 0
+
+            # Auction-record identity of everything in TODAY'S scrape, for
+            # gone-detection below.
+            present_auction_keys = {
+                _ledger_key(n) for n in notices
+                if n.notice_type in _AUCTION_NOTICE_TYPES
+            }
+
             for n in notices:
                 k = _ledger_key(n)
-                if k in ledger:
+                ent = ledger.get(k)
+
+                if n.notice_type not in _AUCTION_NOTICE_TYPES:
+                    # Non-auction sources: original behavior — one upload ever.
+                    if ent is not None:
+                        skipped += 1
+                        continue
+                    fresh.append(n)
+                    fresh_pairs.append((k, n))
                     continue
-                fresh.append(n)
-                ledger_keys_new.append(k)
-            stats["already_uploaded_skipped"] = len(notices) - len(fresh)
+
+                # ── Auction record (Bid4Assets) ─────────────────────────────
+                new_sale = (n.auction_date or "").strip()
+                days = _days_to_sale(new_sale)
+
+                if ent is not None and ent.get("uploaded"):
+                    # Already in DataSift: never re-upload the full record.
+                    # Instead diff the sale date and refresh the ledger entry.
+                    skipped += 1
+                    old_sale = (ent.get("sale_date") or "").strip()
+                    if new_sale and old_sale and new_sale != old_sale:
+                        tag = ("auction-postponed" if new_sale > old_sale
+                               else "auction-date-changed")
+                        overlay_postponed_notices.append(
+                            {"key": k, "notice": n, "ntype": n.notice_type,
+                             "sale_date": new_sale, "tags": [tag]}
+                        )
+                    elif days is not None and days < 0 and not ent.get("recheck_tagged"):
+                        # Past sale date but still listed — likely sold at
+                        # auction; flag for disposition recheck (tag-only).
+                        overlay_recheck_notices.append(
+                            {"key": k, "notice": n, "ntype": n.notice_type,
+                             "tags": ["auction-gone-recheck"]}
+                        )
+                    # Entry refresh (address backfill happens post-Smarty; the
+                    # sale_date is only bumped after the overlay upload lands).
+                    overlay_refresh.append((k, n))
+                    continue
+
+                # New (or previously seen-but-not-admitted) auction record:
+                # sale-date admission bands + nameless gate. Stacked records
+                # (auction merged with another distress signal at dedup) skip
+                # the bands — multiple signals justify admission on their own.
+                all_types = set((n.all_notice_types or n.notice_type or "").split(";"))
+                if not all_types <= _AUCTION_NOTICE_TYPES:
+                    band = "window"   # stacked: admit regardless of sale timing
+                elif days is None:
+                    band = "no_date"
+                elif days < _AUCTION_MIN_DAYS:
+                    band = "too_late"
+                elif days > _AUCTION_MAX_DAYS:
+                    band = "not_yet"
+                else:
+                    band = "window"
+                    c = _get_contact_info(n)
+                    if not (c["first"] or c["last"] or c["entity_name"]):
+                        # Nameless even after OPA — dropped per 2026-08-06
+                        # decision. Stays seen-only; re-gated every run in
+                        # case a later scrape/OPA row names it.
+                        band = "nameless"
+
+                if band == "window":
+                    # auction-window marks records inside the 14-90-day band
+                    # (queue-prep ranks them top, assigned to the closer);
+                    # stacked records admitted outside the band don't get it.
+                    if days is not None and _AUCTION_MIN_DAYS <= days <= _AUCTION_MAX_DAYS:
+                        _set_meta(n, extra_tags=["auction-window"])
+                    fresh.append(n)
+                    fresh_pairs.append((k, n))
+                else:
+                    stats["auction_banded_out"][band] = (
+                        stats["auction_banded_out"].get(band, 0) + 1
+                    )
+                    ledger_seen_pending[k] = {
+                        "uploaded": False, "sale_date": new_sale,
+                    }
+                    skipped += 1
+
+            # Gone-detection: uploaded auction records that vanished from the
+            # standing inventory (sold / withdrawn / cured). Scoped per
+            # notice_type to sources that actually scraped rows this run, so a
+            # source outage can't mark the whole book as vanished. Fires once
+            # per record (recheck_tagged) and only for entries that carry the
+            # uploaded address to target.
+            for ntype, sid in _AUCTION_SOURCE_FOR_TYPE.items():
+                if sid not in sources or stats["scraped_by_source"].get(sid, 0) == 0:
+                    continue
+                suffix = f":{ntype}"
+                for k, ent in ledger.items():
+                    if (not k.endswith(suffix) or not ent.get("uploaded")
+                            or ent.get("recheck_tagged") or not ent.get("address")
+                            or k in present_auction_keys):
+                        continue
+                    overlay_recheck_rows.append({
+                        "key": k, "ntype": ntype,
+                        "address": ent["address"], "zip": ent.get("zip", ""),
+                        "city": ent.get("city", ""), "state": ent.get("state", ""),
+                        "tags": ["auction-gone-recheck"],
+                    })
+
+            stats["already_uploaded_skipped"] = skipped
+            stats["auction_postponed"] = len(overlay_postponed_notices)
+            stats["auction_gone"] = len(overlay_recheck_rows)
+            stats["auction_past_recheck"] = len(overlay_recheck_notices)
             logger.info(
-                "── Step 3a: Upload ledger — %d new, %d already uploaded (skipped) ──",
-                len(fresh), stats["already_uploaded_skipped"],
+                "── Step 3a: Upload ledger — %d new, %d skipped "
+                "(auction bands: %s | postponed: %d | past-date recheck: %d | gone: %d) ──",
+                len(fresh), skipped,
+                stats["auction_banded_out"] or "none",
+                len(overlay_postponed_notices), len(overlay_recheck_notices),
+                len(overlay_recheck_rows),
             )
             notices = fresh
 
@@ -696,7 +1078,12 @@ async def run_pipeline(
     logger.info("── Step 4: Smarty ──")
     if _SMARTY_AVAILABLE and config.SMARTY_AUTH_ID and config.SMARTY_AUTH_TOKEN:
         smarty_cache = _load_smarty_cache()
-        api_needed, cache_hits = _apply_smarty_cache(notices, smarty_cache)
+        # Overlay-refresh notices (already-uploaded auction records seen this
+        # run) ride the same standardization so their ledger address matches
+        # the form DataSift holds — near-total cache hits since their parcels
+        # were standardized when first uploaded.
+        smarty_input = notices + [n for _, n in overlay_refresh]
+        api_needed, cache_hits = _apply_smarty_cache(smarty_input, smarty_cache)
         stats["smarty_cache_hits"] = cache_hits
 
         if api_needed:
@@ -717,6 +1104,12 @@ async def run_pipeline(
         reason = "SDK unavailable" if not _SMARTY_AVAILABLE else "credentials not set"
         logger.info("Smarty skipped (%s)", reason)
 
+    # Auction ledger bookkeeping that does NOT depend on today's upload:
+    # seen-only entries (banded-out/nameless records) and address/sale-date
+    # refresh of already-uploaded entries (post-Smarty, so overlay upserts
+    # target the exact address form DataSift holds). No-op on dry/micro runs.
+    _commit_auction_seen_refresh(ledger_seen_pending, overlay_refresh)
+
     # ── 5. RDI commercial filter ─────────────────────────────────────────────
     logger.info("── Step 5: RDI commercial filter ──")
     notices, stats["rdi_removed"] = _filter_rdi_commercial(notices)
@@ -731,6 +1124,16 @@ async def run_pipeline(
 
     if not notices:
         logger.warning("No records remaining after filters — aborting pipeline")
+        # Auction overlays are independent of new admissions — a run with zero
+        # fresh records can still carry postponement date bumps and gone
+        # rechecks for the standing inventory, so flush them before returning.
+        if upload_datasift and (overlay_postponed_notices
+                                or overlay_recheck_notices or overlay_recheck_rows):
+            logger.info("── Auction overlays (no new records this run) ──")
+            stats["auction_overlay_results"] = await _run_auction_overlays(
+                overlay_postponed_notices, overlay_recheck_notices,
+                overlay_recheck_rows,
+            )
         stats["elapsed_s"] = time.time() - t_start
         return {
             "csv_path": None,
@@ -917,13 +1320,26 @@ async def run_pipeline(
 
         # Commit today's new records to the ledger ONLY if the upload landed —
         # on failure they stay off the ledger so the next run retries them
-        # instead of silently dropping them.
-        if ledger_keys_new and upload_result and upload_result.get("success"):
+        # instead of silently dropping them. Auction records that survived to
+        # upload store their post-Smarty address + sale date so later overlay
+        # upserts (postponements, gone-rechecks) can target them; records
+        # admitted at 3a but dropped by RDI/validation are ledgered WITHOUT an
+        # address, which excludes them from every overlay stream (they were
+        # never uploaded — an upsert would create a stray record).
+        if fresh_pairs and upload_result and upload_result.get("success"):
             ledger = _load_upload_ledger()
-            ledger.update(ledger_keys_new)
+            final_ids = {id(n) for n in notices}
+            for k, n in fresh_pairs:
+                ent: dict = {"uploaded": True}
+                if n.notice_type in _AUCTION_NOTICE_TYPES and id(n) in final_ids:
+                    ent.update({
+                        "sale_date": n.auction_date, "address": n.address,
+                        "city": n.city, "state": n.state, "zip": n.zip,
+                    })
+                ledger[k] = ent
             _save_upload_ledger(ledger)
             logger.info("Upload ledger: recorded %d new keys (total %d)",
-                        len(ledger_keys_new), len(ledger))
+                        len(fresh_pairs), len(ledger))
 
     # ── 10b. Niche list uploads (Option B-1) ────────────────────────────────
     # Each niche list upload runs in its OWN browser session to avoid shared
@@ -986,6 +1402,20 @@ async def run_pipeline(
                     "success": _r.get("success", False),
                     "message": _r.get("message", ""),
                 })
+
+    # ── 10c. Auction overlay uploads (Bid4Assets diff engine) ───────────────
+    # Postponement date bumps + gone/past-date rechecks for the standing
+    # auction inventory. Independent of today's fresh upload result — a failed
+    # Step 10 must not swallow a postponement signal.
+    overlay_results: list[dict] = []
+    if upload_datasift and (overlay_postponed_notices
+                            or overlay_recheck_notices or overlay_recheck_rows):
+        logger.info("── Step 10c: Auction overlay uploads ──")
+        overlay_results = await _run_auction_overlays(
+            overlay_postponed_notices, overlay_recheck_notices,
+            overlay_recheck_rows,
+        )
+        stats["auction_overlay_results"] = overlay_results
 
     # ── 11. Phone scoring (wait for skip trace → Trestle → upload tags) ────────
     # Runs only when: upload happened AND phone_scoring=True AND not micro-run.
@@ -1106,6 +1536,21 @@ def _build_slack_summary(
         f"already-sent −{stats.get('already_uploaded_skipped', 0)}  "
         f"→ {stats['csv_written']} records"
     )
+
+    # Auction overlay (Bid4Assets diff engine)
+    banded = stats.get("auction_banded_out") or {}
+    if banded or stats.get("auction_postponed") or stats.get("auction_gone") \
+            or stats.get("auction_past_recheck"):
+        band_str = "  ".join(f"{k}={v}" for k, v in sorted(banded.items())) or "none"
+        ov = stats.get("auction_overlay_results") or []
+        ov_ok = sum(1 for r in ov if r.get("success"))
+        lines.append(
+            f"Auction: banded-out [{band_str}]  "
+            f"postponed {stats.get('auction_postponed', 0)}  "
+            f"past-recheck {stats.get('auction_past_recheck', 0)}  "
+            f"gone {stats.get('auction_gone', 0)}"
+            + (f"  (overlays {ov_ok}/{len(ov)} ✓)" if ov else "")
+        )
 
     # Distress tier distribution
     tier_dist = stats.get("tier_distribution", {})
