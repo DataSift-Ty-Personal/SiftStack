@@ -27,6 +27,14 @@ logger = logging.getLogger(__name__)
 
 DATASIFT_UPLOAD_URL = "https://app.reisift.io/records/properties"
 
+# Fallback list for callers that pass no list_name. The Add-Data wizard REQUIRES
+# a list, so uploads cannot be list-free — but this used to be
+# "SiftStack <today>", which minted a brand new list on every run and buried the
+# real niche lists (Foreclosure, Probate, ...) in dated clutter. One stable
+# catch-all instead; the per-run cohort now rides a `siftstack_YYYY-MM-DD` tag
+# (see datasift_formatter._build_tags), which is what phone scoring filters on.
+DEFAULT_UPLOAD_LIST = "SiftStack Uploads"
+
 
 async def _click_next_step(page: Page, timeout: int = 20000) -> bool:
     """Click the 'Next Step' button that appears in the upload wizard.
@@ -349,8 +357,7 @@ async def upload_csv(
             list_input = page.locator('input[placeholder*="Enter new list name"], input[placeholder*="list name"]')
             if await list_input.count() > 0:
                 if list_name is None:
-                    from datetime import datetime as _dt
-                    list_name = f"SiftStack {_dt.now().strftime('%Y-%m-%d')}"
+                    list_name = DEFAULT_UPLOAD_LIST
                 await list_input.first.fill(list_name)
                 logger.info("Set list name: %s", list_name)
                 await page.wait_for_timeout(500)
@@ -890,6 +897,151 @@ async def _filter_by_list(page: Page, list_name: str) -> bool:
         return False
 
 
+async def _apply_ready(page: Page) -> bool:
+    """True when the filter panel's 'Apply Filters' control is live.
+
+    DataSift keeps it at pointer-events:none until the filter block actually has
+    a value selected, so this doubles as "did my selection register?". Without
+    the check, a picker click that looks fine but never took leaves the panel
+    unfiltered — and the caller exports the whole account.
+    """
+    try:
+        return await page.evaluate("""() => {
+            const els = [...document.querySelectorAll('div,span,button,a')]
+                .filter(e => e.textContent.trim() === 'Apply Filters');
+            if (!els.length) return false;
+            const e = els[els.length - 1];
+            if (e.disabled === true || e.getAttribute('aria-disabled') === 'true') return false;
+            return getComputedStyle(e).pointerEvents !== 'none';
+        }""")
+    except Exception:
+        return False
+
+
+async def _filter_by_tag(page: Page, tag_name: str) -> bool:
+    """Filter records page by TAG. Returns True only if the filter really applied.
+
+    Unlike _filter_by_list, every step here fails loudly. A filter that silently
+    does nothing is worse than no filter at all: callers like
+    export_phone_enrichment go on to export EVERY record in the account, which
+    means Trestle-scoring the whole database instead of one run's cohort.
+
+    Panel flow (verified 2026-08-08): "Filter Records" -> type "Tags" in the
+    filter-block search -> "Any Tags (OR)" -> "Search for tags..." -> pick the
+    tag -> Apply Filters. Apply stays disabled until a tag is actually selected.
+    """
+    try:
+        await _dismiss_beamer_nps(page)
+        await _dismiss_popups(page)
+
+        filter_link = page.locator('#Records__Filters_Trigger')
+        if await filter_link.count() == 0:
+            filter_link = page.locator('a:has-text("Filter Records")')
+        if await filter_link.count() == 0:
+            logger.error("Tag filter: no 'Filter Records' trigger")
+            return False
+        await filter_link.first.click()
+        await page.wait_for_timeout(2000)
+
+        await _dismiss_beamer_nps(page)
+        await _dismiss_popups(page)
+        await _screenshot(page, "tagfilter_opened")
+
+        filter_search = page.locator('#RecordsFilters__Filter_Blocks__Search')
+        if await filter_search.count() == 0:
+            filter_search = page.locator('input[placeholder*="filter block"]')
+        if await filter_search.count() == 0:
+            logger.error("Tag filter: no filter-block search input")
+            return False
+        await filter_search.first.click()
+        await filter_search.first.fill("Tags")
+        await page.wait_for_timeout(1500)
+
+        # "Any Tags (OR)" — one tag, so OR and AND behave the same; OR is safer
+        # if a caller ever passes more than one.
+        for label in ("Any Tags (OR)", "All Tags (AND)"):
+            block = page.locator(f'text="{label}"')
+            if await block.count() > 0:
+                await block.first.click()
+                await page.wait_for_timeout(2000)
+                logger.debug("Tag filter: added '%s' block", label)
+                break
+        else:
+            logger.error("Tag filter: no tag filter block offered")
+            await _screenshot(page, "tagfilter_no_block")
+            return False
+
+        await _dismiss_popups(page)
+        tag_search = page.locator('input[placeholder*="Search for tags"]')
+        if await tag_search.count() == 0:
+            logger.error("Tag filter: no 'Search for tags...' input")
+            await _screenshot(page, "tagfilter_no_picker")
+            return False
+        # fill() focuses without a pointer click, which the Aside backdrop eats.
+        await tag_search.first.fill(tag_name)
+        await page.wait_for_timeout(2000)
+        await _screenshot(page, "tagfilter_searched")
+
+        # Find the exact match in the suggestions dropdown. A tag that does not
+        # exist produces no option — that must abort, not fall through to
+        # "all records". Note el.click() does NOT register with this styled
+        # component; only a real mouse click at the option's centre does.
+        box = await page.evaluate("""(tag) => {
+            const els = [...document.querySelectorAll('div,span,li,a,label')]
+                .filter(e => {
+                    const r = e.getBoundingClientRect();
+                    return r.width > 0 && r.height > 0 && r.x > 900
+                           && e.children.length === 0
+                           && e.textContent.trim() === tag;
+                });
+            if (!els.length) return null;
+            const r = els[els.length - 1].getBoundingClientRect();
+            return {x: r.x + r.width / 2, y: r.y + r.height / 2};
+        }""", tag_name)
+        if not box:
+            logger.error("Tag filter: tag %r not found in picker — aborting", tag_name)
+            await _screenshot(page, "tagfilter_tag_not_found")
+            return False
+        await page.mouse.click(box["x"], box["y"])
+        await page.wait_for_timeout(1500)
+        await _screenshot(page, "tagfilter_selected")
+
+        # Post-condition: "Apply Filters" is pointer-events:none until a tag is
+        # really selected. This is the check that makes a silent no-op fail loudly.
+        if not await _apply_ready(page):
+            logger.error("Tag filter: %r did not register (Apply still inert) — aborting",
+                         tag_name)
+            await _screenshot(page, "tagfilter_not_registered")
+            return False
+
+        # The Aside backdrop re-arms itself when the panel re-renders, so
+        # re-neutralize it here or the Apply click is swallowed
+        # ("asideOverlay ... intercepts pointer events").
+        await _dismiss_popups(page)
+
+        apply_box = await page.evaluate("""() => {
+            const els = [...document.querySelectorAll('div,span,button,a')]
+                .filter(e => e.textContent.trim() === 'Apply Filters');
+            if (!els.length) return null;
+            const r = els[els.length - 1].getBoundingClientRect();
+            return {x: r.x + r.width / 2, y: r.y + r.height / 2};
+        }""")
+        if not apply_box:
+            logger.error("Tag filter: no 'Apply Filters' control")
+            await _screenshot(page, "tagfilter_no_apply")
+            return False
+        await page.mouse.click(apply_box["x"], apply_box["y"])
+        await page.wait_for_timeout(3000)
+
+        await _screenshot(page, "tagfilter_applied")
+        logger.info("Applied tag filter: %s", tag_name)
+        return True
+    except Exception as e:
+        logger.error("Filter by tag failed: %s", e)
+        await _screenshot(page, "tagfilter_failed")
+        return False
+
+
 async def _select_all_records(page: Page) -> bool:
     """Select all records on the current page. Returns True if selected."""
     try:
@@ -1290,6 +1442,8 @@ async def upload_to_datasift(
     headless: bool = True,
     enrich: bool = True,
     skip_trace: bool = True,
+    list_name: str | None = None,
+    existing_list: bool = False,
 ) -> dict:
     """Full DataSift workflow: launch browser → login → upload CSV → enrich → skip trace.
 
@@ -1300,6 +1454,8 @@ async def upload_to_datasift(
         headless: Run browser in headless mode.
         enrich: Run "Enrich Property Information" after upload (default True).
         skip_trace: Run "Skip Trace" after upload (default True, uses unlimited plan).
+        list_name: Target list. Defaults to DEFAULT_UPLOAD_LIST.
+        existing_list: Add to the existing list of that name instead of creating it.
 
     Returns:
         Dict with upload results including enrich_result and skip_trace_result.
@@ -1341,15 +1497,15 @@ async def upload_to_datasift(
             # Upload CSV — retry once on the same page if the first attempt fails.
             # DataSift's SPA needs one full wizard cycle to initialize; the file
             # input at step 3 only renders reliably after the page has been warm.
-            result = await upload_csv(page, csv_path)
+            list_name = list_name or DEFAULT_UPLOAD_LIST
+            result = await upload_csv(page, csv_path, list_name=list_name,
+                                      existing_list=existing_list)
             if not result.get("success"):
                 logger.info("upload_csv attempt 1 failed — retrying on same page...")
-                result = await upload_csv(page, csv_path)
+                result = await upload_csv(page, csv_path, list_name=list_name,
+                                          existing_list=existing_list)
 
             if result.get("success"):
-                # Derive list name (same format as upload_csv generates)
-                from datetime import datetime as _dt
-                list_name = f"SiftStack {_dt.now().strftime('%Y-%m-%d')}"
 
                 # Enrich property data via SiftMap
                 if enrich:
@@ -1486,18 +1642,25 @@ async def export_phone_enrichment(
     page: Page,
     *,
     list_name: str | None = None,
+    tag_name: str | None = None,
     preset_folder: str | None = None,
     all_records: bool = False,
     download_dir: str | None = None,
 ) -> dict:
     """Export phone enrichment CSV from DataSift via Playwright.
 
-    Navigates to Records, applies filters (list/preset/none), selects all records,
-    clicks Manage → Export, and downloads the Phone Enrichment CSV.
+    Navigates to Records, applies filters (tag/list/preset/none), selects all
+    records, clicks Manage → Export, and downloads the Phone Enrichment CSV.
+
+    A requested filter that fails to apply ABORTS the export. It used to warn and
+    carry on, which exported the entire account — and since the caller
+    Trestle-scores whatever comes back, that billed every unscored number in the
+    database. Only all_records=True may export unfiltered, and only explicitly.
 
     Args:
         page: Logged-in Playwright page.
         list_name: Filter to a specific list name.
+        tag_name: Filter to a specific tag (the run-cohort path).
         preset_folder: Filter using a saved filter preset folder name.
         all_records: If True, export all records (no filter).
         download_dir: Directory for downloads (defaults to output/).
@@ -1515,17 +1678,26 @@ async def export_phone_enrichment(
         # Navigate to Records
         await _navigate_to_records(page)
 
-        # Apply filter based on targeting mode
-        if list_name:
-            filtered = await _filter_by_list(page, list_name)
-            if not filtered:
-                result["message"] = f"Could not filter to list: {list_name}"
-                logger.warning(result["message"])
+        # Apply filter based on targeting mode. Any requested filter that does
+        # not apply is fatal — see the docstring.
+        if tag_name:
+            if not await _filter_by_tag(page, tag_name):
+                result["message"] = (f"Could not filter to tag: {tag_name} — "
+                                     "aborting rather than exporting all records")
+                logger.error(result["message"])
+                return result
+        elif list_name:
+            if not await _filter_by_list(page, list_name):
+                result["message"] = (f"Could not filter to list: {list_name} — "
+                                     "aborting rather than exporting all records")
+                logger.error(result["message"])
+                return result
         elif preset_folder:
-            filtered = await _filter_by_preset(page, preset_folder)
-            if not filtered:
-                result["message"] = f"Could not filter to preset: {preset_folder}"
-                logger.warning(result["message"])
+            if not await _filter_by_preset(page, preset_folder):
+                result["message"] = (f"Could not filter to preset: {preset_folder} — "
+                                     "aborting rather than exporting all records")
+                logger.error(result["message"])
+                return result
         elif all_records:
             logger.info("Exporting all records (no filter)")
         else:

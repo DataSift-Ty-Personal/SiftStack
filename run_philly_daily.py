@@ -111,7 +111,7 @@ async def main(
         ur = result.get("upload_result") or {}
         status = "OK" if ur.get("success") else f"FAILED — {ur.get('message', 'no result')}"
         import datetime
-        print(f"  DataSift bucket   : {status}  (SiftStack {datetime.date.today()})")
+        print(f"  DataSift bucket   : {status}  (tag siftstack_{datetime.date.today()})")
 
         niche = result.get("niche_results", [])
         if niche:

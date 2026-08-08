@@ -344,6 +344,17 @@ def _build_tags(notice: NoticeData) -> str:
         except ValueError:
             pass
 
+    # Run-cohort tag: "the records this run uploaded". Anchored on date_added (the
+    # run date), NOT date_published (the notice's own date), because downstream
+    # phone scoring needs today's upload, not this month's notices. This replaces
+    # the old "SiftStack <date>" list — same cohort, no new list per run.
+    if notice.date_added:
+        try:
+            _run_dt = datetime.strptime(notice.date_added, "%Y-%m-%d")
+            tags.append(f"siftstack_{_run_dt.strftime('%Y-%m-%d')}")
+        except ValueError:
+            pass
+
     # Deceased/living status
     if notice.owner_deceased == "yes":
         tags.append("deceased")
@@ -1094,7 +1105,10 @@ def write_datasift_split_csvs(
         writer = csv.DictWriter(f, fieldnames=DATASIFT_COLUMNS)
         writer.writeheader()
         for notice in notices:
-            row = _build_row(notice, notes_override=_build_dm_notes(notice))
+            # A notice can carry its own pre-built note (e.g. priority_skiptrace's
+            # identity/trace note) — that beats the generic DM/property notes.
+            custom_note = getattr(notice, "_notes_override", None)
+            row = _build_row(notice, notes_override=custom_note or _build_dm_notes(notice))
             is_complete, issues = _validate_row(row)
             if not is_complete:
                 incomplete += 1
@@ -1113,7 +1127,11 @@ def write_datasift_split_csvs(
     results.append({
         "path": dm_path,
         "label": "DMs",
-        "list_name": f"SiftStack {date_str} - DMs",
+        # Stable list, NOT "SiftStack <date> - DMs". The dated form minted two
+        # fresh lists every single run and buried the niche lists. The run
+        # cohort is a tag now (`siftstack_YYYY-MM-DD`, see build_tags), which is
+        # what phone scoring filters on.
+        "list_name": "SiftStack DMs",
     })
 
     # CSV 2: Heirs — only deceased with heir data
@@ -1137,7 +1155,7 @@ def write_datasift_split_csvs(
         results.append({
             "path": heir_path,
             "label": "Heirs",
-            "list_name": f"SiftStack {date_str} - Heirs",
+            "list_name": "SiftStack Heirs",
         })
     else:
         logger.info("No deceased records with heir data — skipping Heirs CSV")

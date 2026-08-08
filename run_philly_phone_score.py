@@ -4,10 +4,13 @@ Core logic lives in src/phone_scorer.py and is shared with the daily
 pipeline (run_philly_daily.py).  Use this script to re-score phones on
 a previously uploaded list without re-running the full scrape.
 
+Targets the `siftstack_YYYY-MM-DD` run-cohort TAG that every uploaded record
+carries. Use --list-name only to score a real list (e.g. a niche list).
+
 Usage:
     python run_philly_phone_score.py
-    python run_philly_phone_score.py --list-name "SiftStack 2026-04-28"
     python run_philly_phone_score.py --lookback-hours 48   # also score yesterday
+    python run_philly_phone_score.py --list-name "Foreclosure"
     python run_philly_phone_score.py --wait-minutes 5 --wait-retries 3
     python run_philly_phone_score.py --no-upload --no-slack
 """
@@ -37,10 +40,12 @@ for _noisy in ("httpx", "httpcore", "asyncio", "urllib3"):
     logging.getLogger(_noisy).setLevel(logging.WARNING)
 
 
-def _list_names_for_window(lookback_hours: int) -> list[str]:
+def _cohort_tags_for_window(lookback_hours: int) -> list[str]:
+    """Run-cohort tags for the window, newest first. Matches the tag stamped by
+    datasift_formatter.build_tags on every record of that run."""
     today = datetime.date.today()
     days = max(1, (lookback_hours + 23) // 24)
-    return [f"SiftStack {(today - datetime.timedelta(days=i)).isoformat()}"
+    return [f"siftstack_{(today - datetime.timedelta(days=i)).isoformat()}"
             for i in range(days)]
 
 
@@ -70,11 +75,12 @@ def _slack_summary(
 
 
 async def main(
-    list_names: list[str],
+    targets: list[str],
     upload: bool,
     slack: bool,
     wait_minutes: int,
     wait_retries: int,
+    as_tag: bool = True,
 ) -> None:
     t_start = time.time()
 
@@ -93,10 +99,11 @@ async def main(
     scored_lists: list[dict] = []
     skipped_lists: list[str] = []
 
-    for list_name in list_names:
-        logger.info("── Processing list: %s ──", list_name)
+    for target in targets:
+        logger.info("── Processing %s: %s ──", "tag" if as_tag else "list", target)
         result = await score_and_tag(
-            list_name=list_name,
+            list_name=None if as_tag else target,
+            tag_name=target if as_tag else None,
             email=email,
             password=password,
             api_key=api_key,
@@ -105,7 +112,7 @@ async def main(
             wait_seconds=wait_seconds,
         )
         if result["skipped"]:
-            skipped_lists.append(list_name)
+            skipped_lists.append(target)
         else:
             scored_lists.append(result)
 
@@ -149,14 +156,17 @@ if __name__ == "__main__":
     parser.add_argument("--no-slack",  action="store_true")
     args = parser.parse_args()
 
-    target_lists = ([args.list_name] if args.list_name
-                    else _list_names_for_window(args.lookback_hours))
-    logger.info("Phone scoring targets: %s", ", ".join(target_lists))
+    as_tag  = args.list_name is None
+    targets = ([args.list_name] if args.list_name
+               else _cohort_tags_for_window(args.lookback_hours))
+    logger.info("Phone scoring targets (%s): %s",
+                "tag" if as_tag else "list", ", ".join(targets))
 
     asyncio.run(main(
-        list_names=target_lists,
+        targets=targets,
         upload=not args.no_upload,
         slack=not args.no_slack,
         wait_minutes=args.wait_minutes,
         wait_retries=args.wait_retries,
+        as_tag=as_tag,
     ))

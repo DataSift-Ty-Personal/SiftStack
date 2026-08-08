@@ -28,6 +28,21 @@ original Tennessee build; the live operation is Philadelphia.
   so a real sheriff sale never reads "cold". `eviction` is deliberately NOT
   floored. The tier does not read any date field — urgency is handled by sorting
   on `Foreclosure Date` / `Tax Auction Date`, not by the tier.
+- **Run cohorts are a TAG, not a per-run list (2026-08-08).** Every uploaded
+  record carries `siftstack_YYYY-MM-DD` (`_build_tags` in
+  `src/datasift_formatter.py`), and phone scoring filters on that tag. Uploads go
+  to stable lists (`SiftStack DMs`, `SiftStack Heirs`, plus the niche lists);
+  nothing creates a dated list anymore. The old `SiftStack <date>` bucket name
+  never matched the lists actually created (`SiftStack <date> - DMs`/` - Heirs`),
+  so the filter silently missed and the export fell through to the WHOLE account.
+  A filter that fails to apply now aborts the export instead of exporting
+  everything — see `_filter_by_tag` / `_apply_ready` in `src/datasift_uploader.py`.
+  Verify with `python src/_probe_tag_filter_verify.py <tag>`.
+- **Update Data cannot write custom fields or Notes.** Its options are tags,
+  property status, phones, emails, and phone tags/types/status — "Update property
+  data" is a section HEADER, not a selectable flow. So Text Touch 1-4 and Notes
+  must go through the Add-Data wizard with `existing_list=True`, which is why the
+  `Priority Skip` list still exists. Confirmed by `src/_probe_update_data.py`.
 - **DataSift tag uploads APPEND, they do not replace.** Changing a record's tier
   by CSV is two steps: upload the new tag, then bulk-remove the old one from the
   filtered view in the DataSift UI. Budget for both or records end up wearing

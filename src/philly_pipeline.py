@@ -338,8 +338,9 @@ def _count_phones(notice: NoticeData) -> int:
 
 # ── Niche list uploads (Option B-1) ────────────────────────────────────────
 # Map Philly notice_type → DataSift niche list name.
-# Each daily run uploads once to the "SiftStack {date}" bucket (for skip trace
-# targeting), then once per non-empty notice_type to its persistent niche list.
+# Each daily run uploads once to the stable SiftStack DMs/Heirs lists, then once
+# per non-empty notice_type to its persistent niche list. Skip-trace/phone-score
+# targeting rides the `siftstack_<date>` run tag, not a per-run list.
 _NICHE_LISTS: dict[str, str] = {
     "CODE_VIOLATION":               "Code Enforcement",
     "SHERIFF_MORTGAGE_FORECLOSURE": "Foreclosure",
@@ -879,14 +880,31 @@ async def run_pipeline(
             for info in csv_infos:
                 logger.info("DataSift CSV (%s): %s", info["label"], info["path"])
 
+            # "SiftStack DMs" / "SiftStack Heirs" are stable lists now, so target
+            # the existing one and only create it on the first-ever run. Without
+            # this, every run would add another list of the same name.
             if len(csv_infos) > 1:
                 upload_result = await upload_datasift_split(
-                    csv_infos, enrich=True, skip_trace=True,
+                    csv_infos, enrich=True, skip_trace=True, existing_list=True,
                 )
+                if not (upload_result and upload_result.get("success")):
+                    logger.info("Split upload: existing lists not found — creating new")
+                    upload_result = await upload_datasift_split(
+                        csv_infos, enrich=True, skip_trace=True, existing_list=False,
+                    )
             else:
+                _only = csv_infos[0]
                 upload_result = await upload_to_datasift(
-                    csv_infos[0]["path"], enrich=True, skip_trace=True,
+                    _only["path"], enrich=True, skip_trace=True,
+                    list_name=_only["list_name"], existing_list=True,
                 )
+                if not (upload_result and upload_result.get("success")):
+                    logger.info("Upload: existing list '%s' not found — creating new",
+                                _only["list_name"])
+                    upload_result = await upload_to_datasift(
+                        _only["path"], enrich=True, skip_trace=True,
+                        list_name=_only["list_name"], existing_list=False,
+                    )
 
             if upload_result and upload_result.get("success"):
                 logger.info("DataSift upload: %s", upload_result.get("message", "OK"))
@@ -979,9 +997,16 @@ async def run_pipeline(
         logger.info("── Step 11: Phone scoring (wait for skip trace) ──")
         try:
             from phone_scorer import score_and_tag
-            bucket_list = f"SiftStack {datetime.date.today().isoformat()}"
+            # Run cohort = the `siftstack_<today>` tag every record in this run
+            # carries (datasift_formatter._build_tags). This used to name a
+            # "SiftStack <today>" LIST that never existed: the split upload
+            # creates "SiftStack <today> - DMs"/" - Heirs", so the unsuffixed name
+            # matched nothing, the filter silently missed, and the export fell
+            # through to the entire account.
+            bucket_tag = f"siftstack_{datetime.date.today().isoformat()}"
             phone_result = await score_and_tag(
-                list_name=bucket_list,
+                list_name=None,
+                tag_name=bucket_tag,
                 email=config.DATASIFT_EMAIL,
                 password=config.DATASIFT_PASSWORD,
                 api_key=config.TRESTLE_API_KEY or "",
@@ -1096,7 +1121,7 @@ def _build_slack_summary(
     ur = upload_result or {}
     bucket_ok = "✓" if ur.get("success") else "✗"
     lines.append(
-        f"Bucket: SiftStack {__import__('datetime').date.today()} — "
+        f"Bucket: siftstack_{__import__('datetime').date.today()} — "
         f"{bucket_ok} ({stats['csv_written']} records)"
     )
 
