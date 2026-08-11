@@ -979,9 +979,16 @@ def build_rehab_matrix(subject: dict, walk: dict, soft_pct: float = SOFT_COST_PC
     scenarios = []
     cat_present: list[str] = []
     line_index: list[tuple[str, str]] = []
+    placeholder_lines: set = set()
 
     credits = _walk_items(walk, "work_done", "credit")
     flags = _walk_items(walk, "flags", "cost")
+
+    # Labor model: default is the own-crew self-perform factor; a walk that is
+    # being PM'd with subs overrides the factor (and names the model) so the
+    # second budget line is the one the operator actually runs.
+    sp_factor = _num(walk.get("self_perform_factor")) or SELF_PERFORM_LABOR_FACTOR
+    sp_label = walk.get("labor_model_label") or "self-perform (own crew)"
 
     for sd in scenario_defs(subject, walk):
         est = estimate_rehab("", sqft, sd["beds"], sd["baths"], subject.get("year_built", 0),
@@ -1023,7 +1030,13 @@ def build_rehab_matrix(subject: dict, walk: dict, soft_pct: float = SOFT_COST_PC
             if sd["key"] in (f.get("scenarios") or [s["key"] for s in scenario_defs(subject, walk)]):
                 amt = _num(f["cost"])
                 flag_total += amt
-                lines[(FLAG_LABEL, f"{f.get('item', 'Flag')}: {f.get('note', '')}".strip(": "))] = amt
+                line_key = (FLAG_LABEL, f"{f.get('item', 'Flag')}: {f.get('note', '')}".strip(": "))
+                lines[line_key] = amt
+                # Ty's rule: a pending quote never renders blank. It carries a
+                # placeholder dollar figure, painted red on the sheet, so the
+                # total is always a true number. Replace with the real bid.
+                if f.get("placeholder"):
+                    placeholder_lines.add(line_key)
         if flag_total:
             cats[FLAG_LABEL] = flag_total
             materials += flag_total * 0.4
@@ -1032,7 +1045,7 @@ def build_rehab_matrix(subject: dict, walk: dict, soft_pct: float = SOFT_COST_PC
         net = max(sum(cats.values()), 0.0)
         soft = round(net * soft_pct)
         grand = round(net + soft)
-        self_perform = round((max(materials, 0) + max(labor, 0) * SELF_PERFORM_LABOR_FACTOR) * (1 + soft_pct))
+        self_perform = round((max(materials, 0) + max(labor, 0) * sp_factor) * (1 + soft_pct))
 
         scenarios.append({
             "key": sd["key"], "label": sd["label"], "tier": sd["tier"],
@@ -1062,7 +1075,8 @@ def build_rehab_matrix(subject: dict, walk: dict, soft_pct: float = SOFT_COST_PC
     line_index.sort(key=lambda kv: (ordered.index(kv[0]) if kv[0] in ordered else 99, kv[1]))
 
     return {"scenarios": scenarios, "categories": ordered, "lines": line_index,
-            "soft_pct": soft_pct,
+            "soft_pct": soft_pct, "sp_factor": sp_factor, "sp_label": sp_label,
+            "placeholders": sorted("|".join(k) for k in placeholder_lines),
             "totals": {s["key"]: s["grand"] for s in scenarios}}
 
 
@@ -1216,15 +1230,17 @@ def build_exits(subject: dict, arv: dict, rehab: dict, walk: dict,
     sp = next((s.get("self_perform") for s in scen_list if s.get("key") == "gut_t2"),
               scen_list[0].get("self_perform", 0) if len(scen_list) == 1 else 0)
     if sp and base:
+        sp_factor = rehab.get("sp_factor", SELF_PERFORM_LABOR_FACTOR)
+        sp_label = rehab.get("sp_label", "self-perform (own crew)")
         sp_r = rng(sp * 0.90, sp * 1.15, point=sp)
         p = resale_profit(base_r, sp_r, 6)
         sp_clears = flip_clears_at(base_r, sp_r)
         exits.append({
-            "name": "Fix and flip, self-perform (own crew)", "kind": "resale",
+            "name": f"Fix and flip, {sp_label}", "kind": "resale",
             "arv": base_r, "work": sp_r, "purchase": purchase, "sell": base_r, "profit": p,
             "viable": roi(p, sp_r) >= MIN_FLIP_ROI,
-            "why": f"Labor at the {SELF_PERFORM_LABOR_FACTOR:.0%} self-perform factor instead of GC "
-                   "retail. The lane that actually buys heavy-rehab houses: the buyers we dial run "
+            "why": f"Labor at the {sp_factor:.0%} factor instead of GC retail: the {sp_label} "
+                   "basis. The lane that actually buys heavy-rehab houses: the buyers we dial run "
                    "this same math.",
             "why_not": ("" if roi(p, sp_r) >= MIN_FLIP_ROI else
                         f"ROI mids at {roi(p, sp_r):.0%}, under the {MIN_FLIP_ROI:.0%} floor at this "
@@ -1881,20 +1897,30 @@ def sheet_repair_numbers(wb, pack):
         c.alignment = Alignment(vertical="center", wrap_text=True)
 
     br = 3
+    placeholders = set(rehab.get("placeholders") or [])
     for cat, item in rehab["lines"]:
+        is_ph = f"{cat}|{item}" in placeholders
         ws.cell(row=br, column=7, value=cat)
-        ws.cell(row=br, column=8, value=item).alignment = Alignment(wrap_text=True, vertical="top")
+        ic = ws.cell(row=br, column=8, value=item)
+        ic.alignment = Alignment(wrap_text=True, vertical="top")
+        if is_ph:
+            ic.font = Font(color="C00000")
         for j, s in enumerate(scen, 9):
             v = s["lines"].get((cat, item))
             if v is not None:
-                ws.cell(row=br, column=j, value=v).number_format = "$#,##0;[Red]-$#,##0"
+                c = ws.cell(row=br, column=j, value=v)
+                c.number_format = "$#,##0;[Red]-$#,##0"
+                if is_ph:
+                    c.font = Font(bold=True, color="C00000")
         br += 1
 
     br += 1
+    sp_factor = rehab.get("sp_factor", SELF_PERFORM_LABOR_FACTOR)
+    sp_label = rehab.get("sp_label", "self-perform")
     for label, key, bold in [("Materials", "materials", False), ("Labor", "labor", False),
                              ("Subtotal", "subtotal", True), (f"Soft costs {pct}", "soft", False),
                              ("GRAND TOTAL (GC model)", "grand", True),
-                             (f"Self-perform estimate (labor at {SELF_PERFORM_LABOR_FACTOR:.0%})",
+                             (f"{sp_label[:1].upper()}{sp_label[1:]} estimate (labor at {sp_factor:.0%})",
                               "self_perform", True)]:
         ws.cell(row=br, column=8, value=label).font = Font(bold=bold, color=NAVY if bold else "000000")
         for j, s in enumerate(scen, 9):
@@ -1905,6 +1931,12 @@ def sheet_repair_numbers(wb, pack):
         br += 1
 
     br += 1
+    if rehab.get("placeholders"):
+        ws.cell(row=br, column=8, value=(
+            "RED = PLACEHOLDER pending a sub bid. A real assumed number, never a blank, so the "
+            "total stays true; replace each with the signed quote and re-render."
+        )).font = Font(bold=True, color="C00000")
+        br += 2
     ws.cell(row=br, column=8, value=(
         f"Engine: SiftStack rehab_estimator, {subject.get('sqft', 0):,} sqft, built "
         f"{subject.get('year_built', '')}, Knoxville regional multiplier. Credits are the work "
