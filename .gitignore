@@ -96,3 +96,33 @@ datasift_*.png
 DataSift*Playbook*.zip
 Candidate-Intake-Skill-Package.zip
 "deep-prospecting V3*.zip"
+
+# ---------------------------------------------------------------- deal data
+# This repository is PUBLIC. Everything below is either a real person's data or
+# our own outreach infrastructure, and neither belongs in it. The CODE is the
+# shareable part; what it produces is not.
+#
+# Deal deliverables and research packs name real owners and heirs, carry their
+# addresses, phone numbers and in the probate work their dates of death. A
+# public commit of that is not undoable: forks, caches and archives keep it
+# after any later deletion.
+*.xlsx
+*_Deep_Prospecting.md
+*_Deep_Prospecting.pdf
+*_Outreach.csv
+*contacts*.csv
+walk_*.json
+*_boundary.json
+
+# Property photos and video from walkthroughs (141MB, and they show real homes).
+158 Old State/
+*.MOV
+*.jpg
+*.jpeg
+*.png
+
+# Our sending numbers and the internal uuid -> caller name map. Publishing the
+# number pool invites exactly the abuse the pool exists to avoid, and these
+# live on the Fly volume at /data in production anyway.
+config/sms_numbers.json
+config/sms_senders.json

@@ -126,6 +126,19 @@ SEL_PAGE_INFO = "td:has-text('Page ')"
 # Notice detail page
 SEL_CAPTCHA_IFRAME = "iframe[src*='recaptcha']"
 SEL_VIEW_NOTICE_BUTTON = "#ctl00_ContentPlaceHolder1_PublicNoticeDetailsBody1_btnViewNotice"
+
+# ── Notice gate CAPTCHA ────────────────────────────────────────────────
+# tnpublicnotice migrated from Google reCAPTCHA v2 to CLOUDFLARE TURNSTILE
+# around 2026-07-13. That is what silently killed the scrape: 2Captcha was still
+# being asked to solve a reCAPTCHA that no longer exists, and the token was being
+# injected into a `g-recaptcha-response` field the page no longer reads. The live
+# page now renders <div class="cf-turnstile" data-sitekey="0x..."> with a
+# `cf-turnstile-response` hidden input.
+CAPTCHA_KIND = os.getenv("CAPTCHA_KIND", "turnstile").strip().lower()  # turnstile | recaptcha
+TURNSTILE_SITEKEY = os.getenv("TURNSTILE_SITEKEY", "0x4AAAAAADs-29tdUBxeI6cO")
+SEL_TURNSTILE = ".cf-turnstile"
+TURNSTILE_RESPONSE_FIELD = "cf-turnstile-response"
+# Legacy Google key, kept for the reCAPTCHA fallback path.
 RECAPTCHA_SITEKEY = "6LdtSg8sAAAAADTdRyZxJ2R2sS82pKALNMvMqSyL"
 
 # ── Rate Limiting ──────────────────────────────────────────────────────

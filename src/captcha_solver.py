@@ -36,9 +36,13 @@ async def solve_captcha_and_view(page: Page) -> bool:
 
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            # Check for IP block message before wasting time on CAPTCHA
+            # Check for IP block message before wasting time on CAPTCHA.
+            # NOTE: quoted text='...' is an EXACT match in Playwright, and the
+            # live message is longer ("...from this computer at this time."), so
+            # the old selector never fired and we paid for solves against a wall.
+            # has-text() is a substring match.
             block_msg = await page.query_selector(
-                "text='You are not permitted to view public notices'"
+                ":text('You are not permitted to view public notices')"
             )
             if block_msg:
                 logger.error(
@@ -140,13 +144,18 @@ async def solve_captcha_and_view(page: Page) -> bool:
                 logger.warning("CAPTCHA solved — notice text visible")
                 return True
 
-            # Fallback: check if CAPTCHA message is gone
-            captcha_msg = await page.query_selector(
-                "text='You must complete the reCAPTCHA'"
+            # There is deliberately NO "the captcha message is gone, so we must
+            # have succeeded" fallback here. That inference is what reported
+            # success on every one of 13 dead runs: after the site moved to
+            # Cloudflare Turnstile the old reCAPTCHA string was always absent,
+            # so the check passed on pages that contained no notice at all.
+            # Success now requires positively seeing the notice.
+            blocked = await page.query_selector(
+                ":text('You are not permitted to view public notices')"
             )
-            if not captcha_msg:
-                logger.warning("CAPTCHA solved — gate cleared")
-                return True
+            if blocked:
+                logger.error("IP BLOCKED after solve attempt; not retrying")
+                return False
 
             logger.warning("CAPTCHA still present after attempt %d", attempt)
 
