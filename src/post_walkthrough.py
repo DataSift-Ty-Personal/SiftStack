@@ -72,6 +72,8 @@ _API_CLIENTS = Path(r"C:\Users\Tyrus\OneDrive\Desktop\Deal Room Coaching Call\_a
 SELF_PERFORM_LABOR_FACTOR = 0.55   # self-performer pays ~55% of GC labor
 SELLING_COST_PCT = 0.08            # commissions + seller closing on a retail exit
 HOLDING_COST_PCT = 0.04            # carry, insurance, utilities over the hold
+BUY_CLOSE_FLAT = 900               # escrow/attorney on the buy (TN)
+BUY_TITLE_PCT = 0.0077             # buy-side title insurance + fees (rehab-estimator contract)
 MIN_WHOLESALE_FEE = 10_000         # below this an assignment is not worth the file
 MIN_FLIP_ROI = 0.15                # below this a flip is not worth the capital
 REFI_LTV = 0.75                    # BRRRR refinance loan-to-value
@@ -1157,16 +1159,57 @@ def build_exits(subject: dict, arv: dict, rehab: dict, walk: dict,
         shell = work_ratio > SHELL_WORK_RATIO
     reconfig_verified = bool(walk.get("reconfig_verified"))
 
+    # ── Financing (walk "financing" block): private money baked into profit ──
+    # Without the block every resale lane stays cash-basis (the old behavior).
+    # With it, each lane's profit is NET OF DEBT: points + interest on the
+    # committed balance over that lane's hold, plus buy-side closing/title.
+    # Interest accrues on the FULL balance (a draw schedule makes reality
+    # cheaper), so the number is conservative.
+    fin = walk.get("financing") or {}
+    fin_on = bool(fin)
+    fin_rate = _num(fin.get("rate")) or 0.12
+    fin_points = _num(fin.get("points")) or 2.0
+    fin_term = int(_num(fin.get("term_months")) or 9)
+    fin_ltc = _num(fin.get("ltc")) if fin.get("ltc") is not None else 1.0
+
+    def buy_close(p: float) -> float:
+        return BUY_CLOSE_FLAT + p * BUY_TITLE_PCT
+
+    def fin_cost(p: float, w: float, months: int) -> float:
+        loan = (p + w) * fin_ltc
+        return loan * fin_points / 100 + loan * fin_rate * months / 12
+
     def resale_profit(sell: dict, work: dict, hold_months: int) -> dict:
         """Worst case pairs the low sale with the high rehab, and the reverse."""
         hold = contract * HOLDING_COST_PCT * (hold_months / 6)
-        lo = sell["lo"] * (1 - SELLING_COST_PCT) - purchase["hi"] - work["hi"] - hold
-        hi = sell["hi"] * (1 - SELLING_COST_PCT) - purchase["lo"] - work["lo"] - hold
+        debt_lo = debt_hi = 0.0
+        if fin_on:
+            debt_lo = fin_cost(purchase["lo"], work["lo"], hold_months) + buy_close(purchase["lo"])
+            debt_hi = fin_cost(purchase["hi"], work["hi"], hold_months) + buy_close(purchase["hi"])
+        lo = sell["lo"] * (1 - SELLING_COST_PCT) - purchase["hi"] - work["hi"] - hold - debt_hi
+        hi = sell["hi"] * (1 - SELLING_COST_PCT) - purchase["lo"] - work["lo"] - hold - debt_lo
         return rng(lo, hi, confident=(sell["confident"] and work["confident"]
                                       and purchase["confident"]))
 
     def roi(profit: dict, work: dict) -> float:
+        if fin_on:
+            # Financed deal: the honest lens is cash-on-cash. Cash in = the
+            # cost the loan does not cover, plus points and closing paid at
+            # the table.
+            total = contract + _mid(work)
+            loan = total * fin_ltc
+            cash_in = max(total - loan, 0) + buy_close(contract) + loan * fin_points / 100
+            return _mid(profit) / max(cash_in, 1)
         return _mid(profit) / max(contract + _mid(work), 1)
+
+    def flip_viable(profit: dict, work: dict) -> bool:
+        """Cash-on-cash goes huge at high LTC, so a financed flip must ALSO
+        beat what wholesaling the same file pays, or the debt is not worth
+        carrying."""
+        ok = roi(profit, work) >= MIN_FLIP_ROI
+        if fin_on:
+            ok = ok and _mid(profit) >= MIN_WHOLESALE_FEE
+        return ok
 
     def flip_clears_at(sell: dict, work: dict) -> float:
         """Entry price where a flip hits the ROI floor, solved off the same
@@ -1199,7 +1242,7 @@ def build_exits(subject: dict, arv: dict, rehab: dict, walk: dict,
         "name": "Wholetail (clean, light cosmetic, list as-is)", "kind": "resale",
         "arv": wholetail_r, "work": cosmetic, "purchase": purchase, "sell": wholetail_r,
         "profit": p,
-        "viable": bool(wholetail_arv) and not shell and roi(p, cosmetic) >= MIN_FLIP_ROI,
+        "viable": bool(wholetail_arv) and not shell and flip_viable(p, cosmetic),
         # A shell blocks wholetail for ANY owner, so it can never be the exit we
         # pitch the buyer either (price-gated exits can: the buyer's basis differs).
         "property_gated": shell or not wholetail_arv,
@@ -1215,7 +1258,7 @@ def build_exits(subject: dict, arv: dict, rehab: dict, walk: dict,
     exits.append({
         "name": "Fix and flip, same config (Tier 2)", "kind": "resale",
         "arv": base_r, "work": gut2, "purchase": purchase, "sell": base_r, "profit": p,
-        "viable": bool(base) and roi(p, gut2) >= MIN_FLIP_ROI,
+        "viable": bool(base) and flip_viable(p, gut2),
         "why": "Sells into the same-bed retail band the comps actually support. The honest base "
                "case: no layout bet.",
         "why_not": ("No same-bed retail comps to underwrite against." if not base else
@@ -1238,7 +1281,7 @@ def build_exits(subject: dict, arv: dict, rehab: dict, walk: dict,
         exits.append({
             "name": f"Fix and flip, {sp_label}", "kind": "resale",
             "arv": base_r, "work": sp_r, "purchase": purchase, "sell": base_r, "profit": p,
-            "viable": roi(p, sp_r) >= MIN_FLIP_ROI,
+            "viable": flip_viable(p, sp_r),
             "why": f"Labor at the {sp_factor:.0%} factor instead of GC retail: the {sp_label} "
                    "basis. The lane that actually buys heavy-rehab houses: the buyers we dial run "
                    "this same math.",
@@ -1252,7 +1295,7 @@ def build_exits(subject: dict, arv: dict, rehab: dict, walk: dict,
         exits.append({
             "name": "Fix and flip, reconfig to target beds (Tier 3)", "kind": "resale",
             "arv": upside_r, "work": gut3, "purchase": purchase, "sell": upside_r, "profit": p,
-            "viable": reconfig_verified and roi(p, gut3) >= MIN_FLIP_ROI,
+            "viable": reconfig_verified and flip_viable(p, gut3),
             "property_gated": not reconfig_verified,
             "why": "Moves the house into the higher-bed value band, which is where the real "
                    "spread on this street lives.",
@@ -1316,6 +1359,15 @@ def build_exits(subject: dict, arv: dict, rehab: dict, walk: dict,
                  + ("Above the shell line, so the buyer pool is CASH self-performers and "
                     "landlords: a GC-model flipper's MAO collapses at this rehab number."
                     if shell else "Inside the range a GC-model flipper can still underwrite."))
+    if fin_on:
+        logic.append(f"FINANCING IS IN THE PROFIT MATH: {fin.get('kind', 'private money')} at "
+                     f"{fin_rate:.0%} + {fin_points:g} pts on {fin_ltc:.0%} of cost, interest on the "
+                     f"full balance over each lane's hold (a draw schedule beats this), plus buy-side "
+                     f"closing ({_money(BUY_CLOSE_FLAT)} + {BUY_TITLE_PCT:.2%} title). Every resale "
+                     "profit is net of debt; ROI reads as cash-on-cash, and a financed flip must also "
+                     f"beat the {_money(MIN_WHOLESALE_FEE)} wholesale floor to stay suggested."
+                     + (" TERMS ARE ASSUMED: replace with the signed term sheet (Lender Analysis "
+                        "sheet)." if fin.get("assumed") else ""))
     if as_is and contract >= as_is * 0.95:
         logic.append(f"Contract {fmt_money_rng(purchase)} sits at or above the as-is band "
                      f"({fmt_money_rng(as_is_r)}). That converts this from a discount wholesale "
@@ -1347,7 +1399,14 @@ def build_exits(subject: dict, arv: dict, rehab: dict, walk: dict,
                        "work_ratio": work_ratio, "shell": shell,
                        "reconfig_verified": reconfig_verified,
                        "contract_point": contract, "assign_point": assign["point"],
-                       "as_is_point": as_is}}
+                       "as_is_point": as_is,
+                       "financing": ({"kind": fin.get("kind", "private money"),
+                                      "rate": fin_rate, "points": fin_points,
+                                      "term_months": fin_term, "ltc": fin_ltc,
+                                      "draws": int(_num(fin.get("draws")) or 4),
+                                      "lender": fin.get("lender", ""),
+                                      "assumed": bool(fin.get("assumed"))}
+                                     if fin_on else None)}}
 
 
 def fmt_money_rng(r) -> str:
@@ -2099,8 +2158,133 @@ def sheet_outreach(wb, pack):
     _widths(ws, [32, 40, 44, 30, 40, 66, 22])
 
 
+def sheet_lender(wb, pack):
+    """Private lender package: sources and uses, exposure vs value, payoff
+    waterfall, and the lender's own return. Renders only when the walk carries
+    a financing block; the borrower-side numbers tie to Exit Strats."""
+    inp = pack["exits"]["inputs"]
+    fin = inp.get("financing")
+    if not fin:
+        return
+    rehab = pack["rehab"]
+    scen = rehab["scenarios"]
+    op = next((s for s in scen if s["key"] == "gut_t2"), scen[0] if scen else None)
+    if op is None:
+        return
+
+    contract = inp["contract_point"]
+    arv = inp["base_arv"]["point"]
+    arv_lo = inp["base_arv"]["lo"]
+    as_is = inp["as_is_point"]
+    sp_label = rehab.get("sp_label", "self-perform")
+    budget = op.get("self_perform") or op["grand"]      # the budget the operator runs
+    stress_budget = op["grand"]                          # GC-model stress case
+    rate, points, term, ltc = fin["rate"], fin["points"], fin["term_months"], fin["ltc"]
+    draws = fin.get("draws", 4)
+
+    loan = round((contract + budget) * ltc)
+    points_d = round(loan * points / 100)
+    interest_full = round(loan * rate * term / 12)
+    closing = round(BUY_CLOSE_FLAT + contract * BUY_TITLE_PCT)
+    initial_draw = round(contract * ltc)
+    per_draw = round((loan - initial_draw) / max(draws, 1))
+    total_project = contract + closing + budget + points_d + interest_full
+    cash_in = points_d + closing + max(round(contract + budget - loan), 0)
+
+    sell_net = arv * (1 - SELLING_COST_PCT)
+    payoff = loan + interest_full
+    borrower_net = round(sell_net - payoff - cash_in - round(contract * HOLDING_COST_PCT * term / 6)
+                         + (loan - contract - budget if ltc > 1 else 0))
+    ann_yield = rate + (points / 100) * (12 / term)
+
+    ws = wb.create_sheet("Lender Analysis")
+    _title(ws, "Private lender package",
+           f"{pack['subject']['full_address']} | contract {_money(contract)} | ARV {_money(arv)} "
+           f"(tight comp set) | budget = {sp_label} plan")
+    r = 4
+    if fin.get("assumed"):
+        c = ws.cell(row=r, column=1, value="TERMS ARE ASSUMED PLACEHOLDERS (red rule): rate, points, "
+                                           "term and LTC below are modeling assumptions. Replace with "
+                                           "the signed term sheet and re-render.")
+        c.font = Font(bold=True, color="C00000")
+        r += 2
+
+    r = _subhead(ws, r, "TERMS" + (f" ({fin['lender']})" if fin.get("lender") else ""))
+    money_rows: set = set()
+
+    def block(rows):
+        nonlocal r
+        for label, val, is_money in rows:
+            ws.cell(row=r, column=1, value=label)
+            c = ws.cell(row=r, column=2, value=val)
+            if is_money:
+                c.number_format = "$#,##0"
+            c.alignment = Alignment(wrap_text=True, vertical="top")
+            r += 1
+
+    block([
+        ("Structure", f"{fin['kind']}, {rate:.0%} interest + {points:g} points, "
+                      f"{term}-month term, {ltc:.0%} of cost funded", False),
+        ("Draw schedule", f"Initial draw {_money(initial_draw)} at close (purchase), then "
+                          f"{draws} rehab draws of ~{_money(per_draw)} released against completed "
+                          "work, so exposure tracks value creation", False),
+    ])
+    r += 1
+    r = _subhead(ws, r, "SOURCES AND USES")
+    block([
+        ("Purchase (contract, signed)", contract, True),
+        ("Buy-side closing + title", closing, True),
+        (f"Renovation budget ({sp_label})", budget, True),
+        ("Points at close", points_d, True),
+        (f"Interest, full balance x {term} mo (draws make this cheaper)", interest_full, True),
+        ("TOTAL PROJECT COST", total_project, True),
+        ("Loan amount", loan, True),
+        ("Borrower cash in (points + closing + any cost above the loan)", cash_in, True),
+    ])
+    r += 1
+    r = _subhead(ws, r, "LENDER SECURITY")
+    block([
+        ("Loan to ARV", f"{loan / arv:.0%}  ({_money(loan)} against {_money(arv)})", False),
+        ("Equity cushion at ARV", f"{_money(round(arv - loan))}  ({(arv - loan) / arv:.0%})", False),
+        ("Day-one exposure vs as-is value",
+         f"{_money(initial_draw)} initial draw against {_money(round(as_is))} as-is: "
+         f"{as_is / max(initial_draw, 1):.2f}x covered" if as_is else "no as-is band priced", False),
+        ("Full-loan coverage at completion", f"{arv / max(loan, 1):.2f}x at the {_money(arv)} ARV", False),
+        ("Stress: sale at the band floor",
+         f"{_money(round(arv_lo * (1 - SELLING_COST_PCT)))} net of selling still repays "
+         f"{_money(payoff)} principal + interest: "
+         f"{arv_lo * (1 - SELLING_COST_PCT) / max(payoff, 1):.2f}x", False),
+        ("Stress: GC-model budget", f"Budget at {_money(stress_budget)} (GC retail) moves loan to "
+                                    f"{_money(round((contract + stress_budget) * ltc))}: "
+                                    f"{(contract + stress_budget) * ltc / arv:.0%} of ARV", False),
+    ])
+    r += 1
+    r = _subhead(ws, r, "PAYOFF WATERFALL AT SALE")
+    block([
+        ("Sale at base ARV", arv, True),
+        (f"Less selling costs ({SELLING_COST_PCT:.0%})", -round(arv * SELLING_COST_PCT), True),
+        ("Less loan principal", -loan, True),
+        (f"Less accrued interest ({term} mo)", -interest_full, True),
+        ("Less borrower cash in + carry", -(cash_in + round(contract * HOLDING_COST_PCT * term / 6)), True),
+        ("BORROWER NET (ties to Exit Strats, term-length hold)", borrower_net, True),
+        ("", "This waterfall holds the POINT ARV for the FULL term: the conservative case. "
+             "Exit Strats mids the comp band and a faster execution, so its profit reads "
+             "higher; the truth lives between the two and improves with every week saved.", False),
+    ])
+    r += 1
+    r = _subhead(ws, r, "LENDER RETURN")
+    block([
+        ("Interest income over term", interest_full, True),
+        ("Points income", points_d, True),
+        ("Total lender income", interest_full + points_d, True),
+        ("Annualized yield on the balance", f"{ann_yield:.1%}", False),
+    ])
+    _widths(ws, [46, 64])
+
+
 BUILDERS = [sheet_overview, sheet_exits, sheet_comps, sheet_active,
-            sheet_repair_logic, sheet_repair_numbers, sheet_buyers, sheet_outreach]
+            sheet_repair_logic, sheet_repair_numbers, sheet_buyers, sheet_outreach,
+            sheet_lender]
 
 
 def build_workbook(pack: dict, out_path: str) -> str:
