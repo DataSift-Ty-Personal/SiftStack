@@ -1167,10 +1167,12 @@ def build_exits(subject: dict, arv: dict, rehab: dict, walk: dict,
     # cheaper), so the number is conservative.
     fin = walk.get("financing") or {}
     fin_on = bool(fin)
-    fin_rate = _num(fin.get("rate")) or 0.12
-    fin_points = _num(fin.get("points")) or 2.0
-    fin_term = int(_num(fin.get("term_months")) or 9)
-    fin_ltc = _num(fin.get("ltc")) if fin.get("ltc") is not None else 1.0
+    # Explicit zero is a real term (a no-points lender), so defaults apply
+    # only when the key is absent, never when it is 0.
+    fin_rate = _num(fin["rate"]) if fin.get("rate") is not None else 0.12
+    fin_points = _num(fin["points"]) if fin.get("points") is not None else 2.0
+    fin_term = int(_num(fin["term_months"])) if fin.get("term_months") is not None else 9
+    fin_ltc = _num(fin["ltc"]) if fin.get("ltc") is not None else 1.0
 
     def buy_close(p: float) -> float:
         return BUY_CLOSE_FLAT + p * BUY_TITLE_PCT
