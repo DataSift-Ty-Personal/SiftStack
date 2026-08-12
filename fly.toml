@@ -1,0 +1,48 @@
+# Fly.io app for the SMS agent receiver + inline worker.
+#   fly launch --no-deploy --copy-config
+#   fly volumes create sms_agent_data --size 1 --region iad
+#   fly secrets set SMS_AGENT_WEBHOOK_SECRET=... SMRTPHONE_API_KEY=... \
+#                   REISIFT_API_KEY=... ANTHROPIC_API_KEY=... \
+#                   SMS_AGENT_SLACK_WEBHOOK=...
+#   fly deploy
+app = "siftstack"
+primary_region = "iad"          # matches the app that already exists
+
+[build]
+  dockerfile = "deploy/Dockerfile"
+
+[env]
+  SMS_AGENT_PHASE = "1"         # 1 classify | 2 +escalate | 3 +draft | 4 +auto-send
+  SMS_AGENT_DRY_RUN = "1"       # flip to 0 only after a watched live send
+  SMS_AGENT_TRANSPORT = "api"
+  SMS_AGENT_INLINE_WORKER = "1"
+  SMS_AGENT_LOCALITY = "Blount County"
+  SMS_AGENT_DATA_DIR = "/data"
+  SMS_AGENT_DB = "/data/sms_agent.db"
+  SMS_AGENT_SENDERS_FILE = "/data/sms_senders.json"
+  SMS_AGENT_NUMBERS_FILE = "/data/sms_numbers.json"
+
+# The event log is the system of record: smrtPhone purges its own webhook logs
+# after 30 days and has no replay, so this volume must survive a redeploy.
+[mounts]
+  source = "sms_agent_data"
+  destination = "/data"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  # NEVER auto-stop. A stopped machine drops the webhook, and smrtPhone gives
+  # no retry guarantee, so a missed inbound reply is a lost lead with no trace.
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+
+  # No HTTP health check on purpose. `min_machines_running = 1` plus
+  # `auto_stop_machines = false` already keep this alive, and a failing check
+  # was itself restarting the machine every five minutes mid-campaign. A probe
+  # that reboots a healthy sender is worse than no probe; liveness is still
+  # observable at /health and /stats, they just do not gate the machine.
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "1gb"   # headroom: web + worker + occasional CLI in one machine

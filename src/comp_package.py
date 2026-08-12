@@ -92,10 +92,12 @@ def dual_track_arv(subject_beds: int, subject_sqft: int,
                 "ppsf": round(ppsf), "n": len(comps)}
 
     same_bed = [l for l in retail if l.beds == subject_beds]
+    base_comps = same_bed
     base = track(same_bed, clamp_to_band=True)
     base_flag = ""
     if len(same_bed) < 3:
         wider = [l for l in retail if abs(l.beds - subject_beds) <= 1]
+        base_comps = wider
         base = track(wider, clamp_to_band=True)
         if base:
             base["arv"] = round(base["arv"] * 0.90 / 5000) * 5000
@@ -105,7 +107,8 @@ def dual_track_arv(subject_beds: int, subject_sqft: int,
                     and (not subject_sqft or 0.6 <= (l.sqft / subject_sqft) <= 1.4)]
     upside = track(upside_comps, clamp_to_band=False)
 
-    return {"base": base, "base_flag": base_flag, "upside": upside}
+    return {"base": base, "base_flag": base_flag, "upside": upside,
+            "base_comps": base_comps if base else []}
 
 
 # ── Rehab scenarios ───────────────────────────────────────────────────

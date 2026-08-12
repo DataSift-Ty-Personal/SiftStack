@@ -27,6 +27,7 @@ import argparse
 import csv
 import json
 import logging
+import os
 import re
 import sys
 from collections import defaultdict
@@ -204,12 +205,24 @@ def main() -> int:
     ap.add_argument("--unmask-top", type=int, default=15, help="Reverse/unmask top N entities")
     ap.add_argument("--no-unmask", action="store_true")
     ap.add_argument("--out", help="Output stem (default output/buyer_sweep_<zip>_<date>)")
+    ap.add_argument("--account", default=os.environ.get("REISIFT_ACCOUNT") or "datasift-apikey",
+                    help="reisift_auth account (default datasift-apikey: the key does not expire)")
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args()
 
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
                         format="%(levelname)s %(message)s")
+    # Without this the sweep inherits reisift_auth's active_account, which is
+    # usually the admin JWT. When that token is expired every get_detail throws,
+    # the per-property handler counts it as a miss, and the run "succeeds" with
+    # 0 buyers instead of failing. Pin the non-expiring key by default.
+    os.environ["REISIFT_ACCOUNT"] = args.account
     result = sweep(args)
+
+    if result["targets"] and not result["records"]:
+        logger.error("Resolved 0 of %d sales. That is an AUTH or COVERAGE failure, not an empty "
+                     "market: check the '%s' account is valid before trusting this file.",
+                     result["targets"], args.account)
 
     stem = args.out or str(config.OUTPUT_DIR / f"buyer_sweep_{args.zip_code}_{datetime.now():%Y%m%d}")
     Path(stem).parent.mkdir(parents=True, exist_ok=True)

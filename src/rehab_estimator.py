@@ -16,6 +16,7 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 
 import config
+import sku_pricing
 
 logger = logging.getLogger(__name__)
 
@@ -126,6 +127,7 @@ class RoomEstimate:
     line_items: dict = field(default_factory=dict)
     weeks: float = 0.0
     notes: str = ""
+    materials_source: str = "engine"  # "engine" or "locked_sku"
 
 
 @dataclass
@@ -149,6 +151,7 @@ class RehabEstimate:
     contingency_pct: float = 0.10  # 10% contingency
     contingency_cost: float = 0.0
     grand_total: float = 0.0
+    materials_source: str = "engine"  # "engine" or the locked-list stamp
 
 
 # ── Estimation engine ─────────────────────────────────────────────────
@@ -211,10 +214,39 @@ def _calc_fixed(category: str, cost_table: dict, tier: int, multiplier: float,
     )
 
 
+def _sku_component_room(category: str, cost_table: dict, tier: int, multiplier: float,
+                        groups: dict, quantity: int = 1,
+                        timeline_key: str = "") -> RoomEstimate:
+    """SKU-grounded variant of _calc_room: materials from the locked Knox
+    basket (already local pricing, so NO regional multiplier on materials);
+    demo and labor from the engine table. Demo is a service, so in SKU mode it
+    moves to the labor side instead of masquerading as a material."""
+    tier_costs = cost_table.get(tier, cost_table.get(2, {}))
+    demo = round(tier_costs.get("demo", 0) * multiplier * quantity)
+    engine_paint = round(tier_costs.get("paint", 0) * multiplier * quantity)
+    engine_labor = round(tier_costs.get("labor", 0) * multiplier * quantity)
+    sku = {k: round(v * quantity) for k, v in groups.items()}
+    materials = sum(sku.values()) + engine_paint
+    labor = engine_labor + demo
+
+    return RoomEstimate(
+        category=category,
+        tier=tier,
+        materials=materials,
+        labor=labor,
+        total=materials + labor,
+        line_items={"demo": demo, **sku, "paint": engine_paint, "labor": engine_labor},
+        weeks=TIMELINE_WEEKS.get(timeline_key or category.lower().split()[0],
+                                 {}).get(tier, 1) * quantity,
+        materials_source="locked_sku",
+    )
+
+
 def estimate_rehab(address: str = "", sqft: int = 0, bedrooms: int = 3,
                    bathrooms: float = 2.0, year_built: int = 0,
                    tier: int = 2, scope: str = "full",
-                   region: str = DEFAULT_REGION) -> RehabEstimate:
+                   region: str = DEFAULT_REGION,
+                   use_locked_materials: bool = True) -> RehabEstimate:
     """Generate a full rehab estimate for a property.
 
     Args:
@@ -238,67 +270,183 @@ def estimate_rehab(address: str = "", sqft: int = 0, bedrooms: int = 3,
     secondary_baths = max(0, full_baths - 1)
     # Window estimate: ~1 per 100 sqft
     window_count = max(8, sqft // 100)
+    roof_sqft = int(sqft * 1.1)
+
+    # ── Locked SKU materials (Knox markets, tiers 1-3 only) ───────
+    # Materials come from the locked master material list (real Home Depot
+    # SKUs local to zip 37914); labor stays on the engine tables with the
+    # regional multiplier. Tier 4 is off-list by definition. A missing file
+    # or missing SKU falls back to the legacy tables, loudly.
+    locked = None
+    if use_locked_materials and tier <= 3 and region.lower() in sku_pricing.SKU_REGIONS:
+        locked = sku_pricing.load_locked()
+    ctx = {"sqft": sqft, "beds": bedrooms, "full_baths": full_baths,
+           "secondary_baths": secondary_baths, "window_count": window_count,
+           "roof_sqft": roof_sqft}
+
+    def _sku(cat_key: str):
+        return sku_pricing.category_materials(cat_key, ctx, tier, locked) if locked else None
 
     rooms = []
 
     # ── Always included (both wholetail and full) ─────────────────
     # Kitchen
-    rooms.append(_calc_room("Kitchen", KITCHEN_COSTS, tier, multiplier))
+    groups = _sku("kitchen")
+    if groups is not None:
+        rooms.append(_sku_component_room("Kitchen", KITCHEN_COSTS, tier, multiplier,
+                                         groups, timeline_key="kitchen"))
+    else:
+        rooms.append(_calc_room("Kitchen", KITCHEN_COSTS, tier, multiplier))
 
     # Master bath
-    rooms.append(_calc_room("Master Bathroom", MASTER_BATH_COSTS, tier, multiplier))
+    groups = _sku("master_bath")
+    if groups is not None:
+        rooms.append(_sku_component_room("Master Bathroom", MASTER_BATH_COSTS, tier,
+                                         multiplier, groups, timeline_key="bathrooms"))
+    else:
+        rooms.append(_calc_room("Master Bathroom", MASTER_BATH_COSTS, tier, multiplier))
 
     # Secondary baths
     if secondary_baths > 0:
-        rooms.append(_calc_room("Secondary Bathroom(s)", SECONDARY_BATH_COSTS,
-                                tier, multiplier, quantity=secondary_baths))
+        groups = _sku("secondary_bath")
+        if groups is not None:
+            rooms.append(_sku_component_room("Secondary Bathroom(s)", SECONDARY_BATH_COSTS,
+                                             tier, multiplier, groups,
+                                             quantity=secondary_baths,
+                                             timeline_key="bathrooms"))
+        else:
+            rooms.append(_calc_room("Secondary Bathroom(s)", SECONDARY_BATH_COSTS,
+                                    tier, multiplier, quantity=secondary_baths))
 
     # Flooring (whole house)
-    rooms.append(_calc_per_sqft("Flooring", sqft, FLOORING_PER_SQFT,
-                                FLOORING_LABOR_PER_SQFT, tier, multiplier, "flooring"))
+    groups = _sku("flooring")
+    if groups is not None:
+        mat = round(groups["lvp"])
+        labor_rate = FLOORING_LABOR_PER_SQFT.get(tier, FLOORING_LABOR_PER_SQFT[2])
+        labor = round(sqft * labor_rate * multiplier)
+        rooms.append(RoomEstimate(
+            category="Flooring", tier=tier, materials=mat, labor=labor,
+            total=mat + labor,
+            line_items={"materials_per_sqft": round(mat / sqft, 2) if sqft else 0,
+                        "labor_per_sqft": round(labor_rate * multiplier, 2),
+                        "sqft": sqft},
+            weeks=TIMELINE_WEEKS["flooring"].get(tier, 1),
+            materials_source="locked_sku"))
+    else:
+        rooms.append(_calc_per_sqft("Flooring", sqft, FLOORING_PER_SQFT,
+                                    FLOORING_LABOR_PER_SQFT, tier, multiplier, "flooring"))
 
     # Paint (whole house)
-    rooms.append(_calc_per_sqft("Paint (Interior)", sqft, PAINT_PER_SQFT,
-                                PAINT_LABOR_PER_SQFT, tier, multiplier, "paint"))
+    groups = _sku("paint_interior")
+    if groups is not None:
+        mat = round(groups["paint"])
+        labor_rate = PAINT_LABOR_PER_SQFT.get(tier, PAINT_LABOR_PER_SQFT[2])
+        labor = round(sqft * labor_rate * multiplier)
+        rooms.append(RoomEstimate(
+            category="Paint (Interior)", tier=tier, materials=mat, labor=labor,
+            total=mat + labor,
+            line_items={"materials_per_sqft": round(mat / sqft, 2) if sqft else 0,
+                        "labor_per_sqft": round(labor_rate * multiplier, 2),
+                        "sqft": sqft},
+            weeks=TIMELINE_WEEKS["paint"].get(tier, 1),
+            materials_source="locked_sku"))
+    else:
+        rooms.append(_calc_per_sqft("Paint (Interior)", sqft, PAINT_PER_SQFT,
+                                    PAINT_LABOR_PER_SQFT, tier, multiplier, "paint"))
 
     # Exterior
-    rooms.append(_calc_room("Exterior", EXTERIOR_COSTS, tier, multiplier))
+    groups = _sku("exterior")
+    if groups is not None:
+        # Siding and driveway have no HD-SKU basket; those components stay on
+        # the engine line (with the multiplier). Paint + landscaping are SKU.
+        tier_costs = EXTERIOR_COSTS.get(tier, EXTERIOR_COSTS[2])
+        siding = round(tier_costs.get("siding", 0) * multiplier)
+        driveway = round(tier_costs.get("driveway", 0) * multiplier)
+        ext_labor = round(tier_costs.get("labor", 0) * multiplier)
+        paint = round(groups["paint"])
+        landscaping = round(groups["landscaping"])
+        ext_mat = siding + paint + landscaping + driveway
+        rooms.append(RoomEstimate(
+            category="Exterior", tier=tier, materials=ext_mat, labor=ext_labor,
+            total=ext_mat + ext_labor,
+            line_items={"siding": siding, "paint": paint, "landscaping": landscaping,
+                        "driveway": driveway, "labor": ext_labor},
+            weeks=TIMELINE_WEEKS["exterior"].get(tier, 1),
+            materials_source="locked_sku"))
+    else:
+        rooms.append(_calc_room("Exterior", EXTERIOR_COSTS, tier, multiplier))
 
     # ── Full rehab only ───────────────────────────────────────────
     if scope == "full":
         # Windows
-        window_total = round(WINDOWS_PER_UNIT.get(tier, 400) * window_count * multiplier)
-        rooms.append(RoomEstimate(
-            category="Windows", tier=tier,
-            materials=round(window_total * 0.6), labor=round(window_total * 0.4),
-            total=window_total,
-            line_items={"per_window": round(WINDOWS_PER_UNIT.get(tier, 400) * multiplier),
-                        "count": window_count},
-            weeks=TIMELINE_WEEKS["windows"].get(tier, 1),
-        ))
+        groups = _sku("windows")
+        if groups is not None:
+            mat = round(groups["windows"])
+            # Engine's implied labor share (40% of the installed unit price)
+            labor = round(WINDOWS_PER_UNIT.get(tier, 400) * window_count * multiplier * 0.4)
+            rooms.append(RoomEstimate(
+                category="Windows", tier=tier, materials=mat, labor=labor,
+                total=mat + labor,
+                line_items={"per_window": round((mat + labor) / window_count),
+                            "count": window_count},
+                weeks=TIMELINE_WEEKS["windows"].get(tier, 1),
+                materials_source="locked_sku"))
+        else:
+            window_total = round(WINDOWS_PER_UNIT.get(tier, 400) * window_count * multiplier)
+            rooms.append(RoomEstimate(
+                category="Windows", tier=tier,
+                materials=round(window_total * 0.6), labor=round(window_total * 0.4),
+                total=window_total,
+                line_items={"per_window": round(WINDOWS_PER_UNIT.get(tier, 400) * multiplier),
+                            "count": window_count},
+                weeks=TIMELINE_WEEKS["windows"].get(tier, 1),
+            ))
 
         # Roof (sqft × 1.1 for slope)
-        roof_sqft = int(sqft * 1.1)
-        roof_total = round(ROOF_PER_SQFT.get(tier, 5) * roof_sqft * multiplier)
-        rooms.append(RoomEstimate(
-            category="Roof", tier=tier,
-            materials=round(roof_total * 0.5), labor=round(roof_total * 0.5),
-            total=roof_total,
-            line_items={"per_sqft": round(ROOF_PER_SQFT.get(tier, 5) * multiplier, 2),
-                        "roof_sqft": roof_sqft},
-            weeks=TIMELINE_WEEKS["roof"].get(tier, 1),
-        ))
+        groups = _sku("roof")
+        if groups is not None:
+            mat = round(groups["roof"])
+            # Engine's implied labor share (50% of the per-sqft installed rate)
+            labor = round(ROOF_PER_SQFT.get(tier, 5) * roof_sqft * multiplier * 0.5)
+            rooms.append(RoomEstimate(
+                category="Roof", tier=tier, materials=mat, labor=labor,
+                total=mat + labor,
+                line_items={"per_sqft": round((mat + labor) / roof_sqft, 2) if roof_sqft else 0,
+                            "roof_sqft": roof_sqft},
+                weeks=TIMELINE_WEEKS["roof"].get(tier, 1),
+                materials_source="locked_sku"))
+        else:
+            roof_total = round(ROOF_PER_SQFT.get(tier, 5) * roof_sqft * multiplier)
+            rooms.append(RoomEstimate(
+                category="Roof", tier=tier,
+                materials=round(roof_total * 0.5), labor=round(roof_total * 0.5),
+                total=roof_total,
+                line_items={"per_sqft": round(ROOF_PER_SQFT.get(tier, 5) * multiplier, 2),
+                            "roof_sqft": roof_sqft},
+                weeks=TIMELINE_WEEKS["roof"].get(tier, 1),
+            ))
 
-        # HVAC
-        rooms.append(_calc_fixed("HVAC", HVAC_COSTS, tier, multiplier, "hvac"))
+        # HVAC / Electrical / Plumbing: SKU materials + engine labor share
+        # (60% of the installed table price, the engine's own split).
+        for cat_name, cat_key, cost_table, tkey in (
+                ("HVAC", "hvac", HVAC_COSTS, "hvac"),
+                ("Electrical", "electrical", ELECTRICAL_COSTS, "electrical"),
+                ("Plumbing", "plumbing", PLUMBING_COSTS, "plumbing")):
+            groups = _sku(cat_key)
+            if groups is not None:
+                mat = round(sum(groups.values()))
+                labor = round(cost_table.get(tier, cost_table.get(2, 0)) * multiplier * 0.6)
+                rooms.append(RoomEstimate(
+                    category=cat_name, tier=tier, materials=mat, labor=labor,
+                    total=mat + labor,
+                    line_items={"total_installed": mat + labor},
+                    weeks=TIMELINE_WEEKS[tkey].get(tier, 1),
+                    materials_source="locked_sku"))
+            else:
+                rooms.append(_calc_fixed(cat_name, cost_table, tier, multiplier, tkey))
 
-        # Electrical
-        rooms.append(_calc_fixed("Electrical", ELECTRICAL_COSTS, tier, multiplier, "electrical"))
-
-        # Plumbing
-        rooms.append(_calc_fixed("Plumbing", PLUMBING_COSTS, tier, multiplier, "plumbing"))
-
-        # Foundation/Structural (only for older homes)
+        # Foundation/Structural (only for older homes; no SKU basket, structural
+        # scope is quote territory)
         if year_built and year_built < 1970:
             rooms.append(_calc_fixed("Foundation/Structural", FOUNDATION_COSTS,
                                      tier, multiplier, "foundation"))
@@ -313,6 +461,10 @@ def estimate_rehab(address: str = "", sqft: int = 0, bedrooms: int = 3,
     permits = round(total_cost * 0.03)  # ~3% for permits
     contingency = round(total_cost * 0.10)  # 10% contingency
     grand_total = total_cost + permits + contingency
+
+    materials_source = "engine"
+    if locked and any(r.materials_source == "locked_sku" for r in rooms):
+        materials_source = locked["_stamp"]
 
     estimate = RehabEstimate(
         address=address,
@@ -332,6 +484,7 @@ def estimate_rehab(address: str = "", sqft: int = 0, bedrooms: int = 3,
         permits_cost=permits,
         contingency_cost=contingency,
         grand_total=round(grand_total),
+        materials_source=materials_source,
     )
 
     logger.info("Rehab estimate for %s: %s scope, Tier %d (%s), Total $%s, ~%.0f weeks",
@@ -597,6 +750,9 @@ def generate_rehab_report(full_est: RehabEstimate, wholetail_est: RehabEstimate 
     notes = [
         f"Tier {full_est.tier}: {TIER_NAMES[full_est.tier]}",
         f"Regional multiplier: {full_est.region.title()} = {full_est.regional_multiplier:.2f}x national avg",
+        f"Materials source: {full_est.materials_source}"
+        + (" (locked Knox SKU prices; multiplier applies to labor only)"
+           if full_est.materials_source != "engine" else " (blended engine tables)"),
         "",
         "Tier Definitions:",
         "  Tier 1 (Minimum Viable): Cheapest materials, basic function. Rental-ready.",

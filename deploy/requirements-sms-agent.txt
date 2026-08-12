@@ -1,0 +1,9 @@
+# Minimal dependency set for the cloud receiver. No Playwright, no OpenCV, no
+# Tesseract: the box uses the smrtPhone API transport, so the browser fallback
+# is a local-only path.
+fastapi>=0.115.0
+uvicorn>=0.32.0
+requests>=2.31.0
+python-dotenv>=1.0.0
+anthropic>=0.40.0
+tzdata>=2024.1

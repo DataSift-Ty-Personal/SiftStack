@@ -1,0 +1,80 @@
+{
+ "_comment": "Anything you fill in here OVERRIDES the live Sift record, so leave a field empty unless the walk proved the record wrong. work_done credits and flags flow straight into the Repair Numbers matrix; scenarios defaults to all four.",
+ "walk_date": "2026-07-22",
+ "media": "24 stills + 7 walkthrough videos.",
+ "layout": "main house + attached rear wing",
+ "motivation": "",
+ "owner": "",
+ "acquired": "",
+ "distress": "",
+ "note": "",
+ "lot": "",
+ "target_config": {
+  "beds": 3,
+  "baths": 2
+ },
+ "reconfig_verified": false,
+ "unfinanceable": true,
+ "under_contract": false,
+ "contract_price": 35000,
+ "assignment_price": 75000,
+ "as_is_value": 90000,
+ "seller_net": 0,
+ "monthly_rent": 1400,
+ "work_done": [
+  {
+   "item": "Drywall",
+   "detail": "Roughly 60% of main house hung and taped",
+   "credit": 6000,
+   "scenarios": [
+    "mid",
+    "gut_t2",
+    "gut_t3"
+   ]
+  },
+  {
+   "item": "Windows",
+   "detail": "11 openings already have new vinyl single-hungs",
+   "credit": 4000,
+   "scenarios": [
+    "gut_t2",
+    "gut_t3"
+   ]
+  }
+ ],
+ "still_open": [
+  {
+   "item": "Structural",
+   "detail": "Rotted sill plate over masonry, failing parging"
+  },
+  {
+   "item": "Plumbing",
+   "detail": "Galvanized supply in crawl: repipe"
+  }
+ ],
+ "flags": [
+  {
+   "item": "Termite: WDO inspection, treatment, framing allowance",
+   "cost": 4000,
+   "note": "Suspected at rotted sill, verify before contract",
+   "scenarios": [
+    "cosmetic",
+    "mid",
+    "gut_t2",
+    "gut_t3"
+   ]
+  },
+  {
+   "item": "Crawl moisture package: 20-mil barrier plus sump",
+   "cost": 4000,
+   "note": "Crawl wet at the new CMU wall"
+  }
+ ],
+ "gates": [
+  "Structural engineer eval before the contract goes hard"
+ ],
+ "price_ladder": "",
+ "sequence": "",
+ "dependency": "",
+ "pitch": ""
+}

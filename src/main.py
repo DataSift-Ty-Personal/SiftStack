@@ -365,7 +365,30 @@ async def actor_main() -> None:
             notices = run_enrichment_pipeline(notices, opts)
 
             if not notices:
-                Actor.log.warning("No notices found")
+                # A zero-notice run is a FAILURE, not a quiet success. This
+                # branch used to `return` before the Slack block below, so 13
+                # consecutive dead runs (2026-07-13 onward) reported nothing at
+                # all while Apify marked each one SUCCEEDED. Alert loudly and
+                # exit non-zero so the scheduler surfaces it.
+                Actor.log.error(
+                    "STALE RUN: 0 notices scraped. The upstream source is "
+                    "unreachable or its gate changed. Not a normal empty day."
+                )
+                if do_notify_slack and config.SLACK_WEBHOOK_URL:
+                    try:
+                        from slack_notifier import _send_webhook
+                        _send_webhook(
+                            config.SLACK_WEBHOOK_URL,
+                            ":rotating_light: *SiftStack scrape produced ZERO notices*\n"
+                            "Searches ran and completed, but nothing was captured. "
+                            "This is how the scrape sat broken for 19 days in July 2026 "
+                            "(reCAPTCHA -> Cloudflare Turnstile migration).\n"
+                            "Check: notice gate/CAPTCHA type, residential proxy, "
+                            "and whether detail pages return a logged-out shell.",
+                        )
+                    except Exception as exc:
+                        Actor.log.warning("Slack stale-run alert failed: %s", exc)
+                await Actor.fail(status_message="Zero notices scraped (stale run)")
                 return
 
             total = len(notices)

@@ -16,6 +16,10 @@ instrument number by mistake.
 """
 
 import logging
+
+import html as _html_mod
+
+import config
 import re
 from dataclasses import dataclass
 from datetime import datetime
@@ -728,18 +732,77 @@ async def parse_notice_html(
     notice_type: str,
     source_url: str,
     llm_api_key: str | None = None,
+    pdf_fetcher=None,
 ) -> NoticeData:
     """Parse a NoticeData from a rendered HTML string (Scrapfly backend).
 
     Mirrors parse_notice_page but sources the page text from an HTML string
-    instead of a live Playwright page. There is no embedded-PDF fallback (the
-    rendered HTML is what we have); the full-page screenshot still captures the
-    notice for the record.
+    instead of a live Playwright page.
+
+    The site caps the web display at 1,000 characters and puts the real notice in
+    an embedded PDF. Without recovering that PDF every record arrives as nothing
+    but the "Web display limited to..." disclaimer, the LLM extracts empty
+    fields, and foreclosure_filter drops the record as "no trustee sale
+    language" — a silent total loss. So this path gets the same PDF fallback the
+    Playwright path has, sourced from the HTML string.
     """
     notice = NoticeData(county=county, notice_type=notice_type, source_url=source_url)
     full_text = _html_to_text(html)
     notice_content = _extract_notice_content(full_text)
+
+    if notice_content and "Web display limited to" in notice_content:
+        pdf_text = _extract_pdf_text_from_html(html, source_url, pdf_fetcher)
+        if pdf_text:
+            notice_content = pdf_text
+
     return await _populate_notice(notice, full_text, notice_content, notice_type, llm_api_key)
+
+
+_PDF_SRC_RE = re.compile(
+    r'(?:iframe|embed|object|a)\b[^>]*?(?:src|data|href)\s*=\s*["\']([^"\']*\.pdf[^"\']*)["\']',
+    re.IGNORECASE,
+)
+
+
+def _extract_pdf_text_from_html(html: str, source_url: str, fetcher=None) -> str:
+    """Pull the embedded notice PDF referenced in `html` and return its text."""
+    m = _PDF_SRC_RE.search(html or "")
+    if not m:
+        return ""
+    pdf_url = _html_mod.unescape(m.group(1))   # href arrives with &amp;
+    if pdf_url.startswith("//"):
+        pdf_url = "https:" + pdf_url
+    elif pdf_url.startswith("/"):
+        from urllib.parse import urljoin
+        pdf_url = urljoin(source_url or config.BASE_URL, pdf_url)
+    elif not pdf_url.lower().startswith("http"):
+        from urllib.parse import urljoin
+        pdf_url = urljoin(source_url or config.BASE_URL, pdf_url)
+
+    logger.info("Found embedded notice PDF: %s", pdf_url[:120])
+    try:
+        if fetcher is not None:
+            content = fetcher(pdf_url)
+            if not content:
+                logger.warning("session PDF fetch returned nothing")
+                return ""
+        else:
+            import requests
+            resp = requests.get(pdf_url, timeout=45,
+                                headers={"User-Agent": "Mozilla/5.0"})
+            if resp.status_code != 200 or not resp.content:
+                logger.warning("PDF download failed: HTTP %s", resp.status_code)
+                return ""
+            content = resp.content
+        from io import BytesIO
+        from pdfminer.high_level import extract_text as pdfminer_extract
+        text = pdfminer_extract(BytesIO(content))
+        if text and len(text.strip()) > 100:
+            logger.info("PDF text extracted: %d chars", len(text))
+            return text.strip()
+    except Exception as e:
+        logger.warning("Embedded PDF extraction failed: %s", e)
+    return ""
 
 
 def _html_to_text(html: str) -> str:
