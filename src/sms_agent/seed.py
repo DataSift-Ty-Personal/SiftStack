@@ -110,11 +110,23 @@ def from_preset(title: str, limit: int = 0, allow_non_mobile: bool = False) -> t
     must, matched = crm.resolve_preset(title)
     if not must:
         return [], ""
+    # Learned once and cached, so this is a dict lookup per record.
+    tier_uuids = set((crm.dial_tier_uuids() or {}).values())
     rows = []
     for rec in crm.fetch_cohort(must, limit=limit):
         phone = rec.get("phone") if isinstance(rec.get("phone"), dict) else {}
         if phone.get("doNotCall"):
             continue
+        # Tier filtered here, on the search payload, so it costs nothing. Doing
+        # it per candidate meant one record fetch each, which is tolerable for
+        # 300 records and impossible for the 9,000 the cadences actually hold.
+        if tier_uuids:
+            tags = set(phone.get("tags") or [])
+            if not tags & tier_uuids:
+                continue
+            row_tier = "verified"
+        else:
+            row_tier = ""
         # The phone's own disposition is the suppression. An opt-out writes
         # DNC / CORRECT_DNC / WRONG_DNC onto the number in Sift, so honouring
         # it here is what makes that stick across every future campaign,
@@ -129,6 +141,7 @@ def from_preset(title: str, limit: int = 0, allow_non_mobile: bool = False) -> t
         rows.append(
             {
                 "phone": phone.get("number") or "",
+                "dial_tier": row_tier,
                 "uuid": rec.get("uuid") or "",
                 "street": addr.get("street") or "",
                 "city": addr.get("city") or "",
@@ -288,6 +301,7 @@ def schedule(candidates: list[Candidate]) -> list[tuple[Candidate, str, str]]:
 
     pool_by_owner: dict[str, list[str]] = {}
     last_used: dict[str, datetime] = {}
+    sticky: dict[str, str] = {}  # phone -> number, held for this run
     now = datetime.now(timezone.utc)
     cursor = now
     out: list[tuple[Candidate, str, str]] = []
@@ -296,6 +310,9 @@ def schedule(candidates: list[Candidate]) -> list[tuple[Candidate, str, str]]:
         numbers = pool_by_owner.setdefault(cand.sender, sender_pool.pool(cand.sender))
         if not numbers:
             continue
+        if cand.phone in sticky:
+            # Same person twice in one batch: same number, no question.
+            numbers = [sticky[cand.phone]]
 
         # Least recently used number that has had its rest, else the one whose
         # rest expires soonest.
@@ -303,15 +320,28 @@ def schedule(candidates: list[Candidate]) -> list[tuple[Candidate, str, str]]:
             last = last_used.get(n)
             return now if last is None else last + timedelta(seconds=config.MIN_SEND_GAP_SECONDS)
 
-        from_number = min(numbers, key=lambda n: (ready_at(n), last_used.get(n, now)))
-        send_at = max(cursor, ready_at(from_number))
+        # A thread keeps its number for life. Whatever already texted this
+        # person wins over the pool's least-recently-used pick, because two
+        # numbers texting one owner about one house reads as a spam farm to the
+        # person receiving it, which matters more than balancing the pool.
+        existing = (store.get_conversation(cand.phone) or {}).get("from_number") or ""
+        if existing in numbers:
+            from_number = existing
+        else:
+            from_number = min(numbers, key=lambda n: (ready_at(n), last_used.get(n, now)))
+        sticky[cand.phone] = from_number
 
-        # Never outside the recipient's own waking hours.
+        slot = max(cursor, ready_at(from_number))
+
+        # Never outside the recipient's own waking hours. A deferral belongs to
+        # that one person: the cursor advances from the slot below, so nobody
+        # else waits out someone else's timezone.
+        send_at = slot
         if not sender_pool.within_quiet_hours(cand.phone, send_at):
             send_at = sender_pool.next_send_window(cand.phone, send_at)
 
         last_used[from_number] = send_at
-        cursor = send_at + timedelta(
+        cursor = slot + timedelta(
             seconds=random.randint(config.SEND_SPACING_MIN, config.SEND_SPACING_MAX)
         )
         out.append((cand, from_number, send_at.isoformat(timespec="seconds")))
@@ -342,18 +372,48 @@ def reschedule_held() -> dict:
     now = datetime.now(timezone.utc)
     cursor = now
     last_used: dict[str, datetime] = {}
+    assigned: list[datetime] = []
     updates = []
+
+    def space_out(when: datetime) -> datetime:
+        """Nudge a time until it is not on top of one already assigned.
+
+        A message deferred to its own timezone re-enters the day at whatever
+        hour suits the recipient, which may be the middle of the batch. Without
+        this it could land on the same second as another send.
+        """
+        moved = True
+        while moved:
+            moved = False
+            for taken in assigned:
+                if abs((when - taken).total_seconds()) < config.SEND_SPACING_MIN:
+                    when = taken + timedelta(
+                        seconds=random.randint(config.SEND_SPACING_MIN, config.SEND_SPACING_MAX)
+                    )
+                    moved = True
+        return when
 
     for row in rows:
         number = row["from_number"] or ""
         ready = now if number not in last_used else (
             last_used[number] + timedelta(seconds=config.MIN_SEND_GAP_SECONDS)
         )
-        send_at = max(cursor, ready)
+        slot = max(cursor, ready)
+
+        send_at = slot
         if not sender_pool.within_quiet_hours(row["phone"], send_at):
             send_at = sender_pool.next_send_window(row["phone"], send_at)
+        send_at = space_out(send_at)
+
+        assigned.append(send_at)
         last_used[number] = send_at
-        cursor = send_at + timedelta(
+
+        # Advance from the SLOT, never from a quiet-hours deferral. Otherwise a
+        # single out-of-state recipient drags the entire day behind them: one
+        # Los Angeles number at the front of a 9am Eastern batch pushed every
+        # Tennessee message that followed it to 11:24, because the cursor
+        # inherited a wait that belonged to one person's timezone alone.
+        cursor = slot + timedelta(
             seconds=random.randint(config.SEND_SPACING_MIN, config.SEND_SPACING_MAX)
         )
         updates.append((send_at.isoformat(timespec="seconds"), row["id"]))
@@ -362,7 +422,10 @@ def reschedule_held() -> dict:
         for not_before, row_id in updates:
             c.execute("UPDATE outbox SET not_before=? WHERE id=?", (not_before, row_id))
 
-    times = [datetime.fromisoformat(t) for t, _ in updates]
+    # Sorted, because the times are no longer monotonic by row id: a deferred
+    # recipient re-enters the day later than rows queued after them. The gap
+    # that matters is between consecutive SENDS, not consecutive rows.
+    times = sorted(datetime.fromisoformat(t) for t, _ in updates)
     gaps = [(times[i + 1] - times[i]).total_seconds() for i in range(len(times) - 1)]
     return {
         "rescheduled": len(updates),

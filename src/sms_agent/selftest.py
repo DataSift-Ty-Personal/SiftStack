@@ -93,7 +93,7 @@ def run(live_model: bool = False) -> int:
     )
     smrtphone.add_to_dnt = lambda phone: (stub.dnt.append(phone) or (True, "stub"))
     escalate._post = lambda text, blocks=None: (stub.slack.append(text) or True)
-    for name in ("add_tags", "set_status", "post_note", "assign"):
+    for name in ("add_tags", "set_status", "post_note", "assign", "bump_sms_attempts"):
         setattr(
             crm, name,
             (lambda n: lambda *a, **k: (stub.crm_writes.append((n, a)) or {"_dry_run": True}))(name),
@@ -255,6 +255,44 @@ def run(live_model: bool = False) -> int:
     r.check("says why it stopped",
             "completed" in _camp.next_touch({"touches": {1, 2, 3, 4}, "last": ""}, 2, today)[1])
 
+    # ---- 1b2. one timezone must not drag the whole batch ---------------
+    # A Los Angeles recipient at the front of a 9am Eastern batch pushed every
+    # Tennessee message behind it to 11:24, because the layout cursor advanced
+    # from the deferred time instead of the slot the message actually held.
+    print("\nschedule layout")
+    from datetime import datetime as _dt, timezone as _tz
+    for i, ph in enumerate(("3109991447", "8650001212", "8650001313", "8650001414")):
+        store.queue_message(ph, f"layout probe {i}", from_number=f"+186527300{i:02d}",
+                            status="held")
+    laid = seed.reschedule_held()
+    r.check("every staged message is laid out", laid["rescheduled"] >= 4, str(laid))
+    rows = list(store._conn().execute(
+        "SELECT phone, not_before FROM outbox WHERE body LIKE 'layout probe%'"))
+    times = {x["phone"]: x["not_before"] for x in rows}
+    east = sorted(v for k, v in times.items() if k.startswith("865"))
+    west = times.get("3109991447")
+    now_iso = _dt.now(_tz.utc).isoformat(timespec="seconds")
+    r.check("eastern recipients are not pushed behind the western one",
+            bool(east) and east[0] < (west or "9999"), f"east={east[:1]} west={west}")
+    r.check("eastern sends start promptly", bool(east) and east[0][:13] <= now_iso[:13],
+            f"first={east[:1]} now={now_iso}")
+    with store.tx() as _c:
+        _c.execute("DELETE FROM outbox WHERE body LIKE 'layout probe%'")
+
+    # A thread keeps one number for life. Live, one owner got touch 3 from
+    # ...0296 and touch 4 from ...0270 an hour later, because the number is
+    # picked when a message is staged and both were staged before either sent.
+    def _cand(phone):
+        c = seed.Candidate(phone=phone, record_uuid="rec-sticky", street="1 Test St",
+                           city="Knoxville", county="Knox", owner_full="Test Owner")
+        c.first, c.sender, c.message, c.status = "Test", "Adriana", "hi", "ready"
+        return c
+
+    laid = seed.schedule([_cand("8650007777"), _cand("8650007777")])
+    numbers = {n for _, n, _ in laid}
+    r.check("the same person in one batch gets one number", len(numbers) <= 1,
+            f"{len(numbers)} numbers: {numbers}")
+
     # ---- 1c. suppression lives on the phone in Sift --------------------
     # smrtPhone has no writable DNT route, so Sift's phone disposition IS the
     # suppression: it is read by every campaign, ours and anyone else's.
@@ -273,6 +311,27 @@ def run(live_model: bool = False) -> int:
     # Only the two tiers Trestle rated most likely to reach the owner. The
     # first live run went out without this and put 24 of 84 texts on Third,
     # Fourth or Drop numbers.
+    # The record itself should show how many texts it has had, so a prospector
+    # opening the file knows before they dial. Exercised with DRY_RUN off and a
+    # stubbed transport, because the dry-run path returns before sending and so
+    # would never reach the counter.
+    _dry_was, _sent_was = config.DRY_RUN, list(stub.sent)
+    with store.tx() as _c:  # park anything else queued so only the probe sends
+        _c.execute("UPDATE outbox SET status='held' WHERE status='queued'")
+    config.DRY_RUN = False
+    store.ensure_conversation("8650006666", from_number="+18650000001")
+    store.update_conversation("8650006666", record_uuid="rec-6666", state="active")
+    store.queue_message("8650006666", "counter probe", from_number="+18650000001")
+    from . import worker as _w2
+    _w2.drain_outbox(limit=5)
+    config.DRY_RUN = _dry_was
+    stub.sent[:] = _sent_was  # the probe is ours, not part of the dry-run check
+    with store.tx() as _c:
+        _c.execute("UPDATE outbox SET status='queued' WHERE status='held'")
+    r.check("a send increments the Sift counter",
+            any(w[0] == "bump_sms_attempts" for w in stub.crm_writes),
+            str(sorted({w[0] for w in stub.crm_writes})))
+
     r.check("only dial first and second may be texted",
             seed.ALLOWED_DIAL_TIERS == {"Dial First", "Dial Second"},
             str(sorted(seed.ALLOWED_DIAL_TIERS)))

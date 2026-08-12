@@ -75,7 +75,10 @@ def run(force: bool = False, dry_run: bool = False) -> dict:
         return {"skipped": "already ran today"}
 
     cap = config.CAMPAIGN_DAILY_CAP or sender_pool.capacity_today()["remaining"]
-    plan = campaign.build()
+    # Build only as far as the cap. The cohort is larger than a day's pool,
+    # so vetting all of it every morning would spend minutes of CRM reads on
+    # candidates the cap then throws away.
+    plan = campaign.build(limit=cap)
     ready = plan.candidates[:cap]
     dropped_for_cap = len(plan.candidates) - len(ready)
 

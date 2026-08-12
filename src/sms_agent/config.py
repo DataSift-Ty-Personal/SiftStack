@@ -126,11 +126,11 @@ CAMPAIGN_ENABLED = _env("SMS_AGENT_CAMPAIGN", "0") not in ("0", "false", "no")
 CAMPAIGN_DAILY_CAP = int(_env("SMS_AGENT_CAMPAIGN_DAILY_CAP", "0"))  # 0 = pool capacity
 CAMPAIGN_DAYS = _env("SMS_AGENT_CAMPAIGN_DAYS", "0,1,2,3,4")  # Mon-Fri
 
-# Whole days between one owner's touches. Everyone walks all four; the traction
-# is in completing the sequence from a single number, not in one perfect text.
-# The skill's proven pattern is consecutive days; 2 is the safer default here
-# because these send unattended.
-TOUCH_GAP_DAYS = int(_env("SMS_AGENT_TOUCH_GAP_DAYS", "2"))
+# Whole days between one owner's touches. A follow-up goes out EVERY day to
+# whoever is next in their own sequence (Ty, 2026-08-12), which is the skill's
+# proven Mon/Tue/Wed rhythm. At 2 days most of the book sat parked: 86 people
+# waiting and 5 eligible on a morning that should have carried ninety.
+TOUCH_GAP_DAYS = int(_env("SMS_AGENT_TOUCH_GAP_DAYS", "1"))
 
 # External heartbeat: how long without a worker pass before it is called dead.
 HEARTBEAT_STALE_MINUTES = int(_env("SMS_AGENT_HEARTBEAT_STALE", "20"))

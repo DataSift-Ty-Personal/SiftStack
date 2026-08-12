@@ -384,6 +384,72 @@ def dnc_status(record_uuid: str, phone: str, wrong_number: bool = False) -> str:
 DIAL_TIERS = ("Dial First", "Dial Second", "Dial Third", "Dial Fourth", "Drop")
 
 
+def dial_tier_uuids(wanted=("Dial First", "Dial Second"), sample: int = 400) -> dict:
+    """Tag NAME -> uuid for the dial tiers, derived once and cached.
+
+    Two payloads describe the same phone differently: the slim search result
+    carries tag UUIDs, the full record carries tag names. Names are the stable
+    contract across accounts, but reading them costs one record fetch per
+    candidate, which is fine for a hundred records and absurd for nine thousand.
+
+    So the mapping is learned once by joining the two payloads on a handful of
+    records, cached on disk, and everything afterwards filters on uuid straight
+    from the search result at no extra cost. Cheap and still not hard-coded to
+    one account's ids.
+    """
+    import json
+
+    cached = store.get_meta("dial_tier_uuids")
+    if cached:
+        try:
+            found = json.loads(cached)
+            if all(w in found for w in wanted):
+                return found
+        except ValueError:
+            pass
+
+    c = client()
+    if not c:
+        return {}
+    try:
+        res = c._request(
+            "/api/internal/property/", method="POST", method_override="GET",
+            body={"limit": sample, "query": {"must": {"phone": 1}}},
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.warning("could not sample records to learn dial tier uuids: %s", exc)
+        return {}
+
+    found: dict = {}
+    for rec in (res.get("results") or []):
+        ph = rec.get("phone") or {}
+        uuids = ph.get("tags") or []
+        if not uuids:
+            continue
+        full = get_record(rec.get("uuid") or "")
+        if not full:
+            continue
+        for p in ((full.get("owner") or {}).get("phones") or []):
+            if store.clean_phone(p.get("number")) != store.clean_phone(ph.get("number")):
+                continue
+            names = [
+                (t.get("title") or t.get("name")) if isinstance(t, dict) else str(t)
+                for t in (p.get("tags") or [])
+            ]
+            if len(names) == len(uuids):
+                for name, uu in zip(names, uuids):
+                    if name in DIAL_TIERS:
+                        found[name] = uu
+            break
+        if all(w in found for w in wanted):
+            break
+
+    if found:
+        store.set_meta("dial_tier_uuids", json.dumps(found))
+        log.info("learned dial tier uuids: %s", sorted(found))
+    return found
+
+
 def dial_tier_checked(record_uuid: str, phone: str) -> tuple[str, bool]:
     """(tier, whether the record could actually be read).
 
@@ -514,6 +580,39 @@ def assign(record_uuid: str, user_uuid: str) -> dict:
             body={"assigned_to": user_uuid},
         )
     except Exception as exc:  # noqa: BLE001
+        return {"error": str(exc)}
+
+
+def bump_sms_attempts(record_uuid: str) -> dict:
+    """Add one to the record's SMS attempt counter in Sift.
+
+    Verified writable and persistent on `property.sms_attempts` (2026-08-12).
+
+    Worth doing for a reason beyond bookkeeping: the counter is the only place a
+    HUMAN sees that the agent has been working a record. A prospector opening a
+    file otherwise has no idea whether it has had one text or three, which is
+    exactly the context that decides how they open the call. It also makes
+    "texts sent" answerable from Sift itself rather than only from our SQLite,
+    so the number survives this box.
+
+    Read-modify-write, which can lose a concurrent increment. Accepted: sends
+    are paced a minute apart and one record is never texted twice in a day, so
+    two writers on one record is not a situation that arises.
+    """
+    c = client()
+    if not c:
+        return {"error": unavailable_reason()}
+    if config.DRY_RUN:
+        return _dry("bump_sms_attempts", uuid=record_uuid)
+    try:
+        current = c._request(f"/api/internal/property/{record_uuid}/", method="GET")
+        count = int(current.get("sms_attempts") or 0) + 1
+        c._request(
+            f"/api/internal/property/{record_uuid}/", method="PATCH",
+            body={"sms_attempts": count},
+        )
+        return {"sms_attempts": count}
+    except Exception as exc:  # noqa: BLE001 - never fail a send over a counter
         return {"error": str(exc)}
 
 

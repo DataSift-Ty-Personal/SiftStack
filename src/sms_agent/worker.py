@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import logging
 import random
+import threading
 import time
 from datetime import datetime, timezone
 
@@ -74,8 +75,25 @@ def drain_outbox(limit: int = 25) -> dict:
             held += 1
             continue
 
-        from_number = row["from_number"] or sender_pool.assign(
-            phone, (store.lookup_phone(phone) or {}).get("context", {}).get("assigned_name", "")
+        # The CONVERSATION owns the sending number, not the queued row.
+        #
+        # The row's number is chosen when the message is staged. Two touches for
+        # the same person staged in one batch are both chosen before either has
+        # sent, so the pool hands out two different numbers and the thread
+        # switches mid-conversation. That happened live: touch 3 went from
+        # ...0296 and touch 4 from ...0270 an hour later, to one owner. Two
+        # numbers texting one person about one house is precisely the pattern a
+        # sticky sender exists to avoid.
+        #
+        # Reading it here instead means the first send fixes the number for the
+        # whole thread, whatever was stamped on the row.
+        from_number = (
+            (conv or {}).get("from_number")
+            or row["from_number"]
+            or sender_pool.assign(
+                phone,
+                (store.lookup_phone(phone) or {}).get("context", {}).get("assigned_name", ""),
+            )
         )
         if not from_number:
             store.mark_outbox(row["id"], "failed", "no sending number available")
@@ -106,6 +124,19 @@ def drain_outbox(limit: int = 25) -> dict:
             store.update_conversation(phone, from_number=from_number)
             sent += 1
             log.info("sent %s -> %s (%s)", from_number, phone, result.sms_id or "no id")
+
+            # Count it in Sift, so the record itself shows how many touches it
+            # has had. Deliberately AFTER the send and wrapped: a counter is
+            # bookkeeping and must never be able to fail a message that already
+            # left, nor stop the queue behind it.
+            record_uuid = (conv or {}).get("record_uuid") or ""
+            if record_uuid:
+                from . import crm
+
+                bumped = crm.bump_sms_attempts(record_uuid)
+                if bumped.get("error"):
+                    log.warning("sms_attempts not incremented on %s: %s",
+                                record_uuid[:8], bumped["error"])
         else:
             # smrtPhone refusing on its own Do Not Text list is the one send
             # error that is an answer rather than a fault. We cannot read that
@@ -174,28 +205,61 @@ def flush_escalations() -> int:
 _last_repin = 0.0
 REPIN_INTERVAL = 300
 
+_campaign_thread = None
+_campaign_result: dict = {}
+
+
+def _start_campaign_thread() -> None:
+    """Kick off the daily build if it is not already running.
+
+    One at a time, always. `scheduler.run` is itself guarded by a once-a-day
+    marker, but a second thread starting mid-build would read that marker before
+    the first thread had claimed the day and queue the batch twice.
+    """
+    global _campaign_thread
+
+    if _campaign_thread is not None and _campaign_thread.is_alive():
+        return
+
+    def _run() -> None:
+        from . import scheduler
+
+        try:
+            out = scheduler.run()
+            if out.get("released"):
+                log.info("campaign started: %s texts", out["released"])
+                _campaign_result.update(out)
+            elif out.get("skipped") not in (None, "already ran today"):
+                log.info("campaign skipped: %s", out["skipped"])
+        except Exception:  # noqa: BLE001 - a bad build must never stop replies
+            log.exception("campaign scheduler failed")
+
+    _campaign_thread = threading.Thread(target=_run, name="campaign", daemon=True)
+    _campaign_thread.start()
+
 
 def run_once(with_reconcile: bool = True) -> dict:
     from . import scheduler
 
     scheduler.heartbeat()
 
-    # Build the day's batch before draining, so today's work is in the queue
-    # by the time the sender looks for something to do.
-    try:
-        started = scheduler.run()
-        if started.get("released"):
-            log.info("campaign started: %s texts", started["released"])
-    except Exception:  # noqa: BLE001 - a bad build must not stop replies
-        log.exception("campaign scheduler failed")
-        started = {"error": "see log"}
+    # The morning build runs on its own thread.
+    #
+    # Vetting a candidate costs a CRM read and reisift throttles hard, so a full
+    # day's batch takes roughly twenty minutes to assemble. Inline, that is
+    # twenty minutes where no reply is classified and nothing in the outbox
+    # drains: the busiest part of the morning, spent building rather than
+    # sending. It only runs once a day, so a thread is cheap, and the build
+    # writes through the same store as everything else (SQLite in WAL, one
+    # writer at a time) so the two loops do not corrupt each other.
+    _start_campaign_thread()
 
     events = drain_events()
     handoffs = flush_escalations()
     outbox = drain_outbox()
     result = {"events": events, "handoffs": handoffs, **outbox}
-    if started.get("released"):
-        result["campaign_released"] = started["released"]
+    if _campaign_result.get("released"):
+        result["campaign_released"] = _campaign_result.pop("released")
 
     # A hot lead the prospector cannot open is a hot lead we did not hand off.
     global _last_repin

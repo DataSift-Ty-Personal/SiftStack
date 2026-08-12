@@ -1,12 +1,13 @@
-"""Touch-aware campaign across the whole Hottest cadence.
+"""The daily follow-up: one text per person per day, next in their sequence.
 
-The calling cadence already encodes how far along a record is, so the text
-should match that stage rather than restarting everyone at touch 1:
+Everybody in the prospector's assigned book walks the same four touches, one a
+day, until the sequence is done: identity check, resend, soft ask, goodbye.
 
-    Hottest - 02 Ready to Call   -> touch 1  (identity check)
-    Hottest - 03 Call Attempt 1  -> touch 2  (the drip)
-    Hottest - 04 Call Attempt 2  -> touch 3  (soft ask)
-    Hottest - 05 Call Attempt 3  -> touch 4  (breakup)
+Which touch someone gets comes from THEIR OWN text history, not from where the
+record sits in the calling cadence. The first build mapped each call-attempt
+stage to a fixed touch, which quietly capped almost everyone at touch 1: a
+record parked in Ready to Call never advances a stage on its own, so it never
+earned touch 2 and the campaign looked exhausted after a single day.
 
 Two things this has to get right, and both are about not annoying people:
 
@@ -34,13 +35,32 @@ from .knowledge import touches
 
 log = logging.getLogger(__name__)
 
-# Cadence stage -> which touch belongs at that point.
-STAGE_TOUCHES = [
-    ("Hottest - 02 Ready to Call", 1),
-    ("Hottest - 03 Call Attempt 1", 2),
-    ("Hottest - 04 Call Attempt 2", 3),
-    ("Hottest - 05 Call Attempt 3", 4),
+# Who is in the daily follow-up: records that are ASSIGNED and in prospecting
+# (Ty, 2026-08-12). A text belongs to somebody who is going to call, so the
+# cohort is the prospector's own book, not the whole database.
+#
+# Order is priority, because the daily cap cuts the tail. The four Hottest
+# call-attempt stages come first as the best leads, then the rest of the
+# assigned prospecting book. Everyone is deduped by phone across all of it, so
+# appearing in two sources is one text, not two.
+#
+# All four call stages, not just Ready to Call: a record sitting on attempt 2 is
+# still owed the rest of its text sequence, and the text is what warms the next
+# dial. Where they are in the CALL cadence decides nothing about which text they
+# get; that comes from their own text history in next_touch().
+FAMILIES = ["Hottest"]
+STAGES = [
+    "02 Ready to Call",
+    "03 Call Attempt 1",
+    "04 Call Attempt 2",
+    "05 Call Attempt 3",
 ]
+PROSPECTING_PRESETS = [f"{config.HANDOFF_NAME} - Actively Prospecting"]
+
+STAGE_TOUCHES = (
+    [(f"{fam} - {stage}", 0) for fam in FAMILIES for stage in STAGES]
+    + [(p, 0) for p in PROSPECTING_PRESETS]
+)
 
 
 def _fingerprints() -> dict[int, list[str]]:
@@ -153,10 +173,12 @@ class Plan:
     skipped_duplicate_person: int = 0
     skipped_waiting: int = 0
     skipped_completed: int = 0
+    hit_cap: bool = False
 
 
 def build(sender_fallback: str = "", log_pages: int = 6,
-          min_days: Optional[int] = None, today: Optional[date] = None) -> Plan:
+          min_days: Optional[int] = None, today: Optional[date] = None,
+          limit: int = 0) -> Plan:
     """Assemble one run across every cadence stage. Sends nothing.
 
     Every eligible person is advanced to the NEXT touch they have not had,
@@ -210,6 +232,18 @@ def build(sender_fallback: str = "", log_pages: int = 6,
             plan.per_touch[touch] = plan.per_touch.get(touch, 0) + 1
             plan.candidates.append(cand)
             stage_ready += 1
+
+            # Stop as soon as the day is full. Vetting a candidate costs a CRM
+            # read, and the scheduler runs inside the worker pass, so building
+            # the whole book every morning would block reply processing for
+            # minutes to then discard most of it at the cap. Sources are in
+            # priority order, so stopping early keeps the best leads.
+            if limit and len(plan.candidates) >= limit:
+                plan.per_stage[title] = {
+                    "mobile_records": len(rows), "ready": stage_ready, "stopped_at_cap": True,
+                }
+                plan.hit_cap = True
+                return plan
 
         plan.per_stage[title] = {"mobile_records": len(rows), "ready": stage_ready}
     return plan
