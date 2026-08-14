@@ -207,6 +207,112 @@ def test_build_notice_property_address_is_decedents_address():
     assert notice.zip     == "08884"
 
 
+# ── Applicant & Affiant coverage (empty-DM investigation, week 32) ──────
+#
+# The 5 initial fixtures cover Executor + Administrator + one Applicant.
+# The three fixtures below cover the two role types that were driving the
+# empty-DM tail on the 2026-08-12 HELD_Probate CSV (11/49 records had no
+# recognized fiduciary type). All three are single-purpose regression
+# guards for _pick_executor's priority list.
+#
+# Provenance: fetched via plain curl against the stable GET URLs (no
+# ViewState needed) — the parties grid is server-rendered.
+#   pk=5406105  Randall Kolb           — 1 Applicant / Accept
+#   pk=5406116  Luis R. Soto           — 1 Affiant   / Accept
+#   pk=5405329  Dollie L. Somers       — 6 Affiants  (1 Accept, 2 Consent, 3 Deceased)
+
+
+def test_pick_executor_applicant_only_accept():
+    """Kolb: single Applicant/Accept row must be picked."""
+    html = (FIXTURE_DIR / "middlesex_probate_detail_applicant_kolb.html").read_text()
+    exe = _pick_executor(_parse_parties(html))
+    assert exe is not None, "expected an Applicant to be picked"
+    assert exe["name"]     == "Anne Marie Kolb"
+    assert exe["type"]     == "Applicant"
+    assert exe["relation"] == "Spouse"
+    assert exe["status"]   == "Accept"
+
+
+def test_pick_executor_affiant_only_accept():
+    """Soto: single Affiant/Accept row must be picked (small-estate path)."""
+    html = (FIXTURE_DIR / "middlesex_probate_detail_affiant_soto.html").read_text()
+    exe = _pick_executor(_parse_parties(html))
+    assert exe is not None, "expected an Affiant to be picked"
+    assert exe["name"]     == "Mirna Yanes Gonzalez"
+    assert exe["type"]     == "Affiant"
+    assert exe["relation"] == "Spouse"
+    assert exe["status"]   == "Accept"
+
+
+def test_pick_executor_affiant_multirow_prefers_accept():
+    """Somers has 6 Affiants: 1 Accept, 2 Consent, 3 Deceased. The picker
+    must return the Accept row, not the first row unconditionally."""
+    html = (FIXTURE_DIR / "middlesex_probate_detail_affiant_multirow_somers.html").read_text()
+    parties = _parse_parties(html)
+    assert len(parties) == 6, f"expected 6 parties, got {len(parties)}"
+    exe = _pick_executor(parties)
+    assert exe is not None
+    assert exe["name"]   == "Chervilla A. Somers-Oglesby"
+    assert exe["type"]   == "Affiant"
+    assert exe["status"] == "Accept"
+
+
+def test_pick_executor_priority_executor_beats_applicant_beats_affiant():
+    """Synthetic mixed-type parties list — priority must be
+    Executor > Applicant > Affiant even when they all have status=Accept."""
+    mixed = [
+        {"name": "Affiant Person",    "type": "Affiant",   "relation": "Child",  "status": "Accept"},
+        {"name": "Applicant Person",  "type": "Applicant", "relation": "Spouse", "status": "Accept"},
+        {"name": "Executor Person",   "type": "Executor",  "relation": "Spouse", "status": "Accept"},
+    ]
+    assert _pick_executor(mixed)["name"] == "Executor Person"
+
+    # Drop Executor — Applicant must win over Affiant
+    assert _pick_executor(mixed[:2])["name"] == "Applicant Person"
+
+    # Drop Applicant — Affiant is the last resort but must still be picked
+    assert _pick_executor([mixed[0]])["name"] == "Affiant Person"
+
+
+def test_pick_executor_returns_none_when_no_fiduciary_types():
+    """Parties with only non-fiduciary types (Legatee/Next of Kin/None) must
+    yield None — the caller then falls back to owner_name = decedent_name."""
+    non_fiduciary = [
+        {"name": "Someone",       "type": "Legatee",     "relation": "Cousin", "status": "N/A"},
+        {"name": "Someone Else",  "type": "Next of Kin", "relation": "Sister", "status": "Deceased"},
+        {"name": "Yet Another",   "type": "None",        "relation": "Child",  "status": "N/A"},
+    ]
+    assert _pick_executor(non_fiduciary) is None
+
+
+def test_build_notice_populates_dm_fields_from_affiant():
+    """End-to-end on the Soto fixture: an Affiant must land in
+    decision_maker_name/relationship/source/confidence exactly like an
+    Executor would — Affiant is the small-estate equivalent for our DM
+    purposes and must not be silently discarded."""
+    html = (FIXTURE_DIR / "middlesex_probate_detail_affiant_soto.html").read_text()
+    fields = _parse_detail_fields(html)
+    parties = _parse_parties(html)
+    row = {
+        "pk_id": "5406116", "detail_url":
+            "https://surrogatesearch.co.middlesex.nj.us/SurrogateSearch/"
+            "WebPages/web_case_detail_middlesex.aspx?Q_PK_ID=5406116",
+        "row_idx": 0, "decedent_name": "Soto Luis", "docket": "",
+        "case_desc": "Probate", "town": "", "filed": "", "issued": "",
+        "dod": "", "dob": "",
+    }
+    notice = _build_notice(row, fields, parties, MIDDLESEX)
+    assert notice is not None, "Affiant record must not be dropped"
+    assert notice.decision_maker_name         == "Mirna Yanes Gonzalez"
+    assert notice.decision_maker_relationship == "Spouse"
+    assert notice.decision_maker_source       == "court_record"
+    assert notice.dm_confidence               == "high"
+    # owner_name (→ full_name in CSV) is the Affiant, per docstring line 31
+    assert notice.owner_name    == "Mirna Yanes Gonzalez"
+    # decedent stays the decedent
+    assert notice.decedent_name == "Luis R. Soto"
+
+
 # ── CLI runner ────────────────────────────────────────────────────────
 
 

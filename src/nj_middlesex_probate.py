@@ -326,18 +326,27 @@ def _pick_executor(parties: list[dict]) -> dict | None:
                                              is the type used when there's no will
                                              and the applicant becomes the
                                              administrator upon acceptance)
-      4. Executor (any status)              (edge cases: pending, renounced)
-      5. Administrator (any status)
-      6. Applicant (any status)
-      7. Anything with "fiduciary" in the type
+      4. Affiant with status=Accept         (Affidavit of Small Estate path —
+                                             the person taking possession and
+                                             distributing assets when the estate
+                                             value is under the NJ small-estate
+                                             threshold and no formal executor is
+                                             appointed)
+      5. Executor (any status)              (edge cases: pending, renounced)
+      6. Administrator (any status)
+      7. Applicant (any status)
+      8. Affiant (any status)
+      9. Anything with "fiduciary" in the type
     """
     priorities = [
         lambda p: p["type"].lower() == "executor"      and p["status"].lower() == "accept",
         lambda p: p["type"].lower() == "administrator" and p["status"].lower() == "accept",
         lambda p: p["type"].lower() == "applicant"     and p["status"].lower() == "accept",
+        lambda p: p["type"].lower() == "affiant"       and p["status"].lower() == "accept",
         lambda p: p["type"].lower() == "executor",
         lambda p: p["type"].lower() == "administrator",
         lambda p: p["type"].lower() == "applicant",
+        lambda p: p["type"].lower() == "affiant",
         lambda p: "fiduciary" in p["type"].lower(),
     ]
     for pred in priorities:
