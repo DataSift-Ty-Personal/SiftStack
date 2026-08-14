@@ -170,14 +170,16 @@ async def login(page, email: str = None, password: str = None) -> bool:
 
     # Click Sign In
     await page.get_by_role("button", name="Sign In").click()
+    await page.wait_for_timeout(4000)  # allow auth to complete
 
-    # Wait for navigation away from login page
-    try:
-        await page.wait_for_url("**/dashboard/general**", timeout=15000)
-    except PwTimeout:
-        if "/login" in page.url:
-            logger.error("DataSift login failed — still on login page")
-            return False
+    # The post-login default redirect can 404 (lands on /login rendering a 404 shell even
+    # though auth succeeded). Don't wait for /dashboard/general; navigate to a known
+    # authenticated route and verify the session by whether we get bounced back to login.
+    await page.goto(DATASIFT_RECORDS_URL, wait_until="domcontentloaded")
+    await page.wait_for_timeout(4000)
+    if "/login" in page.url:
+        logger.error("DataSift login failed — still on login page")
+        return False
 
     await save_cookies(page)
     logger.info("DataSift login successful")

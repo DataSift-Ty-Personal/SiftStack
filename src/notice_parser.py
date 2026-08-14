@@ -16,6 +16,10 @@ instrument number by mistake.
 """
 
 import logging
+
+import html as _html_mod
+
+import config
 import re
 from dataclasses import dataclass
 from datetime import datetime
@@ -28,7 +32,8 @@ logger = logging.getLogger(__name__)
 @dataclass
 class NoticeData:
     """Structured data extracted from a single notice."""
-    date_added: str = ""       # Published date (YYYY-MM-DD)
+    date_added: str = ""       # Date record was added to our system (YYYY-MM-DD, set by pipeline)
+    date_published: str = ""   # Legal notice publication date (YYYY-MM-DD, from the notice)
     auction_date: str = ""     # Scheduled sale/auction date (YYYY-MM-DD)
     address: str = ""
     city: str = ""
@@ -159,6 +164,9 @@ class NoticeData:
     entity_research_confidence: str = ""   # "high", "medium", "low"
     # PDF report link (Google Drive URL, populated by report_generator)
     report_url: str = ""
+    # Notice screenshot: proof-of-source image of the published notice
+    notice_screenshot_path: str = ""   # local PNG path (set by scraper at capture time)
+    notice_screenshot_url: str = ""    # hosted URL (Drive/KVS, set at output time)
     # Tracerfy skip trace — phones + emails (populated by tracerfy_skip_tracer)
     primary_phone: str = ""
     mobile_1: str = ""
@@ -759,23 +767,131 @@ async def parse_notice_page(
         if pdf_text:
             notice_content = pdf_text
 
+    return await _populate_notice(notice, full_text, notice_content, notice_type, llm_api_key)
+
+
+async def parse_notice_html(
+    html: str,
+    county: str,
+    notice_type: str,
+    source_url: str,
+    llm_api_key: str | None = None,
+    pdf_fetcher=None,
+) -> NoticeData:
+    """Parse a NoticeData from a rendered HTML string (Scrapfly backend).
+
+    Mirrors parse_notice_page but sources the page text from an HTML string
+    instead of a live Playwright page.
+
+    The site caps the web display at 1,000 characters and puts the real notice in
+    an embedded PDF. Without recovering that PDF every record arrives as nothing
+    but the "Web display limited to..." disclaimer, the LLM extracts empty
+    fields, and foreclosure_filter drops the record as "no trustee sale
+    language" — a silent total loss. So this path gets the same PDF fallback the
+    Playwright path has, sourced from the HTML string.
+    """
+    notice = NoticeData(county=county, notice_type=notice_type, source_url=source_url)
+    full_text = _html_to_text(html)
+    notice_content = _extract_notice_content(full_text)
+
+    if notice_content and "Web display limited to" in notice_content:
+        pdf_text = _extract_pdf_text_from_html(html, source_url, pdf_fetcher)
+        if pdf_text:
+            notice_content = pdf_text
+
+    return await _populate_notice(notice, full_text, notice_content, notice_type, llm_api_key)
+
+
+_PDF_SRC_RE = re.compile(
+    r'(?:iframe|embed|object|a)\b[^>]*?(?:src|data|href)\s*=\s*["\']([^"\']*\.pdf[^"\']*)["\']',
+    re.IGNORECASE,
+)
+
+
+def _extract_pdf_text_from_html(html: str, source_url: str, fetcher=None) -> str:
+    """Pull the embedded notice PDF referenced in `html` and return its text."""
+    m = _PDF_SRC_RE.search(html or "")
+    if not m:
+        return ""
+    pdf_url = _html_mod.unescape(m.group(1))   # href arrives with &amp;
+    if pdf_url.startswith("//"):
+        pdf_url = "https:" + pdf_url
+    elif pdf_url.startswith("/"):
+        from urllib.parse import urljoin
+        pdf_url = urljoin(source_url or config.BASE_URL, pdf_url)
+    elif not pdf_url.lower().startswith("http"):
+        from urllib.parse import urljoin
+        pdf_url = urljoin(source_url or config.BASE_URL, pdf_url)
+
+    logger.info("Found embedded notice PDF: %s", pdf_url[:120])
+    try:
+        if fetcher is not None:
+            content = fetcher(pdf_url)
+            if not content:
+                logger.warning("session PDF fetch returned nothing")
+                return ""
+        else:
+            import requests
+            resp = requests.get(pdf_url, timeout=45,
+                                headers={"User-Agent": "Mozilla/5.0"})
+            if resp.status_code != 200 or not resp.content:
+                logger.warning("PDF download failed: HTTP %s", resp.status_code)
+                return ""
+            content = resp.content
+        from io import BytesIO
+        from pdfminer.high_level import extract_text as pdfminer_extract
+        text = pdfminer_extract(BytesIO(content))
+        if text and len(text.strip()) > 100:
+            logger.info("PDF text extracted: %d chars", len(text))
+            return text.strip()
+    except Exception as e:
+        logger.warning("Embedded PDF extraction failed: %s", e)
+    return ""
+
+
+def _html_to_text(html: str) -> str:
+    """Convert rendered HTML to newline-separated visible text."""
+    if not html:
+        return ""
+    try:
+        from bs4 import BeautifulSoup
+
+        soup = BeautifulSoup(html, "html.parser")
+        for tag in soup(["script", "style", "noscript"]):
+            tag.decompose()
+        text = soup.get_text("\n")
+    except Exception:
+        text = re.sub(r"<[^>]+>", "\n", html)  # crude fallback
+    lines = [ln.strip() for ln in text.replace("\xa0", " ").splitlines()]
+    return "\n".join(ln for ln in lines if ln)
+
+
+async def _populate_notice(
+    notice: NoticeData,
+    full_text: str,
+    notice_content: str,
+    notice_type: str,
+    llm_api_key: str | None,
+) -> NoticeData:
+    """Shared field extraction for both the Playwright and HTML parse paths."""
+    full_text = full_text.replace("\xa0", " ")
     notice.raw_text = notice_content if notice_content else full_text
 
     if not notice.raw_text.strip():
-        logger.warning("No notice text found on %s", page.url)
+        logger.warning("No notice text found on %s", notice.source_url)
         return notice
 
-    # ── Extract structured metadata from labels ────────────────────
-    notice.date_added = _extract_publish_date(full_text)
+    # The legal notice's publication date (NOT when we added the record; the
+    # pipeline stamps date_added with the actual run date).
+    notice.date_published = _extract_publish_date(full_text)
 
-    # ── Extract fields from the notice body text ───────────────────
     _parse_address(notice)
     _parse_name(notice)
     _parse_pr_address(notice)
     if notice_type != "probate":
         _parse_auction_date(notice)
 
-    # ── LLM fallback for missing fields ──────────────────────────
+    # LLM fallback for any fields the regex parser could not extract.
     needs_llm = (
         (notice_type == "probate" and (not notice.owner_name or not notice.decedent_name or not notice.owner_street))
         or (notice_type != "probate" and (not notice.address or not notice.owner_name or not notice.auction_date))
@@ -784,7 +900,7 @@ async def parse_notice_page(
         from llm_parser import extract_with_llm
 
         llm_result = await extract_with_llm(
-            notice.raw_text, notice_type, county, llm_api_key,
+            notice.raw_text, notice_type, notice.county, llm_api_key,
         )
 
         if notice_type == "probate":

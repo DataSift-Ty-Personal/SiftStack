@@ -15,6 +15,7 @@ import random
 import re
 import threading
 import time
+import unicodedata
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
@@ -28,7 +29,6 @@ from notice_parser import NoticeData
 
 logger = logging.getLogger(__name__)
 
-MODEL = "claude-haiku-4-5-20251001"
 MAX_TOKENS = 1024
 SEARCH_DELAY_MIN = 2.0
 SEARCH_DELAY_MAX = 4.0
@@ -111,7 +111,10 @@ def _dod_sanity_check(dod_str: str, notice: "NoticeData") -> bool:
     if not dod_str or not dod_str.strip():
         return True  # No DOD to check — let other signals decide
 
-    reference_date = notice.date_added or ""
+    # Compare DOD against the notice's PUBLICATION date (the filing proxy), not
+    # date_added (now the run date). Fall back to date_added for imports that
+    # carry no publication date.
+    reference_date = notice.date_published or notice.date_added or ""
     if not reference_date:
         return True  # No filing date to compare against
 
@@ -244,6 +247,108 @@ def _get_name_variants(first_name: str) -> list[str]:
     return list(variants)
 
 
+# ── Survivor grounding guard ─────────────────────────────────────────
+# A stronger model (see _obituary_model) plus a hardened prompt reduce the odds of
+# hallucination; this guard is the deterministic backstop. We keep a survivor ONLY
+# when their full name appears as an ADJACENT phrase in the source obituary text.
+# Requiring adjacency (not just that each word appears somewhere) is what defeats
+# confabulated heir maps: an invented spouse/child, OR a fake name recombined from
+# scattered words ("Bowie Willis", "Emory Willis", a namesake "Norman Willis Jr").
+#
+# Intentional tradeoff: a survivor the obituary mentioned by FIRST NAME ONLY is not
+# retained — we cannot ground a model-guessed surname. That is the safe direction:
+# losing a low-value partial-name lead beats acting on a fabricated heir, and
+# primary heirs (spouse/children) are almost always written in full and kept.
+
+_GENERATIONAL_SUFFIXES = {"jr", "sr", "ii", "iii", "iv", "v"}
+
+
+def _obituary_model() -> str:
+    """High-quality model for heir-determining obituary parsing (configurable)."""
+    return getattr(_cfg, "OBITUARY_LLM_MODEL", "claude-sonnet-4-6")
+
+
+def _survivor_name(item) -> str:
+    """Pull the name out of a survivor entry (dict with 'name', or a bare string)."""
+    if isinstance(item, dict):
+        return (item.get("name") or "").strip()
+    if isinstance(item, str):
+        return item.strip()
+    return ""
+
+
+def _ascii_fold(text: str) -> str:
+    """Lowercase and strip accents so 'José' matches 'Jose' (prevents false drops)."""
+    decomposed = unicodedata.normalize("NFKD", text)
+    return "".join(c for c in decomposed if not unicodedata.combining(c)).lower()
+
+
+def _name_core_tokens(name: str) -> list[str]:
+    """Accent-folded name tokens with generational suffixes (Jr/Sr/III) removed."""
+    folded = re.sub(r"[^a-z ]", " ", _ascii_fold(name))
+    return [t for t in folded.split() if t and t not in _GENERATIONAL_SUFFIXES]
+
+
+def _name_is_grounded(name: str, source_norm: str,
+                      deceased_first: str, deceased_surname: str) -> bool:
+    """True only if the person's full name appears as an adjacent phrase in the text.
+
+    - Single-token names: that token must appear as a whole word.
+    - Multi-token names: the first and last name must appear adjacently, allowing
+      up to two intervening tokens for middle names/initials (so "Elizabeth A.
+      Holland" still matches the text "Elizabeth A. Holland"). Adjacency is what
+      blocks fabricated names recombined from scattered words.
+    - A "survivor" whose first+last equals the deceased's own name is dropped (it is
+      the decedent, or a namesake duplicate, not a separate heir).
+
+    Matching is literal against the accent-folded source text (no nickname
+    expansion): the hardened prompt asks the model to return names verbatim.
+    """
+    core = _name_core_tokens(name)
+    if not core:
+        return False
+    first, last = core[0], core[-1]
+    if first == deceased_first and last == deceased_surname:
+        return False  # the decedent themselves / a namesake, not an heir
+    if len(core) == 1:
+        return re.search(rf"\b{re.escape(first)}\b", source_norm) is not None
+    # Require first .. last to occur as an adjacent span (<= 2 middle tokens).
+    pattern = rf"\b{re.escape(first)}\b(?:\s+\w+){{0,2}}\s+{re.escape(last)}\b"
+    return re.search(pattern, source_norm) is not None
+
+
+def _validate_survivors_against_text(items, source_text, deceased_name=""):
+    """Drop any survivor/heir whose full name is not grounded in the source text.
+
+    Accepts a list of survivor dicts or plain name strings and returns the same
+    shape, minus ungrounded entries. The deterministic backstop against
+    confabulated heir maps. When there is no usable source text we do NOT filter
+    (avoid false drops when grounding is impossible).
+    """
+    if not items or not source_text or not source_text.strip():
+        return items
+    source_norm = re.sub(r"[^a-z ]", " ", _ascii_fold(source_text))
+    if not source_norm.strip():
+        return items
+    dcore = _name_core_tokens(deceased_name)
+    deceased_first = dcore[0] if dcore else ""
+    deceased_surname = dcore[-1] if dcore else ""
+
+    kept, dropped = [], []
+    for item in items:
+        name = _survivor_name(item)
+        if name and _name_is_grounded(name, source_norm, deceased_first, deceased_surname):
+            kept.append(item)
+        elif name:
+            dropped.append(name)
+    if dropped:
+        logger.warning(
+            "Grounding guard dropped %d ungrounded name(s) absent (as an adjacent "
+            "phrase) from the source obituary: %s", len(dropped), "; ".join(dropped)[:400],
+        )
+    return kept
+
+
 def _extract_personal_from_trust_estate(raw_name: str) -> str | None:
     """Extract a personal name from trust/estate ownership patterns.
 
@@ -303,8 +408,13 @@ Include full names when available. (city is where the survivor lives if mentione
 - "executor_named": name of executor/personal representative if mentioned, empty string if not
 
 Important: Only set "match" to true if the first AND last name match the owner. \
-Common names need location confirmation. Be conservative — a false negative is better \
+Common names need location confirmation. Be conservative; a false negative is better \
 than a false positive.
+
+CRITICAL grounding rule: For "survivors", "preceded_in_death", and "executor_named", \
+include ONLY people whose names are written verbatim in the obituary text below. Never \
+infer, assume, or invent a spouse, child, or any other relative who is not literally \
+named in the text. If the text names no survivors, return an empty array.
 
 Obituary text:
 {obituary_text}"""
@@ -837,10 +947,16 @@ def _search_survivors_targeted(
     )
 
     try:
-        parsed = llm_client.chat_json(prompt, system=SYSTEM_PROMPT, max_tokens=MAX_TOKENS, api_key=api_key)
+        parsed = llm_client.chat_json(
+            prompt, system=SYSTEM_PROMPT, max_tokens=MAX_TOKENS,
+            api_key=api_key, model=_obituary_model(),
+        )
         if not parsed:
             return []
-        survivors = parsed.get("survivors", [])
+        # Grounding guard: only keep survivors actually named in the snippets searched.
+        survivors = _validate_survivors_against_text(
+            parsed.get("survivors", []), combined, name,
+        )
         confidence = parsed.get("confidence", "")
         if survivors and confidence == "high":
             logger.info("  Targeted snippet: %d survivors (high conf) for %s", len(survivors), name)
@@ -887,11 +1003,16 @@ def _extract_survivors_aggressive(
     )
 
     try:
-        parsed = llm_client.chat_json(prompt, system=SYSTEM_PROMPT, max_tokens=512, api_key=api_key)
+        parsed = llm_client.chat_json(
+            prompt, system=SYSTEM_PROMPT, max_tokens=512,
+            api_key=api_key, model=_obituary_model(),
+        )
         if not parsed:
             return []
         survivors = parsed.get("survivors", [])
         survivors = [s for s in survivors if s.get("name", "").strip()]
+        # Grounding guard: this permissive prompt is the most likely to confabulate.
+        survivors = _validate_survivors_against_text(survivors, obituary_text, owner_name)
         if survivors:
             logger.info(
                 "  Aggressive extraction found %d survivor(s) for %s",
@@ -1777,7 +1898,10 @@ def _parse_obituary_with_llm(
     )
 
     try:
-        parsed = llm_client.chat_json(prompt, system=SYSTEM_PROMPT, max_tokens=MAX_TOKENS, api_key=api_key)
+        parsed = llm_client.chat_json(
+            prompt, system=SYSTEM_PROMPT, max_tokens=MAX_TOKENS,
+            api_key=api_key, model=_obituary_model(),
+        )
         if not parsed:
             return None
 
@@ -1787,6 +1911,23 @@ def _parse_obituary_with_llm(
         # Validate minimum fields
         if not parsed.get("full_name"):
             return None
+
+        # Grounding guard: drop any survivor / predeceased / executor that is not
+        # literally named in the obituary text (defends against hallucinated heirs).
+        deceased = parsed.get("full_name") or owner_name
+        parsed["survivors"] = _validate_survivors_against_text(
+            parsed.get("survivors", []), obituary_text, deceased,
+        )
+        if parsed.get("preceded_in_death"):
+            parsed["preceded_in_death"] = _validate_survivors_against_text(
+                parsed.get("preceded_in_death", []), obituary_text, deceased,
+            )
+        executor = (parsed.get("executor_named") or "").strip()
+        if executor and not _validate_survivors_against_text(
+            [executor], obituary_text, deceased,
+        ):
+            logger.warning("Grounding guard cleared hallucinated executor_named: %s", executor)
+            parsed["executor_named"] = ""
 
         return parsed
 
@@ -2432,6 +2573,7 @@ def enrich_obituary_data(
     skip_dm_address: bool = False,
     tracerfy_tier1: bool = False,
     skip_ancestry: bool = False,
+    deep_heirs: bool = False,
 ) -> None:
     """Search for obituaries and enrich notices with deceased owner data.
 
@@ -2440,6 +2582,10 @@ def enrich_obituary_data(
       Phase B: For each confirmed deceased, verify heirs alive/dead,
                rank decision-makers, and apply joint-owner fallback
                for snippet-only matches without survivors.
+
+    When ``deep_heirs`` is set (and Enformion creds are configured), Phase B
+    resolves the heir set from the Enformion relatives graph FIRST (grounded,
+    no hallucination), falling back to the obituary-survivor waterfall on a miss.
 
     Updates notices in-place.
     """
@@ -2904,6 +3050,7 @@ def enrich_obituary_data(
 
     heir_verified_count = 0
     joint_owner_dm_count = 0
+    enformion_dm_count = 0
     research_dm_count = 0
     snippet_dm_count = 0
     no_dm_possible_count = 0
@@ -3012,8 +3159,36 @@ def enrich_obituary_data(
                 j, len(matches), notice.owner_name, notice.owner_street,
             )
 
+        # Path E: Enformion deep-heir resolution (opt-in via --deep-heirs).
+        # Runs only for a confirmed-deceased owner that no cheaper high-confidence
+        # path already resolved (Path -1 surviving co-owner on title, Path 0 court
+        # executor). Replaces the hallucination-prone Haiku survivor extraction
+        # with the grounded provider relatives graph. Falls through on miss.
+        if deep_heirs and not ranked_dms and not parsed.get("_probate_preset"):
+            try:
+                from enformion_heir import resolve_heirs_enformion
+
+                # Deceased name: obituary-confirmed full name, else parsed owner name.
+                enf_names = (
+                    parse_tax_owner_name(raw_name) if is_tax_name
+                    else _parse_notice_owner_name(raw_name)
+                )
+                deceased_name = parsed.get("full_name") or (enf_names[0] if enf_names else "")
+                enf_result = resolve_heirs_enformion(notice, parsed, deceased_name=deceased_name)
+            except Exception as e:
+                logger.warning("  [%d/%d] Enformion heir resolution failed: %s", j, len(matches), e)
+                enf_result = None
+            if enf_result:
+                ranked_dms, error_info = enf_result
+                enformion_dm_count += 1
+                _enf_dm = ranked_dms[0]["name"] if ranked_dms else "(none)"
+                logger.info(
+                    "  [%d/%d] Enformion DM: %s (%d heirs)",
+                    j, len(matches), _enf_dm, len(ranked_dms),
+                )
+
         # Path 1: Full-page match with survivors → run heir verification
-        # Skip if Path -1 (joint co-owner) or Path 0 (probate) already set DM
+        # Skip if Path -1 (joint co-owner), Path 0 (probate), or Path E (Enformion) set DM
         if has_survivors and not skip_heir_verification and not ranked_dms:
             logger.info(
                 "  [%d/%d] Verifying heirs for %s (%d survivors)...",
@@ -3391,6 +3566,8 @@ def enrich_obituary_data(
                 dm_identified, confirmed, 100 * dm_identified / confirmed if confirmed else 0)
     logger.info("  DM verified living:     %d", dm_verified_living)
     logger.info("  Heir-verified records:  %d", heir_verified_count)
+    if enformion_dm_count:
+        logger.info("  Enformion heir sets:    %d", enformion_dm_count)
     logger.info("  Joint-owner DM added:   %d", joint_owner_dm_count)
     logger.info("  Re-search DM added:     %d", research_dm_count)
     logger.info("  Snippet DM added:       %d", snippet_dm_count)

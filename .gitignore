@@ -17,10 +17,10 @@ datasift_cookies.json
 dropbox_state.json
 photo_state.json
 nj_lp_cookies.json
-nj_sheriff_state.json
-newark_cv_state.json
 newark_cv_cookies.json
 tracking/
+smrtphone_state.json
+*_state.json
 *.tmp
 *.bak
 
@@ -80,3 +80,64 @@ _brand_tmp/
 _tmp_skill/
 autoresearch/
 .pytest_cache/
+
+# Local deal artifacts & working data (personal — never commit to public repo)
+*_Comp_Analysis*.xlsx
+*_SOW.xlsx
+*_Scope_of_Work.md
+*_Buyer_Prospects.md
+*_Deep_Prospecting_Report.pdf
+*_Prospecting_Report.pdf
+KPI_*.xlsx
+Text_Touch_Preview.xlsx
+Tax*.csv
+*.pptx.pdf
+LEAD-M_1.MD
+TELNYX-REPUTATION-HANDOVER.md
+deep-prospecting-wikitree-enrichment.md
+serp_materials_items.json
+obit_raw.html
+redfin_*.html
+jarboe_*.pdf
+deed_*.pdf
+132 main street/
+
+# Local scratch (screenshots, crops, temp dirs)
+.tmp_*
+crop_*.png
+deed_*.png
+datasift_*.png
+*-001.zip
+DataSift*Playbook*.zip
+Candidate-Intake-Skill-Package.zip
+"deep-prospecting V3*.zip"
+
+# ---------------------------------------------------------------- deal data
+# This repository is PUBLIC. Everything below is either a real person's data or
+# our own outreach infrastructure, and neither belongs in it. The CODE is the
+# shareable part; what it produces is not.
+#
+# Deal deliverables and research packs name real owners and heirs, carry their
+# addresses, phone numbers and in the probate work their dates of death. A
+# public commit of that is not undoable: forks, caches and archives keep it
+# after any later deletion.
+*.xlsx
+*_Deep_Prospecting.md
+*_Deep_Prospecting.pdf
+*_Outreach.csv
+*contacts*.csv
+walk_*.json
+*_boundary.json
+
+# Property photos and video from walkthroughs (141MB, and they show real homes).
+158 Old State/
+*.MOV
+*.jpg
+*.jpeg
+*.png
+
+# Our sending numbers and the internal uuid -> caller name map. Publishing the
+# number pool invites exactly the abuse the pool exists to avoid, and these
+# live on the Fly volume at /data in production anyway.
+config/sms_numbers.json
+config/sms_senders.json

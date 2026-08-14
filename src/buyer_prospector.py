@@ -87,6 +87,19 @@ class BuyerReport:
 
 # ── Data loading ──────────────────────────────────────────────────────
 
+def _norm_date(raw: str) -> str:
+    """Normalize a date (ISO or Sift M/D/YYYY) to YYYY-MM-DD for safe comparison, else ''."""
+    raw = (raw or "").strip()
+    if not raw:
+        return ""
+    for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%m/%d/%y"):
+        try:
+            return datetime.strptime(raw[:10] if fmt == "%Y-%m-%d" else raw, fmt).strftime("%Y-%m-%d")
+        except ValueError:
+            continue
+    return ""
+
+
 def _load_transaction_data(counties: list[str] | None = None,
                            months_back: int = LOOKBACK_MONTHS) -> list[dict]:
     """Load transaction data from our enriched CSV files."""
@@ -102,8 +115,13 @@ def _load_transaction_data(counties: list[str] | None = None,
                     if counties and county not in {c.lower() for c in counties}:
                         continue
 
-                    date_added = row.get("date_added") or row.get("Date Added") or ""
-                    if date_added and date_added < cutoff:
+                    # Window by the notice PUBLICATION date (when the transaction/
+                    # notice actually occurred), not date_added (now the ingest date).
+                    ref = _norm_date(
+                        row.get("date_published") or row.get("Notice Publish Date")
+                        or row.get("date_added") or row.get("Date Added") or ""
+                    )
+                    if ref and ref < cutoff:
                         continue
 
                     records.append(row)
@@ -165,7 +183,11 @@ def _identify_investors(records: list[dict],
             if pt:
                 types.append(pt)
 
-            d = r.get("date_added") or r.get("mls_last_sold_date") or ""
+            d = _norm_date(
+                r.get("date_published") or r.get("Notice Publish Date")
+                or r.get("mls_last_sold_date") or r.get("date_added")
+                or r.get("Date Added") or ""
+            )
             if d:
                 dates.append(d)
 

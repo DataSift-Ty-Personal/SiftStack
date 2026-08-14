@@ -89,6 +89,7 @@ DATASIFT_COLUMNS = [
     "DM 3 Relationship",
     "Obituary URL",
     "Source URL",
+    "Notice Screenshot",
     # ── Deep prospecting fields ──
     "DM 1 Status",
     "DM 1 Source",
@@ -317,17 +318,11 @@ def _build_tags(notice: NoticeData) -> str:
     - DM confidence level (for deceased records)
     - has_auction if auction date is upcoming
     """
-    tags = ["Courthouse Data", "siftstack_auto"]
-
-    # Batch identifier — every Wednesday's records get a "SiftStack YYYY-MM-DD"
-    # tag so a single run can be isolated in DataSift filters. This replaced
-    # the old "SiftStack YYYY-MM-DD" *list name* — list is now stable as
-    # "SiftStack" and the date lives here as a tag instead.
-    tags.append(f"SiftStack {datetime.now().strftime('%Y-%m-%d')}")
-
-    # Week-based batch tag (e.g. "NOD Week 16 2026")
-    if notice.notice_type:
-        tags.append(auto_week_tag(notice.notice_type))
+    # "Courthouse Data" signals first-to-market county data. "FTM" (First-to-Market /
+    # Tier 1) is the tag the ty+2 marketing template routes on: direct-from-county notice
+    # data is the FTM upload stream and must carry `FTM` to land in the FTM-CALL/FTM-MAIL
+    # folders (SiftMap/aggregated data is `Tier 2` instead). See the data-tier model.
+    tags = ["Courthouse Data", "FTM"]
 
     # Notice type
     if notice.notice_type:
@@ -337,10 +332,12 @@ def _build_tags(notice: NoticeData) -> str:
     if notice.county:
         tags.append(notice.county.lower())
 
-    # Month tag from date_added
-    if notice.date_added:
+    # Month tag from the notice publication date (the meaningful cohort), falling
+    # back to date_added (the run date) when no publication date is available.
+    _month_src = notice.date_published or notice.date_added
+    if _month_src:
         try:
-            dt = datetime.strptime(notice.date_added, "%Y-%m-%d")
+            dt = datetime.strptime(_month_src, "%Y-%m-%d")
             tags.append(dt.strftime("%Y-%m"))
         except ValueError:
             pass
@@ -646,6 +643,10 @@ def _build_property_section(notice: NoticeData) -> str:
     if notice.raw_text and len(notice.raw_text) < 500 and "|" in notice.raw_text:
         parts.append(notice.raw_text.strip())
 
+    # Proof-of-source: link to the screenshot of the actual published notice
+    if notice.notice_screenshot_url:
+        parts.append(f"Notice Screenshot: {notice.notice_screenshot_url}")
+
     return " | ".join(parts)
 
 
@@ -884,16 +885,24 @@ def _build_row(notice: NoticeData, notes_override: str | None = None, list_name_
     elif notice.notice_type == "foreclosure":
         foreclosure_date = _format_date(notice.auction_date)
     elif notice.notice_type == "probate":
-        # Probate Open Date = court filing/docket date. Prefer the new
-        # date_filed field (set by scrapers that expose it — e.g. Middlesex
-        # surrogate). Fall back to date_added for legacy sources (TN photo
-        # import, older probates without a filing-date column).
-        probate_open = _format_date(notice.date_filed or notice.date_added)
+        # Probate Open Date. Waterfall from most-precise to fallback:
+        #   1. date_filed     — court's actual docket date (Middlesex surrogate
+        #                       scraper exposes this; most authoritative)
+        #   2. date_published — legal-notice publication date (from
+        #                       tnpublicnotice.com and similar publishers)
+        #   3. date_added     — scrape timestamp (last-resort fallback for
+        #                       sources that expose neither, e.g. TN photo import)
+        probate_open = _format_date(
+            notice.date_filed or notice.date_published or notice.date_added
+        )
 
-    # Personal Representative only for probate notices
+    # Personal Representative only for probate notices. Prefer the resolved
+    # decision maker (deep prospecting), else the court-named PR that the parser
+    # puts in owner_name — so the field is populated even when deep prospecting
+    # is off (lean daily run).
     personal_rep = ""
-    if notice.notice_type == "probate" and notice.decision_maker_name:
-        personal_rep = notice.decision_maker_name
+    if notice.notice_type == "probate":
+        personal_rep = notice.decision_maker_name or notice.owner_name or ""
 
     return {
         # ── Core auto-mapped ──
@@ -927,7 +936,11 @@ def _build_row(notice: NoticeData, notes_override: str | None = None, list_name_
         "Notes": notes,
         # ── Built-in fields ──
         "Estimated Value": notice.estimated_value,
-        "MSL Status": notice.mls_status,
+        # BLANKED (bug 2026-06): the upload wizard auto-maps "MSL Status" to the reisift
+        # lead STATUS field, so a Zillow "sold"/"listed" AUCTION listing here wrongly stamped
+        # active foreclosures as sold and suppressed them from the cadence. MLS status is not
+        # needed for FTM cold outreach. Leave blank so the lead status is never set on import.
+        "MSL Status": "",
         "Last Sale Date": _format_date(notice.mls_last_sold_date),
         "Last Sale Price": notice.mls_last_sold_price,
         "Equity Percentage": notice.equity_percent,
@@ -960,6 +973,7 @@ def _build_row(notice: NoticeData, notes_override: str | None = None, list_name_
         "DM 3 Relationship": notice.decision_maker_3_relationship,
         "Obituary URL": notice.obituary_url,
         "Source URL": notice.source_url,
+        "Notice Screenshot": notice.notice_screenshot_url,
         # ── Deep prospecting fields ──
         "DM 1 Status": notice.decision_maker_status,
         "DM 1 Source": notice.decision_maker_source,

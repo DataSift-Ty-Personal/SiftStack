@@ -20,6 +20,23 @@ import config
 logger = logging.getLogger(__name__)
 
 
+def direct_url(share_url: str | None) -> str | None:
+    """Turn a Dropbox share link (a preview page, ...?dl=0) into a DIRECT link
+    that serves the raw bytes inline — required for <img> embeds and MMS media.
+
+    www.dropbox.com/...?dl=0  ->  ...?raw=1   (Dropbox serves the file inline)
+    """
+    if not share_url:
+        return share_url
+    if "dl=0" in share_url:
+        return share_url.replace("dl=0", "raw=1")
+    if "dl=1" in share_url:
+        return share_url.replace("dl=1", "raw=1")
+    if "raw=1" in share_url:
+        return share_url
+    return share_url + ("&" if "?" in share_url else "?") + "raw=1"
+
+
 def _get_client() -> dropbox.Dropbox:
     # Prefer a short-lived DROPBOX_ACCESS_TOKEN when present (useful for
     # one-off runs before a refresh token is provisioned). Falls back to
@@ -51,14 +68,17 @@ def _ensure_shared_link(dbx: dropbox.Dropbox, path: str) -> str:
             settings=SharedLinkSettings(requested_visibility=RequestedVisibility.public),
         )
         return link.url
-    except ApiError as e:
-        # If a link already exists, Dropbox returns shared_link_already_exists.
-        # Fetch the existing one instead of failing.
-        err = getattr(e, "error", None)
-        if err is not None and getattr(err, "is_shared_link_already_exists", lambda: False)():
+    except Exception:
+        # A link already existing (the idempotent re-run case) can surface either as a
+        # clean ApiError(shared_link_already_exists) OR, in some SDK versions, as a stone
+        # deserialization error ("shared_link_already_exists: missing '.tag' key"). Either
+        # way, just fetch the existing link for this path.
+        try:
             existing = dbx.sharing_list_shared_links(path=path, direct_only=True).links
             if existing:
                 return existing[0].url
+        except Exception:
+            pass
         raise
 
 

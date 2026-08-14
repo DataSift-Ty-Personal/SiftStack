@@ -148,7 +148,7 @@ def process_photos(
     Returns:
         List of NoticeData objects ready for enrichment.
     """
-    date_str = date_added or datetime.now().strftime("%Y-%m-%d")
+    date_str = date_added or config.run_date()
 
     # Collect image files
     image_files = sorted(
