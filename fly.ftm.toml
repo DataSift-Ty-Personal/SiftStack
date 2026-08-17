@@ -1,0 +1,36 @@
+# fly.toml app configuration file generated for siftstack-ftm on 2026-08-14T12:52:51-04:00
+#
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+#
+
+app = 'siftstack-ftm'
+primary_region = 'iad'
+
+[build]
+  dockerfile = 'deploy/Dockerfile.ftm'
+
+[env]
+  APIFY_PROXY_GROUPS = 'BUYPROXIES94952'
+  APIFY_PROXY_SESSION = 'tnpn_fly'
+  BUSINESS_TIMEZONE = 'America/New_York'
+  # Live since 2026-08-16, after the 12-month backfill landed 1,226 records
+  # clean. Without --commit the run scrapes and writes a CSV but never touches
+  # DataSift, which is the right default only until a real run has been read.
+  FTM_ARGS = '--stages notices --commit'
+  FTM_JITTER_SECONDS = '600'
+  FTM_SCHEDULE = '06:30'
+  FTM_SCHEDULE_DAYS = 'all'
+  SIFTSTACK_LOG_DIR = '/data/logs'
+  SIFTSTACK_OUTPUT_DIR = '/data/output'
+  SIFTSTACK_STATE_DIR = '/data'
+
+[[mounts]]
+  source = 'ftm_data'
+  destination = '/data'
+
+[[vm]]
+  # 2 shared cores and 2GB, not 1x/1gb. Chromium rendering ASP.NET postbacks is
+  # CPU-bound: on shared-cpu-1x the browser took 60s just to launch and a
+  # 12-month backfill would have run about twice as long as it needs to.
+  size = 'shared-cpu-2x'
+  memory = '2gb'

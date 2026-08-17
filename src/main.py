@@ -63,9 +63,12 @@ def _preflight_check(mode: str) -> list[str]:
     enrichment_modes = scrape_modes | {"pdf-import", "photo-import", "dropbox-watch", "csv-import"}
     datasift_modes = {"manage-presets", "manage-sold", "phone-validate"}
 
-    if mode in scrape_modes:
+    # list-searches logs in but never opens a notice, so it needs the site
+    # credentials without the CAPTCHA balance or the gate.
+    if mode in scrape_modes or mode == "list-searches":
         if not config.TNPN_EMAIL or not config.TNPN_PASSWORD:
             failures.append("TNPN_EMAIL / TNPN_PASSWORD not set (required for scraping)")
+    if mode in scrape_modes:
         if not config.CAPTCHA_API_KEY:
             failures.append("CAPTCHA_API_KEY not set (CAPTCHA solving will fail)")
 
@@ -1127,7 +1130,8 @@ def cli_main() -> None:
     parser.add_argument(
         "mode",
         choices=[
-            "daily", "historical", "pdf-import", "photo-import", "dropbox-watch",
+            "daily", "historical", "list-searches", "pdf-import", "photo-import",
+            "dropbox-watch",
             "csv-import", "phone-validate", "manage-sold", "manage-presets",
             # New analysis & workflow modes
             "comp", "rehab", "analyze-deal", "market-analysis", "buyer-prospect",
@@ -1135,7 +1139,8 @@ def cli_main() -> None:
             "playbook",
         ],
         help=(
-            "daily/historical = scrape notices; pdf-import/photo-import = import from files; "
+            "daily/historical = scrape notices; list-searches = dump the live saved-search "
+            "dropdown labels; pdf-import/photo-import = import from files; "
             "dropbox-watch = poll Dropbox; csv-import = re-enrich CSV; "
             "phone-validate = Trestle scoring; manage-sold/manage-presets = DataSift ops; "
             "comp = comparable sales ARV; rehab = rehab cost estimate; "
@@ -1173,6 +1178,14 @@ def cli_main() -> None:
         type=int,
         default=0,
         help="Stop after scraping this many notices (0 = no limit)",
+    )
+    parser.add_argument(
+        "--no-proxy",
+        action="store_true",
+        help=(
+            "Scrape from this machine's own IP. Only works from an IP the site "
+            "allows; most get 'not permitted to view public notices'."
+        ),
     )
     parser.add_argument(
         "--verbose", "-v",
@@ -1585,6 +1598,32 @@ def cli_main() -> None:
         sys.exit(1)
     logging.info("Preflight checks passed")
 
+    # ── Saved-search discovery ────────────────────────────────────────
+    # SAVED_SEARCHES labels must match the site's dropdown exactly; a typo
+    # scrapes zero notices and looks like an empty day. Verify, never guess.
+    if args.mode == "list-searches":
+        from proxy_resolver import describe as describe_proxy, resolve_proxy_url
+        from scraper import list_saved_searches
+        proxy_url = None if args.no_proxy else resolve_proxy_url()
+        logging.info("Egress: %s", "DIRECT (--no-proxy)" if args.no_proxy else describe_proxy())
+        labels = asyncio.run(list_saved_searches(proxy_url=proxy_url))
+        if not labels:
+            print("No saved searches found (login failed or dropdown missing).")
+            sys.exit(1)
+        configured = {s.saved_search_name for s in config.SAVED_SEARCHES}
+        print(f"\n{len(labels)} saved search(es) on tnpublicnotice.com:\n")
+        for label in labels:
+            mark = "[configured]" if label in configured else "[ not used  ]"
+            print(f"  {mark}  {label}")
+        missing = sorted(configured - set(labels))
+        if missing:
+            print("\nCONFIGURED BUT NOT ON THE SITE (these scrape nothing):")
+            for name in missing:
+                print(f"  !!  {name}")
+            sys.exit(1)
+        print()
+        return
+
     # ── New analysis & workflow modes ─────────────────────────────────
 
     if args.mode == "comp":
@@ -1687,7 +1726,6 @@ def cli_main() -> None:
         if not csv_path:
             print("ERROR: --csv-path required or place CSVs in output/")
             return
-        import asyncio
         from deep_prospector import run_deep_prospecting
         result = asyncio.run(run_deep_prospecting(
             csv_path=csv_path, depth=args.depth,
@@ -1834,9 +1872,19 @@ def cli_main() -> None:
 
 def _run_scrape_pipeline(args, searches) -> None:
     """Run the daily/historical scrape → enrich → export → upload pipeline."""
+    # Egress first: the site refuses notice pages to unapproved IPs, and the CLI
+    # path used to run direct while only the Apify Actor got a proxy, which is
+    # why the scrape worked in the cloud and died on a workstation.
+    from proxy_resolver import describe as describe_proxy, resolve_proxy_url
+
+    proxy_url = None if getattr(args, "no_proxy", False) else resolve_proxy_url()
+    logging.info("Egress: %s", "DIRECT (--no-proxy)" if getattr(args, "no_proxy", False)
+                 else describe_proxy())
+
     # Scrape
     notices = asyncio.run(scrape_all(
         mode=args.mode, searches=searches,
+        proxy_url=proxy_url,
         llm_api_key=config.ANTHROPIC_API_KEY or None,
         since_date_override=args.since,
         max_notices=args.max_notices,
@@ -1925,28 +1973,7 @@ def _run_scrape_pipeline(args, searches) -> None:
                     except Exception as e:
                         logging.warning("Per-record Trestle scoring failed: %s", e)
 
-    # Host notice screenshots (proof-of-source) so the link travels with the
-    # record into DataSift (Notes + "Notice Screenshot" field). Uses Google
-    # Drive when configured, otherwise references the local PNG path.
-    try:
-        from notice_screenshot import (
-            host_screenshots_via_drive,
-            set_local_screenshot_urls,
-        )
-        captured = sum(1 for n in notices if n.notice_screenshot_path)
-        if captured:
-            hosted = host_screenshots_via_drive(
-                notices,
-                config.GOOGLE_DRIVE_FOLDER_ID,
-                config.GOOGLE_SERVICE_ACCOUNT_KEY,
-            )
-            local_only = set_local_screenshot_urls(notices)
-            logging.info(
-                "Notice screenshots: %d captured, %d hosted on Drive, %d local-only",
-                captured, hosted, local_only,
-            )
-    except Exception:
-        logging.exception("Notice screenshot hosting failed, continuing")
+    # Notice screenshots retired 2026-08-14 (see archive/notice_screenshots/).
 
     # Write output
     if args.split:
@@ -2044,9 +2071,12 @@ def _run_scrape_pipeline(args, searches) -> None:
 
 
 if __name__ == "__main__":
-    if os.environ.get("APIFY_IS_AT_HOME") or os.environ.get("APIFY_TOKEN"):
-        # Running inside Apify platform or with apify run
+    # APIFY_IS_AT_HOME is set only by the Apify platform itself. The old check
+    # also fired on APIFY_TOKEN, which lives in .env for consolidate_foreclosures
+    # to read past run artifacts, so every local `python src/main.py <mode>`
+    # silently ran the Actor instead of the CLI and died on "tn_username and
+    # tn_password are required". Set SIFTSTACK_FORCE_ACTOR=1 for `apify run`.
+    if os.environ.get("APIFY_IS_AT_HOME") or os.environ.get("SIFTSTACK_FORCE_ACTOR"):
         asyncio.run(actor_main())
     else:
-        # Standalone CLI
         cli_main()

@@ -64,12 +64,72 @@ EXCLUDE_PHRASES = [
 ]
 
 
+# Language that means "this is a trustee/foreclosure sale", used to catch a
+# foreclosure notice that surfaced in a NON-foreclosure saved search. The
+# probate saved search matches on the word "probate", which also appears in
+# trustee sale notices ("...the estate of the deceased borrower, probate..."),
+# so a successor-trustee sale can land in the probate results and be uploaded as
+# a probate lead with the trustee's law firm parsed as the personal
+# representative. Seen live on a Marinosci Law Group successor-trustee notice.
+_TRUSTEE_SALE_MARKERS = (
+    "substitute trustee's sale",
+    "substitute trustee sale",
+    "successor trustee's sale",
+    "successor trustee sale",
+    "notice of trustee's sale",
+    "notice of trustee sale",
+    "notice of substitute trustee",
+    "notice of foreclosure sale",
+    "foreclosure sale notice",
+    "notice of default and foreclosure",
+)
+
+# Markers that a notice really is a probate filing. A trustee sale can MENTION
+# an estate, so the reclassification below requires trustee-sale language AND
+# the absence of a genuine probate anchor.
+_PROBATE_ANCHORS = (
+    "notice to creditors",
+    "letters testamentary",
+    "letters of administration",
+    "personal representative",
+    "executor",
+    "executrix",
+    "administratrix",
+    "probate division",
+    "claims against the estate",
+)
+
+
+def looks_like_trustee_sale(notice: NoticeData) -> bool:
+    """True when a non-foreclosure notice is actually a trustee/foreclosure sale.
+
+    Used to keep foreclosure notices out of the probate pipeline, where they
+    would otherwise be uploaded to the Probate list with a law firm as the
+    decision maker.
+    """
+    text = (notice.raw_text or "").lower()
+    if not text:
+        return False
+    if not any(m in text for m in _TRUSTEE_SALE_MARKERS):
+        return False
+    # A real probate filing that happens to reference a trustee is not a sale.
+    return not any(a in text for a in _PROBATE_ANCHORS)
+
+
 def is_valid_foreclosure(notice: NoticeData) -> bool:
     """Determine if a foreclosure notice is a real first-to-market trustee sale.
 
-    Non-foreclosure notice types (tax_sale, tax_lien, probate) always pass through.
+    Non-foreclosure notice types (tax_sale, tax_lien, probate) pass through,
+    EXCEPT when the body is plainly a trustee sale that leaked into another
+    saved search: see looks_like_trustee_sale.
     """
     if notice.notice_type != "foreclosure":
+        if looks_like_trustee_sale(notice):
+            logger.debug(
+                "Excluded %s (body is a trustee sale, not a %s): %s",
+                notice.notice_type, notice.notice_type, notice.source_url,
+            )
+            return False
         return True  # Non-foreclosure notices pass through unfiltered
 
     text = notice.raw_text.lower()

@@ -1,7 +1,14 @@
-"""Live test: login → open a notice → solve reCAPTCHA → verify text appears.
+"""Live diagnostic: login -> open a notice -> clear the gate -> verify text.
 
-Run from project root:
+Not a pytest module (no test functions); it is a hands-on probe kept under
+tests/ so it sits next to the suite. Run it from the project root:
+
     .venv/Scripts/python.exe tests/test_captcha_live.py
+
+The gate is Cloudflare TURNSTILE, not reCAPTCHA (the site migrated around
+2026-07-13). It also runs through the configured proxy: tnpublicnotice.com
+refuses notice pages outright from most IPs, and this probe is exactly where
+that gets mistaken for "no CAPTCHA needed".
 """
 
 import asyncio
@@ -47,8 +54,23 @@ async def main():
 
     logger.info("2Captcha API key: %s...%s", CAPTCHA_API_KEY[:4], CAPTCHA_API_KEY[-4:])
 
+    from proxy_resolver import describe as describe_proxy, resolve_proxy_url
+
+    logger.info("Egress: %s", describe_proxy())
+    proxy_url = resolve_proxy_url()
+    launch: dict = {"headless": False}  # visible for debugging
+    if proxy_url:
+        from urllib.parse import urlparse
+
+        parsed = urlparse(proxy_url)
+        launch["proxy"] = {
+            "server": f"{parsed.scheme}://{parsed.hostname}:{parsed.port}",
+            "username": parsed.username,
+            "password": parsed.password,
+        }
+
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=False)  # visible for debugging
+        browser = await p.chromium.launch(**launch)
         context = await browser.new_context()
         context.set_default_timeout(60_000)
         page = await context.new_page()

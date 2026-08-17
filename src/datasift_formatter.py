@@ -143,6 +143,15 @@ def _is_entity_name(name: str) -> bool:
     return bool(_ENTITY_SUFFIXES.search(name))
 
 
+# Tokens that begin a multi-word surname. When one of these appears between the
+# first and last token, it and everything after it belong to the last name.
+_SURNAME_PARTICLES = {
+    "van", "von", "de", "del", "dela", "della", "di", "da", "das", "dos", "du",
+    "la", "le", "las", "los", "der", "den", "ter", "ten", "af", "av",
+    "mac", "mc", "st", "saint", "santa", "san", "bin", "ibn", "al", "el", "abu",
+}
+
+
 def _clean_and_split_name(full_name: str) -> tuple[str, str]:
     """Clean a full name for DataSift upload and split into (first, last).
 
@@ -185,6 +194,20 @@ def _clean_and_split_name(full_name: str) -> tuple[str, str]:
             # "John & Jane" with no last name → just use first person
             name = first_person
 
+    # Drop a trailing legal status word. The notice parser already does this,
+    # but records that arrive by CSV or photo import never pass through it, and
+    # "JOHN SMITH, DECEASED" splits to last name "Deceased" without it.
+    _status = {
+        "deceased", "decedent", "married", "unmarried", "single", "widow",
+        "widowed", "widower", "divorced", "person", "individually",
+        "et", "al", "etal", "etux", "ux",
+        "jr", "sr", "ii", "iii", "iv", "vi", "vii", "viii", "ix",
+    }
+    _parts = name.split()
+    while len(_parts) > 1 and _parts[-1].strip(",.").lower() in _status:
+        _parts.pop()
+    name = " ".join(_parts)
+
     # Strip remaining special characters that cause incomplete status
     name = re.sub(r"[&@#%]", "", name)
     # Collapse multiple spaces
@@ -199,10 +222,26 @@ def _clean_and_split_name(full_name: str) -> tuple[str, str]:
     if len(parts) >= 3:
         # Strip middle initials (single letter + optional period) from between
         # first and last name parts. "Eric J. Yopp" → "Eric Yopp"
-        # Keeps multi-char prefixes like "St." in "Richard C. St. Leger"
         middle = parts[1:-1]
         middle = [p for p in middle if not re.match(r"^[A-Za-z]\.?$", p)]
         parts = [parts[0]] + middle + [parts[-1]]
+
+    # Anything still between the first and last token is a SPELLED-OUT MIDDLE
+    # name, not part of the surname. "Eric Lee Sharp" was landing in DataSift as
+    # first="Eric", last="Lee Sharp", which breaks record matching, mail merge
+    # and every skip trace keyed on the surname.
+    #
+    # The exception is a surname particle: "Ann Van Buren" and "Maria De La Cruz"
+    # really do have multi-token surnames, so the particle and everything after
+    # it stays with the last name.
+    if len(parts) >= 3:
+        surname_start = len(parts) - 1
+        for i in range(1, len(parts) - 1):
+            if parts[i].lower().rstrip(".") in _SURNAME_PARTICLES:
+                surname_start = i
+                break
+        return (parts[0], " ".join(parts[surname_start:]))
+
     return (parts[0], " ".join(parts[1:]))
 
 

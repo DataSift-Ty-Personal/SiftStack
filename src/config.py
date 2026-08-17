@@ -29,27 +29,53 @@ def run_date() -> str:
 
 # ── Paths ──────────────────────────────────────────────────────────────
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-OUTPUT_DIR = PROJECT_ROOT / "output"
-LOG_DIR = PROJECT_ROOT / "logs"
-STATE_FILE = PROJECT_ROOT / "last_run.json"
-SEEN_IDS_FILE = PROJECT_ROOT / "seen_ids.json"
+
+# Run state (last_run, seen ids, cookies, CAPTCHA failures) lives beside the
+# code locally, but on a cloud box it MUST live on the mounted volume or every
+# redeploy resets the dedup cache and the next run re-scrapes (and re-pays for)
+# everything it already has. Set SIFTSTACK_STATE_DIR=/data in the container.
+STATE_DIR = Path(os.getenv("SIFTSTACK_STATE_DIR", str(PROJECT_ROOT)))
+STATE_DIR.mkdir(parents=True, exist_ok=True)
+
+OUTPUT_DIR = Path(os.getenv("SIFTSTACK_OUTPUT_DIR", str(PROJECT_ROOT / "output")))
+LOG_DIR = Path(os.getenv("SIFTSTACK_LOG_DIR", str(PROJECT_ROOT / "logs")))
+STATE_FILE = STATE_DIR / "last_run.json"
+SEEN_IDS_FILE = STATE_DIR / "seen_ids.json"
 SEEN_IDS_PRUNE_DAYS = 90
 # Notices that exhausted all CAPTCHA retries during scraping.
 # Persisted so the next run's summary can surface them instead of
 # silently dropping — and a future retry pass can prioritize them.
-CAPTCHA_FAILED_IDS_FILE = PROJECT_ROOT / "captcha_failed_ids.json"
+CAPTCHA_FAILED_IDS_FILE = STATE_DIR / "captcha_failed_ids.json"
 CAPTCHA_FAILED_PRUNE_DAYS = 14
-COOKIES_FILE = PROJECT_ROOT / "cookies.json"
-DROPBOX_STATE_FILE = PROJECT_ROOT / "dropbox_state.json"
-PHOTO_STATE_FILE = PROJECT_ROOT / "photo_state.json"
+COOKIES_FILE = STATE_DIR / "cookies.json"
+DROPBOX_STATE_FILE = STATE_DIR / "dropbox_state.json"
+PHOTO_STATE_FILE = STATE_DIR / "photo_state.json"
 
 # ── Dropbox Watcher ────────────────────────────────────────────────────
 DROPBOX_POLL_INTERVAL = int(os.getenv("DROPBOX_POLL_INTERVAL", "900"))  # seconds (default 15 min)
 DROPBOX_ROOT_FOLDER = os.getenv("DROPBOX_ROOT_FOLDER", "")  # root folder path in Dropbox, e.g. "/TN Public Notice"
 DROPBOX_STORAGE_WARN_PERCENT = 80  # warn when storage usage exceeds this %
 
-OUTPUT_DIR.mkdir(exist_ok=True)
-LOG_DIR.mkdir(exist_ok=True)
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+
+# ── Egress / proxy ─────────────────────────────────────────────────────
+# tnpublicnotice.com REFUSES notice detail pages to IPs it does not like:
+# the page carries no CAPTCHA at all, just "You are not permitted to view
+# public notices from this computer at this time." Verified 2026-08-14 from
+# the office IP. Through a proxied IP the same account gets the normal
+# Turnstile gate and the notice. So the scrape needs an egress IP, and this
+# is not something code can work around.
+#
+#   SIFTSTACK_PROXY_URL   explicit proxy, http://user:pass@host:port
+#   APIFY_PROXY_GROUPS    resolve an Apify proxy URL from APIFY_TOKEN instead
+#
+# Apify's RESIDENTIAL group is not on the current plan (availableCount 0);
+# the BUYPROXIES94952 datacenter group (27 US IPs) clears the block today.
+PROXY_URL = os.getenv("SIFTSTACK_PROXY_URL", "").strip()
+APIFY_PROXY_GROUPS = os.getenv("APIFY_PROXY_GROUPS", "BUYPROXIES94952").strip()
+APIFY_PROXY_SESSION = os.getenv("APIFY_PROXY_SESSION", "tnpn").strip()
+APIFY_TOKEN = os.getenv("APIFY_TOKEN", "")
 
 # ── Credentials ────────────────────────────────────────────────────────
 TNPN_EMAIL = os.getenv("TNPN_EMAIL", "")
@@ -167,21 +193,9 @@ BLUR_THRESHOLD = int(os.getenv("BLUR_THRESHOLD", "100"))   # Laplacian variance;
 TESSERACT_PSM_PDF = 3    # fully automatic — best for PDF tax sale tables
 TESSERACT_PSM_PHOTO = 4  # assume single column of variable-size text — best for terminal screen photos
 
-# ── Notice Screenshots (proof-of-source) ────────────────────────────────
-# Capture a full-page screenshot of each notice detail page during scraping so
-# the actual published notice travels with the record into DataSift (a clickable
-# link in Notes + the "Notice Screenshot" custom field). Adds legitimacy to
-# outreach. Disable by setting CAPTURE_NOTICE_SCREENSHOTS=false.
-CAPTURE_NOTICE_SCREENSHOTS = os.getenv(
-    "CAPTURE_NOTICE_SCREENSHOTS", "true"
-).strip().lower() not in ("0", "false", "no", "off", "")
-NOTICE_SCREENSHOT_DIR = OUTPUT_DIR / "notices"
-# Notice types we capture screenshots for (comma-separated env override).
-NOTICE_SCREENSHOT_TYPES = {
-    t.strip().lower()
-    for t in os.getenv("NOTICE_SCREENSHOT_TYPES", "foreclosure").split(",")
-    if t.strip()
-}
+# Notice screenshots were retired 2026-08-14; the tooling and the reasoning
+# live in archive/notice_screenshots/. NoticeData still carries the two
+# fields and the CSV column so historical records keep their URLs.
 
 # ── Notice Types ───────────────────────────────────────────────────────
 NOTICE_TYPES = ["foreclosure", "probate"]
@@ -196,10 +210,19 @@ class SavedSearch:
 
 
 # ── Saved Searches ─────────────────────────────────────────────────────
-# These names must match exactly what appears in the dropdown on the site.
+# These names must match the site's dropdown EXACTLY. A typo scrapes zero
+# notices and looks identical to a quiet day, so verify against the live site
+# rather than guessing:  python src/main.py list-searches
+#
+# Verified live 2026-08-14. The account also carries "Tax Sale V2 {Knox,Blount}"
+# and "Tax Delinquent V2 {Knox,Blount}"; they are deliberately not enabled here
+# (tax sale is excluded per Ty, and tax delinquent arrives through the Knox FTM
+# county pull instead of the notice site).
 SAVED_SEARCHES: list[SavedSearch] = [
     SavedSearch("Knox", "foreclosure", "Foreclosure V2 Knox"),
     SavedSearch("Blount", "foreclosure", "Foreclosure V2 Blount"),
+    SavedSearch("Knox", "probate", "Probate V2 Knox"),
+    SavedSearch("Blount", "probate", "Probate V2 Blount"),
 ]
 
 # ── Entity Detection ──────────────────────────────────────────────────

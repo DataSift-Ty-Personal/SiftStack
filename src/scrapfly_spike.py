@@ -70,7 +70,7 @@ def main() -> None:
             print(snippet[:300])
 
     if res.screenshot_bytes:
-        out_dir = config.NOTICE_SCREENSHOT_DIR / "spike"
+        out_dir = config.OUTPUT_DIR / "notices" / "spike"
         out_dir.mkdir(parents=True, exist_ok=True)
         name = (args.id or "url").replace("/", "_")[:40]
         p = out_dir / f"spike_{name}.png"

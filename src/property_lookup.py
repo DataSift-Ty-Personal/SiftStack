@@ -5,7 +5,7 @@ the decedent's property address. This module searches county property assessor
 databases by the decedent's name to find their property address(es).
 
 - Knox County: KGIS Maps (Playwright scrape — ArcGIS REST services require auth)
-- Blount County: TPAD (TN Comptroller) — simple HTTP GET, HTML table parsing
+- Blount County: TPAD (TN Comptroller), JSON DataTables endpoint, needs a User-Agent
 """
 
 import asyncio
@@ -22,11 +22,52 @@ logger = logging.getLogger(__name__)
 # ── TPAD (Blount County) ─────────────────────────────────────────────
 
 TPAD_SEARCH_URL = "https://assessment.cot.tn.gov/TPAD/Search"
+# The rows live behind the page's own DataTables call, not in the HTML.
+TPAD_RESULTS_URL = "https://assessment.cot.tn.gov/TPAD/Search/GetSearchResults"
 TPAD_BLOUNT_JUR = "005"  # Confirmed via scouting
+# A User-Agent is REQUIRED: TPAD 403s anything that looks like a bare script.
+TPAD_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    ),
+    "X-Requested-With": "XMLHttpRequest",
+    "Referer": TPAD_SEARCH_URL,
+}
+
+
+def _tpad_normalize_address(raw: str) -> str:
+    """TPAD prints the house number LAST: "LAKESHORE DR  5705" -> "5705 Lakeshore Dr".
+
+    Left as-is, every Blount address fails downstream validation and Smarty
+    standardization, so the record is dropped for a formatting reason rather
+    than a data one.
+    """
+    raw = " ".join((raw or "").split())
+    if not raw:
+        return ""
+    m = re.match(r"^(.*?)\s+(\d+[A-Za-z]?)$", raw)
+    if m:
+        street, number = m.group(1), m.group(2)
+        raw = f"{number} {street}"
+    return raw.title() if raw.isupper() else raw
 
 
 def _tpad_lookup(name: str) -> list[dict]:
     """Search TPAD for properties owned by name in Blount County.
+
+    Uses the DataTables JSON endpoint the page's own JS calls. Two things about
+    this were silently broken, and together they meant NO Blount probate record
+    could ever resolve an address:
+
+      1. TPAD returns 403 to a request with no browser User-Agent. Bare
+         `requests` was being refused outright on every single lookup.
+      2. The HTML page only ships an EMPTY table shell (id `searchResultsTable`,
+         not the `resultsTable` the parser looked for). Rows arrive from
+         `POST /TPAD/Search/GetSearchResults`, which returns clean JSON.
+
+    Both failures were quiet: the lookup returned [], the notice kept an empty
+    address, and validation later dropped the record as "missing address".
 
     Args:
         name: Owner name to search (e.g. "SMITH JOHN")
@@ -34,59 +75,45 @@ def _tpad_lookup(name: str) -> list[dict]:
     Returns:
         List of dicts with keys: owner, address, classification, parcel_id
     """
-    params = {
-        "ClearDatatable": "true",
-        "Jur": TPAD_BLOUNT_JUR,
-        "Query": name,
-    }
-
     try:
-        resp = requests.get(TPAD_SEARCH_URL, params=params, timeout=30)
+        resp = requests.post(
+            TPAD_RESULTS_URL,
+            data={
+                "Jur": TPAD_BLOUNT_JUR,
+                "Query": name,
+                "SortBy": "",
+                "PropertyType": "",
+            },
+            headers=TPAD_HEADERS,
+            timeout=45,
+        )
         resp.raise_for_status()
+        rows = resp.json()
     except requests.RequestException as e:
         logger.warning("TPAD request failed for '%s': %s", name, e)
         return []
+    except ValueError:
+        logger.warning("TPAD returned non-JSON for '%s' (endpoint may have moved)", name)
+        return []
 
-    soup = BeautifulSoup(resp.text, "html.parser")
+    if not isinstance(rows, list):
+        logger.warning("TPAD returned %s, expected a list, for '%s'", type(rows).__name__, name)
+        return []
 
-    # The results are in a DataTables grid. Each row has cells for:
-    # [View link] Owner | Property Address | Control Map | Group | Parcel |
-    # Special Interest | Parcel ID | Subdivision | Lot | Class | Sale Date | GIS Map
     results = []
-    table = soup.find("table", {"id": "resultsTable"})
-    if not table:
-        # Try finding any table with the expected structure
-        tables = soup.find_all("table")
-        for t in tables:
-            if t.find("th", string=re.compile(r"Owner", re.IGNORECASE)):
-                table = t
-                break
-
-    if not table:
-        logger.debug("No results table found in TPAD response for '%s'", name)
-        return []
-
-    tbody = table.find("tbody")
-    if not tbody:
-        return []
-
-    for row in tbody.find_all("tr"):
-        cells = row.find_all("td")
-        if len(cells) < 11:
+    for row in rows:
+        if not isinstance(row, dict):
             continue
-
-        owner = cells[1].get_text(strip=True)
-        address = cells[2].get_text(strip=True)
-        parcel_id = cells[7].get_text(strip=True)
-        classification = cells[10].get_text(strip=True)
-
-        if owner and address:
-            results.append({
-                "owner": owner,
-                "address": address,
-                "classification": classification,
-                "parcel_id": parcel_id,
-            })
+        owner = (row.get("owner") or "").strip()
+        address = _tpad_normalize_address(row.get("propertyAddress") or "")
+        if not owner or not address:
+            continue
+        results.append({
+            "owner": owner,
+            "address": address,
+            "classification": (row.get("class") or "").strip(),
+            "parcel_id": (row.get("parcelId") or "").strip(),
+        })
 
     logger.debug("TPAD found %d properties for '%s'", len(results), name)
     return results
@@ -98,89 +125,140 @@ KGIS_URL = "https://www.kgis.org/kgismaps/"
 KGIS_OWNER_CARD_URL = "https://www.kgis.org/parcelreports/ownercard.aspx?id={parcel_id}"
 
 
-async def _kgis_lookup(name: str) -> list[dict]:
-    """Search KGIS for properties owned by name in Knox County.
+class KgisSession:
+    """One Chromium instance reused across many KGIS owner searches.
 
-    Uses Playwright to interact with the KGIS Maps owner search since
-    the ArcGIS REST services require authentication.
+    THE REASON THIS EXISTS. `_kgis_lookup` used to launch a browser, navigate,
+    search, and close for EVERY name. A probate record tries up to three name
+    variants (full, shortened, maiden), so one record could pay three browser
+    launches. On the Fly machine a launch is 10-15s, which made a single record
+    take 40-60s and put the 12-month backfill's probate lookups at roughly 25
+    hours of browser startup alone.
 
-    Args:
-        name: Owner name to search in "LAST FIRST" format
+    Reusing the browser AND the page cuts that to one launch for the whole
+    batch. The page stays on the KGIS map between searches; only the owner
+    field is refilled.
 
-    Returns:
-        List of dicts with keys: owner, address, parcel_id
+    Use as an async context manager:
+
+        async with KgisSession() as kgis:
+            hits = await kgis.search("SMITH JOHN")
     """
-    from playwright.async_api import async_playwright
 
-    results = []
+    def __init__(self, headless: bool = True):
+        self._pw = None
+        self._browser = None
+        self._page = None
+        self._headless = headless
+        self._dialog_hit = False
 
-    try:
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)
-            page = await browser.new_page()
-            page.set_default_timeout(30000)
+    async def __aenter__(self):
+        await self._open()
+        return self
 
-            # Use domcontentloaded — networkidle never fires (map tiles keep loading)
-            await page.goto(KGIS_URL, wait_until="domcontentloaded")
-            await page.wait_for_timeout(2000)
+    async def __aexit__(self, *exc):
+        await self.close()
 
-            # Set up dialog handler early (for "Nothing found" alerts)
-            dialog_handled = False
+    async def _open(self) -> None:
+        from playwright.async_api import async_playwright
 
-            async def handle_dialog(dialog):
-                nonlocal dialog_handled
-                if "nothing found" in dialog.message.lower():
-                    dialog_handled = True
-                await dialog.accept()
+        self._pw = await async_playwright().start()
+        self._browser = await self._pw.chromium.launch(headless=self._headless)
+        self._page = await self._browser.new_page()
+        self._page.set_default_timeout(30000)
 
-            page.on("dialog", handle_dialog)
+        async def handle_dialog(dialog):
+            # KGIS reports an empty result set with a "Nothing found" alert.
+            if "nothing found" in dialog.message.lower():
+                self._dialog_hit = True
+            await dialog.accept()
 
-            # Click the "Owner" cell in the search-by bar to switch to owner search.
-            # The search bar has cells: Address | Parcel | Owner | Place | Other
-            owner_cell = page.get_by_role("cell", name="Owner", exact=True)
-            await owner_cell.click()
+        self._page.on("dialog", handle_dialog)
+        # domcontentloaded, not networkidle: map tiles never stop loading.
+        await self._page.goto(KGIS_URL, wait_until="domcontentloaded")
+        await self._page.wait_for_timeout(2000)
 
-            # Wait for the owner name input to become visible
-            await page.wait_for_selector("#txtOwnerName", state="visible", timeout=5000)
+    async def close(self) -> None:
+        for closer in (
+            getattr(self._browser, "close", None),
+            getattr(self._pw, "stop", None),
+        ):
+            if closer:
+                try:
+                    await closer()
+                except Exception:
+                    pass
+        self._pw = self._browser = self._page = None
 
-            # Fill and search
+    async def _restart(self) -> None:
+        """Recover from a wedged page without losing the whole batch."""
+        logger.warning("KGIS session restarting")
+        await self.close()
+        await self._open()
+
+    async def search(self, name: str, _retry: bool = True) -> list[dict]:
+        """Search KGIS by owner name. Returns owner/address/parcel_id dicts."""
+        if self._page is None:
+            await self._open()
+
+        results: list[dict] = []
+        self._dialog_hit = False
+        page = self._page
+
+        try:
+            # The owner field is only present once the Owner tab is selected.
+            # After a previous search the tab is usually still active, so click
+            # only when the field is missing.
+            if not await page.locator("#txtOwnerName").is_visible():
+                await page.get_by_role("cell", name="Owner", exact=True).click()
+                await page.wait_for_selector("#txtOwnerName", state="visible", timeout=5000)
+
+            await page.fill("#txtOwnerName", "")
             await page.fill("#txtOwnerName", name)
             await page.get_by_role("button", name="Search").click()
-
-            # Wait for results or "nothing found" dialog
             await page.wait_for_timeout(3000)
 
-            if dialog_handled:
+            if self._dialog_hit:
                 logger.debug("KGIS: no results for '%s'", name)
-                await browser.close()
                 return []
 
-            # Results appear in nested tables inside a tabpanel.
-            # Each result is an innermost table with rows: owner, address, parcel+buttons.
+            # Results are innermost tables in the tabpanel: owner, address,
+            # then parcel id plus action buttons.
             inner_tables = await page.locator("[role='tabpanel'] table table table").all()
-
             for tbl in inner_tables:
                 rows = await tbl.locator("tr").all()
                 if len(rows) >= 3:
                     owner_text = (await rows[0].inner_text()).strip()
                     address_text = (await rows[1].inner_text()).strip()
-                    # Third row: first cell is parcel ID, rest are action buttons
                     parcel_text = (await rows[2].locator("td").first.inner_text()).strip()
-
                     if owner_text and address_text:
                         results.append({
                             "owner": owner_text,
                             "address": address_text,
                             "parcel_id": parcel_text,
                         })
+        except Exception as e:
+            logger.warning("KGIS lookup failed for '%s': %s", name, e)
+            if _retry:
+                # A reused page can wedge (navigation, a stuck modal). Rebuild
+                # once rather than failing every remaining record in the batch.
+                await self._restart()
+                return await self.search(name, _retry=False)
 
-            await browser.close()
+        logger.debug("KGIS found %d properties for '%s'", len(results), name)
+        return results
 
-    except Exception as e:
-        logger.warning("KGIS lookup failed for '%s': %s", name, e)
 
-    logger.debug("KGIS found %d properties for '%s'", len(results), name)
-    return results
+async def _kgis_lookup(name: str, session: "KgisSession | None" = None) -> list[dict]:
+    """Search KGIS for properties owned by name in Knox County.
+
+    Pass `session` to reuse one browser across a batch; without it this opens
+    and closes its own, which is correct but slow (see KgisSession).
+    """
+    if session is not None:
+        return await session.search(name)
+    async with KgisSession() as s:
+        return await s.search(name)
 
 
 async def _kgis_get_address_type(parcel_id: str) -> str:
@@ -378,6 +456,25 @@ async def lookup_decedent_properties(notices: list) -> None:
     if not notices:
         return
 
+    # One browser for the entire batch. Opened lazily so a Blount-only batch
+    # (TPAD is plain HTTP) never pays for Chromium at all.
+    kgis: KgisSession | None = None
+
+    async def _kgis(name: str) -> list[dict]:
+        nonlocal kgis
+        if kgis is None:
+            kgis = KgisSession()
+            await kgis._open()
+        return await kgis.search(name)
+
+    try:
+        return await _lookup_loop(notices, _kgis)
+    finally:
+        if kgis is not None:
+            await kgis.close()
+
+
+async def _lookup_loop(notices: list, _kgis) -> None:
     found = 0
     failed = 0
     skipped = 0
@@ -404,21 +501,21 @@ async def lookup_decedent_properties(notices: list) -> None:
 
         try:
             if notice.county.lower() == "knox":
-                results = await _kgis_lookup(search_name)
+                results = await _kgis(search_name)
                 # Retry with shorter name (drop middle name) if full name fails
                 if not results:
                     short_name = _shorten_search_name(search_name)
                     if short_name:
                         logger.info("  Retrying with shorter name: %s", short_name)
                         await asyncio.sleep(random.uniform(1.5, 2.5))
-                        results = await _kgis_lookup(short_name)
+                        results = await _kgis(short_name)
                 # Retry with maiden name for "FIRST MIDDLE MAIDEN MARRIED" patterns
                 if not results:
                     maiden = _maiden_name_variant(notice.decedent_name)
                     if maiden:
                         logger.info("  Retrying with maiden name: %s", maiden)
                         await asyncio.sleep(random.uniform(1.5, 2.5))
-                        results = await _kgis_lookup(maiden)
+                        results = await _kgis(maiden)
                 # KGIS doesn't include classification in search results.
                 # For single results, just take it. For multiple, check details.
                 if len(results) > 1:

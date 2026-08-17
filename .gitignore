@@ -6,6 +6,11 @@ input_foreclosure_daily.json
 # State files (generated at runtime)
 last_run.json
 seen_ids.json
+# Scheduled-run history. Lives on the Fly volume at /data in production.
+# NOTE: gitignore has no trailing-comment syntax. A "pattern  # comment" line
+# is read as one literal pattern and silently matches nothing, which is how
+# this file leaked into `git status` as untracked for a week.
+ftm_runs.jsonl
 captcha_failed_ids.json
 .ancestry_page_loads.json
 cookies.json
@@ -126,3 +131,28 @@ walk_*.json
 # live on the Fly volume at /data in production anyway.
 config/sms_numbers.json
 config/sms_senders.json
+
+# Superseded deal-workbook versions, moved out of the repo root by the
+# cleanup pass. Kept on disk with a MANIFEST.csv so any of it can be put
+# back, but it is derived output and does not belong in git.
+#
+# archive/notice_screenshots/ is the exception and is tracked: it is retired
+# SOURCE, not derived output, and CLAUDE.md sends readers to it by name. Same
+# `dir/*` + `!` form as deals/ above, for the same parent-directory reason.
+archive/*
+!archive/notice_screenshots/
+
+# Per-deal spec files for the lender package and the post-walkthrough pack.
+# The lender/borrower fields are placeholder-scrubbed but the rest is not:
+# real contract prices, real seller names, real comps on real addresses.
+# The GENERATOR is the shareable part; a filled-in spec is deal data.
+# deals/EXAMPLE_lender_spec.json is the scrubbed starting point and is kept.
+# Note the `deals/*` form. Git cannot re-include a file with `!` once its
+# PARENT DIRECTORY is excluded, so `deals/` + `!deals/EXAMPLE...` silently
+# drops the example. Excluding the contents instead keeps the negation live.
+deals/*
+!deals/EXAMPLE_lender_spec.json
+
+# Skip-trace and list exports. Real owners, real phone numbers.
+vacant_top100*.csv
+*_top100*.csv
