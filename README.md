@@ -120,14 +120,30 @@ Two superseded packages (`deep-prospecting`, `deep-prospecting-v4`) stay in the 
 
 ### What a skill needs from you
 
-Most skills call a paid API and read the key from your own environment. They degrade rather than fail: a missing key means that step is skipped and the run says so.
+**Nine of the 22 work the moment they are installed.** No key, no login, no card. Ask the library where you stand:
 
-| Skill group | Wants | Roughly |
+```bash
+python3 install.py --doctor
+```
+
+It reads your environment and a `.env` if you have one, then prints what works now, what needs you signed in somewhere, and what needs a credential. Every blocked skill prints its no-API alternative on the same line, so you are never told no without being told what to do instead. It sends no requests, spends nothing, and never prints a credential value.
+
+| Tier | Count | What it means |
 |---|---|---|
-| Comping, deal analysis | `OPENWEBNINJA_API_KEY` | 100 free lookups/month |
-| Deep prospecting | SmartSkip, Tracerfy, Trestle | about $0.24 per record end to end |
-| Phone validation | `TRESTLE_API_KEY` | $0.015 per number |
-| Coaching, KPI | Your SmrtPhone and DataSift logins | included in those plans |
+| No credentials | 9 | Works on install |
+| A login you already have | 8 | DataSift, SmrtPhone, Google. Browser-driven, no API access needed |
+| A metered API key | 5 | Faster and deeper, and every one has a free route |
+
+**Every paid step has a no-API route.** Comping runs by browser, heir research runs off obituaries and free people-search, KPIs run off a CSV export, coaching runs off any dialer's recordings. The [no-API playbook](docs/setup/no-api-playbook.md) has the method for each, and is honest about the three things that have no substitute.
+
+Skills degrade rather than fail: a missing key means that step is skipped and the run says so.
+
+| Guide | |
+|---|---|
+| [**Getting started**](docs/setup/GETTING-STARTED.md) | Install, check readiness, add credentials, first runs |
+| [**No-API playbook**](docs/setup/no-api-playbook.md) | The free route for every paid step |
+| [**API contracts**](docs/api/) | What each API actually does, and the traps that cost real time |
+| [`.env.skills.example`](.env.skills.example) | Every variable, what it unlocks, what it costs |
 
 ---
 

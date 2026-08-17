@@ -17,6 +17,16 @@
     "Market Intelligence",
     "Operations"
   ],
+  "tiers": {
+    "none": "Works the moment it is installed. No key, no login.",
+    "account": "Needs a login for a service you already pay for.",
+    "api": "Needs a third-party API key, usually metered."
+  },
+  "tier_counts": {
+    "none": 10,
+    "account": 7,
+    "api": 5
+  },
   "skills": [
     {
       "name": "sift-operations",
@@ -47,7 +57,14 @@
       "file_count": 16,
       "bytes": 98997,
       "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/sift-operations.plugin",
-      "sha256": "0bc86547e8c4db6e321d5f92cc060ae91774973a8e0b30646f9bbcf59ca03349"
+      "sha256": "0bc86547e8c4db6e321d5f92cc060ae91774973a8e0b30646f9bbcf59ca03349",
+      "requires": {
+        "tier": "none",
+        "fallback": null,
+        "env": [],
+        "accounts": [],
+        "cost": "Free"
+      }
     },
     {
       "name": "sift-sequences",
@@ -71,7 +88,19 @@
       "file_count": 9,
       "bytes": 107992,
       "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/sift-sequences.skill",
-      "sha256": "fa5df619c5a911a4ade196e8fbe5dcbb769d9cf9021210920861dddcbe497a2c"
+      "sha256": "fa5df619c5a911a4ade196e8fbe5dcbb769d9cf9021210920861dddcbe497a2c",
+      "requires": {
+        "tier": "account",
+        "env": [
+          "DATASIFT_EMAIL",
+          "DATASIFT_PASSWORD"
+        ],
+        "accounts": [
+          "DataSift"
+        ],
+        "cost": "Included with DataSift",
+        "fallback": "no-api-playbook#sequences-by-hand"
+      }
     },
     {
       "name": "closer-coach",
@@ -94,7 +123,17 @@
       "file_count": 8,
       "bytes": 76898,
       "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/closer-coach.skill",
-      "sha256": "d795bfa383c10e3cac099cc31bd736046cdd522dda9face1580ecd3742d910b1"
+      "sha256": "d795bfa383c10e3cac099cc31bd736046cdd522dda9face1580ecd3742d910b1",
+      "requires": {
+        "tier": "account",
+        "accounts": [
+          "SmrtPhone",
+          "OpenRouter or Anthropic"
+        ],
+        "cost": "About $0.002 per audio minute to transcribe",
+        "fallback": "no-api-playbook#coaching-without-a-dialer-api",
+        "env": []
+      }
     },
     {
       "name": "cold-call-coach",
@@ -122,7 +161,17 @@
       "file_count": 13,
       "bytes": 104768,
       "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/cold-call-coach.skill",
-      "sha256": "a50055ea32e7eb853e0f29c1f869346edf557b6d1b5c253840b3a319587267c7"
+      "sha256": "a50055ea32e7eb853e0f29c1f869346edf557b6d1b5c253840b3a319587267c7",
+      "requires": {
+        "tier": "account",
+        "accounts": [
+          "SmrtPhone",
+          "OpenRouter or Anthropic"
+        ],
+        "cost": "About $0.002 per audio minute to transcribe",
+        "fallback": "no-api-playbook#coaching-without-a-dialer-api",
+        "env": []
+      }
     },
     {
       "name": "kpi-engine",
@@ -140,7 +189,19 @@
       "file_count": 3,
       "bytes": 33180,
       "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/kpi-engine.skill",
-      "sha256": "a33f6806787f25298b95359325b82485467b8eadcdc686fdf357c5448712c8cc"
+      "sha256": "a33f6806787f25298b95359325b82485467b8eadcdc686fdf357c5448712c8cc",
+      "requires": {
+        "tier": "account",
+        "env": [
+          "REISIFT_TOKEN"
+        ],
+        "accounts": [
+          "DataSift"
+        ],
+        "cost": "Included with DataSift",
+        "fallback": "no-api-playbook#kpis-by-hand",
+        "note": "Mints its own token from your DataSift login. No internal API access needed."
+      }
     },
     {
       "name": "lead-manager-coach",
@@ -163,7 +224,17 @@
       "file_count": 8,
       "bytes": 76590,
       "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/lead-manager-coach.skill",
-      "sha256": "6eb37dd410c56d7f9101469c446cbb1e9aedcdf2e468bac9caed7c3ea68fc4bc"
+      "sha256": "6eb37dd410c56d7f9101469c446cbb1e9aedcdf2e468bac9caed7c3ea68fc4bc",
+      "requires": {
+        "tier": "account",
+        "accounts": [
+          "SmrtPhone",
+          "OpenRouter or Anthropic"
+        ],
+        "cost": "About $0.002 per audio minute to transcribe",
+        "fallback": "no-api-playbook#coaching-without-a-dialer-api",
+        "env": []
+      }
     },
     {
       "name": "comp-package",
@@ -183,7 +254,17 @@
       "file_count": 5,
       "bytes": 17801,
       "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/comp-package.skill",
-      "sha256": "61c5ccfbae1434497ac248908bbea4cd724be6e638828ca809b6a86f1cf38f5e"
+      "sha256": "61c5ccfbae1434497ac248908bbea4cd724be6e638828ca809b6a86f1cf38f5e",
+      "requires": {
+        "tier": "api",
+        "env": [
+          "OPENWEBNINJA_API_KEY"
+        ],
+        "cost": "100 free lookups per month, then metered",
+        "fallback": "real-estate-comping",
+        "note": "Without the key, real-estate-comping does the same job by browser.",
+        "accounts": []
+      }
     },
     {
       "name": "deal-analyzer",
@@ -216,7 +297,17 @@
       "file_count": 18,
       "bytes": 312860,
       "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/deal-analyzer.plugin",
-      "sha256": "f7802ed3f4bc46b5ff29198f7d4e863391324f44f939048c91c6a0f090aa4414"
+      "sha256": "f7802ed3f4bc46b5ff29198f7d4e863391324f44f939048c91c6a0f090aa4414",
+      "requires": {
+        "tier": "api",
+        "env": [
+          "OPENWEBNINJA_API_KEY"
+        ],
+        "cost": "100 free lookups per month, then metered",
+        "fallback": "real-estate-comping",
+        "note": "Comping stage only. Rehab and offer math need no key.",
+        "accounts": []
+      }
     },
     {
       "name": "deep-prospecting",
@@ -233,7 +324,15 @@
       "bytes": 40432,
       "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/deep-prospecting.skill",
       "sha256": "3fb7b821ad483bd5288dac89404e6c89c37da8ee5730172a2c0bf8e5393aa743",
-      "superseded_by": "deep-prospecting-v5"
+      "superseded_by": "deep-prospecting-v5",
+      "requires": {
+        "tier": "none",
+        "fallback": null,
+        "note": "Superseded. Manual research method.",
+        "env": [],
+        "accounts": [],
+        "cost": "Free"
+      }
     },
     {
       "name": "deep-prospecting-v4",
@@ -256,7 +355,19 @@
       "bytes": 85288,
       "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/deep-prospecting-v4.skill",
       "sha256": "02ee79406e8f8cfffc7df2a0561a382956613a504849553108803538162d18af",
-      "superseded_by": "deep-prospecting-v5"
+      "superseded_by": "deep-prospecting-v5",
+      "requires": {
+        "tier": "api",
+        "env": [
+          "ENFORMION_AP_NAME",
+          "ENFORMION_AP_PASSWORD",
+          "TRESTLE_API_KEY"
+        ],
+        "cost": "About $1.18 per record",
+        "fallback": "deep-prospecting-v5",
+        "note": "Superseded. v5 is roughly 5x cheaper and finds more.",
+        "accounts": []
+      }
     },
     {
       "name": "deep-prospecting-v5",
@@ -283,7 +394,19 @@
       "file_count": 12,
       "bytes": 79198,
       "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/deep-prospecting-v5.skill",
-      "sha256": "5a1527b3a13b5d9bc878ff5dba84dc5cf1a29399439fdb1b94df0b7f889b6554"
+      "sha256": "5a1527b3a13b5d9bc878ff5dba84dc5cf1a29399439fdb1b94df0b7f889b6554",
+      "requires": {
+        "tier": "api",
+        "env": [
+          "SMARTSKIP_EMAIL",
+          "SMARTSKIP_PASSWORD",
+          "TRESTLE_API_KEY"
+        ],
+        "cost": "About $0.24 per record end to end",
+        "fallback": "no-api-playbook#heir-research-by-hand",
+        "note": "Enformion is optional and only needed for LLC and trust owners.",
+        "accounts": []
+      }
     },
     {
       "name": "probate-property-finder",
@@ -299,7 +422,15 @@
       "file_count": 1,
       "bytes": 32693,
       "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/probate-property-finder.skill",
-      "sha256": "c6fd3275ad21c8b8dfb347ed3cd8021f1b5ca4130a0e19034d34953f38aff22f"
+      "sha256": "c6fd3275ad21c8b8dfb347ed3cd8021f1b5ca4130a0e19034d34953f38aff22f",
+      "requires": {
+        "tier": "none",
+        "fallback": null,
+        "note": "Uses free county tax portals and people-search sites.",
+        "env": [],
+        "accounts": [],
+        "cost": "Free"
+      }
     },
     {
       "name": "real-estate-comping",
@@ -320,7 +451,15 @@
       "file_count": 6,
       "bytes": 83133,
       "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/real-estate-comping.skill",
-      "sha256": "33e7abcf50d360f19efd1b3fe71baf328f7dab346883a18087f90f35de3eefd9"
+      "sha256": "33e7abcf50d360f19efd1b3fe71baf328f7dab346883a18087f90f35de3eefd9",
+      "requires": {
+        "tier": "none",
+        "fallback": null,
+        "note": "This IS the no-key comping route: manual Zillow, Redfin and Realtor pulls.",
+        "env": [],
+        "accounts": [],
+        "cost": "Free"
+      }
     },
     {
       "name": "rehab-estimator",
@@ -343,7 +482,15 @@
       "file_count": 8,
       "bytes": 222946,
       "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/rehab-estimator.skill",
-      "sha256": "e4108473498a3300cab4e7f5caec4513f72b9e93b2500c224fb7e2696346fef8"
+      "sha256": "e4108473498a3300cab4e7f5caec4513f72b9e93b2500c224fb7e2696346fef8",
+      "requires": {
+        "tier": "none",
+        "fallback": null,
+        "note": "Ships the locked Knox material list. Other markets use the cheat sheet.",
+        "env": [],
+        "accounts": [],
+        "cost": "Free"
+      }
     },
     {
       "name": "buyer-prospector",
@@ -362,7 +509,15 @@
       "file_count": 4,
       "bytes": 6735501,
       "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/buyer-prospector.skill",
-      "sha256": "183e67e0cfbe0ee2c9b7711041d4d49b927a8d58afe8edaaf05a9790c674c516"
+      "sha256": "183e67e0cfbe0ee2c9b7711041d4d49b927a8d58afe8edaaf05a9790c674c516",
+      "requires": {
+        "tier": "none",
+        "fallback": null,
+        "note": "Ships its own nationwide buyer data. Entity research is browser-driven.",
+        "env": [],
+        "accounts": [],
+        "cost": "Free"
+      }
     },
     {
       "name": "first-market-county-data",
@@ -383,7 +538,15 @@
       "file_count": 6,
       "bytes": 142423,
       "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/first-market-county-data.skill",
-      "sha256": "cd2fb68216cf76da4ec0b3c3158bd9c2f64a38d7556a6d43445470e4901ba8f6"
+      "sha256": "cd2fb68216cf76da4ec0b3c3158bd9c2f64a38d7556a6d43445470e4901ba8f6",
+      "requires": {
+        "tier": "none",
+        "fallback": null,
+        "note": "Tells you where to pull county data. The pulling is manual by design.",
+        "env": [],
+        "accounts": [],
+        "cost": "Free"
+      }
     },
     {
       "name": "sift-market-research",
@@ -405,7 +568,20 @@
       "file_count": 7,
       "bytes": 12095045,
       "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/sift-market-research.skill",
-      "sha256": "fa33ec18ebc641fecd3dbafe2c0823ca063e989de3168f6836c5ad89cff6722a"
+      "sha256": "fa33ec18ebc641fecd3dbafe2c0823ca063e989de3168f6836c5ad89cff6722a",
+      "requires": {
+        "tier": "account",
+        "env": [
+          "DATASIFT_EMAIL",
+          "DATASIFT_PASSWORD"
+        ],
+        "accounts": [
+          "DataSift"
+        ],
+        "cost": "Included with DataSift",
+        "fallback": "no-api-playbook#market-research",
+        "note": "Browser automation of Market Finder. Your login, not an API key."
+      }
     },
     {
       "name": "caller-reputation-monitor",
@@ -438,7 +614,19 @@
       "file_count": 18,
       "bytes": 215945,
       "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/caller-reputation-monitor.skill",
-      "sha256": "6dfa469f64d4f911f680a9d45003050806b9e68f76ee3163d6ed094d72d53e5c"
+      "sha256": "6dfa469f64d4f911f680a9d45003050806b9e68f76ee3163d6ed094d72d53e5c",
+      "requires": {
+        "tier": "api",
+        "env": [
+          "TELNYX_API_KEY",
+          "TELNYX_ENTERPRISE_ID"
+        ],
+        "accounts": [
+          "Telnyx"
+        ],
+        "cost": "Included with a Telnyx account",
+        "fallback": "no-api-playbook#spam-flag-checks-by-hand"
+      }
     },
     {
       "name": "candidate-intake",
@@ -465,7 +653,18 @@
       "file_count": 12,
       "bytes": 43658,
       "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/candidate-intake.skill",
-      "sha256": "17c513c2468cdd2125373950c1708783feeebeb483749ea35ad3a79dca5dff9f"
+      "sha256": "17c513c2468cdd2125373950c1708783feeebeb483749ea35ad3a79dca5dff9f",
+      "requires": {
+        "tier": "none",
+        "accounts": [
+          "Google",
+          "Claude in Chrome"
+        ],
+        "fallback": null,
+        "note": "Runs entirely through the Chrome extension. No API keys.",
+        "env": [],
+        "cost": "Free"
+      }
     },
     {
       "name": "phone-validator",
@@ -486,7 +685,16 @@
       "file_count": 6,
       "bytes": 76925,
       "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/phone-validator.skill",
-      "sha256": "bc00ed89023f1c572b9beb2f390fa7cd465924d26e901f3f0be5c98ee293d850"
+      "sha256": "bc00ed89023f1c572b9beb2f390fa7cd465924d26e901f3f0be5c98ee293d850",
+      "requires": {
+        "tier": "api",
+        "env": [
+          "TRESTLE_API_KEY"
+        ],
+        "cost": "About $0.015 per number",
+        "fallback": "no-api-playbook#phone-scoring-without-trestle",
+        "accounts": []
+      }
     },
     {
       "name": "playbook-creator",
@@ -511,7 +719,14 @@
       "file_count": 10,
       "bytes": 113610,
       "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/playbook-creator.skill",
-      "sha256": "9c24cd232114f77c115181b74f53a2a515f49c579b682b90d72f7fe297f95bc7"
+      "sha256": "9c24cd232114f77c115181b74f53a2a515f49c579b682b90d72f7fe297f95bc7",
+      "requires": {
+        "tier": "none",
+        "fallback": null,
+        "env": [],
+        "accounts": [],
+        "cost": "Free"
+      }
     },
     {
       "name": "sequential-presets",
@@ -532,7 +747,19 @@
       "file_count": 6,
       "bytes": 65292,
       "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/sequential-presets.skill",
-      "sha256": "7907c114b3bff2d4db9b663130f9e9e3805c42ba46b8017165255c2e55fc135d"
+      "sha256": "7907c114b3bff2d4db9b663130f9e9e3805c42ba46b8017165255c2e55fc135d",
+      "requires": {
+        "tier": "account",
+        "env": [
+          "DATASIFT_EMAIL",
+          "DATASIFT_PASSWORD"
+        ],
+        "accounts": [
+          "DataSift"
+        ],
+        "cost": "Included with DataSift",
+        "fallback": "no-api-playbook#presets-by-hand"
+      }
     },
     {
       "name": "team-hiring",
@@ -552,7 +779,14 @@
       "file_count": 5,
       "bytes": 28005,
       "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/team-hiring.skill",
-      "sha256": "ef1fc8b7c3461ecddfb7abde09b08e2b4f4593132810cb39c5c3feea0747ad21"
+      "sha256": "ef1fc8b7c3461ecddfb7abde09b08e2b4f4593132810cb39c5c3feea0747ad21",
+      "requires": {
+        "tier": "none",
+        "fallback": null,
+        "env": [],
+        "accounts": [],
+        "cost": "Free"
+      }
     },
     {
       "name": "text-touch-builder",
@@ -570,7 +804,14 @@
       "file_count": 3,
       "bytes": 30795,
       "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/text-touch-builder.skill",
-      "sha256": "ee627d292a0a2e4a03de07413bf91311e6db8f7365717097a221918acf8c7ea8"
+      "sha256": "ee627d292a0a2e4a03de07413bf91311e6db8f7365717097a221918acf8c7ea8",
+      "requires": {
+        "tier": "none",
+        "fallback": null,
+        "env": [],
+        "accounts": [],
+        "cost": "Free"
+      }
     }
   ]
 }

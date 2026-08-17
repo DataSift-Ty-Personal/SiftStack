@@ -51,6 +51,91 @@ SUPERSEDED = {
     "deep-prospecting-v4": "deep-prospecting-v5",
 }
 
+# What each package needs before it can actually run, and what to do instead
+# when you do not have it. This is the difference between a library someone
+# installs and a library someone uses: a skill that silently needs a paid key
+# fails on first contact and the person concludes the whole thing is broken.
+#
+# tier:      none    nothing to configure, works on install
+#            account your own login for a service you already pay for
+#            api     a third-party API key, usually metered
+# env:       environment variables the scripts read
+# accounts:  logins rather than keys
+# cost:      what it actually costs, so nobody is surprised by a bill
+# fallback:  the no-API route. Either a sibling skill that does the same job
+#            by browser or by hand, or a named section of the no-API playbook.
+REQUIRES = {
+    # --- tier none: knowledge and generation, no credentials at all ---------
+    "rehab-estimator": dict(tier="none", fallback=None,
+                            note="Ships the locked Knox material list. Other markets use the cheat sheet."),
+    "team-hiring": dict(tier="none", fallback=None),
+    "first-market-county-data": dict(tier="none", fallback=None,
+                                     note="Tells you where to pull county data. The pulling is manual by design."),
+    "playbook-creator": dict(tier="none", fallback=None),
+    "probate-property-finder": dict(tier="none", fallback=None,
+                                    note="Uses free county tax portals and people-search sites."),
+    "text-touch-builder": dict(tier="none", fallback=None),
+    "real-estate-comping": dict(tier="none", fallback=None,
+                                note="This IS the no-key comping route: manual Zillow, Redfin and Realtor pulls."),
+    "buyer-prospector": dict(tier="none", fallback=None,
+                             note="Ships its own nationwide buyer data. Entity research is browser-driven."),
+    "candidate-intake": dict(tier="none", accounts=["Google", "Claude in Chrome"], fallback=None,
+                             note="Runs entirely through the Chrome extension. No API keys."),
+    "deep-prospecting": dict(tier="none", fallback=None, note="Superseded. Manual research method."),
+    "sift-operations": dict(tier="none", fallback=None),
+
+    # --- tier account: your own login for something you already pay for ----
+    "sift-market-research": dict(tier="account", env=["DATASIFT_EMAIL", "DATASIFT_PASSWORD"],
+                                 accounts=["DataSift"], cost="Included with DataSift",
+                                 fallback="no-api-playbook#market-research",
+                                 note="Browser automation of Market Finder. Your login, not an API key."),
+    "sequential-presets": dict(tier="account", env=["DATASIFT_EMAIL", "DATASIFT_PASSWORD"],
+                               accounts=["DataSift"], cost="Included with DataSift",
+                               fallback="no-api-playbook#presets-by-hand"),
+    "sift-sequences": dict(tier="account", env=["DATASIFT_EMAIL", "DATASIFT_PASSWORD"],
+                           accounts=["DataSift"], cost="Included with DataSift",
+                           fallback="no-api-playbook#sequences-by-hand"),
+    "kpi-engine": dict(tier="account", env=["REISIFT_TOKEN"], accounts=["DataSift"],
+                       cost="Included with DataSift",
+                       fallback="no-api-playbook#kpis-by-hand",
+                       note="Mints its own token from your DataSift login. No internal API access needed."),
+    "cold-call-coach": dict(tier="account", accounts=["SmrtPhone", "OpenRouter or Anthropic"],
+                            cost="About $0.002 per audio minute to transcribe",
+                            fallback="no-api-playbook#coaching-without-a-dialer-api"),
+    "lead-manager-coach": dict(tier="account", accounts=["SmrtPhone", "OpenRouter or Anthropic"],
+                               cost="About $0.002 per audio minute to transcribe",
+                               fallback="no-api-playbook#coaching-without-a-dialer-api"),
+    "closer-coach": dict(tier="account", accounts=["SmrtPhone", "OpenRouter or Anthropic"],
+                         cost="About $0.002 per audio minute to transcribe",
+                         fallback="no-api-playbook#coaching-without-a-dialer-api"),
+
+    # --- tier api: a metered third-party key --------------------------------
+    "comp-package": dict(tier="api", env=["OPENWEBNINJA_API_KEY"],
+                         cost="100 free lookups per month, then metered",
+                         fallback="real-estate-comping",
+                         note="Without the key, real-estate-comping does the same job by browser."),
+    "phone-validator": dict(tier="api", env=["TRESTLE_API_KEY"],
+                            cost="About $0.015 per number",
+                            fallback="no-api-playbook#phone-scoring-without-trestle"),
+    "deep-prospecting-v5": dict(tier="api",
+                                env=["SMARTSKIP_EMAIL", "SMARTSKIP_PASSWORD", "TRESTLE_API_KEY"],
+                                cost="About $0.24 per record end to end",
+                                fallback="no-api-playbook#heir-research-by-hand",
+                                note="Enformion is optional and only needed for LLC and trust owners."),
+    "deep-prospecting-v4": dict(tier="api",
+                                env=["ENFORMION_AP_NAME", "ENFORMION_AP_PASSWORD", "TRESTLE_API_KEY"],
+                                cost="About $1.18 per record", fallback="deep-prospecting-v5",
+                                note="Superseded. v5 is roughly 5x cheaper and finds more."),
+    "caller-reputation-monitor": dict(tier="api", env=["TELNYX_API_KEY", "TELNYX_ENTERPRISE_ID"],
+                                      accounts=["Telnyx"], cost="Included with a Telnyx account",
+                                      fallback="no-api-playbook#spam-flag-checks-by-hand"),
+    "deal-analyzer": dict(tier="api", env=["OPENWEBNINJA_API_KEY"],
+                          cost="100 free lookups per month, then metered",
+                          fallback="real-estate-comping",
+                          note="Comping stage only. Rehab and offer math need no key."),
+}
+
+
 # Category drives grouping in the README, the manifest, and the install UI.
 CATEGORY = {
     "sift-market-research": "Market Intelligence",
@@ -352,7 +437,21 @@ def manifest() -> dict:
             }
             if src.name in SUPERSEDED:
                 entry["superseded_by"] = SUPERSEDED[src.name]
+
+            req = dict(REQUIRES.get(src.name, {"tier": "unknown"}))
+            req.setdefault("env", [])
+            req.setdefault("accounts", [])
+            req.setdefault("cost", "Free")
+            req.setdefault("fallback", None)
+            entry["requires"] = req
             entries.append(entry)
+
+    unknown = [e["name"] for e in entries if e["requires"]["tier"] == "unknown"]
+    if unknown:
+        raise SystemExit(
+            "These packages have no REQUIRES entry, so the doctor cannot tell "
+            "anyone whether they can run them or what to do instead: "
+            + ", ".join(unknown))
 
     entries.sort(key=lambda e: (e["category"], e["name"]))
     doc = {
@@ -368,6 +467,15 @@ def manifest() -> dict:
             "plugins": sum(1 for e in entries if e["kind"] == "plugin"),
         },
         "categories": sorted({e["category"] for e in entries}),
+        "tiers": {
+            "none": "Works the moment it is installed. No key, no login.",
+            "account": "Needs a login for a service you already pay for.",
+            "api": "Needs a third-party API key, usually metered.",
+        },
+        "tier_counts": {
+            t: sum(1 for e in entries if e["requires"]["tier"] == t and e["status"] == "current")
+            for t in ("none", "account", "api")
+        },
         "skills": entries,
     }
     MANIFEST.parent.mkdir(parents=True, exist_ok=True)

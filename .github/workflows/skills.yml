@@ -93,6 +93,21 @@ jobs:
             echo "::error::second install was not a no-op; installer is not idempotent"; exit 1; }
           echo "installer OK, $(find /tmp/skills-ci -maxdepth 1 -mindepth 1 -type d | wc -l) packages"
 
+      - name: Setup docs match the manifest
+        # The doctor tells people "use X instead". If X points at a section
+        # that does not exist, they are stranded at the moment they asked for
+        # help. Also fails if a documented env var is missing from the example
+        # file, or if the example file ever carries a real value.
+        run: python tools/check_docs.py --ci
+
+      - name: Doctor runs clean with no credentials at all
+        # The first thing a new person runs. It must not need anything.
+        run: |
+          env -u DATASIFT_EMAIL -u DATASIFT_PASSWORD -u OPENWEBNINJA_API_KEY               -u TRESTLE_API_KEY python install.py --doctor > /tmp/doc.txt
+          grep -q "Works right now" /tmp/doc.txt
+          grep -q "Needs a credential" /tmp/doc.txt
+          echo "doctor OK"
+
       - name: No credentials in anything we distribute
         run: |
           python - <<'PY'
