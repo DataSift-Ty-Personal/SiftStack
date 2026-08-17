@@ -101,6 +101,19 @@ def agent_card(a: dict, dept_id: str, lead: bool = False) -> str:
 </article>"""
 
 
+def _skill_count() -> int:
+    """Current, non-superseded packages, read from the manifest.
+
+    Hardcoding this drifts the moment a skill is added, and a page that
+    advertises the wrong number is the kind of small wrongness that makes
+    people distrust the rest of it.
+    """
+    mf = ROOT / "skills" / "manifest.json"
+    if mf.is_file():
+        return json.loads(mf.read_text(encoding="utf-8"))["counts"]["current"]
+    return 0
+
+
 def build(doc: dict) -> str:
     meta = doc["meta"]
     depts = doc["departments"]
@@ -150,6 +163,7 @@ def build(doc: dict) -> str:
         infra = f'<div class="infra">{groups}</div>'
 
     return Template(PAGE).substitute(
+        n_skills=_skill_count(),
         title=e(meta["title"]),
         subtitle=e(meta["subtitle"]),
         version=e(meta.get("version")),
@@ -435,7 +449,7 @@ footer p { margin:0 0 6px; }
 
     <div class="install">
       <h2>Install the skill library</h2>
-      <p>Twenty-one Claude skills that drive the agents below. One command, into Claude Code.
+      <p>$n_skills Claude skills that drive the agents below. One command, into Claude Code.
          No clone, no pip, no virtualenv.</p>
       <div class="cmd">
         <code id="cmd">$install</code>
