@@ -4,7 +4,7 @@ Full-stack real estate investing operations platform built around [DataSift.ai](
 
 Two things live in this repo:
 
-1. **The REI skill library.** 21 Claude skills that teach Claude to run a specific REI workflow: comp a property, estimate a rehab, find the heirs, score your phone numbers, grade your cold calls. Install them into Claude Code with one command, or upload them to a Claude Co-Work session. **You do not need the platform to use these.**
+1. **The REI skill library.** 22 Claude skills that teach Claude to run a specific REI workflow: comp a property, estimate a rehab, find the heirs, score your phone numbers, grade your cold calls. Install them into Claude Code with one command, or upload them to a Claude Co-Work session. **You do not need the platform to use these.**
 2. **The platform.** The pipeline that pulls county distress data, enriches it through 10 steps, and pushes it into DataSift ready for sequential marketing. Requires a DataSift.ai account.
 
 Start with the skills. Most people never need anything else.
@@ -23,7 +23,7 @@ curl -fsSL https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main
 irm https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/install.py | python -
 ```
 
-That downloads all 21 current skills into `~/.claude/skills/` and the 2 plugins into `~/.claude/plugins/`. Restart Claude Code and they are live. No clone, no `pip install`, no virtualenv. Python 3.9 or newer, standard library only.
+That downloads all 22 current skills into `~/.claude/skills/` and the 2 plugins into `~/.claude/plugins/`. Restart Claude Code and they are live. No clone, no `pip install`, no virtualenv. Python 3.9 or newer, standard library only.
 
 Prefer to read the script before running it? That is the right instinct:
 
@@ -67,7 +67,7 @@ The manifest is the machine-readable index of the whole library: every package, 
 
 ## The catalog
 
-21 current packages. `python3 install.py --list` prints this with full descriptions.
+22 current packages. `python3 install.py --list` prints this with full descriptions.
 
 ### Deal Analysis
 
@@ -98,6 +98,7 @@ The manifest is the machine-readable index of the whole library: every package, 
 | `caller-reputation-monitor` | Keep your outbound numbers out of carrier "Spam Likely" labels. |
 | `playbook-creator` | Turn a transcript or a recording into a real SOP with process maps. |
 | `candidate-intake` | Aggregate job applicants from Indeed, Gmail, and Facebook into one scored master list. |
+| `team-hiring` | Who to hire next and what they own. The five roles with their daily tasks and one North Star KPI each, hiring geography and pay bands, job post templates, the interview, and the first two weeks. |
 
 ### Coaching and Performance
 
