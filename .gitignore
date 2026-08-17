@@ -46,10 +46,19 @@ storage/
 # Test data & photos
 test_photos/
 
-# Skills distribution ZIPs (large, distributed separately)
+# The old skill staging area. Superseded by skills/ (source) and dist/ (built
+# archives). Kept on disk, out of git.
 Skills for REI/
+
+# Loose .skill/.plugin archives anywhere EXCEPT dist/. dist/ is the published
+# download location, so those have to be tracked or the install URLs 404 and
+# Co-Work users have nothing to upload. This exclusion is why the first push
+# of the distribution layer shipped a manifest pointing at 23 files that were
+# not in the repo.
 *.skill
 *.plugin
+!dist/*.skill
+!dist/*.plugin
 
 # IDE & OS
 .vscode/

@@ -642,7 +642,7 @@
      ],
      "phase": 1,
      "status": "live",
-     "source": "Skills for REI/improved/deep-prospecting-v5.skill",
+     "source": "skills/deep-prospecting-v5",
      "gotcha": "SmartSkip is WRONG about death. It returned Deceased=false for a man who died with a published funeral-home obituary, and it has no DOD column at all. 63% of relationship labels come back generic. The obituary layer is what makes it trustworthy. Cost is $0.24 per record, 4.9x cheaper than the retired Enformion path."
     },
     {
@@ -1144,7 +1144,7 @@
      ],
      "phase": 1,
      "status": "live",
-     "source": "Skills for REI/improved/buyer-prospector.skill",
+     "source": "skills/buyer-prospector",
      "gotcha": "This is the cold-start answer for a new market. The buyer sweep needs deed history you do not have yet; the prospector gives you a list on day one."
     }
    ]
@@ -1260,7 +1260,7 @@
      ],
      "phase": 1,
      "status": "live",
-     "source": "Skills for REI/improved/text-touch-builder.skill",
+     "source": "skills/text-touch-builder",
      "gotcha": "clean_first('E A Henry') took the first token of length 2 or more, walked past the initials, and greeted people by their SURNAME. The fix is positional: only tokens BEFORE the surname can supply a first name. This bug shipped in two places and was fixed in both."
     },
     {
@@ -1335,7 +1335,7 @@
      ],
      "phase": 1,
      "status": "live",
-     "source": "Skills for REI/improved/caller-reputation-monitor.skill",
+     "source": "skills/caller-reputation-monitor",
      "gotcha": "The phone number is the asset. Every autonomy decision in the SMS agent exists to protect it."
     },
     {
@@ -1773,7 +1773,7 @@
      ],
      "phase": 1,
      "status": "live",
-     "source": "Skills for REI/improved/cold-call-coach.skill",
+     "source": "skills/cold-call-coach",
      "gotcha": "Measured reliability is stated as plus or minus 3 points. A grading rubric that will not state its own error bar is not a measurement, it is an opinion."
     },
     {
@@ -1798,7 +1798,7 @@
      ],
      "phase": 1,
      "status": "live",
-     "source": "Skills for REI/improved/lead-manager-coach.skill",
+     "source": "skills/lead-manager-coach",
      "gotcha": "Deliberately excludes CRM hygiene. Mixing 'did you update the record' into a call-quality score hides whether the person can actually run a conversation."
     },
     {
@@ -1825,7 +1825,7 @@
      ],
      "phase": 1,
      "status": "live",
-     "source": "Skills for REI/improved/closer-coach.skill",
+     "source": "skills/closer-coach",
      "gotcha": "The flywheel worth building next: point these same three rubrics at the SMS agent's own threads, so the texter is graded exactly like the humans."
     },
     {
@@ -1852,7 +1852,7 @@
      ],
      "phase": 1,
      "status": "live",
-     "source": "Skills for REI/improved/kpi-engine.skill",
+     "source": "skills/kpi-engine",
      "gotcha": "Benchmarks ship as tune-per-operation baselines. Publishing someone else's conversion rate as a target is how you get a team optimizing for a number that never applied to them."
     },
     {
@@ -1878,7 +1878,7 @@
      ],
      "phase": 1,
      "status": "live",
-     "source": "Skills for REI/improved/playbook-creator.skill",
+     "source": "skills/playbook-creator",
      "gotcha": "Seven nodes per chart and a 5th grade reading level are hard limits, not style preferences. An SOP nobody can follow at 7am is not an SOP."
     }
    ]

@@ -547,7 +547,7 @@ Finds the date of death and the named representative for deceased owners.
 
 #### Deep Prospecting v5
 
-`Skills for REI/improved/deep-prospecting-v5.skill` &middot; phase 1 &middot; live
+`skills/deep-prospecting-v5` &middot; phase 1 &middot; live
 
 Resolves heirs and required signers via SmartSkip, then confirms against published obituaries.
 
@@ -1017,7 +1017,7 @@ Three-source waterfall with a built-in audit matrix showing which source missed.
 
 #### Buyer Prospector
 
-`Skills for REI/improved/buyer-prospector.skill` &middot; phase 1 &middot; live
+`skills/buyer-prospector` &middot; phase 1 &middot; live
 
 Builds a county buyers list from a nationwide database of active buyers.
 
@@ -1120,7 +1120,7 @@ Writes the reply in a human voice, inside a validator that hard-blocks anything 
 
 #### Text Touch Builder
 
-`Skills for REI/improved/text-touch-builder.skill` &middot; phase 1 &middot; live
+`skills/text-touch-builder` &middot; phase 1 &middot; live
 
 Four pre-call SMS touches per hot record, varied like cold email so nothing looks blasted.
 
@@ -1190,7 +1190,7 @@ Builds and validates the direct mail drop for the obituary list.
 
 #### Caller Reputation Monitor
 
-`Skills for REI/improved/caller-reputation-monitor.skill` &middot; phase 1 &middot; live
+`skills/caller-reputation-monitor` &middot; phase 1 &middot; live
 
 Keeps outbound numbers out of Spam Likely by watching your own call outcomes.
 
@@ -1602,7 +1602,7 @@ Two passes: diarized transcript with delivery notes, then strict-JSON triage.
 
 #### Cold Call Coach
 
-`Skills for REI/improved/cold-call-coach.skill` &middot; phase 1 &middot; live
+`skills/cold-call-coach` &middot; phase 1 &middot; live
 
 Grades opener, motivation probing, objection handling, tonality, close.
 
@@ -1626,7 +1626,7 @@ Grades opener, motivation probing, objection handling, tonality, close.
 
 #### Lead Manager Coach
 
-`Skills for REI/improved/lead-manager-coach.skill` &middot; phase 1 &middot; live
+`skills/lead-manager-coach` &middot; phase 1 &middot; live
 
 Grades the four pillars, roadblocks, no-ladder, and next-action discipline.
 
@@ -1649,7 +1649,7 @@ Grades the four pillars, roadblocks, no-ladder, and next-action discipline.
 
 #### Closer Coach
 
-`Skills for REI/improved/closer-coach.skill` &middot; phase 1 &middot; live
+`skills/closer-coach` &middot; phase 1 &middot; live
 
 Grades the money conversation, the three-option offer stack, and commitment locking.
 
@@ -1674,7 +1674,7 @@ Grades the money conversation, the three-option offer stack, and commitment lock
 
 #### KPI Engine
 
-`Skills for REI/improved/kpi-engine.skill` &middot; phase 1 &middot; live
+`skills/kpi-engine` &middot; phase 1 &middot; live
 
 Activity-log pull and funnel pacing straight from the account.
 
@@ -1699,7 +1699,7 @@ Activity-log pull and funnel pacing straight from the account.
 
 #### Playbook Creator
 
-`Skills for REI/improved/playbook-creator.skill` &middot; phase 1 &middot; live
+`skills/playbook-creator` &middot; phase 1 &middot; live
 
 Turns a transcript or a recorded process into an SOP with process maps.
 
