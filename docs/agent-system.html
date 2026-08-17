@@ -1,0 +1,1767 @@
+<title>SiftStack Agent Org Chart</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+/* ---------------------------------------------------------------- tokens
+   DataSift house palette. Navy #0A1130, blue #316AFF, green #1B9E5A for
+   status, gold for caveats, system font stack. Neutrals are biased toward
+   the blue accent rather than pure grey so they read as chosen. */
+:root {
+  --navy:#0A1130; --blue:#316AFF; --green:#1B9E5A; --gold:#9A6B12;
+  --bg:#F6F7FB; --surface:#FFFFFF; --surface-2:#F0F2F8; --sunk:#FBFCFE;
+  --ink:#0A1130; --ink-2:#3A4364; --ink-3:#646E8C;
+  --line:#DDE2EE; --line-2:#C9D0E2;
+  --accent:#316AFF; --accent-ink:#1D4ED8; --accent-wash:#EAF0FF;
+  --ok:#12784A; --ok-wash:#E6F4EC;
+  --warn:#8A5D0B; --warn-wash:#FBF2DF;
+  --off:#646E8C; --off-wash:#EEF0F6;
+  --shadow:0 1px 2px rgba(10,17,48,.05);
+  --r-lg:12px; --r-md:8px; --r-sm:6px; --r-xs:4px;
+  --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg:#070B1C; --surface:#0E1430; --surface-2:#141B3C; --sunk:#0A1027;
+    --ink:#E9EDF9; --ink-2:#AFB9D6; --ink-3:#8590AF;
+    --line:#222C52; --line-2:#2E3A66;
+    --accent:#7A9EFF; --accent-ink:#A8C0FF; --accent-wash:#16204A;
+    --ok:#5CD79B; --ok-wash:#0F2C20;
+    --warn:#E5B65A; --warn-wash:#2E2311;
+    --off:#8590AF; --off-wash:#171E3E;
+    --shadow:0 1px 2px rgba(0,0,0,.3);
+  }
+}
+:root[data-theme="dark"] {
+  --bg:#070B1C; --surface:#0E1430; --surface-2:#141B3C; --sunk:#0A1027;
+  --ink:#E9EDF9; --ink-2:#AFB9D6; --ink-3:#8590AF;
+  --line:#222C52; --line-2:#2E3A66;
+  --accent:#7A9EFF; --accent-ink:#A8C0FF; --accent-wash:#16204A;
+  --ok:#5CD79B; --ok-wash:#0F2C20;
+  --warn:#E5B65A; --warn-wash:#2E2311;
+  --off:#8590AF; --off-wash:#171E3E;
+  --shadow:0 1px 2px rgba(0,0,0,.3);
+}
+
+*,*::before,*::after { box-sizing:border-box; }
+body {
+  margin:0; background:var(--bg); color:var(--ink);
+  font-family:var(--sans); font-size:16px; line-height:1.55;
+  -webkit-text-size-adjust:100%;
+}
+.wrap { max-width:1120px; margin:0 auto; padding:0 20px; }
+@media (max-width:520px){ .wrap { padding:0 14px; } }
+
+a { color:var(--accent-ink); text-underline-offset:2px; }
+:focus-visible { outline:2px solid var(--accent); outline-offset:2px; border-radius:var(--r-xs); }
+
+/* ---------------------------------------------------------------- masthead */
+.mast { border-bottom:1px solid var(--line); background:var(--surface); }
+/* padding-top/bottom, NOT the shorthand. This element carries both .wrap and
+   .mast-in; a `padding: 34px 0 26px` here has equal specificity and comes
+   later, so it silently reset .wrap's horizontal padding to 0 and ran the
+   headline edge to edge on mobile. */
+.mast-in { padding-top:34px; padding-bottom:26px; }
+.eyebrow {
+  font-size:13px; color:var(--ink-3); margin:0 0 10px;
+  display:flex; gap:8px; align-items:center; flex-wrap:wrap;
+}
+.eyebrow .sep { color:var(--line-2); }
+h1 {
+  margin:0 0 10px; font-size:clamp(28px,5.2vw,42px); line-height:1.12;
+  letter-spacing:-.022em; font-weight:680; text-wrap:balance;
+}
+.lede { margin:0; max-width:64ch; color:var(--ink-2); font-size:clamp(15px,2.4vw,17px); }
+
+.stats { display:flex; flex-wrap:wrap; gap:10px; margin-top:22px; }
+.stat {
+  background:var(--sunk); border:1px solid var(--line); border-radius:var(--r-md);
+  padding:10px 14px; min-width:104px;
+}
+.stat b { display:block; font-size:22px; font-variant-numeric:tabular-nums; letter-spacing:-.02em; }
+.stat span { font-size:12.5px; color:var(--ink-3); }
+
+/* ---------------------------------------------------------------- install */
+.install { margin:26px 0 0; }
+.install h2 { margin:0 0 4px; font-size:17px; font-weight:660; letter-spacing:-.01em; }
+.install p { margin:0 0 12px; color:var(--ink-2); font-size:14.5px; max-width:62ch; }
+.cmd {
+  display:flex; align-items:stretch; gap:0; border:1px solid var(--line-2);
+  border-radius:var(--r-md); overflow:hidden; background:var(--sunk);
+}
+.cmd code {
+  flex:1; min-width:0; font-family:var(--mono); font-size:13.5px; padding:13px 14px;
+  overflow-x:auto; white-space:nowrap; color:var(--ink);
+}
+.cmd button {
+  flex:none; border:0; border-left:1px solid var(--line-2); background:var(--surface-2);
+  color:var(--ink); font:inherit; font-size:13.5px; font-weight:560;
+  padding:0 16px; cursor:pointer; transition:background .12s ease;
+}
+.cmd button:hover { background:var(--accent-wash); color:var(--accent-ink); }
+.cmd button:active { transform:translateY(1px); }
+.install-note { margin-top:9px; font-size:13px; color:var(--ink-3); }
+
+/* ---------------------------------------------------------------- controls */
+.controls {
+  position:sticky; top:0; z-index:20; background:var(--surface);
+  border-bottom:1px solid var(--line); padding:12px 0;
+}
+.controls-in { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+.search {
+  flex:1 1 210px; min-width:0; font:inherit; font-size:14.5px; color:var(--ink);
+  background:var(--sunk); border:1px solid var(--line-2); border-radius:var(--r-md);
+  padding:9px 12px;
+}
+.search::placeholder { color:var(--ink-3); }
+.filts { display:flex; gap:6px; flex-wrap:wrap; }
+.filt {
+  font:inherit; font-size:13px; font-weight:520; color:var(--ink-2);
+  background:var(--surface-2); border:1px solid var(--line);
+  border-radius:var(--r-sm); padding:6px 11px; cursor:pointer;
+  transition:background .12s ease,color .12s ease,border-color .12s ease;
+}
+.filt:hover { border-color:var(--line-2); }
+.filt:active { transform:translateY(1px); }
+.filt[aria-pressed="true"] {
+  background:var(--accent-wash); border-color:var(--accent); color:var(--accent-ink);
+}
+.count-live { font-size:13px; color:var(--ink-3); font-variant-numeric:tabular-nums; margin-left:auto; }
+
+/* ---------------------------------------------------------------- sections */
+main { padding:30px 0 60px; }
+.band { margin:0 0 34px; }
+.band > h2 {
+  margin:0 0 4px; font-size:20px; font-weight:660; letter-spacing:-.015em;
+}
+.band > p { margin:0 0 18px; color:var(--ink-2); font-size:14.5px; max-width:66ch; }
+
+.dept { margin:0 0 34px; scroll-margin-top:70px; }
+.dept-head {
+  display:flex; align-items:baseline; gap:12px; flex-wrap:wrap;
+  padding-bottom:10px; border-bottom:1px solid var(--line); margin-bottom:14px;
+}
+.dept-head h3 { margin:0; font-size:18px; font-weight:660; letter-spacing:-.012em; }
+.dept-tag { margin:0; flex:1 1 240px; color:var(--ink-3); font-size:13.5px; }
+.dept-count { font-size:13px; color:var(--ink-3); font-variant-numeric:tabular-nums; }
+.dept-count b { color:var(--ink-2); }
+
+.grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(310px,1fr)); gap:12px; }
+@media (max-width:560px){ .grid { grid-template-columns:1fr; } }
+
+/* ---------------------------------------------------------------- agent */
+.agent {
+  background:var(--surface); border:1px solid var(--line);
+  border-radius:var(--r-lg); box-shadow:var(--shadow); overflow:hidden;
+}
+.agent details { }
+.agent summary {
+  list-style:none; cursor:pointer; padding:14px 15px;
+  display:grid; grid-template-columns:auto 1fr auto; gap:6px 9px; align-items:start;
+}
+.agent summary::-webkit-details-marker { display:none; }
+.agent summary:hover { background:var(--surface-2); }
+.dot { width:8px; height:8px; border-radius:50%; margin-top:7px; }
+.dot-live { background:var(--ok); }
+.dot-gated { background:var(--warn); }
+.dot-planned { background:var(--off); }
+.dot-retired { background:var(--line-2); }
+.agent-name { font-weight:620; font-size:15px; letter-spacing:-.008em; }
+.lead-tag {
+  font-size:11px; font-weight:560; color:var(--accent-ink);
+  background:var(--accent-wash); border-radius:var(--r-xs); padding:1px 5px; margin-left:5px;
+  vertical-align:1px;
+}
+.agent-meta { display:flex; gap:5px; flex-wrap:wrap; justify-content:flex-end; }
+.badge {
+  font-size:11.5px; font-weight:560; border-radius:var(--r-xs);
+  padding:2px 7px; white-space:nowrap; border:1px solid transparent;
+}
+.badge-live { background:var(--ok-wash); color:var(--ok); }
+.badge-gated { background:var(--warn-wash); color:var(--warn); }
+.badge-planned { background:var(--off-wash); color:var(--off); }
+.badge-retired { background:var(--off-wash); color:var(--off); }
+.badge-gate { background:var(--accent-wash); color:var(--accent-ink); }
+.agent-role { grid-column:2 / -1; color:var(--ink-2); font-size:13.8px; line-height:1.5; }
+.src {
+  grid-column:2 / -1; font-family:var(--mono); font-size:11.8px; color:var(--ink-3);
+  overflow-wrap:anywhere;
+}
+
+.agent-body { padding:2px 15px 15px; border-top:1px solid var(--line); margin-top:2px; }
+.fact { padding:12px 0 0; }
+.fact-k {
+  font-size:12px; font-weight:600; color:var(--ink-3); margin-bottom:3px;
+}
+.fact-v { font-size:14px; color:var(--ink-2); margin:0; }
+.fact-v.muted { color:var(--ink-3); }
+ul.steps { padding-left:17px; margin:0; }
+ul.steps li { margin:2px 0; }
+.chips { display:flex; gap:5px; flex-wrap:wrap; }
+.chip {
+  font-family:var(--mono); font-size:11.5px; color:var(--ink-2);
+  background:var(--surface-2); border:1px solid var(--line);
+  border-radius:var(--r-xs); padding:2px 6px;
+}
+
+/* The trap is the most valuable field on the page: every one is a real
+   production failure, most of which failed silently. It gets its own
+   recessed treatment so it reads as evidence rather than commentary. */
+.trap {
+  margin-top:14px; background:var(--warn-wash); border:1px solid transparent;
+  border-left:3px solid var(--warn); border-radius:0 var(--r-sm) var(--r-sm) 0;
+  padding:10px 12px;
+}
+.trap-k { font-size:11.5px; font-weight:640; color:var(--warn); margin-bottom:3px; }
+.trap p { margin:0; font-size:13.5px; line-height:1.52; color:var(--ink-2); }
+
+/* ---------------------------------------------------------------- infra */
+.infra { display:grid; grid-template-columns:repeat(auto-fill,minmax(230px,1fr)); gap:12px; }
+.infra-g {
+  background:var(--surface); border:1px solid var(--line);
+  border-radius:var(--r-md); padding:13px 15px;
+}
+.infra-g h4 { margin:0 0 7px; font-size:14px; font-weight:620; }
+.infra-g ul { margin:0; padding-left:16px; color:var(--ink-2); font-size:13.5px; }
+.infra-g li { margin:2px 0; }
+
+/* ---------------------------------------------------------------- legend */
+.legend {
+  display:flex; gap:16px; flex-wrap:wrap; font-size:13px; color:var(--ink-3);
+  padding:12px 0 0; border-top:1px solid var(--line); margin-top:6px;
+}
+.legend span { display:flex; align-items:center; gap:6px; }
+.legend .dot { margin-top:0; }
+
+.empty { display:none; padding:34px 0; color:var(--ink-3); font-size:15px; }
+.empty.on { display:block; }
+
+footer {
+  border-top:1px solid var(--line); background:var(--surface);
+  padding:22px 0 30px; color:var(--ink-3); font-size:13.5px;
+}
+footer p { margin:0 0 6px; }
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition:none !important; animation:none !important; }
+}
+</style>
+
+<div class="mast">
+  <div class="wrap mast-in">
+    <p class="eyebrow">
+      <span>SiftStack</span><span class="sep">/</span><span>Build 1.0.44</span>
+      <span class="sep">/</span><span>2026-08-17</span>
+    </p>
+    <h1>SiftStack AI Agent Org Chart</h1>
+    <p class="lede">Every agent, what triggers it, what it touches, where a human still signs off, and the specific trap each one exists to avoid.</p>
+
+    <div class="stats">
+      <div class="stat"><b>74</b><span>agents</span></div>
+      <div class="stat"><b>9</b><span>divisions</span></div>
+      <div class="stat"><b>67</b><span>live in production</span></div>
+      <div class="stat"><b>48</b><span>with a human gate</span></div>
+    </div>
+
+    <div class="install">
+      <h2>Install the skill library</h2>
+      <p>Twenty-one Claude skills that drive the agents below. One command, into Claude Code.
+         No clone, no pip, no virtualenv.</p>
+      <div class="cmd">
+        <code id="cmd">curl -fsSL https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/install.py | python3 -</code>
+        <button type="button" id="copy" aria-label="Copy the install command">Copy</button>
+      </div>
+      <p class="install-note">
+        On Claude Co-Work or claude.ai, download a package from
+        <a href="https://github.com/DataSift-Ty-Personal/SiftStack/tree/main/dist">dist/</a> and upload it instead.
+        Full instructions in the <a href="https://github.com/DataSift-Ty-Personal/SiftStack#install-the-skill-library">README</a>.
+      </p>
+    </div>
+  </div>
+</div>
+
+<div class="controls">
+  <div class="wrap controls-in">
+    <input id="q" class="search" type="search" placeholder="Search agents, files, traps" aria-label="Search agents">
+    <div class="filts">
+      <button class="filt" data-filter="status" data-value="live">Live</button>
+      <button class="filt" data-filter="status" data-value="gated">Gated</button>
+      <button class="filt" data-filter="human" data-value="yes">Human gate</button>
+      <button class="filt" data-filter="dept" data-value="acq">Data Acquisition</button><button class="filt" data-filter="dept" data-value="enrich">Enrichment &amp; Identity</button><button class="filt" data-filter="dept" data-value="deal">Deal Analysis</button><button class="filt" data-filter="dept" data-value="dispo">Dispo &amp; Buyers</button><button class="filt" data-filter="dept" data-value="outreach">Outreach &amp; Marketing</button><button class="filt" data-filter="dept" data-value="crm">CRM Operations</button><button class="filt" data-filter="dept" data-value="market">Market Intelligence</button><button class="filt" data-filter="dept" data-value="coach">Coaching &amp; Performance</button><button class="filt" data-filter="dept" data-value="soi">Sphere of Influence</button>
+    </div>
+    <span class="count-live" id="count"></span>
+  </div>
+</div>
+
+<main class="wrap">
+  <section class="band">
+    <h2>How to read this</h2>
+    <p>Every agent carries a trigger, the steps it runs, where a person still signs off, what
+       comes out, and the trap it exists to avoid. That last field is the one worth reading:
+       each is a real production failure, and most of them failed silently for days or weeks
+       before anyone noticed. Click any agent to open it.</p>
+    <div class="legend">
+      <span><i class="dot dot-live"></i>Live in production</span>
+      <span><i class="dot dot-gated"></i>Built, held behind a human go/no-go</span>
+      <span><i class="dot dot-planned"></i>Designed, not yet wired</span>
+      <span><i class="dot dot-retired"></i>Retired on purpose</span>
+    </div>
+  </section>
+
+  <section class="band">
+    <h2>Top of the org</h2>
+    <p>Every gated action routes to a person. Outreach identity is anchored to the assigned
+       human rather than a company name, and no agent puts a dollar figure in front of a seller
+       or a buyer without someone approving it.</p>
+    <div class="grid"><article class="agent" data-dept="exec" data-status="live" data-phase="1" data-human="yes" data-search="operator sets the buy box, approves spend, gives the go on anything that touches a homeowner. claude.md the named company is litigation bait. outbound identity is anchored to the assigned human, never to a business name. ">
+  <details>
+    <summary>
+      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="agent-name">Operator</span>
+      <span class="agent-meta">
+        <span class="badge badge-live">Live</span>
+        <span class="badge badge-gate">Human gate</span>
+      </span>
+      <span class="agent-role">Sets the buy box, approves spend, gives the go on anything that touches a homeowner.</span>
+      <code class="src">CLAUDE.md</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">Always on. Every gated action routes here.</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Defines buy box: single family, AVM $1 to $700,000</li><li>Approves outbound sends, offer numbers, and contract gates</li><li>Re-approves the locked material list each project cycle</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>Every Phase 2 gate</li><li>Any dollar figure that reaches a seller or buyer</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Go / no-go decisions, Buy box parameters</div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>The named company is litigation bait. Outbound identity is anchored to the assigned human, never to a business name.</p></div>
+    </div>
+  </details>
+</article><article class="agent" data-dept="exec" data-status="live" data-phase="1" data-human="yes" data-search="claude orchestrator the session that reads the repo, picks the right agent chain, and runs it end to end. claude.md a run that succeeds with no data is worse than one that fails. every agent must state an explicit reason when it degrades. claude cowork claude code">
+  <details>
+    <summary>
+      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="agent-name">Claude Orchestrator</span>
+      <span class="agent-meta">
+        <span class="badge badge-live">Live</span>
+        <span class="badge badge-gate">Human gate</span>
+      </span>
+      <span class="agent-role">The session that reads the repo, picks the right agent chain, and runs it end to end.</span>
+      <code class="src">CLAUDE.md</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">Operator prompt, scheduled task, or an inbound webhook.</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Reads CLAUDE.md for domain rules and hard-won gotchas</li><li>Selects the skill or module chain for the job</li><li>Runs the chain, degrades gracefully on any missing credential</li><li>Reports what it did and what it could not do</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>Approves any irreversible or billable action</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Excel workbooks, CSV uploads, PDF research packs, Slack summaries</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">Claude</span><span class="chip">Cowork</span><span class="chip">Claude Code</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>A run that succeeds with no data is worse than one that fails. Every agent must state an explicit reason when it degrades.</p></div>
+    </div>
+  </details>
+</article></div>
+  </section>
+
+  <section class="band">
+    <h2>Divisions</h2>
+    <p>Nine divisions, from pulling the county record through to handing a private lender a
+       funded deal package.</p>
+  </section>
+
+  <section class="dept" id="dept-acq" data-dept="acq">
+  <header class="dept-head">
+    <h3>Data Acquisition</h3>
+    <p class="dept-tag">First to market or it is not worth pulling</p>
+    <span class="dept-count"><b>15</b> agents</span>
+  </header>
+  <div class="grid"><article class="agent" data-dept="acq" data-status="live" data-phase="1" data-human="yes" data-search="intake orchestrator routes every source into one noticedata shape, dedupes by address, stamps provenance. src/main.py date semantics split two ways. date_added is when we added it; date_published is the legal filing date. everything downstream that reasons about timing must anchor on date_published. main.py data_formatter.py apify">
+  <details>
+    <summary>
+      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="agent-name">Intake Orchestrator <span class="lead-tag">lead</span></span>
+      <span class="agent-meta">
+        <span class="badge badge-live">Live</span>
+        <span class="badge badge-gate">Human gate</span>
+      </span>
+      <span class="agent-role">Routes every source into one NoticeData shape, dedupes by address, stamps provenance.</span>
+      <code class="src">src/main.py</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">python src/main.py daily | historical, or the Apify daily schedule.</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Filters saved searches by county and notice type</li><li>Fans out to the right importer for each source</li><li>Deduplicates by address, keeping the most recent</li><li>Stamps date_added (our run date) separately from date_published (the legal filing date)</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>Reviews the run summary before upload</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Sift upload CSV, Run summary stats</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">main.py</span><span class="chip">data_formatter.py</span><span class="chip">Apify</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>Date semantics split two ways. date_added is when WE added it; date_published is the legal filing date. Everything downstream that reasons about timing must anchor on date_published.</p></div>
+    </div>
+  </details>
+</article><article class="agent" data-dept="acq" data-status="live" data-phase="1" data-human="yes" data-search="scheduled ftm runner one unattended first-to-market pull of foreclosure and probate for knox and blount, running in the cloud instead of on a workstation. src/ftm_runner.py zero notices is a failure, not a quiet day. there is deliberately no inference that a missing challenge means a cleared gate; that exact reasoning reported 13 consecutive dead runs as successful over 19 days. seen_ids is persisted only after a successful upload, because an aborted run that had already written it left 204 notices flagged as handled that were never sent anywhere, and a retry would have skipped every one of them permanently. fly.io siftstack-ftm playwright apify proxy /data volume">
+  <details>
+    <summary>
+      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="agent-name">Scheduled FTM Runner</span>
+      <span class="agent-meta">
+        <span class="badge badge-live">Live</span>
+        <span class="badge badge-gate">Human gate</span>
+      </span>
+      <span class="agent-role">One unattended first-to-market pull of foreclosure and probate for Knox and Blount, running in the cloud instead of on a workstation.</span>
+      <code class="src">src/ftm_runner.py</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">The scheduler at 06:30 America/New_York, or python src/ftm_runner.py --commit by hand.</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Preflights credentials, egress, state dir and saved searches</li><li>Rotates to a fresh proxy session id per PROCESS, counter held on the volume</li><li>Scrapes, enriches and uploads, then persists seen_ids ONLY after the upload succeeds</li><li>Reports a 0-notice run as EMPTY and exits non-zero</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>Approves the first scheduled run before --commit is added to FTM_ARGS</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Upload CSV, ftm_runs.jsonl history, Run summary</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">Fly.io siftstack-ftm</span><span class="chip">Playwright</span><span class="chip">Apify proxy</span><span class="chip">/data volume</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>Zero notices is a FAILURE, not a quiet day. There is deliberately no inference that a missing challenge means a cleared gate; that exact reasoning reported 13 consecutive dead runs as successful over 19 days. seen_ids is persisted only AFTER a successful upload, because an aborted run that had already written it left 204 notices flagged as handled that were never sent anywhere, and a retry would have skipped every one of them permanently.</p></div>
+    </div>
+  </details>
+</article><article class="agent" data-dept="acq" data-status="live" data-phase="1" data-human="no" data-search="egress proxy resolver decides which ip the scrape goes out from, because the site gates on egress rather than on code. src/proxy_resolver.py apify session ids accept only letters, digits, underscore and dot. a hyphen in the name returns 407 proxy authentication required, which is indistinguishable from a rejected password, and cost a full day of debugging byte-identical credentials. separately: the site blocks an ip by volume, around 204 notices per session, so the backfill runs one process per saved-search-month rather than one long job. apify proxy buyproxies94952">
+  <details>
+    <summary>
+      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="agent-name">Egress Proxy Resolver</span>
+      <span class="agent-meta">
+        <span class="badge badge-live">Live</span>
+        
+      </span>
+      <span class="agent-role">Decides which IP the scrape goes out from, because the site gates on egress rather than on code.</span>
+      <code class="src">src/proxy_resolver.py</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">Every scraper run, before the first page load.</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Resolution order: SIFTSTACK_PROXY_URL, then Apify groups via token lookup, then direct</li><li>Rewrites illegal characters in the session id and logs the substitution</li><li>Raises NoticeAccessBlocked on a refusal so the run aborts instead of grinding</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><div class="fact-v muted">Nobody. Runs unattended.</div></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">A proxy URL, A sanitized sticky session id</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">Apify proxy</span><span class="chip">BUYPROXIES94952</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>Apify session ids accept only letters, digits, underscore and dot. A hyphen in the name returns 407 Proxy Authentication Required, which is indistinguishable from a rejected password, and cost a full day of debugging byte-identical credentials. Separately: the site blocks an IP by VOLUME, around 204 notices per session, so the backfill runs one process per saved-search-month rather than one long job.</p></div>
+    </div>
+  </details>
+</article><article class="agent" data-dept="acq" data-status="live" data-phase="1" data-human="no" data-search="ftm scheduler the long-lived process that decides when the pull fires, business-local. src/ftm_schedule.py a scheduler process rather than fly machine run --schedule, because fly schedules are coarse and pick their own minute, while a first-to-market pull wants a specific business-local hour. being first is the entire product. fly.io ftm_runner.py">
+  <details>
+    <summary>
+      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="agent-name">FTM Scheduler</span>
+      <span class="agent-meta">
+        <span class="badge badge-live">Live</span>
+        
+      </span>
+      <span class="agent-role">The long-lived process that decides when the pull fires, business-local.</span>
+      <code class="src">src/ftm_schedule.py</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">Container CMD. Runs continuously.</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Computes the next fire time in the business timezone</li><li>Launches ftm_runner as a fresh PROCESS so the proxy session rotates</li><li>Records each run exit code</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><div class="fact-v muted">Nobody. Runs unattended.</div></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Scheduled runs, Exit codes</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">Fly.io</span><span class="chip">ftm_runner.py</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>A scheduler process rather than fly machine run --schedule, because Fly schedules are coarse and pick their own minute, while a first-to-market pull wants a specific business-local hour. Being first is the entire product.</p></div>
+    </div>
+  </details>
+</article><article class="agent" data-dept="acq" data-status="live" data-phase="1" data-human="no" data-search="notice scraper drives tnpublicnotice.com through 8 saved searches and paginates every result. src/scraper.py the site is asp.net webforms. all navigation is __dopostback with viewstate, so plain http requests would have to hand-manage viewstate and eventvalidation. browser automation is not optional here. playwright tnpublicnotice.com cookies.json">
+  <details>
+    <summary>
+      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="agent-name">Notice Scraper</span>
+      <span class="agent-meta">
+        <span class="badge badge-live">Live</span>
+        
+      </span>
+      <span class="agent-role">Drives tnpublicnotice.com through 8 saved searches and paginates every result.</span>
+      <code class="src">src/scraper.py</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">Daily run, or historical backfill over 12 months.</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Reuses saved session cookies, falls back to fresh login</li><li>Selects each saved search from the Smart Search dropdown</li><li>Paginates results at 50 per page</li><li>Opens each notice detail page</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><div class="fact-v muted">Nobody. Runs unattended.</div></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Raw notice HTML, Notice IDs</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">Playwright</span><span class="chip">tnpublicnotice.com</span><span class="chip">cookies.json</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>The site is ASP.NET WebForms. All navigation is __doPostBack with ViewState, so plain HTTP requests would have to hand-manage ViewState and EventValidation. Browser automation is not optional here.</p></div>
+    </div>
+  </details>
+</article><article class="agent" data-dept="acq" data-status="live" data-phase="1" data-human="no" data-search="turnstile gate runner clears the cloudflare turnstile challenge that sits in front of every notice detail page. src/captcha_solver.py, src/scrapfly_client.py the gate migrated from recaptcha to cloudflare turnstile on 2026-07-13. config.py recorded the migration but the solver still called recaptcha() and injected into g-recaptcha-response, a field the page no longer reads, so every solve was billed and discarded. the gate is session-level, so one solve covers the rest of the run. a blocked ip now aborts instead of grinding 50 results times 3 attempts against a wall, and the page shows no challenge at all from a blocked address, which is why this looks like a solver bug when it is an egress problem. cloudflare turnstile 2captcha playwright">
+  <details>
+    <summary>
+      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="agent-name">Turnstile Gate Runner</span>
+      <span class="agent-meta">
+        <span class="badge badge-live">Live</span>
+        
+      </span>
+      <span class="agent-role">Clears the Cloudflare Turnstile challenge that sits in front of every notice detail page.</span>
+      <code class="src">src/captcha_solver.py, src/scrapfly_client.py</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">Every notice detail page open.</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Reads the sitekey off the LIVE page, and logs SITEKEY ROTATED rather than dying quietly</li><li>Selects the solve method and the response field from CAPTCHA_KIND</li><li>Creates the cf-turnstile-response input when the headless widget never renders one</li><li>Runs the blocking 2Captcha call in a thread so the browser event loop keeps servicing the page</li><li>Raises NoticeAccessBlocked on an IP refusal and aborts the whole run</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><div class="fact-v muted">Nobody. Runs unattended.</div></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Rendered notice HTML</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">Cloudflare Turnstile</span><span class="chip">2Captcha</span><span class="chip">Playwright</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>The gate migrated from reCAPTCHA to Cloudflare Turnstile on 2026-07-13. config.py recorded the migration but the solver still called recaptcha() and injected into g-recaptcha-response, a field the page no longer reads, so EVERY solve was billed and discarded. The gate is session-level, so one solve covers the rest of the run. A blocked IP now aborts instead of grinding 50 results times 3 attempts against a wall, and the page shows no challenge at all from a blocked address, which is why this looks like a solver bug when it is an egress problem.</p></div>
+    </div>
+  </details>
+</article><article class="agent" data-dept="acq" data-status="live" data-phase="1" data-human="no" data-search="notice parser pulls address, owner, and dates out of free-text legal notice bodies. src/notice_parser.py there are no structured html fields on the site. address, owner, and dates are all embedded in free-text notice bodies, so the regex layer is load bearing. notice_parser.py">
+  <details>
+    <summary>
+      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="agent-name">Notice Parser</span>
+      <span class="agent-meta">
+        <span class="badge badge-live">Live</span>
+        
+      </span>
+      <span class="agent-role">Pulls address, owner, and dates out of free-text legal notice bodies.</span>
+      <code class="src">src/notice_parser.py</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">Every notice fetched.</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Regex extraction into the NoticeData dataclass</li><li>Owner name taken from the deed-of-trust &#x27;executed by&#x27; language</li><li>Probate owner set to the Personal Representative, never the deceased</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><div class="fact-v muted">Nobody. Runs unattended.</div></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Structured NoticeData</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">notice_parser.py</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>There are no structured HTML fields on the site. Address, owner, and dates are all embedded in free-text notice bodies, so the regex layer is load bearing.</p></div>
+    </div>
+  </details>
+</article><article class="agent" data-dept="acq" data-status="live" data-phase="1" data-human="no" data-search="foreclosure filter keeps only real first-to-market trustee sales out of the foreclosure search results. src/foreclosure_filter.py not everything in a foreclosure saved search is a foreclosure. skipping this filter poisons the whole downstream list. foreclosure_filter.py">
+  <details>
+    <summary>
+      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="agent-name">Foreclosure Filter</span>
+      <span class="agent-meta">
+        <span class="badge badge-live">Live</span>
+        
+      </span>
+      <span class="agent-role">Keeps only real first-to-market trustee sales out of the foreclosure search results.</span>
+      <code class="src">src/foreclosure_filter.py</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">Any record from a Foreclosure saved search.</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Matches full notice text against observed trustee sale title variations</li><li>Applies INCLUDE_PHRASES and EXCLUDE_PHRASES</li><li>Non-foreclosure notice types pass through unfiltered</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><div class="fact-v muted">Nobody. Runs unattended.</div></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Filtered foreclosure set</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">foreclosure_filter.py</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>Not everything in a Foreclosure saved search is a foreclosure. Skipping this filter poisons the whole downstream list.</p></div>
+    </div>
+  </details>
+</article><article class="agent" data-dept="acq" data-status="live" data-phase="1" data-human="yes" data-search="courthouse photo importer turns phone photos of courthouse terminal screens into structured records. src/photo_importer.py, src/image_utils.py moire from terminal screens is the number one ocr killer. bilateral filter plus otsu beats adaptive threshold and clahe, and psm 4 beats the psm 6 that every research guide recommends. do not run tesseract osd rotation on phone photos, exif already handled it. opencv tesseract llm parser">
+  <details>
+    <summary>
+      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="agent-name">Courthouse Photo Importer</span>
+      <span class="agent-meta">
+        <span class="badge badge-live">Live</span>
+        <span class="badge badge-gate">Human gate</span>
+      </span>
+      <span class="agent-role">Turns phone photos of courthouse terminal screens into structured records.</span>
+      <code class="src">src/photo_importer.py, src/image_utils.py</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">photo-import command, or a new file landing in Dropbox.</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>EXIF transpose, blur check, bilateral filter, perspective correction, Otsu threshold</li><li>Tesseract OCR at PSM 4</li><li>LLM parse into NoticeData across all 7 notice types</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>Runner takes the photos at the terminal</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">NoticeData records</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">OpenCV</span><span class="chip">Tesseract</span><span class="chip">LLM parser</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>Moire from terminal screens is the number one OCR killer. Bilateral filter plus Otsu beats adaptive threshold and CLAHE, and PSM 4 beats the PSM 6 that every research guide recommends. Do not run Tesseract OSD rotation on phone photos, EXIF already handled it.</p></div>
+    </div>
+  </details>
+</article><article class="agent" data-dept="acq" data-status="live" data-phase="1" data-human="no" data-search="pdf importer ingests scanned notice pdfs into the same pipeline. src/pdf_importer.py pdf and photo imports set date_added explicitly and it is preserved, not re-stamped by the pipeline run. pypdfium2 tesseract">
+  <details>
+    <summary>
+      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="agent-name">PDF Importer</span>
+      <span class="agent-meta">
+        <span class="badge badge-live">Live</span>
+        
+      </span>
+      <span class="agent-role">Ingests scanned notice PDFs into the same pipeline.</span>
+      <code class="src">src/pdf_importer.py</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">Manual import of a scanned batch.</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>pypdfium2 renders pages to images</li><li>Shared OCR utilities extract text</li><li>Records flow into the standard enrichment pipeline</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><div class="fact-v muted">Nobody. Runs unattended.</div></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">NoticeData records</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">pypdfium2</span><span class="chip">Tesseract</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>PDF and photo imports set date_added explicitly and it is preserved, not re-stamped by the pipeline run.</p></div>
+    </div>
+  </details>
+</article><article class="agent" data-dept="acq" data-status="live" data-phase="1" data-human="yes" data-search="dropbox watcher cursor-based polling so a runner just uploads photos and walks away. src/dropbox_watcher.py folder path is the metadata. /knox/eviction/photo.jpg is how county and type get resolved, so a misfiled photo is a mislabeled record. dropbox api">
+  <details>
+    <summary>
+      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="agent-name">Dropbox Watcher</span>
+      <span class="agent-meta">
+        <span class="badge badge-live">Live</span>
+        <span class="badge badge-gate">Human gate</span>
+      </span>
+      <span class="agent-role">Cursor-based polling so a runner just uploads photos and walks away.</span>
+      <code class="src">src/dropbox_watcher.py</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">Continuous loop, default 15 minute interval.</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Polls the Dropbox cursor for new files</li><li>Resolves county and notice type from the folder path</li><li>Processes through the photo importer, then deletes on success</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>Runner organizes uploads as /County/notice_type/</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Processed records, dropbox_state.json</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">Dropbox API</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>Folder path IS the metadata. /Knox/eviction/photo.jpg is how county and type get resolved, so a misfiled photo is a mislabeled record.</p></div>
+    </div>
+  </details>
+</article><article class="agent" data-dept="acq" data-status="live" data-phase="1" data-human="yes" data-search="knox ftm puller sweeps every knox source that carries a property address and applies the buy box. src/knox_ftm_pull.py condemnations are one cycle only and evictions are one week only. the city overwrites its agenda pdfs and the court keeps only the current week, so roughly 86 back-dated urls all 404. these accumulate forward or not at all. register of deeds knox tax api siftmap">
+  <details>
+    <summary>
+      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="agent-name">Knox FTM Puller</span>
+      <span class="agent-meta">
+        <span class="badge badge-live">Live</span>
+        <span class="badge badge-gate">Human gate</span>
+      </span>
+      <span class="agent-role">Sweeps every Knox source that carries a property address and applies the buy box.</span>
+      <code class="src">src/knox_ftm_pull.py</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">python src/knox_ftm_pull.py</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Pulls liens, state and federal tax liens, and trustee deeds from the Register of Deeds</li><li>Pulls notices from tnpublicnotice, condemnations from city agendas, evictions from the court</li><li>Enriches against SiftMap, applies buy box, writes the upload CSV</li><li>Routes upside-down records to a separate exclusion file</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>Operator sets the buy box</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">knox_ftm_pull.csv, _upside_down.csv</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">Register of Deeds</span><span class="chip">Knox Tax API</span><span class="chip">SiftMap</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>Condemnations are one cycle only and evictions are one week only. The city overwrites its agenda PDFs and the court keeps only the current week, so roughly 86 back-dated URLs all 404. These accumulate forward or not at all.</p></div>
+    </div>
+  </details>
+</article><article class="agent" data-dept="acq" data-status="live" data-phase="1" data-human="no" data-search="lien resolver turns lien debtor names into parcels, then drops anyone already satisfied. src/knox_lien_resolve.py 27,493 release documents exist against 12 months of liens, and 8% of lead debtors had every lien already satisfied. release filtering is not optional. full-run name-join hit rate is 40%, not the 64% a sorted sample suggested. knox tax api register of deeds">
+  <details>
+    <summary>
+      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="agent-name">Lien Resolver</span>
+      <span class="agent-meta">
+        <span class="badge badge-live">Live</span>
+        
+      </span>
+      <span class="agent-role">Turns lien debtor names into parcels, then drops anyone already satisfied.</span>
+      <code class="src">src/knox_lien_resolve.py</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">python src/knox_lien_resolve.py --all</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Liens carry no parcel id, so the join is debtor name into the open county tax API</li><li>Computes active liens as recorded minus released</li><li>Drops fully cleared debtors, states &#x27;3 of 8 still active&#x27; in Notes</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><div class="fact-v muted">Nobody. Runs unattended.</div></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Debtor to parcel matches</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">Knox Tax API</span><span class="chip">Register of Deeds</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>27,493 release documents exist against 12 months of liens, and 8% of lead debtors had EVERY lien already satisfied. Release filtering is not optional. Full-run name-join hit rate is 40%, not the 64% a sorted sample suggested.</p></div>
+    </div>
+  </details>
+</article><article class="agent" data-dept="acq" data-status="live" data-phase="1" data-human="no" data-search="foreclosure consolidator builds a master list of still-active foreclosures from the last n months of runs. src/consolidate_foreclosures.py dedupe by property, not by notice. republished and postponed notices collapse to one record only if you key on address plus city and keep the latest sale date. apify">
+  <details>
+    <summary>
+      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="agent-name">Foreclosure Consolidator</span>
+      <span class="agent-meta">
+        <span class="badge badge-live">Live</span>
+        
+      </span>
+      <span class="agent-role">Builds a master list of still-active foreclosures from the last N months of runs.</span>
+      <code class="src">src/consolidate_foreclosures.py</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">python src/consolidate_foreclosures.py --months 3</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Pulls each Apify run&#x27;s output.csv from its key-value store</li><li>Merges local output CSVs</li><li>Dedupes by property, keeping the latest sale date</li><li>Drops anything whose auction date has already passed</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><div class="fact-v muted">Nobody. Runs unattended.</div></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">foreclosure_master_active_&lt;date&gt;.csv</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">Apify</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>Dedupe by property, not by notice. Republished and postponed notices collapse to one record only if you key on address plus city and keep the latest sale date.</p></div>
+    </div>
+  </details>
+</article><article class="agent" data-dept="acq" data-status="retired" data-phase="1" data-human="no" data-search="proof-of-source capture retired 2026-08-14. captured a full-page screenshot of each notice as proof of source. archive/notice_screenshots/notice_screenshot.py retired because nothing used it, and it was the slowest step in a foreclosure notice, which matters directly on a multi-thousand-notice backfill. the fields, the csv column and the datasift custom field are deliberately kept so historical records retain their urls. scrapfly google drive apify">
+  <details>
+    <summary>
+      <span class="dot dot-retired" aria-hidden="true"></span>
+      <span class="agent-name">Proof-of-Source Capture</span>
+      <span class="agent-meta">
+        <span class="badge badge-retired">Retired</span>
+        
+      </span>
+      <span class="agent-role">RETIRED 2026-08-14. Captured a full-page screenshot of each notice as proof of source.</span>
+      <code class="src">archive/notice_screenshots/notice_screenshot.py</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">The moment the CAPTCHA clears and the notice is visible.</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Full-page screenshot of the detail page</li><li>Hosted to Apify key-value store or Google Drive</li><li>URL rides along as a custom field plus a Notes line into DataSift</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><div class="fact-v muted">Nobody. Runs unattended.</div></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">notice_&lt;ID&gt;.png, Hosted screenshot URL</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">Scrapfly</span><span class="chip">Google Drive</span><span class="chip">Apify</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>Retired because nothing used it, and it was the slowest step in a foreclosure notice, which matters directly on a multi-thousand-notice backfill. The fields, the CSV column and the DataSift custom field are deliberately KEPT so historical records retain their URLs.</p></div>
+    </div>
+  </details>
+</article></div>
+</section><section class="dept" id="dept-enrich" data-dept="enrich">
+  <header class="dept-head">
+    <h3>Enrichment &amp; Identity</h3>
+    <p class="dept-tag">Who actually owns it and who can legally sign</p>
+    <span class="dept-count"><b>10</b> agents</span>
+  </header>
+  <div class="grid"><article class="agent" data-dept="enrich" data-status="live" data-phase="1" data-human="yes" data-search="enrichment pipeline ten-plus step chain that takes a bare address to a dialable decision maker. src/enrichment_pipeline.py every step is optional and states its own failure. one dead api must never take the record with it. enrichment_pipeline.py">
+  <details>
+    <summary>
+      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="agent-name">Enrichment Pipeline <span class="lead-tag">lead</span></span>
+      <span class="agent-meta">
+        <span class="badge badge-live">Live</span>
+        <span class="badge badge-gate">Human gate</span>
+      </span>
+      <span class="agent-role">Ten-plus step chain that takes a bare address to a dialable decision maker.</span>
+      <code class="src">src/enrichment_pipeline.py</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">Every record after intake.</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Address standardization, property data, tax data</li><li>Obituary and heir research where the owner is deceased</li><li>Skip trace waterfall, then phone scoring</li><li>Stamps date_added at run time</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>Reviews decision-maker confidence before calling</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Enriched NoticeData</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">enrichment_pipeline.py</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>Every step is optional and states its own failure. One dead API must never take the record with it.</p></div>
+    </div>
+  </details>
+</article><article class="agent" data-dept="enrich" data-status="live" data-phase="1" data-human="no" data-search="address standardizer normalizes addresses so dedupe and crm matching actually work. src/address_standardizer.py address is the upsert key for datasift. if standardization drifts, re-runs create duplicates instead of updating. smarty">
+  <details>
+    <summary>
+      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="agent-name">Address Standardizer</span>
+      <span class="agent-meta">
+        <span class="badge badge-live">Live</span>
+        
+      </span>
+      <span class="agent-role">Normalizes addresses so dedupe and CRM matching actually work.</span>
+      <code class="src">src/address_standardizer.py</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">Step 1 of enrichment.</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Smarty API standardization</li><li>Normalized form used as the dedupe key</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><div class="fact-v muted">Nobody. Runs unattended.</div></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Standardized address</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">Smarty</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>Address is the upsert key for DataSift. If standardization drifts, re-runs create duplicates instead of updating.</p></div>
+    </div>
+  </details>
+</article><article class="agent" data-dept="enrich" data-status="live" data-phase="1" data-human="yes" data-search="property enricher pulls beds, baths, sqft, year built, and valuation for the subject. src/property_enricher.py aggregators get bedroom counts wrong. explicit cli county-card values always win over zillow, and the whole dual-track arv rests on the bed count being right. openweb ninja zillow">
+  <details>
+    <summary>
+      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="agent-name">Property Enricher</span>
+      <span class="agent-meta">
+        <span class="badge badge-live">Live</span>
+        <span class="badge badge-gate">Human gate</span>
+      </span>
+      <span class="agent-role">Pulls beds, baths, sqft, year built, and valuation for the subject.</span>
+      <code class="src">src/property_enricher.py</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">Step 2 of enrichment.</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Zillow property-details-address endpoint</li><li>Merged into NoticeData</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>County card overrides beat the aggregator</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Property facts</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">OpenWeb Ninja</span><span class="chip">Zillow</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>Aggregators get bedroom counts wrong. Explicit CLI county-card values always win over Zillow, and the whole dual-track ARV rests on the bed count being right.</p></div>
+    </div>
+  </details>
+</article><article class="agent" data-dept="enrich" data-status="live" data-phase="1" data-human="no" data-search="tax enricher pulls per-parcel delinquency, assessed value, and owner of record. src/tax_enricher.py the county api returns bills per owner. without the per-parcel gate, a multi-parcel owner stamps one property&#x27;s debt onto another. only about 12% of parcels owe anything, so a sparse column is correct. knox county tax api">
+  <details>
+    <summary>
+      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="agent-name">Tax Enricher</span>
+      <span class="agent-meta">
+        <span class="badge badge-live">Live</span>
+        
+      </span>
+      <span class="agent-role">Pulls per-parcel delinquency, assessed value, and owner of record.</span>
+      <code class="src">src/tax_enricher.py</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">Step 3 of enrichment.</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Knox County Tax API by parcel</li><li>Delinquent year gated on a positive per-parcel amount</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><div class="fact-v muted">Nobody. Runs unattended.</div></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Tax delinquency, Parcel data</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">Knox County Tax API</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>The county API returns bills per OWNER. Without the per-parcel gate, a multi-parcel owner stamps one property&#x27;s debt onto another. Only about 12% of parcels owe anything, so a sparse column is correct.</p></div>
+    </div>
+  </details>
+</article><article class="agent" data-dept="enrich" data-status="live" data-phase="1" data-human="yes" data-search="obituary enricher finds the date of death and the named representative for deceased owners. src/obituary_enricher.py the spouse-obituary trap. an obituary on the record does not mean the owner died. a live blount case had the husband&#x27;s obituary on a living widow&#x27;s record. an unresearched caller would have asked a recent widow for her dead husband. always match decedent against owner of record first. obituary sources knox tax api scrapfly">
+  <details>
+    <summary>
+      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="agent-name">Obituary Enricher</span>
+      <span class="agent-meta">
+        <span class="badge badge-live">Live</span>
+        <span class="badge badge-gate">Human gate</span>
+      </span>
+      <span class="agent-role">Finds the date of death and the named representative for deceased owners.</span>
+      <code class="src">src/obituary_enricher.py</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">Owner flagged deceased, or a probate record.</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Probate preset sets DM to the court-named PR and skips obituary search entirely</li><li>Otherwise searches obituary sources for the decedent</li><li>Runs the DOD sanity check against the publication date</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>Must confirm the decedent IS the owner of record</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Date of death, Decision maker, Obituary URL</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">Obituary sources</span><span class="chip">Knox Tax API</span><span class="chip">Scrapfly</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>THE SPOUSE-OBITUARY TRAP. An obituary on the record does not mean the OWNER died. A live Blount case had the husband&#x27;s obituary on a living widow&#x27;s record. An unresearched caller would have asked a recent widow for her dead husband. Always match decedent against owner of record first.</p></div>
+    </div>
+  </details>
+</article><article class="agent" data-dept="enrich" data-status="live" data-phase="1" data-human="yes" data-search="deep prospecting v5 resolves heirs and required signers via smartskip, then confirms against published obituaries. skills/deep-prospecting-v5 smartskip is wrong about death. it returned deceased=false for a man who died with a published funeral-home obituary, and it has no dod column at all. 63% of relationship labels come back generic. the obituary layer is what makes it trustworthy. cost is $0.24 per record, 4.9x cheaper than the retired enformion path. smartskip tracerfy trestle iq scrapfly">
+  <details>
+    <summary>
+      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="agent-name">Deep Prospecting v5</span>
+      <span class="agent-meta">
+        <span class="badge badge-live">Live</span>
+        <span class="badge badge-gate">Human gate</span>
+      </span>
+      <span class="agent-role">Resolves heirs and required signers via SmartSkip, then confirms against published obituaries.</span>
+      <code class="src">skills/deep-prospecting-v5</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">Confirmed deceased owner that no cheaper path resolved.</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>SmartSkip batch returns relatives AND their phones in one row</li><li>Tracerfy gap-fills the roughly 7% of relatives left phoneless</li><li>Mandatory free obituary and web research supplies DOD and true relationships</li><li>Trestle scores every number into dial tiers</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>Research pass is mandatory, never skipped</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Heir map, Master dial sheet, Branded PDF pack</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">SmartSkip</span><span class="chip">Tracerfy</span><span class="chip">Trestle IQ</span><span class="chip">Scrapfly</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>SmartSkip is WRONG about death. It returned Deceased=false for a man who died with a published funeral-home obituary, and it has no DOD column at all. 63% of relationship labels come back generic. The obituary layer is what makes it trustworthy. Cost is $0.24 per record, 4.9x cheaper than the retired Enformion path.</p></div>
+    </div>
+  </details>
+</article><article class="agent" data-dept="enrich" data-status="live" data-phase="1" data-human="no" data-search="entity researcher unmasks the human behind an llc, trust, or corporation. src/enformion_business.py, src/entity_researcher.py entities cannot be name-traced. 35 of 321 vacant owners were llcs or trusts, so filter them out of the consumer skip-trace batch up front or you burn the spend. the v1 businesssearch type is access-denied; only businessv2 works. enformion businessv2 siftmap">
+  <details>
+    <summary>
+      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="agent-name">Entity Researcher</span>
+      <span class="agent-meta">
+        <span class="badge badge-live">Live</span>
+        
+      </span>
+      <span class="agent-role">Unmasks the human behind an LLC, trust, or corporation.</span>
+      <code class="src">src/enformion_business.py, src/entity_researcher.py</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">Owner is an entity, not a person.</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Enformion BusinessV2 returns officers from corp filings</li><li>Filters out entity self-references and registered-agent fronts</li><li>Reverse-lookups an LLC&#x27;s residential mailing address to find the principal</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><div class="fact-v muted">Nobody. Runs unattended.</div></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Named principals</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">Enformion BusinessV2</span><span class="chip">SiftMap</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>Entities cannot be name-traced. 35 of 321 vacant owners were LLCs or trusts, so filter them out of the consumer skip-trace batch up front or you burn the spend. The v1 BusinessSearch type is access-denied; only BusinessV2 works.</p></div>
+    </div>
+  </details>
+</article><article class="agent" data-dept="enrich" data-status="live" data-phase="1" data-human="no" data-search="tracerfy skip trace cheap batch phone and email fill at about two cents a record. src/tracerfy_skip_tracer.py, src/tracerfy_ftm.py datasift merges phones rather than replacing them, so tracerfy and enformion accumulate. run them sequentially, then re-score and re-tag. one live run went from 109 to 302 phones across 33 records. tracerfy">
+  <details>
+    <summary>
+      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="agent-name">Tracerfy Skip Trace</span>
+      <span class="agent-meta">
+        <span class="badge badge-live">Live</span>
+        
+      </span>
+      <span class="agent-role">Cheap batch phone and email fill at about two cents a record.</span>
+      <code class="src">src/tracerfy_skip_tracer.py, src/tracerfy_ftm.py</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">Any record or relative missing contact data.</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Batch submission</li><li>Merge found phones back by address upsert</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><div class="fact-v muted">Nobody. Runs unattended.</div></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Phone numbers, Emails</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">Tracerfy</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>DataSift MERGES phones rather than replacing them, so Tracerfy and Enformion accumulate. Run them sequentially, then re-score and re-tag. One live run went from 109 to 302 phones across 33 records.</p></div>
+    </div>
+  </details>
+</article><article class="agent" data-dept="enrich" data-status="live" data-phase="1" data-human="no" data-search="phone validator scores every number and sorts the call list into dial tiers. src/phone_validator.py on a shared household line the owner rule wins: the number carries source and tier only, never a relationship tag, or the dial sheet labels the owner&#x27;s own landline &#x27;husband&#x27;. trestle iq">
+  <details>
+    <summary>
+      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="agent-name">Phone Validator</span>
+      <span class="agent-meta">
+        <span class="badge badge-live">Live</span>
+        
+      </span>
+      <span class="agent-role">Scores every number and sorts the call list into dial tiers.</span>
+      <code class="src">src/phone_validator.py</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">After every skip-trace pass.</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Trestle phone_intel scores activity and line type</li><li>Tiers: 81-100 dial first, 61-80 second, 41-60 third, 21-40 fourth, 0-20 drop</li><li>Litigator risk check</li><li>Writes phone tags back to DataSift</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><div class="fact-v muted">Nobody. Runs unattended.</div></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Tiered dial list, DataSift phone tags</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">Trestle IQ</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>On a shared household line the owner rule wins: the number carries source and tier only, never a relationship tag, or the dial sheet labels the owner&#x27;s own landline &#x27;Husband&#x27;.</p></div>
+    </div>
+  </details>
+</article><article class="agent" data-dept="enrich" data-status="live" data-phase="1" data-human="yes" data-search="probate property finder finds the property when the court record has names but no address. src/property_lookup.py courthouse probate records have decedent and executor names but no property address. without this three-tier lookup the entire probate niche is unusable. knox tax api people search scrapfly">
+  <details>
+    <summary>
+      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="agent-name">Probate Property Finder</span>
+      <span class="agent-meta">
+        <span class="badge badge-live">Live</span>
+        <span class="badge badge-gate">Human gate</span>
+      </span>
+      <span class="agent-role">Finds the property when the court record has names but no address.</span>
+      <code class="src">src/property_lookup.py</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">Probate record with a PR and decedent but no property.</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Tier 1: Knox Tax API name search, scored by token overlap, accept at 0.4 or better</li><li>Tier 2: executor family search for transferred family property</li><li>Tier 3: people search for the decedent&#x27;s last known address</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>Confidence score reviewed before the record ships</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Property address, Confidence score</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">Knox Tax API</span><span class="chip">People search</span><span class="chip">Scrapfly</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>Courthouse probate records have decedent and executor names but no property address. Without this three-tier lookup the entire probate niche is unusable.</p></div>
+    </div>
+  </details>
+</article></div>
+</section><section class="dept" id="dept-deal" data-dept="deal">
+  <header class="dept-head">
+    <h3>Deal Analysis</h3>
+    <p class="dept-tag">What it is worth, what it costs, what you can pay</p>
+    <span class="dept-count"><b>11</b> agents</span>
+  </header>
+  <div class="grid"><article class="agent" data-dept="deal" data-status="live" data-phase="1" data-human="yes" data-search="post-walkthrough package the one workbook you build the hour after walking a house. nine sheets, sift-linked. src/post_walkthrough.py exact numbers, not ranges, in the cells. a wide band is not an answer you can take to a seller or a buyer. the lo/hi still drives the math and surfaces as one &#x27;if it moves&#x27; sensitivity line. sift deal room api siftmap zillow openpyxl">
+  <details>
+    <summary>
+      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="agent-name">Post-Walkthrough Package <span class="lead-tag">lead</span></span>
+      <span class="agent-meta">
+        <span class="badge badge-live">Live</span>
+        <span class="badge badge-gate">Human gate</span>
+      </span>
+      <span class="agent-role">The one workbook you build the hour after walking a house. Nine sheets, Sift-linked.</span>
+      <code class="src">src/post_walkthrough.py</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">python src/post_walkthrough.py after a walk.</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Loads the LIVE Sift lead as the anchor, not just the address</li><li>Spins comps, rehab, walk findings, exits, and the dispo stack together</li><li>Renders Overview, Exit Strats, Comps, Active-Pending, Repair Logic, Repair Numbers, Buyer Targets, Outreach, Lender Analysis</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>Walkthrough JSON is the human layer and overrides the live record</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">9-sheet branded Excel workbook</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">Sift Deal Room API</span><span class="chip">SiftMap</span><span class="chip">Zillow</span><span class="chip">openpyxl</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>Exact numbers, not ranges, in the cells. A wide band is not an answer you can take to a seller or a buyer. The lo/hi still drives the math and surfaces as one &#x27;If it moves&#x27; sensitivity line.</p></div>
+    </div>
+  </details>
+</article><article class="agent" data-dept="deal" data-status="live" data-phase="1" data-human="yes" data-search="comp package engine boundary-filtered comps and dual-track arv for a subject property. src/comp_package.py, src/zillow_market_api.py the api contract moved. similar-sale-homes is retired and 404s. every /search caps at 41 rows with totalpages=1, so you partition by price band and recursively split saturated bands, 50 to 80 calls to recover 2 to 3 years. price_min and price_max are silently ignored, so always check the echoed parameters object. openweb ninja /search zillow">
+  <details>
+    <summary>
+      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="agent-name">Comp Package Engine</span>
+      <span class="agent-meta">
+        <span class="badge badge-live">Live</span>
+        <span class="badge badge-gate">Human gate</span>
+      </span>
+      <span class="agent-role">Boundary-filtered comps and dual-track ARV for a subject property.</span>
+      <code class="src">src/comp_package.py, src/zillow_market_api.py</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">python src/comp_package.py with a subject address.</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Band-partitioned Zillow /search pull to beat the 41-row cap</li><li>Boundary clip by bbox AND street regex, both applied</li><li>Condition bucketing by sold price over Zestimate ratio</li><li>Dual-track ARV, then MAO math and buyer matching</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>County card overrides for beds, baths, sqft, year built</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Branded comp workbook</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">OpenWeb Ninja /search</span><span class="chip">Zillow</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>The API contract moved. similar-sale-homes is retired and 404s. Every /search caps at 41 rows with totalPages=1, so you partition by price band and recursively split saturated bands, 50 to 80 calls to recover 2 to 3 years. price_min and price_max are SILENTLY ignored, so always check the echoed parameters object.</p></div>
+    </div>
+  </details>
+</article><article class="agent" data-dept="deal" data-status="live" data-phase="1" data-human="yes" data-search="dual-track arv engine prices the subject inside its own bedroom band and labels reconfig upside separately. src/post_walkthrough.py, src/comp_package.py a subject below the comp set&#x27;s bed count lives in a lower value band than per-bedroom adjustments imply. in 37914, renovated 2-beds capped at $215-280k while same-size 3/2s ran $285-385k. extra square footage cannot escape the band. comp_package.py">
+  <details>
+    <summary>
+      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="agent-name">Dual-Track ARV Engine</span>
+      <span class="agent-meta">
+        <span class="badge badge-live">Live</span>
+        <span class="badge badge-gate">Human gate</span>
+      </span>
+      <span class="agent-role">Prices the subject inside its own bedroom band and labels reconfig upside separately.</span>
+      <code class="src">src/post_walkthrough.py, src/comp_package.py</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">Called by the comp package and post-walkthrough.</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Base ARV from same-bed renovated comps only, clamped to that band&#x27;s median</li><li>Reconfig-to-more-beds rides as a labeled UPSIDE track capped at band p75</li><li>tight_arv applies recency, size window, and same-bed rules for underwriting</li><li>refine_bucket demotes investor buys that Zillow re-anchored to look renovated</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>Reconfig upside credited only after a walkthrough verifies the layout converts</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Base ARV, Upside ARV, Basis string</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">comp_package.py</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>A subject below the comp set&#x27;s bed count lives in a LOWER value band than per-bedroom adjustments imply. In 37914, renovated 2-beds capped at $215-280K while same-size 3/2s ran $285-385K. Extra square footage cannot escape the band.</p></div>
+    </div>
+  </details>
+</article><article class="agent" data-dept="deal" data-status="live" data-phase="1" data-human="yes" data-search="rehab estimator room-by-room, four-tier scope priced off the locked knox material list. src/rehab_estimator.py, src/sku_pricing.py the double-discount trap. locked prices are already knox-local, so applying the 0.88 regional multiplier to materials under-prices by about 12%. the multiplier is labor only in sku mode, and a test asserts the exact basket math to catch a leak. locked material list home depot sku pricing">
+  <details>
+    <summary>
+      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="agent-name">Rehab Estimator</span>
+      <span class="agent-meta">
+        <span class="badge badge-live">Live</span>
+        <span class="badge badge-gate">Human gate</span>
+      </span>
+      <span class="agent-role">Room-by-room, four-tier scope priced off the locked Knox material list.</span>
+      <code class="src">src/rehab_estimator.py, src/sku_pricing.py</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">Deal analysis or post-walkthrough.</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>SKU baskets per category from the locked master material list</li><li>Engine labor per category, regional multiplier on LABOR ONLY</li><li>Any missing SKU drops the whole category back to the legacy table with a loud log</li><li>Self-perform estimate alongside the GC grand total</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>Signed bids replace estimates and collapse the range</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Itemized scope, 4-scenario matrix, Self-perform estimate</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">Locked material list</span><span class="chip">Home Depot SKU pricing</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>THE DOUBLE-DISCOUNT TRAP. Locked prices are already Knox-local, so applying the 0.88 regional multiplier to materials under-prices by about 12%. The multiplier is labor only in SKU mode, and a test asserts the exact basket math to catch a leak.</p></div>
+    </div>
+  </details>
+</article><article class="agent" data-dept="deal" data-status="live" data-phase="1" data-human="yes" data-search="master material list the frozen, git-tracked price source every knox estimate reads from. src/material_list.py only --lock writes to data/. that single rule is what stops a casual re-pull from silently changing every estimate in flight. current lock: 94 of 94 search keys priced, 88 sku rows plus 12 allowances. home depot serp pull">
+  <details>
+    <summary>
+      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="agent-name">Master Material List</span>
+      <span class="agent-meta">
+        <span class="badge badge-live">Live</span>
+        <span class="badge badge-gate">Human gate</span>
+      </span>
+      <span class="agent-role">The frozen, git-tracked price source every Knox estimate reads from.</span>
+      <code class="src">src/material_list.py</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">Re-locked only when the PM re-approves the list.</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Pulls fresh Knox pricing by zip</li><li>--lock writes the git-tracked JSON and CSV twins</li><li>An ordinary re-pull refreshes cache but can never drift prices into estimates</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>PM re-approval required to re-lock</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">master_materials_locked_37914.json, CSV twin</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">Home Depot</span><span class="chip">SERP pull</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>Only --lock writes to data/. That single rule is what stops a casual re-pull from silently changing every estimate in flight. Current lock: 94 of 94 search keys priced, 88 SKU rows plus 12 allowances.</p></div>
+    </div>
+  </details>
+</article><article class="agent" data-dept="deal" data-status="live" data-phase="1" data-human="yes" data-search="exit strategy engine scores each lane off the conservative arv and says why each is in or out. src/post_walkthrough.py the template&#x27;s six exit slots were placeholders, not a quota. if nothing clears its gate, the two closest misses render under an explicit banner rather than fabricating a recommendation. novation is not modelled at all, it was removed rather than hidden. post_walkthrough.py">
+  <details>
+    <summary>
+      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="agent-name">Exit Strategy Engine</span>
+      <span class="agent-meta">
+        <span class="badge badge-live">Live</span>
+        <span class="badge badge-gate">Human gate</span>
+      </span>
+      <span class="agent-role">Scores each lane off the conservative ARV and says why each is in or out.</span>
+      <code class="src">src/post_walkthrough.py</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">Post-walkthrough render.</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Scores wholesale assignment, wholetail, flip same-config, flip reconfig, BRRRR</li><li>Only lanes that clear their gate get a suggestion block</li><li>Everything ruled out is named in the headline and explained</li><li>Names the BUYER&#x27;s exit on the outreach sheet, never our hold</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>Reconfig lane gated on walkthrough verification</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Ranked exit lanes with rationale</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">post_walkthrough.py</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>The template&#x27;s six exit slots were placeholders, not a quota. If nothing clears its gate, the two closest misses render under an explicit banner rather than fabricating a recommendation. Novation is not modelled at all, it was removed rather than hidden.</p></div>
+    </div>
+  </details>
+</article><article class="agent" data-dept="deal" data-status="live" data-phase="1" data-human="yes" data-search="deal analyzer mao, roi, and financing scenarios across multiple loan structures. src/deal_analyzer.py transfer tax defaults are tennessee-specific. the skill ships a state reference table because shipping one state&#x27;s number as universal is how community users get burned. deal_analyzer.py">
+  <details>
+    <summary>
+      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="agent-name">Deal Analyzer</span>
+      <span class="agent-meta">
+        <span class="badge badge-live">Live</span>
+        <span class="badge badge-gate">Human gate</span>
+      </span>
+      <span class="agent-role">MAO, ROI, and financing scenarios across multiple loan structures.</span>
+      <code class="src">src/deal_analyzer.py</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">analyze-deal command or the deal-analyzer plugin.</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>75% and 70% MAO rules</li><li>Hard money at 12%, conventional at 7%, 2 points, 2.5% closing</li><li>Exit strategy comparison</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>Operator sets target margin</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">MAO, ROI, Financing comparison</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">deal_analyzer.py</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>Transfer tax defaults are Tennessee-specific. The skill ships a state reference table because shipping one state&#x27;s number as universal is how community users get burned.</p></div>
+    </div>
+  </details>
+</article><article class="agent" data-dept="deal" data-status="live" data-phase="1" data-human="yes" data-search="lender analysis bakes private money into every resale lane and renders the lender&#x27;s own view. src/post_walkthrough.py roi reads as cash-on-cash when financed, and a financed flip must also clear the $10k wholesale floor to stay suggested. no financing block means the old cash-basis math, byte identical. post_walkthrough.py">
+  <details>
+    <summary>
+      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="agent-name">Lender Analysis</span>
+      <span class="agent-meta">
+        <span class="badge badge-live">Live</span>
+        <span class="badge badge-gate">Human gate</span>
+      </span>
+      <span class="agent-role">Bakes private money into every resale lane and renders the lender&#x27;s own view.</span>
+      <code class="src">src/post_walkthrough.py</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">A financing block present in the walkthrough JSON.</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Profit goes net of debt: points plus interest over the lane&#x27;s hold</li><li>Sources and uses, draw schedule, loan-to-ARV, equity cushion</li><li>Band-floor stress case and payoff waterfall at the point ARV</li><li>Lender&#x27;s annualized yield</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>Assumed terms paint a red placeholder banner until real terms land</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Lender Analysis sheet</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">post_walkthrough.py</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>ROI reads as cash-on-cash when financed, and a financed flip must ALSO clear the $10K wholesale floor to stay suggested. No financing block means the old cash-basis math, byte identical.</p></div>
+    </div>
+  </details>
+</article><article class="agent" data-dept="deal" data-status="live" data-phase="2" data-human="yes" data-search="lot split underwriter underwrites splitting a parcel as its own exit lane. src/lot_split_underwrite.py run on 306 n morgan and 2810 barton. treat the split as an exit lane that competes with the others, not as free upside stacked on top. knox tax api siftmap">
+  <details>
+    <summary>
+      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="agent-name">Lot Split Underwriter</span>
+      <span class="agent-meta">
+        <span class="badge badge-live">Live</span>
+        <span class="badge badge-gate">Human gate</span>
+      </span>
+      <span class="agent-role">Underwrites splitting a parcel as its own exit lane.</span>
+      <code class="src">src/lot_split_underwrite.py</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">python src/lot_split_underwrite.py</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Parcel and zoning review</li><li>Split scenario economics</li><li>Comparison against the standard lanes</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>Zoning confirmation before relying on it</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Lot split underwrite workbook</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">Knox Tax API</span><span class="chip">SiftMap</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>Run on 306 N Morgan and 2810 Barton. Treat the split as an exit lane that competes with the others, not as free upside stacked on top.</p></div>
+    </div>
+  </details>
+</article><article class="agent" data-dept="deal" data-status="live" data-phase="1" data-human="yes" data-search="lender package builder the 8-piece set handed to a private money lender to fund one named property. src/lender_package.py read the workbook back before regenerating over it. ty reviews in excel and edits inputs directly; on one review he made three changes and mentioned one. also: dayone = loan minus rehabtotal is derived, never typed, because typing the closing advance let financed closing costs land in the draw tranche and the holdback disagreed with the repair budget by $1,608. openpyxl deal spec json">
+  <details>
+    <summary>
+      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="agent-name">Lender Package Builder</span>
+      <span class="agent-meta">
+        <span class="badge badge-live">Live</span>
+        <span class="badge badge-gate">Human gate</span>
+      </span>
+      <span class="agent-role">The 8-piece set handed to a private money lender to fund one named property.</span>
+      <code class="src">src/lender_package.py</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">python src/lender_package.py --spec deals/&lt;deal&gt;.json</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Mirrors The Repair Estimator block for block, inputs inline beside the answers</li><li>Writes 240+ live Excel formulas off workbook defined names, including the prose</li><li>Rolls the 65-line repair grid up into the front page</li><li>Sizes every column from what a cell will DISPLAY, not what it holds</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>Reviews and edits the blue input cells directly in Excel</li><li>Negotiates the loan amount, the one input that sets the deal</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">The Private Lender Package.xlsx, 8 tabs</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">openpyxl</span><span class="chip">deal spec JSON</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>Read the workbook back before regenerating over it. Ty reviews in Excel and edits inputs directly; on one review he made three changes and mentioned one. Also: DayOne = Loan minus RehabTotal is derived, never typed, because typing the closing advance let financed closing costs land in the draw tranche and the holdback disagreed with the repair budget by $1,608.</p></div>
+    </div>
+  </details>
+</article><article class="agent" data-dept="deal" data-status="live" data-phase="1" data-human="yes" data-search="lender document set cover letter, promissory note, personal guarantee, closing instructions, insurance request, investor sheet, satisfaction and release. src/lender_docs.py the templates carry a notes for claude block that must never reach a lender, so build_all re-reads each rendered file and raises rather than trusting the code path. main exits 1 if fewer than 7 documents write, and stale files from a previous numbering are deleted, so a folder cannot grow a second copy of everything. python-docx cmo stack voice guide">
+  <details>
+    <summary>
+      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="agent-name">Lender Document Set</span>
+      <span class="agent-meta">
+        <span class="badge badge-live">Live</span>
+        <span class="badge badge-gate">Human gate</span>
+      </span>
+      <span class="agent-role">Cover letter, promissory note, personal guarantee, closing instructions, insurance request, investor sheet, satisfaction and release.</span>
+      <code class="src">src/lender_docs.py</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">python src/lender_docs.py --spec deals/&lt;deal&gt;.json</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Picks exactly one side of every either/or branch from the spec</li><li>Renders one signature block per company member on the guarantee</li><li>Re-reads every rendered document and raises if the internal notes block survived</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>Signs. A closing attorney draws the deed of trust on their own form.</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">7 .docx documents, numbered 1 and 3 through 8</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">python-docx</span><span class="chip">CMO Stack voice guide</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>The templates carry a NOTES FOR CLAUDE block that must never reach a lender, so build_all re-reads each rendered file and raises rather than trusting the code path. main exits 1 if fewer than 7 documents write, and stale files from a previous numbering are deleted, so a folder cannot grow a second copy of everything.</p></div>
+    </div>
+  </details>
+</article></div>
+</section><section class="dept" id="dept-dispo" data-dept="dispo">
+  <header class="dept-head">
+    <h3>Dispo &amp; Buyers</h3>
+    <p class="dept-tag">Deed-verified buyers before you need them</p>
+    <span class="dept-count"><b>4</b> agents</span>
+  </header>
+  <div class="grid"><article class="agent" data-dept="dispo" data-status="live" data-phase="1" data-human="yes" data-search="deal package generator six-sheet workbook that turns analysis into a dial sheet somebody can work today. src/deal_package.py per-buyer ask prices are tuned to each buyer&#x27;s model, self-performer above landlord above out-of-state. one blast number leaves money on the table and burns credibility. openpyxl buyer_sweep output">
+  <details>
+    <summary>
+      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="agent-name">Deal Package Generator <span class="lead-tag">lead</span></span>
+      <span class="agent-meta">
+        <span class="badge badge-live">Live</span>
+        <span class="badge badge-gate">Human gate</span>
+      </span>
+      <span class="agent-role">Six-sheet workbook that turns analysis into a dial sheet somebody can work today.</span>
+      <code class="src">src/deal_package.py</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">python src/deal_package.py --spec</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Deal Summary, Dial Sheet, Deal Math, Comps, Pitch and Sequence, Sources and Audit</li><li>Per-buyer open and target prices, tuned to each buyer&#x27;s model</li><li>30-second script, objection answers, day-by-day plan</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>Operator approves the ask prices</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">6-sheet branded workbook</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">openpyxl</span><span class="chip">buyer_sweep output</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>Per-buyer ask prices are tuned to each buyer&#x27;s model, self-performer above landlord above out-of-state. One blast number leaves money on the table and burns credibility.</p></div>
+    </div>
+  </details>
+</article><article class="agent" data-dept="dispo" data-status="live" data-phase="1" data-human="no" data-search="buyer sweep deed-level sweep of who actually buys in a zip, ranked by fit. src/buyer_sweep.py the harper move. when an llc&#x27;s mailing address is a residence, reverse-look up that address and take the human owner as the principal. live run resolved 175 of 193 sales and unmasked tn super props to jonathan harper, braden family to joshua braden. siftmap zillow /search enformion businessv2">
+  <details>
+    <summary>
+      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="agent-name">Buyer Sweep</span>
+      <span class="agent-meta">
+        <span class="badge badge-live">Live</span>
+        
+      </span>
+      <span class="agent-role">Deed-level sweep of who actually buys in a zip, ranked by fit.</span>
+      <code class="src">src/buyer_sweep.py</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">python src/buyer_sweep.py --zip</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Pulls the sold universe, filters to the investor band</li><li>Per sale runs SiftMap autocomplete then get_detail for the DEED sale history</li><li>Aggregates buyer name, cash flag, portfolio size, equity, mailing</li><li>Ranks by purchase count, band fit, and portfolio</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><div class="fact-v muted">Nobody. Runs unattended.</div></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Ranked buyer list JSON and CSV</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">SiftMap</span><span class="chip">Zillow /search</span><span class="chip">Enformion BusinessV2</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>THE HARPER MOVE. When an LLC&#x27;s mailing address is a residence, reverse-look up that address and take the human owner as the principal. Live run resolved 175 of 193 sales and unmasked TN Super Props to Jonathan Harper, Braden Family to Joshua Braden.</p></div>
+    </div>
+  </details>
+</article><article class="agent" data-dept="dispo" data-status="live" data-phase="1" data-human="yes" data-search="dispo skiptrace three-source waterfall with a built-in audit matrix showing which source missed. src/dispo_skiptrace.py the audit matrix answers the question everyone forgets to ask: did we skip-trace this landline at both tracerfy and enformion? single-source numbers get flagged so you know what you are actually dialing. enformion tracerfy trestle iq">
+  <details>
+    <summary>
+      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="agent-name">Dispo Skiptrace</span>
+      <span class="agent-meta">
+        <span class="badge badge-live">Live</span>
+        <span class="badge badge-gate">Human gate</span>
+      </span>
+      <span class="agent-role">Three-source waterfall with a built-in audit matrix showing which source missed.</span>
+      <code class="src">src/dispo_skiptrace.py</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">After the buyer sweep ranks a list.</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Source 1 Enformion person search, address-anchored</li><li>Source 2 Tracerfy batch at two cents a record</li><li>Source 3 web people-search cross-check, merged in manually</li><li>Dedupes the union, Trestle-scores every unique number</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>Web source is manual because aggregators bot-block</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Cross-confirmed contact list, Per-contact source audit</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">Enformion</span><span class="chip">Tracerfy</span><span class="chip">Trestle IQ</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>The audit matrix answers the question everyone forgets to ask: did we skip-trace this landline at BOTH Tracerfy and Enformion? Single-source numbers get flagged so you know what you are actually dialing.</p></div>
+    </div>
+  </details>
+</article><article class="agent" data-dept="dispo" data-status="live" data-phase="1" data-human="yes" data-search="buyer prospector builds a county buyers list from a nationwide database of active buyers. skills/buyer-prospector this is the cold-start answer for a new market. the buyer sweep needs deed history you do not have yet; the prospector gives you a list on day one. nationwide buyer database state sos sites">
+  <details>
+    <summary>
+      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="agent-name">Buyer Prospector</span>
+      <span class="agent-meta">
+        <span class="badge badge-live">Live</span>
+        <span class="badge badge-gate">Human gate</span>
+      </span>
+      <span class="agent-role">Builds a county buyers list from a nationwide database of active buyers.</span>
+      <code class="src">skills/buyer-prospector</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">Any new market.</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Pulls buyers for the county from 84K-plus records</li><li>Categorizes LLCs, trusts, and corporations</li><li>Researches decision makers for skip tracing across 50-state SOS lookups</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>Reviews entity research before spending on skip trace</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">County buyers workbook</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">Nationwide buyer database</span><span class="chip">State SOS sites</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>This is the cold-start answer for a new market. The buyer sweep needs deed history you do not have yet; the prospector gives you a list on day one.</p></div>
+    </div>
+  </details>
+</article></div>
+</section><section class="dept" id="dept-outreach" data-dept="outreach">
+  <header class="dept-head">
+    <h3>Outreach &amp; Marketing</h3>
+    <p class="dept-tag">The seller should feel found, not targeted</p>
+    <span class="dept-count"><b>9</b> agents</span>
+  </header>
+  <div class="grid"><article class="agent" data-dept="outreach" data-status="gated" data-phase="2" data-human="yes" data-search="two-way sms agent sends outreach, reads replies live, classifies them, writes back to the crm, hands positives to a prospector. src/sms_agent/ datasift webhooks cannot see an inbound text. webhooks shipped as a sequence action, so all ten triggers are crm state changes. smrtphone&#x27;s smsincoming is the only inbound leg. that single constraint shapes the entire architecture. smrtphone api datasift api slack fly.io sqlite">
+  <details>
+    <summary>
+      <span class="dot dot-gated" aria-hidden="true"></span>
+      <span class="agent-name">Two-Way SMS Agent <span class="lead-tag">lead</span></span>
+      <span class="agent-meta">
+        <span class="badge badge-gated">Gated</span>
+        <span class="badge badge-gate">Human gate</span>
+      </span>
+      <span class="agent-role">Sends outreach, reads replies live, classifies them, writes back to the CRM, hands positives to a prospector.</span>
+      <code class="src">src/sms_agent/</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">smrtPhone smsIncoming webhook, or a seeded outreach touch.</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Receiver ingests the webhook into a SQLite event log</li><li>Classifier decides intent, opt-outs decided by regex and never by a model</li><li>Responder drafts inside a hard output validator</li><li>CRM writes phone status, opt-outs, and lead status; Slack gets the handoff</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>Autonomy ladder. Phase 2 delivers the handoff with zero AI-authored text sent.</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Classified replies, CRM writes, Slack handoffs</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">smrtPhone API</span><span class="chip">DataSift API</span><span class="chip">Slack</span><span class="chip">Fly.io</span><span class="chip">SQLite</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>DataSift webhooks CANNOT see an inbound text. Webhooks shipped as a sequence ACTION, so all ten triggers are CRM state changes. smrtPhone&#x27;s smsIncoming is the only inbound leg. That single constraint shapes the entire architecture.</p></div>
+    </div>
+  </details>
+</article><article class="agent" data-dept="outreach" data-status="gated" data-phase="2" data-human="yes" data-search="reply classifier reads an inbound text and decides what it means, with a confidence floor. src/sms_agent/respond.py backfill proved it on 9 real replies before anything was wired, and it was correct on all 9. it also caught that &#x27;i&#x27;d like to get the house in auction if it&#x27;s cheap enough&#x27; is a buyer, not a seller, and correctly refused to escalate at 0.55. claude smrtphone">
+  <details>
+    <summary>
+      <span class="dot dot-gated" aria-hidden="true"></span>
+      <span class="agent-name">Reply Classifier</span>
+      <span class="agent-meta">
+        <span class="badge badge-gated">Gated</span>
+        <span class="badge badge-gate">Human gate</span>
+      </span>
+      <span class="agent-role">Reads an inbound text and decides what it means, with a confidence floor.</span>
+      <code class="src">src/sms_agent/respond.py</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">Every inbound SMS.</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Regex rules handle opt-outs and obvious cases</li><li>Model handles the rest at a 0.80 confidence floor</li><li>Below the floor it drafts for a human instead of paging a prospector</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>Anything under the confidence floor</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Intent label, Confidence, Soft vs hard no</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">Claude</span><span class="chip">smrtPhone</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>Backfill proved it on 9 real replies before anything was wired, and it was correct on all 9. It also caught that &#x27;I&#x27;d like to get the house in auction if it&#x27;s cheap enough&#x27; is a BUYER, not a seller, and correctly refused to escalate at 0.55.</p></div>
+    </div>
+  </details>
+</article><article class="agent" data-dept="outreach" data-status="planned" data-phase="3" data-human="yes" data-search="reply drafter writes the reply in a human voice, inside a validator that hard-blocks anything risky. src/sms_agent/respond.py the model invents an identity. with no name configured it introduced itself as &#x27;alex&#x27;. unresolved identity now means the agent is explicitly told it has no name and no company name rather than being left to fill the gap. claude playbook.md">
+  <details>
+    <summary>
+      <span class="dot dot-planned" aria-hidden="true"></span>
+      <span class="agent-name">Reply Drafter</span>
+      <span class="agent-meta">
+        <span class="badge badge-planned">Planned</span>
+        <span class="badge badge-gate">Human gate</span>
+      </span>
+      <span class="agent-role">Writes the reply in a human voice, inside a validator that hard-blocks anything risky.</span>
+      <code class="src">src/sms_agent/respond.py</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">A classified reply that warrants a response.</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Given almost nothing on purpose: first name, street line, city, county</li><li>Signs as the record&#x27;s assigned human, resolved from the assignee uuid</li><li>Validator blocks dollar amounts, list names, links, zips, two questions, or self-identifying as automated</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>Phase 3 holds every draft in Slack for approval</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Draft reply</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">Claude</span><span class="chip">playbook.md</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>The model invents an identity. With no name configured it introduced itself as &#x27;Alex&#x27;. Unresolved identity now means the agent is explicitly told it has NO name and NO company name rather than being left to fill the gap.</p></div>
+    </div>
+  </details>
+</article><article class="agent" data-dept="outreach" data-status="live" data-phase="1" data-human="yes" data-search="text touch builder four pre-call sms touches per hot record, varied like cold email so nothing looks blasted. skills/text-touch-builder clean_first(&#x27;e a henry&#x27;) took the first token of length 2 or more, walked past the initials, and greeted people by their surname. the fix is positional: only tokens before the surname can supply a first name. this bug shipped in two places and was fixed in both. datasift add-data text-touch-builder skill">
+  <details>
+    <summary>
+      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="agent-name">Text Touch Builder</span>
+      <span class="agent-meta">
+        <span class="badge badge-live">Live</span>
+        <span class="badge badge-gate">Human gate</span>
+      </span>
+      <span class="agent-role">Four pre-call SMS touches per hot record, varied like cold email so nothing looks blasted.</span>
+      <code class="src">skills/text-touch-builder</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">A ready-to-call list export.</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Renders identity check, drip, soft ask, and breakup touches</li><li>Rotates copy variants across the pools</li><li>Writes back into Text Touch 1-4 custom fields via CSV re-import</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>Caller copies the next touch into the dialer before calling</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Four touches per record in DataSift</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">DataSift Add-Data</span><span class="chip">text-touch-builder skill</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>clean_first(&#x27;E A Henry&#x27;) took the first token of length 2 or more, walked past the initials, and greeted people by their SURNAME. The fix is positional: only tokens BEFORE the surname can supply a first name. This bug shipped in two places and was fixed in both.</p></div>
+    </div>
+  </details>
+</article><article class="agent" data-dept="outreach" data-status="gated" data-phase="2" data-human="yes" data-search="mms screenshot sender texts each foreclosure homeowner the actual auction notice image. src/mms_sender.py smrtphone has an api for text but not for mms, which is what forced the browser route. replies carry no image, so the api is the right transport for conversation and the browser is only for the original screenshot send. smrtphone web app playwright dropbox">
+  <details>
+    <summary>
+      <span class="dot dot-gated" aria-hidden="true"></span>
+      <span class="agent-name">MMS Screenshot Sender</span>
+      <span class="agent-meta">
+        <span class="badge badge-gated">Gated</span>
+        <span class="badge badge-gate">Human gate</span>
+      </span>
+      <span class="agent-role">Texts each foreclosure homeowner the actual auction notice image.</span>
+      <code class="src">src/mms_sender.py</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">Operator go, per campaign.</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Text goes via the Compose Message modal</li><li>Image goes via the conversation reply box inside main-iframe</li><li>File set on a hidden input, send arrow clicked by bounding box position</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>PAUSED pre-send. Requires explicit operator GO.</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Sent MMS with proof-of-source image</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">smrtPhone web app</span><span class="chip">Playwright</span><span class="chip">Dropbox</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>smrtPhone has an API for TEXT but not for MMS, which is what forced the browser route. Replies carry no image, so the API is the right transport for conversation and the browser is only for the original screenshot send.</p></div>
+    </div>
+  </details>
+</article><article class="agent" data-dept="outreach" data-status="live" data-phase="2" data-human="yes" data-search="obituary mail campaign builds and validates the direct mail drop for the obituary list. src/obituary_campaign.py, src/obituary_mail_export.py never name the list. foreclosure, probate, inherited, tax, lien: none of those words appear in outreach copy, because the seller should feel found, not targeted. datasift api address validation">
+  <details>
+    <summary>
+      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="agent-name">Obituary Mail Campaign</span>
+      <span class="agent-meta">
+        <span class="badge badge-live">Live</span>
+        <span class="badge badge-gate">Human gate</span>
+      </span>
+      <span class="agent-role">Builds and validates the direct mail drop for the obituary list.</span>
+      <code class="src">src/obituary_campaign.py, src/obituary_mail_export.py</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">After the obituary opportunity ranking.</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Export, validate addresses, produce the mail file</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>Operator approves the drop</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Validated mail export</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">DataSift API</span><span class="chip">Address validation</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>Never name the list. Foreclosure, probate, inherited, tax, lien: none of those words appear in outreach copy, because the seller should feel found, not targeted.</p></div>
+    </div>
+  </details>
+</article><article class="agent" data-dept="outreach" data-status="live" data-phase="1" data-human="yes" data-search="caller reputation monitor keeps outbound numbers out of spam likely by watching your own call outcomes. skills/caller-reputation-monitor the phone number is the asset. every autonomy decision in the sms agent exists to protect it. smrtphone carrier registries">
+  <details>
+    <summary>
+      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="agent-name">Caller Reputation Monitor</span>
+      <span class="agent-meta">
+        <span class="badge badge-live">Live</span>
+        <span class="badge badge-gate">Human gate</span>
+      </span>
+      <span class="agent-role">Keeps outbound numbers out of Spam Likely by watching your own call outcomes.</span>
+      <code class="src">skills/caller-reputation-monitor</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">Daily.</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Monitors every caller ID by answer rate, call length, and short calls</li><li>Runs a warm-up, active, watch, rest, retire lifecycle with dial caps</li><li>Writes an HTML health dashboard and a recommended dial pool</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>Walks the operator through free carrier registration</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Number health dashboard, Recommended dial pool</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">smrtPhone</span><span class="chip">Carrier registries</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>The phone number is the asset. Every autonomy decision in the SMS agent exists to protect it.</p></div>
+    </div>
+  </details>
+</article><article class="agent" data-dept="outreach" data-status="gated" data-phase="2" data-human="no" data-search="sender pool manager owner-bound number pool so a callback reaches the person who claimed to text. src/sms_agent/sender_pool.py this module was originally named numbers.py, which shadowed the stdlib numbers module and broke pydantic inside the anthropic sdk. the exception was swallowed and every classification silently degraded to the weak keyword fallback while still returning a plausible answer. smrtphone sms_numbers.json">
+  <details>
+    <summary>
+      <span class="dot dot-gated" aria-hidden="true"></span>
+      <span class="agent-name">Sender Pool Manager</span>
+      <span class="agent-meta">
+        <span class="badge badge-gated">Gated</span>
+        
+      </span>
+      <span class="agent-role">Owner-bound number pool so a callback reaches the person who claimed to text.</span>
+      <code class="src">src/sms_agent/sender_pool.py</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">Every outbound send.</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>18 numbers at 25 a day, 450 a day total</li><li>Prefers the assigned caller&#x27;s own numbers</li><li>Sticky number per conversation wins over owner preference</li><li>Quiet hours 8am-9pm recipient-local with up to 30 minutes of wake jitter</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><div class="fact-v muted">Nobody. Runs unattended.</div></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Assigned sender number</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">smrtPhone</span><span class="chip">sms_numbers.json</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>This module was originally named numbers.py, which SHADOWED the stdlib numbers module and broke pydantic inside the Anthropic SDK. The exception was swallowed and every classification silently degraded to the weak keyword fallback while still returning a plausible answer.</p></div>
+    </div>
+  </details>
+</article><article class="agent" data-dept="outreach" data-status="gated" data-phase="2" data-human="yes" data-search="obituary mail export turns the ranked obituary opportunity list into a validated mail file. src/obituary_mail_export.py every row ships a must-verify note. whether the person who died is the owner of record is not verifiable from crm data, and the spouse-obituary trap is live on every single row: an obituary on the record does not mean the owner died. datasift api smarty">
+  <details>
+    <summary>
+      <span class="dot dot-gated" aria-hidden="true"></span>
+      <span class="agent-name">Obituary Mail Export</span>
+      <span class="agent-meta">
+        <span class="badge badge-gated">Gated</span>
+        <span class="badge badge-gate">Human gate</span>
+      </span>
+      <span class="agent-role">Turns the ranked obituary opportunity list into a validated mail file.</span>
+      <code class="src">src/obituary_mail_export.py</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">After obituary_opportunity ranks the list.</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Pulls the ranked records</li><li>Validates deliverable mailing addresses</li><li>Writes the mail-house export</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>Approves the drop and the spend</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Mail export CSV</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">DataSift API</span><span class="chip">Smarty</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>Every row ships a must-verify note. Whether the person who died is the owner of record is NOT verifiable from CRM data, and the spouse-obituary trap is live on every single row: an obituary on the record does not mean the OWNER died.</p></div>
+    </div>
+  </details>
+</article></div>
+</section><section class="dept" id="dept-crm" data-dept="crm">
+  <header class="dept-head">
+    <h3>CRM Operations</h3>
+    <p class="dept-tag">Get it into DataSift without silently losing half of it</p>
+    <span class="dept-count"><b>7</b> agents</span>
+  </header>
+  <div class="grid"><article class="agent" data-dept="crm" data-status="live" data-phase="1" data-human="yes" data-search="upload orchestrator owns the path from finished csv to live, tagged, enriched crm records. src/datasift_api_upload.py four traps that each fail silently. tags must be an array or you create one tag literally named the whole comma string. a select field needs the option&#x27;s uuid, not its label. entity owners cannot have a blank first_name, and omitting a key is not the same as sending empty. notes on the property payload returns 200 and is discarded. datasift api playwright">
+  <details>
+    <summary>
+      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="agent-name">Upload Orchestrator <span class="lead-tag">lead</span></span>
+      <span class="agent-meta">
+        <span class="badge badge-live">Live</span>
+        <span class="badge badge-gate">Human gate</span>
+      </span>
+      <span class="agent-role">Owns the path from finished CSV to live, tagged, enriched CRM records.</span>
+      <code class="src">src/datasift_api_upload.py</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">--upload-datasift on any run.</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Mints a JWT and re-mints every 30 minutes so long runs cannot die on expiry</li><li>Upserts by address so re-runs never duplicate</li><li>Fires enrich and skip trace after upload</li><li>Verifies one record read-back before releasing the file</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>Always upload one record and read it back first</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Live CRM records</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">DataSift API</span><span class="chip">Playwright</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>Four traps that each fail silently. Tags must be an ARRAY or you create one tag literally named the whole comma string. A select field needs the OPTION&#x27;S UUID, not its label. Entity owners cannot have a blank first_name, and omitting a key is not the same as sending empty. notes on the property payload returns 200 and is discarded.</p></div>
+    </div>
+  </details>
+</article><article class="agent" data-dept="crm" data-status="live" data-phase="1" data-human="yes" data-search="api uploader pushes records entirely over the api, no browser. src/datasift_api_upload.py the open api key cannot do this job. custom fields do not exist anywhere in its 93-route surface and every write 401s. only the minted user jwt reaches /api/internal/ where they do. datasift internal api">
+  <details>
+    <summary>
+      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="agent-name">API Uploader</span>
+      <span class="agent-meta">
+        <span class="badge badge-live">Live</span>
+        <span class="badge badge-gate">Human gate</span>
+      </span>
+      <span class="agent-role">Pushes records entirely over the API, no browser.</span>
+      <code class="src">src/datasift_api_upload.py</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">python src/datasift_api_upload.py --commit</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>POST /property/ upserts by address</li><li>Custom fields PATCH separately by field uuid</li><li>Notes posted separately from the property payload</li><li>Lists accumulate rather than overwrite</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>--limit 1 verification run is mandatory</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Created and updated records</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">DataSift internal API</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>The Open API key CANNOT do this job. Custom fields do not exist anywhere in its 93-route surface and every write 401s. Only the minted user JWT reaches /api/internal/ where they do.</p></div>
+    </div>
+  </details>
+</article><article class="agent" data-dept="crm" data-status="live" data-phase="1" data-human="no" data-search="schema setup creates custom fields, select options, and lists. idempotent, dry-run by default. src/datasift_schema_setup.py dry run by default is the right posture for anything that mutates an account&#x27;s schema. creating a select custom field requires its options in the same post. datasift internal api">
+  <details>
+    <summary>
+      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="agent-name">Schema Setup</span>
+      <span class="agent-meta">
+        <span class="badge badge-live">Live</span>
+        
+      </span>
+      <span class="agent-role">Creates custom fields, select options, and lists. Idempotent, dry-run by default.</span>
+      <code class="src">src/datasift_schema_setup.py</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">python src/datasift_schema_setup.py --commit</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Creates the field structure</li><li>Select fields require options in the same POST</li><li>Safe to re-run</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><div class="fact-v muted">Nobody. Runs unattended.</div></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">CRM schema</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">DataSift internal API</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>Dry run by default is the right posture for anything that mutates an account&#x27;s schema. Creating a select custom field REQUIRES its options in the same POST.</p></div>
+    </div>
+  </details>
+</article><article class="agent" data-dept="crm" data-status="live" data-phase="1" data-human="yes" data-search="upload wizard driver drives the 5-step browser upload wizard when the api path will not do. src/datasift_uploader.py only core address fields reliably auto-map. tags, lists, and every enrichment column routinely stay unmapped in step 4, which is exactly how you upload 2,500 records that attach to nothing. playwright datasift web app">
+  <details>
+    <summary>
+      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="agent-name">Upload Wizard Driver</span>
+      <span class="agent-meta">
+        <span class="badge badge-live">Live</span>
+        <span class="badge badge-gate">Human gate</span>
+      </span>
+      <span class="agent-role">Drives the 5-step browser upload wizard when the API path will not do.</span>
+      <code class="src">src/datasift_uploader.py</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">Legacy or wizard-only flows.</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Setup, tags, upload file, map columns, review and finish</li><li>Core address fields auto-map; tags, lists, and custom fields need manual mapping</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>Watches the column mapping step</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Uploaded list</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">Playwright</span><span class="chip">DataSift web app</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>Only core address fields reliably auto-map. Tags, Lists, and every enrichment column routinely stay unmapped in step 4, which is exactly how you upload 2,500 records that attach to nothing.</p></div>
+    </div>
+  </details>
+</article><article class="agent" data-dept="crm" data-status="live" data-phase="1" data-human="no" data-search="preset manager discovers and updates the 21 filter presets that drive sequential marketing. src/datasift_uploader.py, src/niche_sequential.py the filter panel is a scrollable div, not the viewport, so playwright&#x27;s scroll_into_view_if_needed does nothing. you need js scrollintoview. and the beamer nps iframe blocks all pointer events globally until you remove it from the dom. playwright datasift web app">
+  <details>
+    <summary>
+      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="agent-name">Preset Manager</span>
+      <span class="agent-meta">
+        <span class="badge badge-live">Live</span>
+        
+      </span>
+      <span class="agent-role">Discovers and updates the 21 filter presets that drive sequential marketing.</span>
+      <code class="src">src/datasift_uploader.py, src/niche_sequential.py</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">manage-presets --all</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Opens the filter panel, scrolls to the bottom, expands Filter Presets</li><li>Applies the Sold exclusion across all presets</li><li>Saves with overwrite confirmation</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><div class="fact-v muted">Nobody. Runs unattended.</div></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Updated presets</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">Playwright</span><span class="chip">DataSift web app</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>The filter panel is a scrollable div, not the viewport, so Playwright&#x27;s scroll_into_view_if_needed does nothing. You need JS scrollIntoView. And the Beamer NPS iframe blocks ALL pointer events globally until you remove it from the DOM.</p></div>
+    </div>
+  </details>
+</article><article class="agent" data-dept="crm" data-status="live" data-phase="1" data-human="no" data-search="sequence builder builds the 26 tca sequence templates via drag and drop. src/sequence_templates.py cards carry draggable=false so playwright&#x27;s native drag will not work. mouse down, 20 incremental moves at 50ms, mouse up, with 500ms pauses between phases. playwright react dnd">
+  <details>
+    <summary>
+      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="agent-name">Sequence Builder</span>
+      <span class="agent-meta">
+        <span class="badge badge-live">Live</span>
+        
+      </span>
+      <span class="agent-role">Builds the 26 TCA sequence templates via drag and drop.</span>
+      <code class="src">src/sequence_templates.py</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">create-sold-sequence, or sequence template deployment.</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Trigger, condition, then actions</li><li>Slow mouse drag in 20 incremental steps because cards are draggable=false</li><li>Duplicate name detection retries with a V2 suffix</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><div class="fact-v muted">Nobody. Runs unattended.</div></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Live sequences</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">Playwright</span><span class="chip">React DnD</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>Cards carry draggable=false so Playwright&#x27;s native drag will not work. Mouse down, 20 incremental moves at 50ms, mouse up, with 500ms pauses between phases.</p></div>
+    </div>
+  </details>
+</article><article class="agent" data-dept="crm" data-status="live" data-phase="1" data-human="no" data-search="siftmap sold tagger tags sold properties so they drop out of active marketing. src/datasift_uploader.py known limitation, stated out loud: siftmap filters set values visually but do not trigger a react re-query, so only the 3 to 5 sidebar-visible properties get added per run. playwright siftmap">
+  <details>
+    <summary>
+      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="agent-name">SiftMap Sold Tagger</span>
+      <span class="agent-meta">
+        <span class="badge badge-live">Live</span>
+        
+      </span>
+      <span class="agent-role">Tags sold properties so they drop out of active marketing.</span>
+      <code class="src">src/datasift_uploader.py</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">manage-sold --months-back 12</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Searches by city, not county</li><li>Adds records with tags</li><li>Sold Property Cleanup sequence fires on the tag</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><div class="fact-v muted">Nobody. Runs unattended.</div></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Tagged sold records</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">Playwright</span><span class="chip">SiftMap</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>Known limitation, stated out loud: SiftMap filters set values visually but do not trigger a React re-query, so only the 3 to 5 sidebar-visible properties get added per run.</p></div>
+    </div>
+  </details>
+</article></div>
+</section><section class="dept" id="dept-market" data-dept="market">
+  <header class="dept-head">
+    <h3>Market Intelligence</h3>
+    <p class="dept-tag">Where to spend the next marketing dollar</p>
+    <span class="dept-count"><b>4</b> agents</span>
+  </header>
+  <div class="grid"><article class="agent" data-dept="market" data-status="live" data-phase="1" data-human="yes" data-search="market analyzer six-factor weighted zip scoring with letter grades and budget allocation. src/market_analyzer.py weights are set from measured distribution, not intuition. weighting a near-constant variable produces a ranking with no spread, which looks rigorous and tells you nothing. market_analyzer.py">
+  <details>
+    <summary>
+      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="agent-name">Market Analyzer <span class="lead-tag">lead</span></span>
+      <span class="agent-meta">
+        <span class="badge badge-live">Live</span>
+        <span class="badge badge-gate">Human gate</span>
+      </span>
+      <span class="agent-role">Six-factor weighted zip scoring with letter grades and budget allocation.</span>
+      <code class="src">src/market_analyzer.py</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">After a market finder extraction.</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Distress 30, Value 20, Equity 15, Tax Delinquency 15, Competition 10, DOM 10</li><li>Grades A through D</li><li>Allocates budget across the top zips</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>Operator sets the budget</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Scored zip list, Budget allocation</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">market_analyzer.py</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>Weights are set from measured distribution, not intuition. Weighting a near-constant variable produces a ranking with no spread, which looks rigorous and tells you nothing.</p></div>
+    </div>
+  </details>
+</article><article class="agent" data-dept="market" data-status="live" data-phase="1" data-human="no" data-search="market finder extractor pulls every zip and neighborhood row out of datasift market finder. src/extract_market_finder.py there is no html table element. the data table is entirely div-based styled-components, so searching for tr or td finds nothing. it is pagination, not infinite scroll, and pagination controls sit below the viewport until you scroll the body container. playwright datasift market finder">
+  <details>
+    <summary>
+      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="agent-name">Market Finder Extractor</span>
+      <span class="agent-meta">
+        <span class="badge badge-live">Live</span>
+        
+      </span>
+      <span class="agent-role">Pulls every zip and neighborhood row out of DataSift Market Finder.</span>
+      <code class="src">src/extract_market_finder.py</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">python src/extract_market_finder.py</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Selects state and county via InputMultiSearch</li><li>Paginates all pages at 20 rows each</li><li>Extracts the county summary panel via regex</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><div class="fact-v muted">Nobody. Runs unattended.</div></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Market finder JSON</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">Playwright</span><span class="chip">DataSift Market Finder</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>There is no HTML table element. The data table is entirely div-based styled-components, so searching for tr or td finds nothing. It is pagination, not infinite scroll, and pagination controls sit below the viewport until you scroll the body container.</p></div>
+    </div>
+  </details>
+</article><article class="agent" data-dept="market" data-status="live" data-phase="1" data-human="no" data-search="county market report generator merges a market finder extraction with a public-data bundle into a 7-sheet county research workbook. county-agnostic. src/county_market_report.py sheets 4, 5 and 6 (economic, crime, recommendations) are fully populated rather than placeholders, which is the difference between a report someone acts on and a template someone files. lived in a gitignored output/ directory until 2026-08-17, where it was one cleanup away from being lost. openpyxl public data sources">
+  <details>
+    <summary>
+      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="agent-name">County Market Report Generator</span>
+      <span class="agent-meta">
+        <span class="badge badge-live">Live</span>
+        
+      </span>
+      <span class="agent-role">Merges a Market Finder extraction with a public-data bundle into a 7-sheet county research workbook. County-agnostic.</span>
+      <code class="src">src/county_market_report.py</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">After extraction and scoring.</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Blends Sift data with BLS, Census, Zillow, Redfin, FBI crime data</li><li>Renders 7 branded sheets</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><div class="fact-v muted">Nobody. Runs unattended.</div></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">7-sheet market report</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">openpyxl</span><span class="chip">Public data sources</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>Sheets 4, 5 and 6 (Economic, Crime, Recommendations) are FULLY populated rather than placeholders, which is the difference between a report someone acts on and a template someone files. Lived in a gitignored output/ directory until 2026-08-17, where it was one cleanup away from being lost.</p></div>
+    </div>
+  </details>
+</article><article class="agent" data-dept="market" data-status="live" data-phase="1" data-human="yes" data-search="obituary opportunity ranker turns the obituary list into a lean-budget call order. src/obituary_opportunity.py total delinquency is liens plus taxes. reading it as the tax figure double counts the lien and inflates exactly the records the model exists to surface. it put a lien-only record at rank 1 before the fix. also: gate on lead status, not just on sold, or a not_interested record tops your ranking. datasift api openpyxl">
+  <details>
+    <summary>
+      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="agent-name">Obituary Opportunity Ranker</span>
+      <span class="agent-meta">
+        <span class="badge badge-live">Live</span>
+        <span class="badge badge-gate">Human gate</span>
+      </span>
+      <span class="agent-role">Turns the obituary list into a lean-budget call order.</span>
+      <code class="src">src/obituary_opportunity.py</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">python src/obituary_opportunity.py</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Pulls detail and custom fields, applies gates, scores six weighted components</li><li>Gates: under 3 months since death, already sold, dead statuses, upside down, over buy box</li><li>Renders a branded 6-sheet Excel</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>Every row ships a Must Verify note</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Ranked call order workbook</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">DataSift API</span><span class="chip">openpyxl</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>Total Delinquency is liens PLUS taxes. Reading it as the tax figure double counts the lien and inflates exactly the records the model exists to surface. It put a lien-only record at rank 1 before the fix. Also: gate on lead status, not just on sold, or a not_interested record tops your ranking.</p></div>
+    </div>
+  </details>
+</article></div>
+</section><section class="dept" id="dept-coach" data-dept="coach">
+  <header class="dept-head">
+    <h3>Coaching &amp; Performance</h3>
+    <p class="dept-tag">Grade the humans and the agents on the same rubric</p>
+    <span class="dept-count"><b>8</b> agents</span>
+  </header>
+  <div class="grid"><article class="agent" data-dept="coach" data-status="live" data-phase="1" data-human="yes" data-search="call coaching engine pulls real recordings, transcribes with tonality, routes to three grading rubrics. src/call_coaching/ voicemails and wrong numbers are never scored. short calls get their own scale, because grading a 40-second wrong number against a full discovery rubric produces a meaningless zero. smrtphone openrouter gemini claude">
+  <details>
+    <summary>
+      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="agent-name">Call Coaching Engine <span class="lead-tag">lead</span></span>
+      <span class="agent-meta">
+        <span class="badge badge-live">Live</span>
+        <span class="badge badge-gate">Human gate</span>
+      </span>
+      <span class="agent-role">Pulls real recordings, transcribes with tonality, routes to three grading rubrics.</span>
+      <code class="src">src/call_coaching/</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">Weekly, or on demand per caller.</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Pull calls over the minimum duration that have a recording</li><li>Transcribe with delivery notes, then triage into a pipeline</li><li>Route to cold call, lead manager, or closer rubric</li><li>Write per-call reports and per-caller scorecards</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>Coach reviews scorecards with the caller</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Coaching reports, Scorecards, Excel workbook</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">smrtPhone</span><span class="chip">OpenRouter Gemini</span><span class="chip">Claude</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>Voicemails and wrong numbers are never scored. Short calls get their own scale, because grading a 40-second wrong number against a full discovery rubric produces a meaningless zero.</p></div>
+    </div>
+  </details>
+</article><article class="agent" data-dept="coach" data-status="live" data-phase="1" data-human="yes" data-search="call puller fetches the call log and downloads recordings. src/call_coaching/pull_calls.py recording urls on rec.smrtphone.io are public once known, no auth. the call log itself needs the cookie session, and an expired session exits 2 rather than returning an empty list. smrtphone web session">
+  <details>
+    <summary>
+      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="agent-name">Call Puller</span>
+      <span class="agent-meta">
+        <span class="badge badge-live">Live</span>
+        <span class="badge badge-gate">Human gate</span>
+      </span>
+      <span class="agent-role">Fetches the call log and downloads recordings.</span>
+      <code class="src">src/call_coaching/pull_calls.py</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">Start of a coaching run.</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>POST /logs/calls/filtered as a DataTables form with a cookie session</li><li>Filters by minimum seconds and presence of a recording</li><li>Downloads MP3s from the direct recording URL</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>Session expiry means re-running the login script</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Call metadata, MP3 recordings</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">smrtPhone web session</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>Recording URLs on rec.smrtphone.io are public once known, no auth. The call log itself needs the cookie session, and an expired session exits 2 rather than returning an empty list.</p></div>
+    </div>
+  </details>
+</article><article class="agent" data-dept="coach" data-status="live" data-phase="1" data-human="no" data-search="transcription &amp; triage two passes: diarized transcript with delivery notes, then strict-json triage. src/call_coaching/transcribe.py agent and seller labels are decided by content with the caller name as anchor. on a callback the labels otherwise swap, and every downstream grade is then assigned to the wrong person. openrouter gemini 2.5 flash">
+  <details>
+    <summary>
+      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="agent-name">Transcription &amp; Triage</span>
+      <span class="agent-meta">
+        <span class="badge badge-live">Live</span>
+        
+      </span>
+      <span class="agent-role">Two passes: diarized transcript with delivery notes, then strict-JSON triage.</span>
+      <code class="src">src/call_coaching/transcribe.py</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">Each downloaded recording.</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Pass 1: audio to diarized transcript with bracketed delivery notes and a pace, tone, talk-balance summary</li><li>Pass 2: text to strict JSON, call type, pipeline, worth_grading</li><li>Groups the review queue by pipeline</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><div class="fact-v muted">Nobody. Runs unattended.</div></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Transcripts, review_queue.json</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">OpenRouter</span><span class="chip">Gemini 2.5 Flash</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>AGENT and SELLER labels are decided by CONTENT with the caller name as anchor. On a callback the labels otherwise swap, and every downstream grade is then assigned to the wrong person.</p></div>
+    </div>
+  </details>
+</article><article class="agent" data-dept="coach" data-status="live" data-phase="1" data-human="yes" data-search="cold call coach grades opener, motivation probing, objection handling, tonality, close. skills/cold-call-coach measured reliability is stated as plus or minus 3 points. a grading rubric that will not state its own error bar is not a measurement, it is an opinion. claude datasift call playbook">
+  <details>
+    <summary>
+      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="agent-name">Cold Call Coach</span>
+      <span class="agent-meta">
+        <span class="badge badge-live">Live</span>
+        <span class="badge badge-gate">Human gate</span>
+      </span>
+      <span class="agent-role">Grades opener, motivation probing, objection handling, tonality, close.</span>
+      <code class="src">skills/cold-call-coach</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">Transcripts triaged to the cold_call pipeline.</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Scores against the cold-calling rubric</li><li>Calibration examples keep reliability inside 3 points</li><li>JSON score footer per call</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>Coach delivers the feedback</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Per-call report, Caller scorecard</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">Claude</span><span class="chip">DataSift Call Playbook</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>Measured reliability is stated as plus or minus 3 points. A grading rubric that will not state its own error bar is not a measurement, it is an opinion.</p></div>
+    </div>
+  </details>
+</article><article class="agent" data-dept="coach" data-status="live" data-phase="1" data-human="yes" data-search="lead manager coach grades the four pillars, roadblocks, no-ladder, and next-action discipline. skills/lead-manager-coach deliberately excludes crm hygiene. mixing &#x27;did you update the record&#x27; into a call-quality score hides whether the person can actually run a conversation. claude lead-m_1.md">
+  <details>
+    <summary>
+      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="agent-name">Lead Manager Coach</span>
+      <span class="agent-meta">
+        <span class="badge badge-live">Live</span>
+        <span class="badge badge-gate">Human gate</span>
+      </span>
+      <span class="agent-role">Grades the four pillars, roadblocks, no-ladder, and next-action discipline.</span>
+      <code class="src">skills/lead-manager-coach</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">Transcripts triaged to lead_management.</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Scores qualification: condition, timeline, motivation, price</li><li>Call quality only, no CRM hygiene scoring</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>Coach delivers the feedback</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Per-call report, Scorecard</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">Claude</span><span class="chip">LEAD-M_1.MD</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>Deliberately excludes CRM hygiene. Mixing &#x27;did you update the record&#x27; into a call-quality score hides whether the person can actually run a conversation.</p></div>
+    </div>
+  </details>
+</article><article class="agent" data-dept="coach" data-status="live" data-phase="1" data-human="yes" data-search="closer coach grades the money conversation, the three-option offer stack, and commitment locking. skills/closer-coach the flywheel worth building next: point these same three rubrics at the sms agent&#x27;s own threads, so the texter is graded exactly like the humans. claude datasift call playbook">
+  <details>
+    <summary>
+      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="agent-name">Closer Coach</span>
+      <span class="agent-meta">
+        <span class="badge badge-live">Live</span>
+        <span class="badge badge-gate">Human gate</span>
+      </span>
+      <span class="agent-role">Grades the money conversation, the three-option offer stack, and commitment locking.</span>
+      <code class="src">skills/closer-coach</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">Transcripts triaged to closing.</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Discovery deepening</li><li>Offer presentation</li><li>Objection frameworks</li><li>Negotiation timeline reports</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>Coach delivers the feedback</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Per-call report, Scorecard</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">Claude</span><span class="chip">DataSift Call Playbook</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>The flywheel worth building next: point these same three rubrics at the SMS agent&#x27;s own threads, so the texter is graded exactly like the humans.</p></div>
+    </div>
+  </details>
+</article><article class="agent" data-dept="coach" data-status="live" data-phase="1" data-human="yes" data-search="kpi engine activity-log pull and funnel pacing straight from the account. skills/kpi-engine benchmarks ship as tune-per-operation baselines. publishing someone else&#x27;s conversion rate as a target is how you get a team optimizing for a number that never applied to them. datasift api slack">
+  <details>
+    <summary>
+      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="agent-name">KPI Engine</span>
+      <span class="agent-meta">
+        <span class="badge badge-live">Live</span>
+        <span class="badge badge-gate">Human gate</span>
+      </span>
+      <span class="agent-role">Activity-log pull and funnel pacing straight from the account.</span>
+      <code class="src">skills/kpi-engine</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">Daily or weekly.</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Pulls the activity log with its own JWT</li><li>Three distinct rates, lead counting including new_lead statuses</li><li>Funnel pacing from dials to correct to leads to appointments to contracts</li><li>Outputs markdown, CSV, Excel, or Slack</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>Benchmarks are baselines to tune per operation, not targets</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">KPI report, Slack digest</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">DataSift API</span><span class="chip">Slack</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>Benchmarks ship as tune-per-operation baselines. Publishing someone else&#x27;s conversion rate as a target is how you get a team optimizing for a number that never applied to them.</p></div>
+    </div>
+  </details>
+</article><article class="agent" data-dept="coach" data-status="live" data-phase="1" data-human="yes" data-search="playbook creator turns a transcript or a recorded process into an sop with process maps. skills/playbook-creator seven nodes per chart and a 5th grade reading level are hard limits, not style preferences. an sop nobody can follow at 7am is not an sop. mermaid docx">
+  <details>
+    <summary>
+      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="agent-name">Playbook Creator</span>
+      <span class="agent-meta">
+        <span class="badge badge-live">Live</span>
+        <span class="badge badge-gate">Human gate</span>
+      </span>
+      <span class="agent-role">Turns a transcript or a recorded process into an SOP with process maps.</span>
+      <code class="src">skills/playbook-creator</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">Any repeatable process worth documenting.</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Transcript to structured workflow</li><li>Mermaid flowcharts, decision trees, screenshot placeholders</li><li>Seven-node chart limit, 5th grade reading level</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>Operator supplies screenshots</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Word doc SOP, Process maps</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">Mermaid</span><span class="chip">docx</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>Seven nodes per chart and a 5th grade reading level are hard limits, not style preferences. An SOP nobody can follow at 7am is not an SOP.</p></div>
+    </div>
+  </details>
+</article></div>
+</section><section class="dept" id="dept-soi" data-dept="soi">
+  <header class="dept-head">
+    <h3>Sphere of Influence</h3>
+    <p class="dept-tag">Reverse-search a realtor&#x27;s own contact export into a scored homeowner call list.</p>
+    <span class="dept-count"><b>6</b> agents</span>
+  </header>
+  <div class="grid"><article class="agent" data-dept="soi" data-status="live" data-phase="2" data-human="yes" data-search="soi pipeline turns name-and-email-only contact exports into confirmed metro homeowners ranked by realtor ai score. src/soi_intake.py first live run: 848 raw rows to 728 unique people to 222 confirmed metro homeowners to 191 scored. the distribution is steep, one at 95+, six in the 80s, so the 95+ bar isolates a real call list rather than a third of the sphere. sqlite enformion siftmap">
+  <details>
+    <summary>
+      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="agent-name">SOI Pipeline <span class="lead-tag">lead</span></span>
+      <span class="agent-meta">
+        <span class="badge badge-live">Live</span>
+        <span class="badge badge-gate">Human gate</span>
+      </span>
+      <span class="agent-role">Turns name-and-email-only contact exports into confirmed metro homeowners ranked by Realtor AI score.</span>
+      <code class="src">src/soi_intake.py</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">A realtor hands over a Facebook or LinkedIn contact export.</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Normalize and dedupe the roster</li><li>Join against free county owner rolls</li><li>Pay to resolve only the misses</li><li>Score the confirmed homeowners</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>Decides the call order and makes the calls</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">soi_priority_list.csv</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">SQLite</span><span class="chip">Enformion</span><span class="chip">SiftMap</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>First live run: 848 raw rows to 728 unique people to 222 confirmed metro homeowners to 191 scored. The distribution is steep, one at 95+, six in the 80s, so the 95+ bar isolates a real call list rather than a third of the sphere.</p></div>
+    </div>
+  </details>
+</article><article class="agent" data-dept="soi" data-status="live" data-phase="2" data-human="no" data-search="contact intake normalizes and dedupes the raw social exports. src/soi_intake.py 27 contacts on the live run were kw.com, mortgage or title domains. those are referral partners, not homeowner sphere, and scoring them as leads pollutes the call list. stdlib">
+  <details>
+    <summary>
+      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="agent-name">Contact Intake</span>
+      <span class="agent-meta">
+        <span class="badge badge-live">Live</span>
+        
+      </span>
+      <span class="agent-role">Normalizes and dedupes the raw social exports.</span>
+      <code class="src">src/soi_intake.py</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">python src/soi_intake.py</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Normalizes names and emails</li><li>Dedupes across sources</li><li>Flags real-estate-industry domains as referral partners, not sphere</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><div class="fact-v muted">Nobody. Runs unattended.</div></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">soi_contacts_normalized.csv</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">stdlib</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>27 contacts on the live run were kw.com, mortgage or title domains. Those are referral partners, not homeowner sphere, and scoring them as leads pollutes the call list.</p></div>
+    </div>
+  </details>
+</article><article class="agent" data-dept="soi" data-status="live" data-phase="2" data-human="no" data-search="county owner pull pulls the owner rolls for the whole metro, free. src/soi_county_pull.py, src/soi_owner_db.py the whole columbus metro is free data and costs $0. two traps: franklin&#x27;s newer-looking tab-delimited appraisal extract has no owner fields at all, and the parcel_csv folder path is stale on purpose, so check the last-modified header rather than the path. the vendor search uis are bot-walled and never needed. arcgis sqlite">
+  <details>
+    <summary>
+      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="agent-name">County Owner Pull</span>
+      <span class="agent-meta">
+        <span class="badge badge-live">Live</span>
+        
+      </span>
+      <span class="agent-role">Pulls the owner rolls for the whole metro, free.</span>
+      <code class="src">src/soi_county_pull.py, src/soi_owner_db.py</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">python src/soi_county_pull.py then soi_owner_db.py</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Franklin from the open file server</li><li>Fairfield from the nightly CAMA dump</li><li>Four more counties from open ArcGIS layers</li><li>Loads 811,146 rows into SQLite</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><div class="fact-v muted">Nobody. Runs unattended.</div></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">output/soi/owners.db</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">ArcGIS</span><span class="chip">SQLite</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>The whole Columbus metro is free data and costs $0. Two traps: Franklin&#x27;s newer-looking tab-delimited appraisal extract has NO owner fields at all, and the Parcel_CSV folder path is stale on purpose, so check the Last-Modified header rather than the path. The vendor search UIs are bot-walled and never needed.</p></div>
+    </div>
+  </details>
+</article><article class="agent" data-dept="soi" data-status="live" data-phase="2" data-human="yes" data-search="owner name join matches roster people to deeds. src/soi_owner_match.py owner_occupied compares mailing address key to situs address key. do not fall back to franklin&#x27;s owner_add1: it sometimes echoes the situs and false-flagged a texas absentee as owner-occupied. owners.db">
+  <details>
+    <summary>
+      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="agent-name">Owner Name Join</span>
+      <span class="agent-meta">
+        <span class="badge badge-live">Live</span>
+        <span class="badge badge-gate">Human gate</span>
+      </span>
+      <span class="agent-role">Matches roster people to deeds.</span>
+      <code class="src">src/soi_owner_match.py</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">python src/soi_owner_match.py</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Handles LAST FIRST M deed order and co-owner ampersands</li><li>Strips credentials from LinkedIn surnames</li><li>Searches the Facebook middle token as a maiden name</li><li>Boosts a household pair when two contacts hit the same deed</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>Reviews ambiguous same-name groups</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">soi_owner_matches.csv</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">owners.db</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>owner_occupied compares mailing address key to situs address key. Do NOT fall back to Franklin&#x27;s OWNER_ADD1: it sometimes echoes the situs and false-flagged a Texas absentee as owner-occupied.</p></div>
+    </div>
+  </details>
+</article><article class="agent" data-dept="soi" data-status="live" data-phase="2" data-human="yes" data-search="enformion resolver pays to resolve only the roster misses. src/soi_enformion.py email is the verifier. an exact email hit grounds identity with no address needed; name-only matches are kept but flagged. emailaddresses is a list of dicts with .emailaddress inside, not a list of strings. misses are free. enformion person search">
+  <details>
+    <summary>
+      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="agent-name">Enformion Resolver</span>
+      <span class="agent-meta">
+        <span class="badge badge-live">Live</span>
+        <span class="badge badge-gate">Human gate</span>
+      </span>
+      <span class="agent-role">Pays to resolve only the roster misses.</span>
+      <code class="src">src/soi_enformion.py</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">python src/soi_enformion.py, about $0.10 per match</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Anchors Person Search on name plus the metro city and state</li><li>Matches the response emails against the contact&#x27;s exported email</li><li>Cross-checks each resolved address back against owners.db</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>Approves the spend</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">soi_enformion_resolved.json</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">Enformion Person Search</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>EMAIL is the verifier. An exact email hit grounds identity with no address needed; name-only matches are kept but flagged. emailAddresses is a list of DICTS with .emailAddress inside, not a list of strings. Misses are free.</p></div>
+    </div>
+  </details>
+</article><article class="agent" data-dept="soi" data-status="live" data-phase="2" data-human="yes" data-search="realtor score enrichment attaches the realtor ai score to each confirmed homeowner. src/soi_enrich.py realtor_score off siftmap get_detail is the realtor ai score, and 95+ is a priority call. 8 rows were flagged rather than trusted because the deed owner and siftmap owner did not overlap. renters are kept on their own track as future first-time buyers. siftmap">
+  <details>
+    <summary>
+      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="agent-name">Realtor Score Enrichment</span>
+      <span class="agent-meta">
+        <span class="badge badge-live">Live</span>
+        <span class="badge badge-gate">Human gate</span>
+      </span>
+      <span class="agent-role">Attaches the Realtor AI score to each confirmed homeowner.</span>
+      <code class="src">src/soi_enrich.py</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">python src/soi_enrich.py</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Autocomplete then get_detail per matched address</li><li>Requires a token overlap between the deed owner and SiftMap owner_info before trusting the row</li><li>Carries equity, mortgage, portfolio count and both investor scores</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>Calls the 95+ list</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">soi_priority_list.csv</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">SiftMap</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>realtor_score off SiftMap get_detail IS the Realtor AI score, and 95+ is a priority call. 8 rows were flagged rather than trusted because the deed owner and SiftMap owner did not overlap. Renters are kept on their own track as future first-time buyers.</p></div>
+    </div>
+  </details>
+</article></div>
+</section>
+
+  <p class="empty" id="empty">No agent matches that. Clear the filters or try another word.</p>
+
+  <section class="band">
+    <h2>What the system depends on</h2>
+    <div class="infra"><div class="infra-g"><h4>County &amp; Public Record</h4><ul><li>tnpublicnotice.com</li><li>Knox County Tax API</li><li>Register of Deeds</li><li>City condemnation agendas</li><li>Eviction court docket</li></ul></div><div class="infra-g"><h4>Property &amp; Market Data</h4><ul><li>SiftMap</li><li>Zillow /search (OpenWeb Ninja)</li><li>Smarty</li><li>Redfin</li><li>BLS / Census / FBI</li></ul></div><div class="infra-g"><h4>Identity &amp; Contact</h4><ul><li>SmartSkip</li><li>Tracerfy</li><li>Enformion BusinessV2</li><li>Trestle IQ</li><li>Obituary sources</li></ul></div><div class="infra-g"><h4>CRM &amp; Comms</h4><ul><li>DataSift (apiv2.reisift.io)</li><li>smrtPhone</li><li>Slack</li><li>Dropbox</li><li>Google Drive</li></ul></div><div class="infra-g"><h4>Runtime &amp; Access</h4><ul><li>Apify Actor</li><li>Fly.io</li><li>Scrapfly</li><li>2Captcha</li><li>Playwright</li><li>SQLite event log</li></ul></div><div class="infra-g"><h4>Models &amp; Knowledge</h4><ul><li>Claude</li><li>OpenRouter / Gemini</li><li>Locked material list</li><li>DataSift Call Playbook</li><li>playbook.md</li></ul></div></div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <p>Generated from <code>docs/agents.json</code> by <code>tools/build_agent_page.py</code>.
+       The same file renders <code>docs/AGENT-MAP.md</code>, so this page and the repo docs
+       cannot disagree.</p>
+    <p><a href="https://github.com/DataSift-Ty-Personal/SiftStack">github.com/DataSift-Ty-Personal/SiftStack</a></p>
+  </div>
+</footer>
+
+<script>
+(function () {
+  var agents = Array.prototype.slice.call(document.querySelectorAll('.agent'));
+  var depts  = Array.prototype.slice.call(document.querySelectorAll('.dept'));
+  var q = document.getElementById('q');
+  var countEl = document.getElementById('count');
+  var empty = document.getElementById('empty');
+  var active = { status: null, human: null, dept: null };
+
+  function apply() {
+    var term = (q.value || '').trim().toLowerCase();
+    var shown = 0;
+    agents.forEach(function (el) {
+      var ok = true;
+      if (active.status && el.dataset.status !== active.status) ok = false;
+      if (active.human && el.dataset.human !== active.human) ok = false;
+      if (active.dept && el.dataset.dept !== active.dept) ok = false;
+      if (ok && term) ok = el.dataset.search.indexOf(term) !== -1;
+      el.hidden = !ok;
+      if (ok) shown++;
+    });
+    // Hide a division whose agents have all been filtered out, so the page
+    // does not leave a row of empty headers behind.
+    depts.forEach(function (d) {
+      var any = d.querySelector('.agent:not([hidden])');
+      d.hidden = !any;
+    });
+    countEl.textContent = shown + ' of ' + agents.length + ' agents';
+    empty.classList.toggle('on', shown === 0);
+  }
+
+  document.querySelectorAll('.filt').forEach(function (b) {
+    b.setAttribute('aria-pressed', 'false');
+    b.addEventListener('click', function () {
+      var k = b.dataset.filter, v = b.dataset.value;
+      var on = active[k] === v;
+      // One value per filter key. Re-clicking the active one clears it.
+      document.querySelectorAll('.filt[data-filter="' + k + '"]').forEach(function (o) {
+        o.setAttribute('aria-pressed', 'false');
+      });
+      active[k] = on ? null : v;
+      b.setAttribute('aria-pressed', on ? 'false' : 'true');
+      apply();
+    });
+  });
+
+  q.addEventListener('input', apply);
+
+  var copy = document.getElementById('copy');
+  copy.addEventListener('click', function () {
+    var text = document.getElementById('cmd').textContent;
+    var done = function () {
+      copy.textContent = 'Copied';
+      setTimeout(function () { copy.textContent = 'Copy'; }, 1600);
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done, function () { copy.textContent = 'Press Ctrl C'; });
+    } else {
+      // execCommand fallback: clipboard API needs a secure context and this
+      // page may be opened from a file:// path.
+      var t = document.createElement('textarea');
+      t.value = text; document.body.appendChild(t); t.select();
+      try { document.execCommand('copy'); done(); } catch (err) { copy.textContent = 'Press Ctrl C'; }
+      document.body.removeChild(t);
+    }
+  });
+
+  apply();
+})();
+</script>

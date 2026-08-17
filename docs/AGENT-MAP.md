@@ -197,27 +197,29 @@ Drives tnpublicnotice.com through 8 saved searches and paginates every result.
 
 > **The trap this exists to avoid.** The site is ASP.NET WebForms. All navigation is __doPostBack with ViewState, so plain HTTP requests would have to hand-manage ViewState and EventValidation. Browser automation is not optional here.
 
-#### CAPTCHA Gate Runner
+#### Turnstile Gate Runner
 
 `src/captcha_solver.py, src/scrapfly_client.py` &middot; phase 1 &middot; live
 
-Clears the reCAPTCHA that sits on every single notice detail page.
+Clears the Cloudflare Turnstile challenge that sits in front of every notice detail page.
 
 **Trigger.** Every notice detail page open.
 
 **Does.**
 
-- Scrapfly path: asp=True plus render_js, one call returns HTML and a full-page screenshot
-- Fallback path: 2Captcha solves, token is injected, View Notice is clicked
-- Retries up to 3 times, then yields a gate_not_cleared result
+- Reads the sitekey off the LIVE page, and logs SITEKEY ROTATED rather than dying quietly
+- Selects the solve method and the response field from CAPTCHA_KIND
+- Creates the cf-turnstile-response input when the headless widget never renders one
+- Runs the blocking 2Captcha call in a thread so the browser event loop keeps servicing the page
+- Raises NoticeAccessBlocked on an IP refusal and aborts the whole run
 
 **Human checkpoint.** None. Runs unattended.
 
-**Outputs.** Rendered notice HTML, Proof-of-source screenshot
+**Outputs.** Rendered notice HTML
 
-**Touches.** Scrapfly, 2Captcha, Playwright
+**Touches.** Cloudflare Turnstile, 2Captcha, Playwright
 
-> **The trap this exists to avoid.** This is the pipeline bottleneck at 10 to 30 seconds per notice. There is no CAPTCHA on login, search, or results pages, only on the detail page you actually need.
+> **The trap this exists to avoid.** The gate migrated from reCAPTCHA to Cloudflare Turnstile on 2026-07-13. config.py recorded the migration but the solver still called recaptcha() and injected into g-recaptcha-response, a field the page no longer reads, so EVERY solve was billed and discarded. The gate is session-level, so one solve covers the rest of the run. A blocked IP now aborts instead of grinding 50 results times 3 attempts against a wall, and the page shows no challenge at all from a blocked address, which is why this looks like a solver bug when it is an egress problem.
 
 #### Notice Parser
 

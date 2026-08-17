@@ -132,7 +132,14 @@ Most skills call a paid API and read the key from your own environment. They deg
 
 ## The agent system
 
-The platform is 54 agents across 8 divisions. [**docs/AGENT-MAP.md**](docs/AGENT-MAP.md) is the full map: what triggers each one, what it touches, where a human still signs off, and the specific trap each one exists to avoid.
+The platform is 74 agents across 9 divisions.
+
+- [**The interactive map**](https://claude.ai/code/artifact/254afeb5-1fe5-4c8e-8179-0a7fa79d9039), searchable and filterable by division, status, and whether a human still signs off.
+- [**docs/AGENT-MAP.md**](docs/AGENT-MAP.md), the same thing as a document you can read in the repo or hand to Claude.
+
+Both render from [`docs/agents.json`](docs/agents.json), so they cannot disagree about what the system does.
+
+Each agent carries a trigger, the steps it runs, where a person signs off, what comes out, and the trap it exists to avoid. That last field is the one worth reading: every one is a real production failure, and most of them failed silently for days or weeks before anyone noticed.
 
 ```
   Web scrape (gated site)   ──┐
