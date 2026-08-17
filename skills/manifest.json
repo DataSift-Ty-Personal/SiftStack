@@ -55,9 +55,9 @@
         "skills/sift-operations/scripts/datasift_core.py"
       ],
       "file_count": 16,
-      "bytes": 98997,
+      "bytes": 98719,
       "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/sift-operations.plugin",
-      "sha256": "0bc86547e8c4db6e321d5f92cc060ae91774973a8e0b30646f9bbcf59ca03349",
+      "sha256": "bc53528bf552ab7a820a4691cec760cab6ab31c6d17880f1d29f5b6ec1defe53",
       "requires": {
         "tier": "none",
         "fallback": null,

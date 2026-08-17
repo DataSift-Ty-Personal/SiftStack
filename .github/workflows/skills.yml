@@ -93,11 +93,11 @@ jobs:
             echo "::error::second install was not a no-op; installer is not idempotent"; exit 1; }
           echo "installer OK, $(find /tmp/skills-ci -maxdepth 1 -mindepth 1 -type d | wc -l) packages"
 
-      - name: Setup docs match the manifest
-        # The doctor tells people "use X instead". If X points at a section
-        # that does not exist, they are stranded at the moment they asked for
-        # help. Also fails if a documented env var is missing from the example
-        # file, or if the example file ever carries a real value.
+      - name: Platform limits Claude Code enforces at install time
+        # This is a user-facing gate. Breaking it does not fail here, it fails
+        # on a community member's machine with "Plugin validation failed"
+        # after they have already run the install command. Checked across
+        # nested skills inside plugins too, which is where it broke.
         run: python tools/check_docs.py --ci
 
       - name: Doctor runs clean with no credentials at all
