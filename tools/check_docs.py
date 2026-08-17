@@ -17,6 +17,20 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 MANIFEST = ROOT / "skills" / "manifest.json"
+
+# Platform limits enforced by Claude Code at INSTALL time, not by us. Breaking
+# one does not fail here, it fails on a community member's machine with
+# "Plugin validation failed", after they have already run the install command
+# and told other people it is broken. That happened once, with a description
+# of 1105 characters in the sift-operations plugin.
+#
+# Anything the platform validates belongs in this list.
+DESCRIPTION_MAX = 1024
+NAME_MAX = 64
+NAME_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
+# Warn before it becomes an error, so a small edit does not tip a skill over
+# the line without anyone noticing.
+DESCRIPTION_WARN = int(DESCRIPTION_MAX * 0.9)
 PLAYBOOK = ROOT / "docs" / "setup" / "no-api-playbook.md"
 GETTING = ROOT / "docs" / "setup" / "GETTING-STARTED.md"
 ENV_EXAMPLE = ROOT / ".env.skills.example"
@@ -34,9 +48,59 @@ def anchors(md: str) -> set[str]:
     return found
 
 
+def check_platform_limits() -> tuple[list[str], list[str]]:
+    """Validate every SKILL.md the way Claude Code will at install time.
+
+    Covers nested skills inside plugins too. The one that broke shipped inside
+    a plugin, where the top-level frontmatter check never looked.
+    """
+    sys.path.insert(0, str(ROOT / "tools"))
+    from build_skills import read_frontmatter  # noqa: E402
+
+    problems: list[str] = []
+    warnings: list[str] = []
+    for base in ("skills", "plugins"):
+        root = ROOT / base
+        if not root.is_dir():
+            continue
+        for smd in sorted(root.rglob("SKILL.md")):
+            rel = smd.relative_to(ROOT).as_posix()
+            fm = read_frontmatter(smd.read_text(encoding="utf-8", errors="replace"))
+
+            name = fm.get("name", "")
+            desc = fm.get("description", "") or ""
+
+            if not name:
+                problems.append(f"{rel}: no 'name' in frontmatter")
+            else:
+                if len(name) > NAME_MAX:
+                    problems.append(f"{rel}: name is {len(name)} chars, limit {NAME_MAX}")
+                if not NAME_RE.match(name):
+                    problems.append(
+                        f"{rel}: name {name!r} must be lowercase letters, digits "
+                        f"and single hyphens")
+
+            if not desc:
+                problems.append(f"{rel}: no 'description' in frontmatter, so it can never trigger")
+            elif len(desc) > DESCRIPTION_MAX:
+                problems.append(
+                    f"{rel}: description is {len(desc)} chars, limit {DESCRIPTION_MAX}. "
+                    f"Claude Code rejects the whole package at install time.")
+            elif len(desc) > DESCRIPTION_WARN:
+                warnings.append(
+                    f"{rel}: description is {len(desc)} chars, "
+                    f"{DESCRIPTION_MAX - len(desc)} from the {DESCRIPTION_MAX} limit")
+    return problems, warnings
+
+
 def main() -> int:
     problems: list[str] = []
     doc = json.loads(MANIFEST.read_text(encoding="utf-8"))
+
+    plat_problems, plat_warnings = check_platform_limits()
+    problems.extend(plat_problems)
+    for w in plat_warnings:
+        print(f"::warning::{w}" if "--ci" in sys.argv else f"WARN    {w}")
     current = [e for e in doc["skills"] if e["status"] == "current"]
 
     play = PLAYBOOK.read_text(encoding="utf-8")

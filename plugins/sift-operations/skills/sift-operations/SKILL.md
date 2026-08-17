@@ -1,22 +1,18 @@
 ---
 name: sift-operations
 description: >
-  This skill should be used when the user asks anything about REI Sift operations,
-  including "how do I set up a sequence", "build a sequence", "create a sequence",
-  "sequence workflow", "sequential presets", "filter presets", "preset map",
-  "SiftLine boards", "board workflow", "move cards between boards",
-  "drip campaigns", "drip setup", "events", "tasks", "task presets",
-  "tags", "filters", "skip tracing workflow", "list management",
-  "property statuses", "lead management", "acquisitions workflow",
-  "transactions workflow", "follow-up cadence", "round-robin assignment",
-  "Sift automation", "how does Sift work", "Sift help", "Sift walkthrough",
-  or any question about configuring, troubleshooting, or optimizing
-  workflows inside REI Sift. Also trigger for "what sequences should I build",
-  "how to organize my marketing", "niche sequential", "bulk sequential",
-  "pendulum theory", "call attempts filter", "mail attempts filter",
-  "deep prospecting workflow", "Sift best practices", "STABM", "daily routine",
-  "lead pipeline", "speed to lead", "task presets", "team setup",
-  "record import", or "status workflow".
+  Operations encyclopedia for REI Sift (DataSift). Covers sequences and
+  automations, niche and bulk sequential marketing, filter presets and the
+  preset map, SiftLine boards and moving cards between them, drip campaigns,
+  events, tasks and task presets, tags, filters, skip tracing workflows, list
+  management and record import, property statuses, lead pipeline and speed to
+  lead, acquisitions and transactions workflows, follow-up cadence,
+  round-robin assignment, team setup, and the STABM daily routine. Use for
+  how do I build a sequence, what sequences should I build, how to organize
+  my marketing, pendulum theory, call or mail attempts filters, deep
+  prospecting workflow, status workflow, Sift best practices, Sift
+  walkthrough, how does Sift work, or any question about configuring,
+  troubleshooting or optimizing workflows inside Sift.
 version: 1.0.0
 ---
 
