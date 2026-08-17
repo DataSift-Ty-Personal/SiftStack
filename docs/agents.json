@@ -1,0 +1,2104 @@
+{
+ "meta": {
+  "title": "SiftStack AI Agent Org Chart",
+  "subtitle": "Every agent, what triggers it, what it touches, where a human still signs off, and the specific trap each one exists to avoid",
+  "org": "DataSift / DataFlik",
+  "version": "1.0.44",
+  "generated": "2026-08-17"
+ },
+ "phases": {
+  "1": {
+   "label": "Phase 1 - Running in production",
+   "desc": "Live today. Proven on real deals."
+  },
+  "2": {
+   "label": "Phase 2 - Scaling / gated",
+   "desc": "Built and validated, held behind a human go/no-go."
+  },
+  "3": {
+   "label": "Phase 3 - Next build",
+   "desc": "Designed, not yet wired end to end."
+  }
+ },
+ "exec": [
+  {
+   "id": "operator",
+   "name": "Operator",
+   "kind": "human",
+   "role": "Sets the buy box, approves spend, gives the go on anything that touches a homeowner.",
+   "trigger": "Always on. Every gated action routes here.",
+   "steps": [
+    "Defines buy box: single family, AVM $1 to $700,000",
+    "Approves outbound sends, offer numbers, and contract gates",
+    "Re-approves the locked material list each project cycle"
+   ],
+   "human": [
+    "Every Phase 2 gate",
+    "Any dollar figure that reaches a seller or buyer"
+   ],
+   "outputs": [
+    "Go / no-go decisions",
+    "Buy box parameters"
+   ],
+   "tools": [],
+   "phase": 1,
+   "status": "live",
+   "source": "CLAUDE.md",
+   "gotcha": "The named company is litigation bait. Outbound identity is anchored to the assigned human, never to a business name."
+  },
+  {
+   "id": "orchestrator",
+   "name": "Claude Orchestrator",
+   "kind": "orchestrator",
+   "role": "The session that reads the repo, picks the right agent chain, and runs it end to end.",
+   "trigger": "Operator prompt, scheduled task, or an inbound webhook.",
+   "steps": [
+    "Reads CLAUDE.md for domain rules and hard-won gotchas",
+    "Selects the skill or module chain for the job",
+    "Runs the chain, degrades gracefully on any missing credential",
+    "Reports what it did and what it could not do"
+   ],
+   "human": [
+    "Approves any irreversible or billable action"
+   ],
+   "outputs": [
+    "Excel workbooks",
+    "CSV uploads",
+    "PDF research packs",
+    "Slack summaries"
+   ],
+   "tools": [
+    "Claude",
+    "Cowork",
+    "Claude Code"
+   ],
+   "phase": 1,
+   "status": "live",
+   "source": "CLAUDE.md",
+   "gotcha": "A run that succeeds with no data is worse than one that fails. Every agent must state an explicit reason when it degrades."
+  }
+ ],
+ "core": {
+  "id": "core",
+  "name": "SiftStack Core",
+  "kind": "core",
+  "role": "Shared spine: config, credential resolution, LLM client, rate limiting, graceful degradation.",
+  "trigger": "Imported by every agent in the org.",
+  "steps": [
+   "config.py resolves credentials, selectors, buy box, and paths from .env",
+   "reisift_auth resolves the no-expiry Api-Key account ahead of short-lived JWTs",
+   "llm_client routes model calls and retries",
+   "Every module degrades with a stated reason instead of failing silently"
+  ],
+  "human": [],
+  "outputs": [
+   "Authenticated clients",
+   "Resolved config"
+  ],
+  "tools": [
+   "config.py",
+   "llm_client.py",
+   "reisift_auth",
+   "datasift_core.py"
+  ],
+  "phase": 1,
+  "status": "live",
+  "source": "src/config.py, src/llm_client.py, src/datasift_core.py",
+  "gotcha": "buyer_sweep once took an expired 48h admin JWT, resolved 0 of 133 sales, and exited 0 as if the market were empty. Pin the no-expiry account and hard-error on a zero-resolve."
+ },
+ "departments": [
+  {
+   "id": "acq",
+   "name": "Data Acquisition",
+   "tagline": "First to market or it is not worth pulling",
+   "color": "#62D4FF",
+   "lead": {
+    "id": "intake",
+    "name": "Intake Orchestrator",
+    "role": "Routes every source into one NoticeData shape, dedupes by address, stamps provenance.",
+    "trigger": "python src/main.py daily | historical, or the Apify daily schedule.",
+    "steps": [
+     "Filters saved searches by county and notice type",
+     "Fans out to the right importer for each source",
+     "Deduplicates by address, keeping the most recent",
+     "Stamps date_added (our run date) separately from date_published (the legal filing date)"
+    ],
+    "human": [
+     "Reviews the run summary before upload"
+    ],
+    "outputs": [
+     "Sift upload CSV",
+     "Run summary stats"
+    ],
+    "tools": [
+     "main.py",
+     "data_formatter.py",
+     "Apify"
+    ],
+    "phase": 1,
+    "status": "live",
+    "source": "src/main.py",
+    "gotcha": "Date semantics split two ways. date_added is when WE added it; date_published is the legal filing date. Everything downstream that reasons about timing must anchor on date_published."
+   },
+   "agents": [
+    {
+     "id": "ftmrun",
+     "name": "Scheduled FTM Runner",
+     "role": "One unattended first-to-market pull of foreclosure and probate for Knox and Blount, running in the cloud instead of on a workstation.",
+     "trigger": "The scheduler at 06:30 America/New_York, or python src/ftm_runner.py --commit by hand.",
+     "steps": [
+      "Preflights credentials, egress, state dir and saved searches",
+      "Rotates to a fresh proxy session id per PROCESS, counter held on the volume",
+      "Scrapes, enriches and uploads, then persists seen_ids ONLY after the upload succeeds",
+      "Reports a 0-notice run as EMPTY and exits non-zero"
+     ],
+     "human": [
+      "Approves the first scheduled run before --commit is added to FTM_ARGS"
+     ],
+     "outputs": [
+      "Upload CSV",
+      "ftm_runs.jsonl history",
+      "Run summary"
+     ],
+     "tools": [
+      "Fly.io siftstack-ftm",
+      "Playwright",
+      "Apify proxy",
+      "/data volume"
+     ],
+     "phase": 1,
+     "status": "live",
+     "source": "src/ftm_runner.py",
+     "gotcha": "Zero notices is a FAILURE, not a quiet day. There is deliberately no inference that a missing challenge means a cleared gate; that exact reasoning reported 13 consecutive dead runs as successful over 19 days. seen_ids is persisted only AFTER a successful upload, because an aborted run that had already written it left 204 notices flagged as handled that were never sent anywhere, and a retry would have skipped every one of them permanently."
+    },
+    {
+     "id": "proxy",
+     "name": "Egress Proxy Resolver",
+     "role": "Decides which IP the scrape goes out from, because the site gates on egress rather than on code.",
+     "trigger": "Every scraper run, before the first page load.",
+     "steps": [
+      "Resolution order: SIFTSTACK_PROXY_URL, then Apify groups via token lookup, then direct",
+      "Rewrites illegal characters in the session id and logs the substitution",
+      "Raises NoticeAccessBlocked on a refusal so the run aborts instead of grinding"
+     ],
+     "human": [],
+     "outputs": [
+      "A proxy URL",
+      "A sanitized sticky session id"
+     ],
+     "tools": [
+      "Apify proxy",
+      "BUYPROXIES94952"
+     ],
+     "phase": 1,
+     "status": "live",
+     "source": "src/proxy_resolver.py",
+     "gotcha": "Apify session ids accept only letters, digits, underscore and dot. A hyphen in the name returns 407 Proxy Authentication Required, which is indistinguishable from a rejected password, and cost a full day of debugging byte-identical credentials. Separately: the site blocks an IP by VOLUME, around 204 notices per session, so the backfill runs one process per saved-search-month rather than one long job."
+    },
+    {
+     "id": "ftmsched",
+     "name": "FTM Scheduler",
+     "role": "The long-lived process that decides when the pull fires, business-local.",
+     "trigger": "Container CMD. Runs continuously.",
+     "steps": [
+      "Computes the next fire time in the business timezone",
+      "Launches ftm_runner as a fresh PROCESS so the proxy session rotates",
+      "Records each run exit code"
+     ],
+     "human": [],
+     "outputs": [
+      "Scheduled runs",
+      "Exit codes"
+     ],
+     "tools": [
+      "Fly.io",
+      "ftm_runner.py"
+     ],
+     "phase": 1,
+     "status": "live",
+     "source": "src/ftm_schedule.py",
+     "gotcha": "A scheduler process rather than fly machine run --schedule, because Fly schedules are coarse and pick their own minute, while a first-to-market pull wants a specific business-local hour. Being first is the entire product."
+    },
+    {
+     "id": "scraper",
+     "name": "Notice Scraper",
+     "role": "Drives tnpublicnotice.com through 8 saved searches and paginates every result.",
+     "trigger": "Daily run, or historical backfill over 12 months.",
+     "steps": [
+      "Reuses saved session cookies, falls back to fresh login",
+      "Selects each saved search from the Smart Search dropdown",
+      "Paginates results at 50 per page",
+      "Opens each notice detail page"
+     ],
+     "human": [],
+     "outputs": [
+      "Raw notice HTML",
+      "Notice IDs"
+     ],
+     "tools": [
+      "Playwright",
+      "tnpublicnotice.com",
+      "cookies.json"
+     ],
+     "phase": 1,
+     "status": "live",
+     "source": "src/scraper.py",
+     "gotcha": "The site is ASP.NET WebForms. All navigation is __doPostBack with ViewState, so plain HTTP requests would have to hand-manage ViewState and EventValidation. Browser automation is not optional here."
+    },
+    {
+     "id": "gate",
+     "name": "CAPTCHA Gate Runner",
+     "role": "Clears the reCAPTCHA that sits on every single notice detail page.",
+     "trigger": "Every notice detail page open.",
+     "steps": [
+      "Scrapfly path: asp=True plus render_js, one call returns HTML and a full-page screenshot",
+      "Fallback path: 2Captcha solves, token is injected, View Notice is clicked",
+      "Retries up to 3 times, then yields a gate_not_cleared result"
+     ],
+     "human": [],
+     "outputs": [
+      "Rendered notice HTML",
+      "Proof-of-source screenshot"
+     ],
+     "tools": [
+      "Scrapfly",
+      "2Captcha",
+      "Playwright"
+     ],
+     "phase": 1,
+     "status": "live",
+     "source": "src/captcha_solver.py, src/scrapfly_client.py",
+     "gotcha": "This is the pipeline bottleneck at 10 to 30 seconds per notice. There is no CAPTCHA on login, search, or results pages, only on the detail page you actually need."
+    },
+    {
+     "id": "parser",
+     "name": "Notice Parser",
+     "role": "Pulls address, owner, and dates out of free-text legal notice bodies.",
+     "trigger": "Every notice fetched.",
+     "steps": [
+      "Regex extraction into the NoticeData dataclass",
+      "Owner name taken from the deed-of-trust 'executed by' language",
+      "Probate owner set to the Personal Representative, never the deceased"
+     ],
+     "human": [],
+     "outputs": [
+      "Structured NoticeData"
+     ],
+     "tools": [
+      "notice_parser.py"
+     ],
+     "phase": 1,
+     "status": "live",
+     "source": "src/notice_parser.py",
+     "gotcha": "There are no structured HTML fields on the site. Address, owner, and dates are all embedded in free-text notice bodies, so the regex layer is load bearing."
+    },
+    {
+     "id": "fcfilter",
+     "name": "Foreclosure Filter",
+     "role": "Keeps only real first-to-market trustee sales out of the foreclosure search results.",
+     "trigger": "Any record from a Foreclosure saved search.",
+     "steps": [
+      "Matches full notice text against observed trustee sale title variations",
+      "Applies INCLUDE_PHRASES and EXCLUDE_PHRASES",
+      "Non-foreclosure notice types pass through unfiltered"
+     ],
+     "human": [],
+     "outputs": [
+      "Filtered foreclosure set"
+     ],
+     "tools": [
+      "foreclosure_filter.py"
+     ],
+     "phase": 1,
+     "status": "live",
+     "source": "src/foreclosure_filter.py",
+     "gotcha": "Not everything in a Foreclosure saved search is a foreclosure. Skipping this filter poisons the whole downstream list."
+    },
+    {
+     "id": "photo",
+     "name": "Courthouse Photo Importer",
+     "role": "Turns phone photos of courthouse terminal screens into structured records.",
+     "trigger": "photo-import command, or a new file landing in Dropbox.",
+     "steps": [
+      "EXIF transpose, blur check, bilateral filter, perspective correction, Otsu threshold",
+      "Tesseract OCR at PSM 4",
+      "LLM parse into NoticeData across all 7 notice types"
+     ],
+     "human": [
+      "Runner takes the photos at the terminal"
+     ],
+     "outputs": [
+      "NoticeData records"
+     ],
+     "tools": [
+      "OpenCV",
+      "Tesseract",
+      "LLM parser"
+     ],
+     "phase": 1,
+     "status": "live",
+     "source": "src/photo_importer.py, src/image_utils.py",
+     "gotcha": "Moire from terminal screens is the number one OCR killer. Bilateral filter plus Otsu beats adaptive threshold and CLAHE, and PSM 4 beats the PSM 6 that every research guide recommends. Do not run Tesseract OSD rotation on phone photos, EXIF already handled it."
+    },
+    {
+     "id": "pdfimp",
+     "name": "PDF Importer",
+     "role": "Ingests scanned notice PDFs into the same pipeline.",
+     "trigger": "Manual import of a scanned batch.",
+     "steps": [
+      "pypdfium2 renders pages to images",
+      "Shared OCR utilities extract text",
+      "Records flow into the standard enrichment pipeline"
+     ],
+     "human": [],
+     "outputs": [
+      "NoticeData records"
+     ],
+     "tools": [
+      "pypdfium2",
+      "Tesseract"
+     ],
+     "phase": 1,
+     "status": "live",
+     "source": "src/pdf_importer.py",
+     "gotcha": "PDF and photo imports set date_added explicitly and it is preserved, not re-stamped by the pipeline run."
+    },
+    {
+     "id": "dropbox",
+     "name": "Dropbox Watcher",
+     "role": "Cursor-based polling so a runner just uploads photos and walks away.",
+     "trigger": "Continuous loop, default 15 minute interval.",
+     "steps": [
+      "Polls the Dropbox cursor for new files",
+      "Resolves county and notice type from the folder path",
+      "Processes through the photo importer, then deletes on success"
+     ],
+     "human": [
+      "Runner organizes uploads as /County/notice_type/"
+     ],
+     "outputs": [
+      "Processed records",
+      "dropbox_state.json"
+     ],
+     "tools": [
+      "Dropbox API"
+     ],
+     "phase": 1,
+     "status": "live",
+     "source": "src/dropbox_watcher.py",
+     "gotcha": "Folder path IS the metadata. /Knox/eviction/photo.jpg is how county and type get resolved, so a misfiled photo is a mislabeled record."
+    },
+    {
+     "id": "knoxftm",
+     "name": "Knox FTM Puller",
+     "role": "Sweeps every Knox source that carries a property address and applies the buy box.",
+     "trigger": "python src/knox_ftm_pull.py",
+     "steps": [
+      "Pulls liens, state and federal tax liens, and trustee deeds from the Register of Deeds",
+      "Pulls notices from tnpublicnotice, condemnations from city agendas, evictions from the court",
+      "Enriches against SiftMap, applies buy box, writes the upload CSV",
+      "Routes upside-down records to a separate exclusion file"
+     ],
+     "human": [
+      "Operator sets the buy box"
+     ],
+     "outputs": [
+      "knox_ftm_pull.csv",
+      "_upside_down.csv"
+     ],
+     "tools": [
+      "Register of Deeds",
+      "Knox Tax API",
+      "SiftMap"
+     ],
+     "phase": 1,
+     "status": "live",
+     "source": "src/knox_ftm_pull.py",
+     "gotcha": "Condemnations are one cycle only and evictions are one week only. The city overwrites its agenda PDFs and the court keeps only the current week, so roughly 86 back-dated URLs all 404. These accumulate forward or not at all."
+    },
+    {
+     "id": "lien",
+     "name": "Lien Resolver",
+     "role": "Turns lien debtor names into parcels, then drops anyone already satisfied.",
+     "trigger": "python src/knox_lien_resolve.py --all",
+     "steps": [
+      "Liens carry no parcel id, so the join is debtor name into the open county tax API",
+      "Computes active liens as recorded minus released",
+      "Drops fully cleared debtors, states '3 of 8 still active' in Notes"
+     ],
+     "human": [],
+     "outputs": [
+      "Debtor to parcel matches"
+     ],
+     "tools": [
+      "Knox Tax API",
+      "Register of Deeds"
+     ],
+     "phase": 1,
+     "status": "live",
+     "source": "src/knox_lien_resolve.py",
+     "gotcha": "27,493 release documents exist against 12 months of liens, and 8% of lead debtors had EVERY lien already satisfied. Release filtering is not optional. Full-run name-join hit rate is 40%, not the 64% a sorted sample suggested."
+    },
+    {
+     "id": "consolidate",
+     "name": "Foreclosure Consolidator",
+     "role": "Builds a master list of still-active foreclosures from the last N months of runs.",
+     "trigger": "python src/consolidate_foreclosures.py --months 3",
+     "steps": [
+      "Pulls each Apify run's output.csv from its key-value store",
+      "Merges local output CSVs",
+      "Dedupes by property, keeping the latest sale date",
+      "Drops anything whose auction date has already passed"
+     ],
+     "human": [],
+     "outputs": [
+      "foreclosure_master_active_<date>.csv"
+     ],
+     "tools": [
+      "Apify"
+     ],
+     "phase": 1,
+     "status": "live",
+     "source": "src/consolidate_foreclosures.py",
+     "gotcha": "Dedupe by property, not by notice. Republished and postponed notices collapse to one record only if you key on address plus city and keep the latest sale date."
+    },
+    {
+     "id": "shot",
+     "name": "Proof-of-Source Capture",
+     "role": "RETIRED 2026-08-14. Captured a full-page screenshot of each notice as proof of source.",
+     "trigger": "The moment the CAPTCHA clears and the notice is visible.",
+     "steps": [
+      "Full-page screenshot of the detail page",
+      "Hosted to Apify key-value store or Google Drive",
+      "URL rides along as a custom field plus a Notes line into DataSift"
+     ],
+     "human": [],
+     "outputs": [
+      "notice_<ID>.png",
+      "Hosted screenshot URL"
+     ],
+     "tools": [
+      "Scrapfly",
+      "Google Drive",
+      "Apify"
+     ],
+     "phase": 1,
+     "status": "retired",
+     "source": "archive/notice_screenshots/notice_screenshot.py",
+     "gotcha": "Retired because nothing used it, and it was the slowest step in a foreclosure notice, which matters directly on a multi-thousand-notice backfill. The fields, the CSV column and the DataSift custom field are deliberately KEPT so historical records retain their URLs."
+    }
+   ]
+  },
+  {
+   "id": "enrich",
+   "name": "Enrichment & Identity",
+   "tagline": "Who actually owns it and who can legally sign",
+   "color": "#7C9CFF",
+   "lead": {
+    "id": "pipeline",
+    "name": "Enrichment Pipeline",
+    "role": "Ten-plus step chain that takes a bare address to a dialable decision maker.",
+    "trigger": "Every record after intake.",
+    "steps": [
+     "Address standardization, property data, tax data",
+     "Obituary and heir research where the owner is deceased",
+     "Skip trace waterfall, then phone scoring",
+     "Stamps date_added at run time"
+    ],
+    "human": [
+     "Reviews decision-maker confidence before calling"
+    ],
+    "outputs": [
+     "Enriched NoticeData"
+    ],
+    "tools": [
+     "enrichment_pipeline.py"
+    ],
+    "phase": 1,
+    "status": "live",
+    "source": "src/enrichment_pipeline.py",
+    "gotcha": "Every step is optional and states its own failure. One dead API must never take the record with it."
+   },
+   "agents": [
+    {
+     "id": "addr",
+     "name": "Address Standardizer",
+     "role": "Normalizes addresses so dedupe and CRM matching actually work.",
+     "trigger": "Step 1 of enrichment.",
+     "steps": [
+      "Smarty API standardization",
+      "Normalized form used as the dedupe key"
+     ],
+     "human": [],
+     "outputs": [
+      "Standardized address"
+     ],
+     "tools": [
+      "Smarty"
+     ],
+     "phase": 1,
+     "status": "live",
+     "source": "src/address_standardizer.py",
+     "gotcha": "Address is the upsert key for DataSift. If standardization drifts, re-runs create duplicates instead of updating."
+    },
+    {
+     "id": "prop",
+     "name": "Property Enricher",
+     "role": "Pulls beds, baths, sqft, year built, and valuation for the subject.",
+     "trigger": "Step 2 of enrichment.",
+     "steps": [
+      "Zillow property-details-address endpoint",
+      "Merged into NoticeData"
+     ],
+     "human": [
+      "County card overrides beat the aggregator"
+     ],
+     "outputs": [
+      "Property facts"
+     ],
+     "tools": [
+      "OpenWeb Ninja",
+      "Zillow"
+     ],
+     "phase": 1,
+     "status": "live",
+     "source": "src/property_enricher.py",
+     "gotcha": "Aggregators get bedroom counts wrong. Explicit CLI county-card values always win over Zillow, and the whole dual-track ARV rests on the bed count being right."
+    },
+    {
+     "id": "tax",
+     "name": "Tax Enricher",
+     "role": "Pulls per-parcel delinquency, assessed value, and owner of record.",
+     "trigger": "Step 3 of enrichment.",
+     "steps": [
+      "Knox County Tax API by parcel",
+      "Delinquent year gated on a positive per-parcel amount"
+     ],
+     "human": [],
+     "outputs": [
+      "Tax delinquency",
+      "Parcel data"
+     ],
+     "tools": [
+      "Knox County Tax API"
+     ],
+     "phase": 1,
+     "status": "live",
+     "source": "src/tax_enricher.py",
+     "gotcha": "The county API returns bills per OWNER. Without the per-parcel gate, a multi-parcel owner stamps one property's debt onto another. Only about 12% of parcels owe anything, so a sparse column is correct."
+    },
+    {
+     "id": "obit",
+     "name": "Obituary Enricher",
+     "role": "Finds the date of death and the named representative for deceased owners.",
+     "trigger": "Owner flagged deceased, or a probate record.",
+     "steps": [
+      "Probate preset sets DM to the court-named PR and skips obituary search entirely",
+      "Otherwise searches obituary sources for the decedent",
+      "Runs the DOD sanity check against the publication date"
+     ],
+     "human": [
+      "Must confirm the decedent IS the owner of record"
+     ],
+     "outputs": [
+      "Date of death",
+      "Decision maker",
+      "Obituary URL"
+     ],
+     "tools": [
+      "Obituary sources",
+      "Knox Tax API",
+      "Scrapfly"
+     ],
+     "phase": 1,
+     "status": "live",
+     "source": "src/obituary_enricher.py",
+     "gotcha": "THE SPOUSE-OBITUARY TRAP. An obituary on the record does not mean the OWNER died. A live Blount case had the husband's obituary on a living widow's record. An unresearched caller would have asked a recent widow for her dead husband. Always match decedent against owner of record first."
+    },
+    {
+     "id": "dp5",
+     "name": "Deep Prospecting v5",
+     "role": "Resolves heirs and required signers via SmartSkip, then confirms against published obituaries.",
+     "trigger": "Confirmed deceased owner that no cheaper path resolved.",
+     "steps": [
+      "SmartSkip batch returns relatives AND their phones in one row",
+      "Tracerfy gap-fills the roughly 7% of relatives left phoneless",
+      "Mandatory free obituary and web research supplies DOD and true relationships",
+      "Trestle scores every number into dial tiers"
+     ],
+     "human": [
+      "Research pass is mandatory, never skipped"
+     ],
+     "outputs": [
+      "Heir map",
+      "Master dial sheet",
+      "Branded PDF pack"
+     ],
+     "tools": [
+      "SmartSkip",
+      "Tracerfy",
+      "Trestle IQ",
+      "Scrapfly"
+     ],
+     "phase": 1,
+     "status": "live",
+     "source": "Skills for REI/improved/deep-prospecting-v5.skill",
+     "gotcha": "SmartSkip is WRONG about death. It returned Deceased=false for a man who died with a published funeral-home obituary, and it has no DOD column at all. 63% of relationship labels come back generic. The obituary layer is what makes it trustworthy. Cost is $0.24 per record, 4.9x cheaper than the retired Enformion path."
+    },
+    {
+     "id": "entity",
+     "name": "Entity Researcher",
+     "role": "Unmasks the human behind an LLC, trust, or corporation.",
+     "trigger": "Owner is an entity, not a person.",
+     "steps": [
+      "Enformion BusinessV2 returns officers from corp filings",
+      "Filters out entity self-references and registered-agent fronts",
+      "Reverse-lookups an LLC's residential mailing address to find the principal"
+     ],
+     "human": [],
+     "outputs": [
+      "Named principals"
+     ],
+     "tools": [
+      "Enformion BusinessV2",
+      "SiftMap"
+     ],
+     "phase": 1,
+     "status": "live",
+     "source": "src/enformion_business.py, src/entity_researcher.py",
+     "gotcha": "Entities cannot be name-traced. 35 of 321 vacant owners were LLCs or trusts, so filter them out of the consumer skip-trace batch up front or you burn the spend. The v1 BusinessSearch type is access-denied; only BusinessV2 works."
+    },
+    {
+     "id": "tracerfy",
+     "name": "Tracerfy Skip Trace",
+     "role": "Cheap batch phone and email fill at about two cents a record.",
+     "trigger": "Any record or relative missing contact data.",
+     "steps": [
+      "Batch submission",
+      "Merge found phones back by address upsert"
+     ],
+     "human": [],
+     "outputs": [
+      "Phone numbers",
+      "Emails"
+     ],
+     "tools": [
+      "Tracerfy"
+     ],
+     "phase": 1,
+     "status": "live",
+     "source": "src/tracerfy_skip_tracer.py, src/tracerfy_ftm.py",
+     "gotcha": "DataSift MERGES phones rather than replacing them, so Tracerfy and Enformion accumulate. Run them sequentially, then re-score and re-tag. One live run went from 109 to 302 phones across 33 records."
+    },
+    {
+     "id": "phone",
+     "name": "Phone Validator",
+     "role": "Scores every number and sorts the call list into dial tiers.",
+     "trigger": "After every skip-trace pass.",
+     "steps": [
+      "Trestle phone_intel scores activity and line type",
+      "Tiers: 81-100 dial first, 61-80 second, 41-60 third, 21-40 fourth, 0-20 drop",
+      "Litigator risk check",
+      "Writes phone tags back to DataSift"
+     ],
+     "human": [],
+     "outputs": [
+      "Tiered dial list",
+      "DataSift phone tags"
+     ],
+     "tools": [
+      "Trestle IQ"
+     ],
+     "phase": 1,
+     "status": "live",
+     "source": "src/phone_validator.py",
+     "gotcha": "On a shared household line the owner rule wins: the number carries source and tier only, never a relationship tag, or the dial sheet labels the owner's own landline 'Husband'."
+    },
+    {
+     "id": "probfind",
+     "name": "Probate Property Finder",
+     "role": "Finds the property when the court record has names but no address.",
+     "trigger": "Probate record with a PR and decedent but no property.",
+     "steps": [
+      "Tier 1: Knox Tax API name search, scored by token overlap, accept at 0.4 or better",
+      "Tier 2: executor family search for transferred family property",
+      "Tier 3: people search for the decedent's last known address"
+     ],
+     "human": [
+      "Confidence score reviewed before the record ships"
+     ],
+     "outputs": [
+      "Property address",
+      "Confidence score"
+     ],
+     "tools": [
+      "Knox Tax API",
+      "People search",
+      "Scrapfly"
+     ],
+     "phase": 1,
+     "status": "live",
+     "source": "src/property_lookup.py",
+     "gotcha": "Courthouse probate records have decedent and executor names but no property address. Without this three-tier lookup the entire probate niche is unusable."
+    }
+   ]
+  },
+  {
+   "id": "deal",
+   "name": "Deal Analysis",
+   "tagline": "What it is worth, what it costs, what you can pay",
+   "color": "#A78BFA",
+   "lead": {
+    "id": "postwalk",
+    "name": "Post-Walkthrough Package",
+    "role": "The one workbook you build the hour after walking a house. Nine sheets, Sift-linked.",
+    "trigger": "python src/post_walkthrough.py after a walk.",
+    "steps": [
+     "Loads the LIVE Sift lead as the anchor, not just the address",
+     "Spins comps, rehab, walk findings, exits, and the dispo stack together",
+     "Renders Overview, Exit Strats, Comps, Active-Pending, Repair Logic, Repair Numbers, Buyer Targets, Outreach, Lender Analysis"
+    ],
+    "human": [
+     "Walkthrough JSON is the human layer and overrides the live record"
+    ],
+    "outputs": [
+     "9-sheet branded Excel workbook"
+    ],
+    "tools": [
+     "Sift Deal Room API",
+     "SiftMap",
+     "Zillow",
+     "openpyxl"
+    ],
+    "phase": 1,
+    "status": "live",
+    "source": "src/post_walkthrough.py",
+    "gotcha": "Exact numbers, not ranges, in the cells. A wide band is not an answer you can take to a seller or a buyer. The lo/hi still drives the math and surfaces as one 'If it moves' sensitivity line."
+   },
+   "agents": [
+    {
+     "id": "comp",
+     "name": "Comp Package Engine",
+     "role": "Boundary-filtered comps and dual-track ARV for a subject property.",
+     "trigger": "python src/comp_package.py with a subject address.",
+     "steps": [
+      "Band-partitioned Zillow /search pull to beat the 41-row cap",
+      "Boundary clip by bbox AND street regex, both applied",
+      "Condition bucketing by sold price over Zestimate ratio",
+      "Dual-track ARV, then MAO math and buyer matching"
+     ],
+     "human": [
+      "County card overrides for beds, baths, sqft, year built"
+     ],
+     "outputs": [
+      "Branded comp workbook"
+     ],
+     "tools": [
+      "OpenWeb Ninja /search",
+      "Zillow"
+     ],
+     "phase": 1,
+     "status": "live",
+     "source": "src/comp_package.py, src/zillow_market_api.py",
+     "gotcha": "The API contract moved. similar-sale-homes is retired and 404s. Every /search caps at 41 rows with totalPages=1, so you partition by price band and recursively split saturated bands, 50 to 80 calls to recover 2 to 3 years. price_min and price_max are SILENTLY ignored, so always check the echoed parameters object."
+    },
+    {
+     "id": "arv",
+     "name": "Dual-Track ARV Engine",
+     "role": "Prices the subject inside its own bedroom band and labels reconfig upside separately.",
+     "trigger": "Called by the comp package and post-walkthrough.",
+     "steps": [
+      "Base ARV from same-bed renovated comps only, clamped to that band's median",
+      "Reconfig-to-more-beds rides as a labeled UPSIDE track capped at band p75",
+      "tight_arv applies recency, size window, and same-bed rules for underwriting",
+      "refine_bucket demotes investor buys that Zillow re-anchored to look renovated"
+     ],
+     "human": [
+      "Reconfig upside credited only after a walkthrough verifies the layout converts"
+     ],
+     "outputs": [
+      "Base ARV",
+      "Upside ARV",
+      "Basis string"
+     ],
+     "tools": [
+      "comp_package.py"
+     ],
+     "phase": 1,
+     "status": "live",
+     "source": "src/post_walkthrough.py, src/comp_package.py",
+     "gotcha": "A subject below the comp set's bed count lives in a LOWER value band than per-bedroom adjustments imply. In 37914, renovated 2-beds capped at $215-280K while same-size 3/2s ran $285-385K. Extra square footage cannot escape the band."
+    },
+    {
+     "id": "rehab",
+     "name": "Rehab Estimator",
+     "role": "Room-by-room, four-tier scope priced off the locked Knox material list.",
+     "trigger": "Deal analysis or post-walkthrough.",
+     "steps": [
+      "SKU baskets per category from the locked master material list",
+      "Engine labor per category, regional multiplier on LABOR ONLY",
+      "Any missing SKU drops the whole category back to the legacy table with a loud log",
+      "Self-perform estimate alongside the GC grand total"
+     ],
+     "human": [
+      "Signed bids replace estimates and collapse the range"
+     ],
+     "outputs": [
+      "Itemized scope",
+      "4-scenario matrix",
+      "Self-perform estimate"
+     ],
+     "tools": [
+      "Locked material list",
+      "Home Depot SKU pricing"
+     ],
+     "phase": 1,
+     "status": "live",
+     "source": "src/rehab_estimator.py, src/sku_pricing.py",
+     "gotcha": "THE DOUBLE-DISCOUNT TRAP. Locked prices are already Knox-local, so applying the 0.88 regional multiplier to materials under-prices by about 12%. The multiplier is labor only in SKU mode, and a test asserts the exact basket math to catch a leak."
+    },
+    {
+     "id": "material",
+     "name": "Master Material List",
+     "role": "The frozen, git-tracked price source every Knox estimate reads from.",
+     "trigger": "Re-locked only when the PM re-approves the list.",
+     "steps": [
+      "Pulls fresh Knox pricing by zip",
+      "--lock writes the git-tracked JSON and CSV twins",
+      "An ordinary re-pull refreshes cache but can never drift prices into estimates"
+     ],
+     "human": [
+      "PM re-approval required to re-lock"
+     ],
+     "outputs": [
+      "master_materials_locked_37914.json",
+      "CSV twin"
+     ],
+     "tools": [
+      "Home Depot",
+      "SERP pull"
+     ],
+     "phase": 1,
+     "status": "live",
+     "source": "src/material_list.py",
+     "gotcha": "Only --lock writes to data/. That single rule is what stops a casual re-pull from silently changing every estimate in flight. Current lock: 94 of 94 search keys priced, 88 SKU rows plus 12 allowances."
+    },
+    {
+     "id": "exits",
+     "name": "Exit Strategy Engine",
+     "role": "Scores each lane off the conservative ARV and says why each is in or out.",
+     "trigger": "Post-walkthrough render.",
+     "steps": [
+      "Scores wholesale assignment, wholetail, flip same-config, flip reconfig, BRRRR",
+      "Only lanes that clear their gate get a suggestion block",
+      "Everything ruled out is named in the headline and explained",
+      "Names the BUYER's exit on the outreach sheet, never our hold"
+     ],
+     "human": [
+      "Reconfig lane gated on walkthrough verification"
+     ],
+     "outputs": [
+      "Ranked exit lanes with rationale"
+     ],
+     "tools": [
+      "post_walkthrough.py"
+     ],
+     "phase": 1,
+     "status": "live",
+     "source": "src/post_walkthrough.py",
+     "gotcha": "The template's six exit slots were placeholders, not a quota. If nothing clears its gate, the two closest misses render under an explicit banner rather than fabricating a recommendation. Novation is not modelled at all, it was removed rather than hidden."
+    },
+    {
+     "id": "dealanalyzer",
+     "name": "Deal Analyzer",
+     "role": "MAO, ROI, and financing scenarios across multiple loan structures.",
+     "trigger": "analyze-deal command or the deal-analyzer plugin.",
+     "steps": [
+      "75% and 70% MAO rules",
+      "Hard money at 12%, conventional at 7%, 2 points, 2.5% closing",
+      "Exit strategy comparison"
+     ],
+     "human": [
+      "Operator sets target margin"
+     ],
+     "outputs": [
+      "MAO",
+      "ROI",
+      "Financing comparison"
+     ],
+     "tools": [
+      "deal_analyzer.py"
+     ],
+     "phase": 1,
+     "status": "live",
+     "source": "src/deal_analyzer.py",
+     "gotcha": "Transfer tax defaults are Tennessee-specific. The skill ships a state reference table because shipping one state's number as universal is how community users get burned."
+    },
+    {
+     "id": "lender",
+     "name": "Lender Analysis",
+     "role": "Bakes private money into every resale lane and renders the lender's own view.",
+     "trigger": "A financing block present in the walkthrough JSON.",
+     "steps": [
+      "Profit goes net of debt: points plus interest over the lane's hold",
+      "Sources and uses, draw schedule, loan-to-ARV, equity cushion",
+      "Band-floor stress case and payoff waterfall at the point ARV",
+      "Lender's annualized yield"
+     ],
+     "human": [
+      "Assumed terms paint a red placeholder banner until real terms land"
+     ],
+     "outputs": [
+      "Lender Analysis sheet"
+     ],
+     "tools": [
+      "post_walkthrough.py"
+     ],
+     "phase": 1,
+     "status": "live",
+     "source": "src/post_walkthrough.py",
+     "gotcha": "ROI reads as cash-on-cash when financed, and a financed flip must ALSO clear the $10K wholesale floor to stay suggested. No financing block means the old cash-basis math, byte identical."
+    },
+    {
+     "id": "lotsplit",
+     "name": "Lot Split Underwriter",
+     "role": "Underwrites splitting a parcel as its own exit lane.",
+     "trigger": "python src/lot_split_underwrite.py",
+     "steps": [
+      "Parcel and zoning review",
+      "Split scenario economics",
+      "Comparison against the standard lanes"
+     ],
+     "human": [
+      "Zoning confirmation before relying on it"
+     ],
+     "outputs": [
+      "Lot split underwrite workbook"
+     ],
+     "tools": [
+      "Knox Tax API",
+      "SiftMap"
+     ],
+     "phase": 2,
+     "status": "live",
+     "source": "src/lot_split_underwrite.py",
+     "gotcha": "Run on 306 N Morgan and 2810 Barton. Treat the split as an exit lane that competes with the others, not as free upside stacked on top."
+    },
+    {
+     "id": "lenderpkg",
+     "name": "Lender Package Builder",
+     "role": "The 8-piece set handed to a private money lender to fund one named property.",
+     "trigger": "python src/lender_package.py --spec deals/<deal>.json",
+     "steps": [
+      "Mirrors The Repair Estimator block for block, inputs inline beside the answers",
+      "Writes 240+ live Excel formulas off workbook defined names, including the prose",
+      "Rolls the 65-line repair grid up into the front page",
+      "Sizes every column from what a cell will DISPLAY, not what it holds"
+     ],
+     "human": [
+      "Reviews and edits the blue input cells directly in Excel",
+      "Negotiates the loan amount, the one input that sets the deal"
+     ],
+     "outputs": [
+      "The Private Lender Package.xlsx, 8 tabs"
+     ],
+     "tools": [
+      "openpyxl",
+      "deal spec JSON"
+     ],
+     "phase": 1,
+     "status": "live",
+     "source": "src/lender_package.py",
+     "gotcha": "Read the workbook back before regenerating over it. Ty reviews in Excel and edits inputs directly; on one review he made three changes and mentioned one. Also: DayOne = Loan minus RehabTotal is derived, never typed, because typing the closing advance let financed closing costs land in the draw tranche and the holdback disagreed with the repair budget by $1,608."
+    },
+    {
+     "id": "lenderdocs",
+     "name": "Lender Document Set",
+     "role": "Cover letter, promissory note, personal guarantee, closing instructions, insurance request, investor sheet, satisfaction and release.",
+     "trigger": "python src/lender_docs.py --spec deals/<deal>.json",
+     "steps": [
+      "Picks exactly one side of every either/or branch from the spec",
+      "Renders one signature block per company member on the guarantee",
+      "Re-reads every rendered document and raises if the internal notes block survived"
+     ],
+     "human": [
+      "Signs. A closing attorney draws the deed of trust on their own form."
+     ],
+     "outputs": [
+      "7 .docx documents, numbered 1 and 3 through 8"
+     ],
+     "tools": [
+      "python-docx",
+      "CMO Stack voice guide"
+     ],
+     "phase": 1,
+     "status": "live",
+     "source": "src/lender_docs.py",
+     "gotcha": "The templates carry a NOTES FOR CLAUDE block that must never reach a lender, so build_all re-reads each rendered file and raises rather than trusting the code path. main exits 1 if fewer than 7 documents write, and stale files from a previous numbering are deleted, so a folder cannot grow a second copy of everything."
+    }
+   ]
+  },
+  {
+   "id": "dispo",
+   "name": "Dispo & Buyers",
+   "tagline": "Deed-verified buyers before you need them",
+   "color": "#4ADE80",
+   "lead": {
+    "id": "dealpkg",
+    "name": "Deal Package Generator",
+    "role": "Six-sheet workbook that turns analysis into a dial sheet somebody can work today.",
+    "trigger": "python src/deal_package.py --spec",
+    "steps": [
+     "Deal Summary, Dial Sheet, Deal Math, Comps, Pitch and Sequence, Sources and Audit",
+     "Per-buyer open and target prices, tuned to each buyer's model",
+     "30-second script, objection answers, day-by-day plan"
+    ],
+    "human": [
+     "Operator approves the ask prices"
+    ],
+    "outputs": [
+     "6-sheet branded workbook"
+    ],
+    "tools": [
+     "openpyxl",
+     "buyer_sweep output"
+    ],
+    "phase": 1,
+    "status": "live",
+    "source": "src/deal_package.py",
+    "gotcha": "Per-buyer ask prices are tuned to each buyer's model, self-performer above landlord above out-of-state. One blast number leaves money on the table and burns credibility."
+   },
+   "agents": [
+    {
+     "id": "sweep",
+     "name": "Buyer Sweep",
+     "role": "Deed-level sweep of who actually buys in a zip, ranked by fit.",
+     "trigger": "python src/buyer_sweep.py --zip",
+     "steps": [
+      "Pulls the sold universe, filters to the investor band",
+      "Per sale runs SiftMap autocomplete then get_detail for the DEED sale history",
+      "Aggregates buyer name, cash flag, portfolio size, equity, mailing",
+      "Ranks by purchase count, band fit, and portfolio"
+     ],
+     "human": [],
+     "outputs": [
+      "Ranked buyer list JSON and CSV"
+     ],
+     "tools": [
+      "SiftMap",
+      "Zillow /search",
+      "Enformion BusinessV2"
+     ],
+     "phase": 1,
+     "status": "live",
+     "source": "src/buyer_sweep.py",
+     "gotcha": "THE HARPER MOVE. When an LLC's mailing address is a residence, reverse-look up that address and take the human owner as the principal. Live run resolved 175 of 193 sales and unmasked TN Super Props to Jonathan Harper, Braden Family to Joshua Braden."
+    },
+    {
+     "id": "disposkip",
+     "name": "Dispo Skiptrace",
+     "role": "Three-source waterfall with a built-in audit matrix showing which source missed.",
+     "trigger": "After the buyer sweep ranks a list.",
+     "steps": [
+      "Source 1 Enformion person search, address-anchored",
+      "Source 2 Tracerfy batch at two cents a record",
+      "Source 3 web people-search cross-check, merged in manually",
+      "Dedupes the union, Trestle-scores every unique number"
+     ],
+     "human": [
+      "Web source is manual because aggregators bot-block"
+     ],
+     "outputs": [
+      "Cross-confirmed contact list",
+      "Per-contact source audit"
+     ],
+     "tools": [
+      "Enformion",
+      "Tracerfy",
+      "Trestle IQ"
+     ],
+     "phase": 1,
+     "status": "live",
+     "source": "src/dispo_skiptrace.py",
+     "gotcha": "The audit matrix answers the question everyone forgets to ask: did we skip-trace this landline at BOTH Tracerfy and Enformion? Single-source numbers get flagged so you know what you are actually dialing."
+    },
+    {
+     "id": "prospector",
+     "name": "Buyer Prospector",
+     "role": "Builds a county buyers list from a nationwide database of active buyers.",
+     "trigger": "Any new market.",
+     "steps": [
+      "Pulls buyers for the county from 84K-plus records",
+      "Categorizes LLCs, trusts, and corporations",
+      "Researches decision makers for skip tracing across 50-state SOS lookups"
+     ],
+     "human": [
+      "Reviews entity research before spending on skip trace"
+     ],
+     "outputs": [
+      "County buyers workbook"
+     ],
+     "tools": [
+      "Nationwide buyer database",
+      "State SOS sites"
+     ],
+     "phase": 1,
+     "status": "live",
+     "source": "Skills for REI/improved/buyer-prospector.skill",
+     "gotcha": "This is the cold-start answer for a new market. The buyer sweep needs deed history you do not have yet; the prospector gives you a list on day one."
+    }
+   ]
+  },
+  {
+   "id": "outreach",
+   "name": "Outreach & Marketing",
+   "tagline": "The seller should feel found, not targeted",
+   "color": "#FBBF24",
+   "lead": {
+    "id": "smsagent",
+    "name": "Two-Way SMS Agent",
+    "role": "Sends outreach, reads replies live, classifies them, writes back to the CRM, hands positives to a prospector.",
+    "trigger": "smrtPhone smsIncoming webhook, or a seeded outreach touch.",
+    "steps": [
+     "Receiver ingests the webhook into a SQLite event log",
+     "Classifier decides intent, opt-outs decided by regex and never by a model",
+     "Responder drafts inside a hard output validator",
+     "CRM writes phone status, opt-outs, and lead status; Slack gets the handoff"
+    ],
+    "human": [
+     "Autonomy ladder. Phase 2 delivers the handoff with zero AI-authored text sent."
+    ],
+    "outputs": [
+     "Classified replies",
+     "CRM writes",
+     "Slack handoffs"
+    ],
+    "tools": [
+     "smrtPhone API",
+     "DataSift API",
+     "Slack",
+     "Fly.io",
+     "SQLite"
+    ],
+    "phase": 2,
+    "status": "gated",
+    "source": "src/sms_agent/",
+    "gotcha": "DataSift webhooks CANNOT see an inbound text. Webhooks shipped as a sequence ACTION, so all ten triggers are CRM state changes. smrtPhone's smsIncoming is the only inbound leg. That single constraint shapes the entire architecture."
+   },
+   "agents": [
+    {
+     "id": "classifier",
+     "name": "Reply Classifier",
+     "role": "Reads an inbound text and decides what it means, with a confidence floor.",
+     "trigger": "Every inbound SMS.",
+     "steps": [
+      "Regex rules handle opt-outs and obvious cases",
+      "Model handles the rest at a 0.80 confidence floor",
+      "Below the floor it drafts for a human instead of paging a prospector"
+     ],
+     "human": [
+      "Anything under the confidence floor"
+     ],
+     "outputs": [
+      "Intent label",
+      "Confidence",
+      "Soft vs hard no"
+     ],
+     "tools": [
+      "Claude",
+      "smrtPhone"
+     ],
+     "phase": 2,
+     "status": "gated",
+     "source": "src/sms_agent/respond.py",
+     "gotcha": "Backfill proved it on 9 real replies before anything was wired, and it was correct on all 9. It also caught that 'I'd like to get the house in auction if it's cheap enough' is a BUYER, not a seller, and correctly refused to escalate at 0.55."
+    },
+    {
+     "id": "responder",
+     "name": "Reply Drafter",
+     "role": "Writes the reply in a human voice, inside a validator that hard-blocks anything risky.",
+     "trigger": "A classified reply that warrants a response.",
+     "steps": [
+      "Given almost nothing on purpose: first name, street line, city, county",
+      "Signs as the record's assigned human, resolved from the assignee uuid",
+      "Validator blocks dollar amounts, list names, links, zips, two questions, or self-identifying as automated"
+     ],
+     "human": [
+      "Phase 3 holds every draft in Slack for approval"
+     ],
+     "outputs": [
+      "Draft reply"
+     ],
+     "tools": [
+      "Claude",
+      "playbook.md"
+     ],
+     "phase": 3,
+     "status": "planned",
+     "source": "src/sms_agent/respond.py",
+     "gotcha": "The model invents an identity. With no name configured it introduced itself as 'Alex'. Unresolved identity now means the agent is explicitly told it has NO name and NO company name rather than being left to fill the gap."
+    },
+    {
+     "id": "texttouch",
+     "name": "Text Touch Builder",
+     "role": "Four pre-call SMS touches per hot record, varied like cold email so nothing looks blasted.",
+     "trigger": "A ready-to-call list export.",
+     "steps": [
+      "Renders identity check, drip, soft ask, and breakup touches",
+      "Rotates copy variants across the pools",
+      "Writes back into Text Touch 1-4 custom fields via CSV re-import"
+     ],
+     "human": [
+      "Caller copies the next touch into the dialer before calling"
+     ],
+     "outputs": [
+      "Four touches per record in DataSift"
+     ],
+     "tools": [
+      "DataSift Add-Data",
+      "text-touch-builder skill"
+     ],
+     "phase": 1,
+     "status": "live",
+     "source": "Skills for REI/improved/text-touch-builder.skill",
+     "gotcha": "clean_first('E A Henry') took the first token of length 2 or more, walked past the initials, and greeted people by their SURNAME. The fix is positional: only tokens BEFORE the surname can supply a first name. This bug shipped in two places and was fixed in both."
+    },
+    {
+     "id": "mms",
+     "name": "MMS Screenshot Sender",
+     "role": "Texts each foreclosure homeowner the actual auction notice image.",
+     "trigger": "Operator go, per campaign.",
+     "steps": [
+      "Text goes via the Compose Message modal",
+      "Image goes via the conversation reply box inside main-iframe",
+      "File set on a hidden input, send arrow clicked by bounding box position"
+     ],
+     "human": [
+      "PAUSED pre-send. Requires explicit operator GO."
+     ],
+     "outputs": [
+      "Sent MMS with proof-of-source image"
+     ],
+     "tools": [
+      "smrtPhone web app",
+      "Playwright",
+      "Dropbox"
+     ],
+     "phase": 2,
+     "status": "gated",
+     "source": "src/mms_sender.py",
+     "gotcha": "smrtPhone has an API for TEXT but not for MMS, which is what forced the browser route. Replies carry no image, so the API is the right transport for conversation and the browser is only for the original screenshot send."
+    },
+    {
+     "id": "obitcamp",
+     "name": "Obituary Mail Campaign",
+     "role": "Builds and validates the direct mail drop for the obituary list.",
+     "trigger": "After the obituary opportunity ranking.",
+     "steps": [
+      "Export, validate addresses, produce the mail file"
+     ],
+     "human": [
+      "Operator approves the drop"
+     ],
+     "outputs": [
+      "Validated mail export"
+     ],
+     "tools": [
+      "DataSift API",
+      "Address validation"
+     ],
+     "phase": 2,
+     "status": "live",
+     "source": "src/obituary_campaign.py, src/obituary_mail_export.py",
+     "gotcha": "Never name the list. Foreclosure, probate, inherited, tax, lien: none of those words appear in outreach copy, because the seller should feel found, not targeted."
+    },
+    {
+     "id": "callerrep",
+     "name": "Caller Reputation Monitor",
+     "role": "Keeps outbound numbers out of Spam Likely by watching your own call outcomes.",
+     "trigger": "Daily.",
+     "steps": [
+      "Monitors every caller ID by answer rate, call length, and short calls",
+      "Runs a warm-up, active, watch, rest, retire lifecycle with dial caps",
+      "Writes an HTML health dashboard and a recommended dial pool"
+     ],
+     "human": [
+      "Walks the operator through free carrier registration"
+     ],
+     "outputs": [
+      "Number health dashboard",
+      "Recommended dial pool"
+     ],
+     "tools": [
+      "smrtPhone",
+      "Carrier registries"
+     ],
+     "phase": 1,
+     "status": "live",
+     "source": "Skills for REI/improved/caller-reputation-monitor.skill",
+     "gotcha": "The phone number is the asset. Every autonomy decision in the SMS agent exists to protect it."
+    },
+    {
+     "id": "sender",
+     "name": "Sender Pool Manager",
+     "role": "Owner-bound number pool so a callback reaches the person who claimed to text.",
+     "trigger": "Every outbound send.",
+     "steps": [
+      "18 numbers at 25 a day, 450 a day total",
+      "Prefers the assigned caller's own numbers",
+      "Sticky number per conversation wins over owner preference",
+      "Quiet hours 8am-9pm recipient-local with up to 30 minutes of wake jitter"
+     ],
+     "human": [],
+     "outputs": [
+      "Assigned sender number"
+     ],
+     "tools": [
+      "smrtPhone",
+      "sms_numbers.json"
+     ],
+     "phase": 2,
+     "status": "gated",
+     "source": "src/sms_agent/sender_pool.py",
+     "gotcha": "This module was originally named numbers.py, which SHADOWED the stdlib numbers module and broke pydantic inside the Anthropic SDK. The exception was swallowed and every classification silently degraded to the weak keyword fallback while still returning a plausible answer."
+    },
+    {
+     "id": "obitmail",
+     "name": "Obituary Mail Export",
+     "role": "Turns the ranked obituary opportunity list into a validated mail file.",
+     "trigger": "After obituary_opportunity ranks the list.",
+     "steps": [
+      "Pulls the ranked records",
+      "Validates deliverable mailing addresses",
+      "Writes the mail-house export"
+     ],
+     "human": [
+      "Approves the drop and the spend"
+     ],
+     "outputs": [
+      "Mail export CSV"
+     ],
+     "tools": [
+      "DataSift API",
+      "Smarty"
+     ],
+     "phase": 2,
+     "status": "gated",
+     "source": "src/obituary_mail_export.py",
+     "gotcha": "Every row ships a must-verify note. Whether the person who died is the owner of record is NOT verifiable from CRM data, and the spouse-obituary trap is live on every single row: an obituary on the record does not mean the OWNER died."
+    }
+   ]
+  },
+  {
+   "id": "crm",
+   "name": "CRM Operations",
+   "tagline": "Get it into DataSift without silently losing half of it",
+   "color": "#316AFF",
+   "lead": {
+    "id": "upload",
+    "name": "Upload Orchestrator",
+    "role": "Owns the path from finished CSV to live, tagged, enriched CRM records.",
+    "trigger": "--upload-datasift on any run.",
+    "steps": [
+     "Mints a JWT and re-mints every 30 minutes so long runs cannot die on expiry",
+     "Upserts by address so re-runs never duplicate",
+     "Fires enrich and skip trace after upload",
+     "Verifies one record read-back before releasing the file"
+    ],
+    "human": [
+     "Always upload one record and read it back first"
+    ],
+    "outputs": [
+     "Live CRM records"
+    ],
+    "tools": [
+     "DataSift API",
+     "Playwright"
+    ],
+    "phase": 1,
+    "status": "live",
+    "source": "src/datasift_api_upload.py",
+    "gotcha": "Four traps that each fail silently. Tags must be an ARRAY or you create one tag literally named the whole comma string. A select field needs the OPTION'S UUID, not its label. Entity owners cannot have a blank first_name, and omitting a key is not the same as sending empty. notes on the property payload returns 200 and is discarded."
+   },
+   "agents": [
+    {
+     "id": "apiupload",
+     "name": "API Uploader",
+     "role": "Pushes records entirely over the API, no browser.",
+     "trigger": "python src/datasift_api_upload.py --commit",
+     "steps": [
+      "POST /property/ upserts by address",
+      "Custom fields PATCH separately by field uuid",
+      "Notes posted separately from the property payload",
+      "Lists accumulate rather than overwrite"
+     ],
+     "human": [
+      "--limit 1 verification run is mandatory"
+     ],
+     "outputs": [
+      "Created and updated records"
+     ],
+     "tools": [
+      "DataSift internal API"
+     ],
+     "phase": 1,
+     "status": "live",
+     "source": "src/datasift_api_upload.py",
+     "gotcha": "The Open API key CANNOT do this job. Custom fields do not exist anywhere in its 93-route surface and every write 401s. Only the minted user JWT reaches /api/internal/ where they do."
+    },
+    {
+     "id": "schema",
+     "name": "Schema Setup",
+     "role": "Creates custom fields, select options, and lists. Idempotent, dry-run by default.",
+     "trigger": "python src/datasift_schema_setup.py --commit",
+     "steps": [
+      "Creates the field structure",
+      "Select fields require options in the same POST",
+      "Safe to re-run"
+     ],
+     "human": [],
+     "outputs": [
+      "CRM schema"
+     ],
+     "tools": [
+      "DataSift internal API"
+     ],
+     "phase": 1,
+     "status": "live",
+     "source": "src/datasift_schema_setup.py",
+     "gotcha": "Dry run by default is the right posture for anything that mutates an account's schema. Creating a select custom field REQUIRES its options in the same POST."
+    },
+    {
+     "id": "wizard",
+     "name": "Upload Wizard Driver",
+     "role": "Drives the 5-step browser upload wizard when the API path will not do.",
+     "trigger": "Legacy or wizard-only flows.",
+     "steps": [
+      "Setup, tags, upload file, map columns, review and finish",
+      "Core address fields auto-map; tags, lists, and custom fields need manual mapping"
+     ],
+     "human": [
+      "Watches the column mapping step"
+     ],
+     "outputs": [
+      "Uploaded list"
+     ],
+     "tools": [
+      "Playwright",
+      "DataSift web app"
+     ],
+     "phase": 1,
+     "status": "live",
+     "source": "src/datasift_uploader.py",
+     "gotcha": "Only core address fields reliably auto-map. Tags, Lists, and every enrichment column routinely stay unmapped in step 4, which is exactly how you upload 2,500 records that attach to nothing."
+    },
+    {
+     "id": "presets",
+     "name": "Preset Manager",
+     "role": "Discovers and updates the 21 filter presets that drive sequential marketing.",
+     "trigger": "manage-presets --all",
+     "steps": [
+      "Opens the filter panel, scrolls to the bottom, expands Filter Presets",
+      "Applies the Sold exclusion across all presets",
+      "Saves with overwrite confirmation"
+     ],
+     "human": [],
+     "outputs": [
+      "Updated presets"
+     ],
+     "tools": [
+      "Playwright",
+      "DataSift web app"
+     ],
+     "phase": 1,
+     "status": "live",
+     "source": "src/datasift_uploader.py, src/niche_sequential.py",
+     "gotcha": "The filter panel is a scrollable div, not the viewport, so Playwright's scroll_into_view_if_needed does nothing. You need JS scrollIntoView. And the Beamer NPS iframe blocks ALL pointer events globally until you remove it from the DOM."
+    },
+    {
+     "id": "sequences",
+     "name": "Sequence Builder",
+     "role": "Builds the 26 TCA sequence templates via drag and drop.",
+     "trigger": "create-sold-sequence, or sequence template deployment.",
+     "steps": [
+      "Trigger, condition, then actions",
+      "Slow mouse drag in 20 incremental steps because cards are draggable=false",
+      "Duplicate name detection retries with a V2 suffix"
+     ],
+     "human": [],
+     "outputs": [
+      "Live sequences"
+     ],
+     "tools": [
+      "Playwright",
+      "React DnD"
+     ],
+     "phase": 1,
+     "status": "live",
+     "source": "src/sequence_templates.py",
+     "gotcha": "Cards carry draggable=false so Playwright's native drag will not work. Mouse down, 20 incremental moves at 50ms, mouse up, with 500ms pauses between phases."
+    },
+    {
+     "id": "siftmap",
+     "name": "SiftMap Sold Tagger",
+     "role": "Tags sold properties so they drop out of active marketing.",
+     "trigger": "manage-sold --months-back 12",
+     "steps": [
+      "Searches by city, not county",
+      "Adds records with tags",
+      "Sold Property Cleanup sequence fires on the tag"
+     ],
+     "human": [],
+     "outputs": [
+      "Tagged sold records"
+     ],
+     "tools": [
+      "Playwright",
+      "SiftMap"
+     ],
+     "phase": 1,
+     "status": "live",
+     "source": "src/datasift_uploader.py",
+     "gotcha": "Known limitation, stated out loud: SiftMap filters set values visually but do not trigger a React re-query, so only the 3 to 5 sidebar-visible properties get added per run."
+    }
+   ]
+  },
+  {
+   "id": "market",
+   "name": "Market Intelligence",
+   "tagline": "Where to spend the next marketing dollar",
+   "color": "#F472B6",
+   "lead": {
+    "id": "analyzer",
+    "name": "Market Analyzer",
+    "role": "Six-factor weighted zip scoring with letter grades and budget allocation.",
+    "trigger": "After a market finder extraction.",
+    "steps": [
+     "Distress 30, Value 20, Equity 15, Tax Delinquency 15, Competition 10, DOM 10",
+     "Grades A through D",
+     "Allocates budget across the top zips"
+    ],
+    "human": [
+     "Operator sets the budget"
+    ],
+    "outputs": [
+     "Scored zip list",
+     "Budget allocation"
+    ],
+    "tools": [
+     "market_analyzer.py"
+    ],
+    "phase": 1,
+    "status": "live",
+    "source": "src/market_analyzer.py",
+    "gotcha": "Weights are set from measured distribution, not intuition. Weighting a near-constant variable produces a ranking with no spread, which looks rigorous and tells you nothing."
+   },
+   "agents": [
+    {
+     "id": "finder",
+     "name": "Market Finder Extractor",
+     "role": "Pulls every zip and neighborhood row out of DataSift Market Finder.",
+     "trigger": "python src/extract_market_finder.py",
+     "steps": [
+      "Selects state and county via InputMultiSearch",
+      "Paginates all pages at 20 rows each",
+      "Extracts the county summary panel via regex"
+     ],
+     "human": [],
+     "outputs": [
+      "Market finder JSON"
+     ],
+     "tools": [
+      "Playwright",
+      "DataSift Market Finder"
+     ],
+     "phase": 1,
+     "status": "live",
+     "source": "src/extract_market_finder.py",
+     "gotcha": "There is no HTML table element. The data table is entirely div-based styled-components, so searching for tr or td finds nothing. It is pagination, not infinite scroll, and pagination controls sit below the viewport until you scroll the body container."
+    },
+    {
+     "id": "report",
+     "name": "County Market Report Generator",
+     "role": "Merges a Market Finder extraction with a public-data bundle into a 7-sheet county research workbook. County-agnostic.",
+     "trigger": "After extraction and scoring.",
+     "steps": [
+      "Blends Sift data with BLS, Census, Zillow, Redfin, FBI crime data",
+      "Renders 7 branded sheets"
+     ],
+     "human": [],
+     "outputs": [
+      "7-sheet market report"
+     ],
+     "tools": [
+      "openpyxl",
+      "Public data sources"
+     ],
+     "phase": 1,
+     "status": "live",
+     "source": "src/county_market_report.py",
+     "gotcha": "Sheets 4, 5 and 6 (Economic, Crime, Recommendations) are FULLY populated rather than placeholders, which is the difference between a report someone acts on and a template someone files. Lived in a gitignored output/ directory until 2026-08-17, where it was one cleanup away from being lost."
+    },
+    {
+     "id": "obitrank",
+     "name": "Obituary Opportunity Ranker",
+     "role": "Turns the obituary list into a lean-budget call order.",
+     "trigger": "python src/obituary_opportunity.py",
+     "steps": [
+      "Pulls detail and custom fields, applies gates, scores six weighted components",
+      "Gates: under 3 months since death, already sold, dead statuses, upside down, over buy box",
+      "Renders a branded 6-sheet Excel"
+     ],
+     "human": [
+      "Every row ships a Must Verify note"
+     ],
+     "outputs": [
+      "Ranked call order workbook"
+     ],
+     "tools": [
+      "DataSift API",
+      "openpyxl"
+     ],
+     "phase": 1,
+     "status": "live",
+     "source": "src/obituary_opportunity.py",
+     "gotcha": "Total Delinquency is liens PLUS taxes. Reading it as the tax figure double counts the lien and inflates exactly the records the model exists to surface. It put a lien-only record at rank 1 before the fix. Also: gate on lead status, not just on sold, or a not_interested record tops your ranking."
+    }
+   ]
+  },
+  {
+   "id": "coach",
+   "name": "Coaching & Performance",
+   "tagline": "Grade the humans and the agents on the same rubric",
+   "color": "#2DD4BF",
+   "lead": {
+    "id": "coaching",
+    "name": "Call Coaching Engine",
+    "role": "Pulls real recordings, transcribes with tonality, routes to three grading rubrics.",
+    "trigger": "Weekly, or on demand per caller.",
+    "steps": [
+     "Pull calls over the minimum duration that have a recording",
+     "Transcribe with delivery notes, then triage into a pipeline",
+     "Route to cold call, lead manager, or closer rubric",
+     "Write per-call reports and per-caller scorecards"
+    ],
+    "human": [
+     "Coach reviews scorecards with the caller"
+    ],
+    "outputs": [
+     "Coaching reports",
+     "Scorecards",
+     "Excel workbook"
+    ],
+    "tools": [
+     "smrtPhone",
+     "OpenRouter Gemini",
+     "Claude"
+    ],
+    "phase": 1,
+    "status": "live",
+    "source": "src/call_coaching/",
+    "gotcha": "Voicemails and wrong numbers are never scored. Short calls get their own scale, because grading a 40-second wrong number against a full discovery rubric produces a meaningless zero."
+   },
+   "agents": [
+    {
+     "id": "callpull",
+     "name": "Call Puller",
+     "role": "Fetches the call log and downloads recordings.",
+     "trigger": "Start of a coaching run.",
+     "steps": [
+      "POST /logs/calls/filtered as a DataTables form with a cookie session",
+      "Filters by minimum seconds and presence of a recording",
+      "Downloads MP3s from the direct recording URL"
+     ],
+     "human": [
+      "Session expiry means re-running the login script"
+     ],
+     "outputs": [
+      "Call metadata",
+      "MP3 recordings"
+     ],
+     "tools": [
+      "smrtPhone web session"
+     ],
+     "phase": 1,
+     "status": "live",
+     "source": "src/call_coaching/pull_calls.py",
+     "gotcha": "Recording URLs on rec.smrtphone.io are public once known, no auth. The call log itself needs the cookie session, and an expired session exits 2 rather than returning an empty list."
+    },
+    {
+     "id": "transcribe",
+     "name": "Transcription & Triage",
+     "role": "Two passes: diarized transcript with delivery notes, then strict-JSON triage.",
+     "trigger": "Each downloaded recording.",
+     "steps": [
+      "Pass 1: audio to diarized transcript with bracketed delivery notes and a pace, tone, talk-balance summary",
+      "Pass 2: text to strict JSON, call type, pipeline, worth_grading",
+      "Groups the review queue by pipeline"
+     ],
+     "human": [],
+     "outputs": [
+      "Transcripts",
+      "review_queue.json"
+     ],
+     "tools": [
+      "OpenRouter",
+      "Gemini 2.5 Flash"
+     ],
+     "phase": 1,
+     "status": "live",
+     "source": "src/call_coaching/transcribe.py",
+     "gotcha": "AGENT and SELLER labels are decided by CONTENT with the caller name as anchor. On a callback the labels otherwise swap, and every downstream grade is then assigned to the wrong person."
+    },
+    {
+     "id": "coldcoach",
+     "name": "Cold Call Coach",
+     "role": "Grades opener, motivation probing, objection handling, tonality, close.",
+     "trigger": "Transcripts triaged to the cold_call pipeline.",
+     "steps": [
+      "Scores against the cold-calling rubric",
+      "Calibration examples keep reliability inside 3 points",
+      "JSON score footer per call"
+     ],
+     "human": [
+      "Coach delivers the feedback"
+     ],
+     "outputs": [
+      "Per-call report",
+      "Caller scorecard"
+     ],
+     "tools": [
+      "Claude",
+      "DataSift Call Playbook"
+     ],
+     "phase": 1,
+     "status": "live",
+     "source": "Skills for REI/improved/cold-call-coach.skill",
+     "gotcha": "Measured reliability is stated as plus or minus 3 points. A grading rubric that will not state its own error bar is not a measurement, it is an opinion."
+    },
+    {
+     "id": "lmcoach",
+     "name": "Lead Manager Coach",
+     "role": "Grades the four pillars, roadblocks, no-ladder, and next-action discipline.",
+     "trigger": "Transcripts triaged to lead_management.",
+     "steps": [
+      "Scores qualification: condition, timeline, motivation, price",
+      "Call quality only, no CRM hygiene scoring"
+     ],
+     "human": [
+      "Coach delivers the feedback"
+     ],
+     "outputs": [
+      "Per-call report",
+      "Scorecard"
+     ],
+     "tools": [
+      "Claude",
+      "LEAD-M_1.MD"
+     ],
+     "phase": 1,
+     "status": "live",
+     "source": "Skills for REI/improved/lead-manager-coach.skill",
+     "gotcha": "Deliberately excludes CRM hygiene. Mixing 'did you update the record' into a call-quality score hides whether the person can actually run a conversation."
+    },
+    {
+     "id": "closercoach",
+     "name": "Closer Coach",
+     "role": "Grades the money conversation, the three-option offer stack, and commitment locking.",
+     "trigger": "Transcripts triaged to closing.",
+     "steps": [
+      "Discovery deepening",
+      "Offer presentation",
+      "Objection frameworks",
+      "Negotiation timeline reports"
+     ],
+     "human": [
+      "Coach delivers the feedback"
+     ],
+     "outputs": [
+      "Per-call report",
+      "Scorecard"
+     ],
+     "tools": [
+      "Claude",
+      "DataSift Call Playbook"
+     ],
+     "phase": 1,
+     "status": "live",
+     "source": "Skills for REI/improved/closer-coach.skill",
+     "gotcha": "The flywheel worth building next: point these same three rubrics at the SMS agent's own threads, so the texter is graded exactly like the humans."
+    },
+    {
+     "id": "kpi",
+     "name": "KPI Engine",
+     "role": "Activity-log pull and funnel pacing straight from the account.",
+     "trigger": "Daily or weekly.",
+     "steps": [
+      "Pulls the activity log with its own JWT",
+      "Three distinct rates, lead counting including new_lead statuses",
+      "Funnel pacing from dials to correct to leads to appointments to contracts",
+      "Outputs markdown, CSV, Excel, or Slack"
+     ],
+     "human": [
+      "Benchmarks are baselines to tune per operation, not targets"
+     ],
+     "outputs": [
+      "KPI report",
+      "Slack digest"
+     ],
+     "tools": [
+      "DataSift API",
+      "Slack"
+     ],
+     "phase": 1,
+     "status": "live",
+     "source": "Skills for REI/improved/kpi-engine.skill",
+     "gotcha": "Benchmarks ship as tune-per-operation baselines. Publishing someone else's conversion rate as a target is how you get a team optimizing for a number that never applied to them."
+    },
+    {
+     "id": "playbookgen",
+     "name": "Playbook Creator",
+     "role": "Turns a transcript or a recorded process into an SOP with process maps.",
+     "trigger": "Any repeatable process worth documenting.",
+     "steps": [
+      "Transcript to structured workflow",
+      "Mermaid flowcharts, decision trees, screenshot placeholders",
+      "Seven-node chart limit, 5th grade reading level"
+     ],
+     "human": [
+      "Operator supplies screenshots"
+     ],
+     "outputs": [
+      "Word doc SOP",
+      "Process maps"
+     ],
+     "tools": [
+      "Mermaid",
+      "docx"
+     ],
+     "phase": 1,
+     "status": "live",
+     "source": "Skills for REI/improved/playbook-creator.skill",
+     "gotcha": "Seven nodes per chart and a 5th grade reading level are hard limits, not style preferences. An SOP nobody can follow at 7am is not an SOP."
+    }
+   ]
+  },
+  {
+   "id": "soi",
+   "name": "Sphere of Influence",
+   "color": "#7A5AF8",
+   "tagline": "Reverse-search a realtor's own contact export into a scored homeowner call list.",
+   "lead": {
+    "id": "soipipe",
+    "name": "SOI Pipeline",
+    "role": "Turns name-and-email-only contact exports into confirmed metro homeowners ranked by Realtor AI score.",
+    "trigger": "A realtor hands over a Facebook or LinkedIn contact export.",
+    "steps": [
+     "Normalize and dedupe the roster",
+     "Join against free county owner rolls",
+     "Pay to resolve only the misses",
+     "Score the confirmed homeowners"
+    ],
+    "human": [
+     "Decides the call order and makes the calls"
+    ],
+    "outputs": [
+     "soi_priority_list.csv"
+    ],
+    "tools": [
+     "SQLite",
+     "Enformion",
+     "SiftMap"
+    ],
+    "phase": 2,
+    "status": "live",
+    "source": "src/soi_intake.py",
+    "gotcha": "First live run: 848 raw rows to 728 unique people to 222 confirmed metro homeowners to 191 scored. The distribution is steep, one at 95+, six in the 80s, so the 95+ bar isolates a real call list rather than a third of the sphere."
+   },
+   "agents": [
+    {
+     "id": "soiintake",
+     "name": "Contact Intake",
+     "role": "Normalizes and dedupes the raw social exports.",
+     "trigger": "python src/soi_intake.py",
+     "steps": [
+      "Normalizes names and emails",
+      "Dedupes across sources",
+      "Flags real-estate-industry domains as referral partners, not sphere"
+     ],
+     "human": [],
+     "outputs": [
+      "soi_contacts_normalized.csv"
+     ],
+     "tools": [
+      "stdlib"
+     ],
+     "phase": 2,
+     "status": "live",
+     "source": "src/soi_intake.py",
+     "gotcha": "27 contacts on the live run were kw.com, mortgage or title domains. Those are referral partners, not homeowner sphere, and scoring them as leads pollutes the call list."
+    },
+    {
+     "id": "soicounty",
+     "name": "County Owner Pull",
+     "role": "Pulls the owner rolls for the whole metro, free.",
+     "trigger": "python src/soi_county_pull.py then soi_owner_db.py",
+     "steps": [
+      "Franklin from the open file server",
+      "Fairfield from the nightly CAMA dump",
+      "Four more counties from open ArcGIS layers",
+      "Loads 811,146 rows into SQLite"
+     ],
+     "human": [],
+     "outputs": [
+      "output/soi/owners.db"
+     ],
+     "tools": [
+      "ArcGIS",
+      "SQLite"
+     ],
+     "phase": 2,
+     "status": "live",
+     "source": "src/soi_county_pull.py, src/soi_owner_db.py",
+     "gotcha": "The whole Columbus metro is free data and costs $0. Two traps: Franklin's newer-looking tab-delimited appraisal extract has NO owner fields at all, and the Parcel_CSV folder path is stale on purpose, so check the Last-Modified header rather than the path. The vendor search UIs are bot-walled and never needed."
+    },
+    {
+     "id": "soimatch",
+     "name": "Owner Name Join",
+     "role": "Matches roster people to deeds.",
+     "trigger": "python src/soi_owner_match.py",
+     "steps": [
+      "Handles LAST FIRST M deed order and co-owner ampersands",
+      "Strips credentials from LinkedIn surnames",
+      "Searches the Facebook middle token as a maiden name",
+      "Boosts a household pair when two contacts hit the same deed"
+     ],
+     "human": [
+      "Reviews ambiguous same-name groups"
+     ],
+     "outputs": [
+      "soi_owner_matches.csv"
+     ],
+     "tools": [
+      "owners.db"
+     ],
+     "phase": 2,
+     "status": "live",
+     "source": "src/soi_owner_match.py",
+     "gotcha": "owner_occupied compares mailing address key to situs address key. Do NOT fall back to Franklin's OWNER_ADD1: it sometimes echoes the situs and false-flagged a Texas absentee as owner-occupied."
+    },
+    {
+     "id": "soienf",
+     "name": "Enformion Resolver",
+     "role": "Pays to resolve only the roster misses.",
+     "trigger": "python src/soi_enformion.py, about $0.10 per match",
+     "steps": [
+      "Anchors Person Search on name plus the metro city and state",
+      "Matches the response emails against the contact's exported email",
+      "Cross-checks each resolved address back against owners.db"
+     ],
+     "human": [
+      "Approves the spend"
+     ],
+     "outputs": [
+      "soi_enformion_resolved.json"
+     ],
+     "tools": [
+      "Enformion Person Search"
+     ],
+     "phase": 2,
+     "status": "live",
+     "source": "src/soi_enformion.py",
+     "gotcha": "EMAIL is the verifier. An exact email hit grounds identity with no address needed; name-only matches are kept but flagged. emailAddresses is a list of DICTS with .emailAddress inside, not a list of strings. Misses are free."
+    },
+    {
+     "id": "soienrich",
+     "name": "Realtor Score Enrichment",
+     "role": "Attaches the Realtor AI score to each confirmed homeowner.",
+     "trigger": "python src/soi_enrich.py",
+     "steps": [
+      "Autocomplete then get_detail per matched address",
+      "Requires a token overlap between the deed owner and SiftMap owner_info before trusting the row",
+      "Carries equity, mortgage, portfolio count and both investor scores"
+     ],
+     "human": [
+      "Calls the 95+ list"
+     ],
+     "outputs": [
+      "soi_priority_list.csv"
+     ],
+     "tools": [
+      "SiftMap"
+     ],
+     "phase": 2,
+     "status": "live",
+     "source": "src/soi_enrich.py",
+     "gotcha": "realtor_score off SiftMap get_detail IS the Realtor AI score, and 95+ is a priority call. 8 rows were flagged rather than trusted because the deed owner and SiftMap owner did not overlap. Renters are kept on their own track as future first-time buyers."
+    }
+   ]
+  }
+ ],
+ "infra": [
+  {
+   "group": "County & Public Record",
+   "items": [
+    "tnpublicnotice.com",
+    "Knox County Tax API",
+    "Register of Deeds",
+    "City condemnation agendas",
+    "Eviction court docket"
+   ]
+  },
+  {
+   "group": "Property & Market Data",
+   "items": [
+    "SiftMap",
+    "Zillow /search (OpenWeb Ninja)",
+    "Smarty",
+    "Redfin",
+    "BLS / Census / FBI"
+   ]
+  },
+  {
+   "group": "Identity & Contact",
+   "items": [
+    "SmartSkip",
+    "Tracerfy",
+    "Enformion BusinessV2",
+    "Trestle IQ",
+    "Obituary sources"
+   ]
+  },
+  {
+   "group": "CRM & Comms",
+   "items": [
+    "DataSift (apiv2.reisift.io)",
+    "smrtPhone",
+    "Slack",
+    "Dropbox",
+    "Google Drive"
+   ]
+  },
+  {
+   "group": "Runtime & Access",
+   "items": [
+    "Apify Actor",
+    "Fly.io",
+    "Scrapfly",
+    "2Captcha",
+    "Playwright",
+    "SQLite event log"
+   ]
+  },
+  {
+   "group": "Models & Knowledge",
+   "items": [
+    "Claude",
+    "OpenRouter / Gemini",
+    "Locked material list",
+    "DataSift Call Playbook",
+    "playbook.md"
+   ]
+  }
+ ]
+}

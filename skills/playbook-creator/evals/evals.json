@@ -1,0 +1,23 @@
+{
+  "skill_name": "playbook-creator",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "I just had a training call with my new VA about how to pull foreclosure records from the Knox County public notice site. Here's the transcript from the call. Can you turn this into an SOP they can follow on their own? [transcript attached - the Sync meeting PDF from the conversation]",
+      "expected_output": "A complete SOP with process map flowchart, step-by-step instructions extracted from the transcript, decision trees for qualifying records, screenshot placeholders, a worked example, and a quality checklist. Should be at 5th-grade reading level.",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "Create a playbook for how to do sequential marketing with Sift. Cover the full funnel from pulling first-to-market data through skip tracing, calling, and mail campaigns. Our team uses Sift presets to move leads through stages.",
+      "expected_output": "A strategic playbook with a central metaphor, overview process map showing the full marketing funnel, decision trees for which channel to use when, screenshot placeholders for Sift interfaces, a worked example, and best practices. Should include a Mermaid swim lane diagram showing the team workflow.",
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "Write me a quick SOP for how to deep prospect a lead when skip tracing doesn't return any phone numbers. The process is: check the verified dashboard in Sift, look up the property, use people search sites like TruePeopleSearch and CyberBackgroundChecks to find the actual owner, cross-reference ages and locations, then add the verified numbers back into Sift with notes.",
+      "expected_output": "A focused SOP with a clear process map, step-by-step actions for each research stage, decision tree for verifying you have the right person, screenshot placeholders for each tool, a worked example with a real-sounding scenario, and common problems table.",
+      "files": []
+    }
+  ]
+}
