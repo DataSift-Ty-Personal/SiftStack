@@ -31,6 +31,7 @@ import os
 import shutil
 import ssl
 import sys
+import time
 import urllib.error
 import urllib.request
 import zipfile
@@ -77,34 +78,68 @@ def say(msg: str = "") -> None:
     print(msg, flush=True)
 
 
-def fetch(url: str, timeout: int = 60) -> bytes:
+def fetch(url: str, timeout: int = 60, attempts: int = 5) -> bytes:
     """GET a URL, with one plain-text explanation per failure mode.
+
+    Retries on 429 and 5xx. Installing the whole library is 23 requests in a
+    row, which is enough for raw.githubusercontent.com to start rate-limiting
+    partway through: the first full-library run died on a 429 at package 15.
+    A transient throttle must not end the run, so back off and keep going.
 
     Corporate TLS interception is common enough on the laptops this runs on
     that a bare SSLCertVerificationError traceback would strand people. Say
     what happened and what to do instead.
     """
     req = urllib.request.Request(url, headers={"User-Agent": "siftstack-installer"})
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            return r.read()
-    except urllib.error.HTTPError as e:
-        if e.code == 404:
-            raise SystemExit(
-                f"{RED}Not found:{OFF} {url}\n"
-                f"The branch '{BRANCH}' may not carry this file yet. "
-                f"Set SIFTSTACK_BRANCH to a branch that does."
-            )
-        raise SystemExit(f"{RED}HTTP {e.code}{OFF} fetching {url}")
-    except urllib.error.URLError as e:
-        if isinstance(e.reason, ssl.SSLError):
-            raise SystemExit(
-                f"{RED}TLS verification failed.{OFF}\n"
-                f"This is usually a corporate proxy intercepting HTTPS. Either run this on an\n"
-                f"unfiltered network, or clone the repo and run install.py from inside it:\n"
-                f"  git clone https://github.com/{REPO}.git && cd SiftStack && python install.py"
-            )
-        raise SystemExit(f"{RED}Network error:{OFF} {e.reason}\nURL: {url}")
+    delay = 2.0
+    for attempt in range(1, attempts + 1):
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                return r.read()
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                raise SystemExit(
+                    f"{RED}Not found:{OFF} {url}\n"
+                    f"The branch '{BRANCH}' may not carry this file yet. "
+                    f"Set SIFTSTACK_BRANCH to a branch that does."
+                )
+            if e.code in (429, 500, 502, 503, 504) and attempt < attempts:
+                # Honour Retry-After when the server sends one; it knows
+                # better than our backoff curve does.
+                wait = delay
+                hdr = e.headers.get("Retry-After") if e.headers else None
+                if hdr:
+                    try:
+                        wait = max(wait, float(hdr))
+                    except ValueError:
+                        pass
+                say(f"  {DIM}rate limited ({e.code}), waiting {wait:.0f}s "
+                    f"[{attempt}/{attempts - 1}]{OFF}")
+                time.sleep(wait)
+                delay = min(delay * 2, 30)
+                continue
+            if e.code == 429:
+                raise SystemExit(
+                    f"{RED}GitHub is still rate limiting after {attempts} tries.{OFF}\n"
+                    f"Wait a few minutes and re-run: already-installed packages are skipped,\n"
+                    f"so it picks up where it left off."
+                )
+            raise SystemExit(f"{RED}HTTP {e.code}{OFF} fetching {url}")
+        except urllib.error.URLError as e:
+            if isinstance(e.reason, ssl.SSLError):
+                raise SystemExit(
+                    f"{RED}TLS verification failed.{OFF}\n"
+                    f"This is usually a corporate proxy intercepting HTTPS. Either run this on an\n"
+                    f"unfiltered network, or clone the repo and run install.py from inside it:\n"
+                    f"  git clone https://github.com/{REPO}.git && cd SiftStack && python install.py"
+                )
+            if attempt < attempts:
+                say(f"  {DIM}network error ({e.reason}), retrying in {delay:.0f}s{OFF}")
+                time.sleep(delay)
+                delay = min(delay * 2, 30)
+                continue
+            raise SystemExit(f"{RED}Network error:{OFF} {e.reason}\nURL: {url}")
+    raise SystemExit(f"{RED}Gave up fetching{OFF} {url}")
 
 
 def load_manifest(prefer_local: bool) -> tuple[dict, bool]:
@@ -148,21 +183,29 @@ def install_one(entry: dict, dest_root: Path, local: bool, dry: bool, force: boo
         shutil.rmtree(staging)
     staging.mkdir(parents=True)
 
-    if local:
-        src = HERE / entry["source_dir"]
-        if not src.is_dir():
-            raise SystemExit(f"{RED}Missing local source:{OFF} {src}")
-        shutil.copytree(src, staging, dirs_exist_ok=True)
-    else:
-        blob = fetch(entry["download"])
-        with zipfile.ZipFile(io.BytesIO(blob)) as zf:
-            for info, target in _safe_members(zf, staging):
-                target.parent.mkdir(parents=True, exist_ok=True)
-                with zf.open(info) as s, open(target, "wb") as o:
-                    shutil.copyfileobj(s, o)
+    # Anything that raises past here must not leave a half-written staging
+    # directory next to the real one. The first full-library run died on a
+    # rate limit and left a "<name>.siftstack-tmp" folder behind, which then
+    # looked like an installed package to anyone reading the directory.
+    try:
+        if local:
+            src = HERE / entry["source_dir"]
+            if not src.is_dir():
+                raise SystemExit(f"{RED}Missing local source:{OFF} {src}")
+            shutil.copytree(src, staging, dirs_exist_ok=True)
+        else:
+            blob = fetch(entry["download"])
+            with zipfile.ZipFile(io.BytesIO(blob)) as zf:
+                for info, target in _safe_members(zf, staging):
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    with zf.open(info) as s, open(target, "wb") as o:
+                        shutil.copyfileobj(s, o)
 
-    if entry.get("sha256"):
-        (staging / ".siftstack-version").write_text(entry["sha256"] + "\n", encoding="utf-8")
+        if entry.get("sha256"):
+            (staging / ".siftstack-version").write_text(entry["sha256"] + "\n", encoding="utf-8")
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
 
     # Swap last. A half-written skill directory is worse than an old one,
     # because Claude will load it and behave in a way nobody can reproduce.
@@ -244,6 +287,8 @@ def main() -> int:
             say(f"  {RED}failed{OFF}     {e['name']}  ({exc})")
             tally["failed"] = tally.get("failed", 0) + 1
             continue
+        if not local and not args.dry_run and result in ("installed", "updated"):
+            time.sleep(0.3)
         colour = {"installed": GREEN, "updated": GREEN, "current": DIM}.get(result, YELLOW)
         say(f"  {colour}{result:<10}{OFF} {e['name']:<28} {DIM}-> {root / e['name']}{OFF}")
         tally[result] = tally.get(result, 0) + 1
