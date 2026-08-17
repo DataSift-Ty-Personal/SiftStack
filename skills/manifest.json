@@ -5,9 +5,9 @@
   "raw_base": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main",
   "install_target": "~/.claude/skills",
   "counts": {
-    "total": 23,
-    "current": 21,
-    "skills": 21,
+    "total": 24,
+    "current": 22,
+    "skills": 22,
     "plugins": 2
   },
   "categories": [
@@ -533,6 +533,26 @@
       "bytes": 65292,
       "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/sequential-presets.skill",
       "sha256": "7907c114b3bff2d4db9b663130f9e9e3805c42ba46b8017165255c2e55fc135d"
+    },
+    {
+      "name": "team-hiring",
+      "kind": "skill",
+      "category": "Operations",
+      "version": null,
+      "description": "Plan, post for, interview, and onboard a remote REI team: data manager, prospector, lead manager, acquisitions manager, dispo. Defines each role's daily, weekly and monthly tasks and its one North Star KPI, picks the hiring geography by cost arbitrage, sets pay bands and commission, writes the job description and the Indeed or Facebook post, runs the interview around the KPI expectation, and builds the first-week onboarding. Use when the user is scaling, building a team, writing a job post, deciding what to pay a VA or cold caller, wondering which country to hire from, preparing to interview, or asking \"who should I hire next\". Pairs with candidate-intake, which handles applicants once they start arriving.",
+      "status": "current",
+      "source_dir": "skills/team-hiring",
+      "files": [
+        "SKILL.md",
+        "references/interview-and-onboarding.md",
+        "references/job-descriptions.md",
+        "references/pay-and-geography.md",
+        "references/roles-and-kpis.md"
+      ],
+      "file_count": 5,
+      "bytes": 28005,
+      "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/team-hiring.skill",
+      "sha256": "ef1fc8b7c3461ecddfb7abde09b08e2b4f4593132810cb39c5c3feea0747ad21"
     },
     {
       "name": "text-touch-builder",
