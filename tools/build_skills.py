@@ -38,7 +38,7 @@ DIST = ROOT / "dist"
 LEGACY = ROOT / "Skills for REI" / "improved"
 MANIFEST = SKILLS / "manifest.json"
 
-REPO = "tyvhb/SiftStack"
+REPO = "DataSift-Ty-Personal/SiftStack"
 BRANCH = "main"
 RAW = f"https://raw.githubusercontent.com/{REPO}/{BRANCH}"
 

@@ -36,7 +36,7 @@ import urllib.request
 import zipfile
 from pathlib import Path
 
-REPO = "tyvhb/SiftStack"
+REPO = "DataSift-Ty-Personal/SiftStack"
 BRANCH = os.environ.get("SIFTSTACK_BRANCH", "main")
 RAW = f"https://raw.githubusercontent.com/{REPO}/{BRANCH}"
 MANIFEST_URL = f"{RAW}/skills/manifest.json"
