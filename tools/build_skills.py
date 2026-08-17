@@ -68,6 +68,7 @@ CATEGORY = {
     "playbook-creator": "Operations",
     "text-touch-builder": "Operations",
     "candidate-intake": "Operations",
+    "team-hiring": "Operations",
     "caller-reputation-monitor": "Operations",
     "kpi-engine": "Coaching & Performance",
     "cold-call-coach": "Coaching & Performance",
