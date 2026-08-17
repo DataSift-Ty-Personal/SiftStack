@@ -31,6 +31,7 @@
         "commands/sift-presets.md",
         "commands/sift-sequence.md",
         "commands/sift-workflow.md",
+        "skills/sift-operations/SKILL.md",
         "skills/sift-operations/references/acquisitions-sequences.md",
         "skills/sift-operations/references/board-workflows.md",
         "skills/sift-operations/references/bulk-sequential-presets.md",
@@ -41,13 +42,12 @@
         "skills/sift-operations/references/sequence-ideation.md",
         "skills/sift-operations/references/sequences-core.md",
         "skills/sift-operations/references/troubleshooting.md",
-        "skills/sift-operations/scripts/datasift_core.py",
-        "skills/sift-operations/SKILL.md"
+        "skills/sift-operations/scripts/datasift_core.py"
       ],
       "file_count": 16,
       "bytes": 98997,
       "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/sift-operations.plugin",
-      "sha256": "87fe05450704fb64b7998abc61a0aea0c8af7b0260ea63f5de2c18367a2dfbb9"
+      "sha256": "0bc86547e8c4db6e321d5f92cc060ae91774973a8e0b30646f9bbcf59ca03349"
     },
     {
       "name": "sift-sequences",
@@ -58,6 +58,7 @@
       "status": "current",
       "source_dir": "skills/sift-sequences",
       "files": [
+        "SKILL.md",
         "references/acquisitions-sequences.md",
         "references/board-workflows.md",
         "references/drip-campaigns.md",
@@ -65,13 +66,12 @@
         "references/lead-management-sequences.md",
         "references/sequence-ideation.md",
         "scripts/datasift_core.py",
-        "scripts/manage_sequences.py",
-        "SKILL.md"
+        "scripts/manage_sequences.py"
       ],
       "file_count": 9,
       "bytes": 107992,
       "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/sift-sequences.skill",
-      "sha256": "10e329a137a322729d67c7dc3afc9b9a53caacb1a4cc3092d953b3d0f4a0370d"
+      "sha256": "fa5df619c5a911a4ade196e8fbe5dcbb769d9cf9021210920861dddcbe497a2c"
     },
     {
       "name": "closer-coach",
@@ -82,19 +82,19 @@
       "status": "current",
       "source_dir": "skills/closer-coach",
       "files": [
+        "SKILL.md",
         "references/rubric.md",
         "scripts/env.example",
         "scripts/export_excel.py",
         "scripts/pull_calls.py",
         "scripts/roster.example.json",
         "scripts/smrtphone_login.py",
-        "scripts/transcribe.py",
-        "SKILL.md"
+        "scripts/transcribe.py"
       ],
       "file_count": 8,
       "bytes": 76898,
       "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/closer-coach.skill",
-      "sha256": "65684405fd728c53109fb13f26521871c91b1b1fe002adb9fcc2975e35c142f5"
+      "sha256": "d795bfa383c10e3cac099cc31bd736046cdd522dda9face1580ecd3742d910b1"
     },
     {
       "name": "cold-call-coach",
@@ -105,10 +105,11 @@
       "status": "current",
       "source_dir": "skills/cold-call-coach",
       "files": [
+        "SKILL.md",
+        "references/calibration/README.md",
         "references/calibration/example_full_needswork.md",
         "references/calibration/example_full_strong.md",
         "references/calibration/example_short_call.md",
-        "references/calibration/README.md",
         "references/reliability.md",
         "references/rubric.md",
         "scripts/env.example",
@@ -116,13 +117,12 @@
         "scripts/pull_calls.py",
         "scripts/roster.example.json",
         "scripts/smrtphone_login.py",
-        "scripts/transcribe.py",
-        "SKILL.md"
+        "scripts/transcribe.py"
       ],
       "file_count": 13,
       "bytes": 104768,
       "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/cold-call-coach.skill",
-      "sha256": "b393181a350ca55eb60e29ea5734e5a881da7238a9db9f18830b0fa09506bcca"
+      "sha256": "a50055ea32e7eb853e0f29c1f869346edf557b6d1b5c253840b3a319587267c7"
     },
     {
       "name": "kpi-engine",
@@ -133,14 +133,14 @@
       "status": "current",
       "source_dir": "skills/kpi-engine",
       "files": [
+        "SKILL.md",
         "references/kpi-catalog.md",
-        "scripts/pull_kpis.py",
-        "SKILL.md"
+        "scripts/pull_kpis.py"
       ],
       "file_count": 3,
       "bytes": 33180,
       "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/kpi-engine.skill",
-      "sha256": "97d1007feb4ef46c7d57831f2930dffaa94fbce4272717557396215f119cf687"
+      "sha256": "a33f6806787f25298b95359325b82485467b8eadcdc686fdf357c5448712c8cc"
     },
     {
       "name": "lead-manager-coach",
@@ -151,19 +151,19 @@
       "status": "current",
       "source_dir": "skills/lead-manager-coach",
       "files": [
+        "SKILL.md",
         "references/rubric.md",
         "scripts/env.example",
         "scripts/export_excel.py",
         "scripts/pull_calls.py",
         "scripts/roster.example.json",
         "scripts/smrtphone_login.py",
-        "scripts/transcribe.py",
-        "SKILL.md"
+        "scripts/transcribe.py"
       ],
       "file_count": 8,
       "bytes": 76590,
       "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/lead-manager-coach.skill",
-      "sha256": "4e28be06c8c67ef73a89a04e991ead2ea087e8c5e601d295fc2d697b45e8dab1"
+      "sha256": "6eb37dd410c56d7f9101469c446cbb1e9aedcdf2e468bac9caed7c3ea68fc4bc"
     },
     {
       "name": "comp-package",
@@ -174,16 +174,16 @@
       "status": "current",
       "source_dir": "skills/comp-package",
       "files": [
+        "SKILL.md",
         "references/api_contract.md",
         "references/dual_track_arv.md",
         "references/workbook_format.md",
-        "scripts/zillow_market_pull.py",
-        "SKILL.md"
+        "scripts/zillow_market_pull.py"
       ],
       "file_count": 5,
       "bytes": 17801,
       "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/comp-package.skill",
-      "sha256": "d35939991a0515c444ee898cdecb2bd2a104ae875d4fb9e350ef288373561b9d"
+      "sha256": "61c5ccfbae1434497ac248908bbea4cd724be6e638828ca809b6a86f1cf38f5e"
     },
     {
       "name": "deal-analyzer",
@@ -195,28 +195,28 @@
       "source_dir": "plugins/deal-analyzer",
       "files": [
         ".claude-plugin/plugin.json",
-        "commands/analyze-deal.md",
         "README.md",
+        "commands/analyze-deal.md",
         "skills/deal-analyzer/SKILL.md",
+        "skills/real-estate-comping/SKILL.md",
         "skills/real-estate-comping/references/adjustment-cheatsheet.md",
         "skills/real-estate-comping/references/disclosure-prompt.md",
         "skills/real-estate-comping/references/non-disclosure-prompt.md",
         "skills/real-estate-comping/references/state-list.md",
         "skills/real-estate-comping/scripts/generate_excel_report.py",
-        "skills/real-estate-comping/SKILL.md",
+        "skills/rehab-estimator/SKILL.md",
         "skills/rehab-estimator/data/master_material_list_37914.csv",
         "skills/rehab-estimator/references/finish-tiers.md",
         "skills/rehab-estimator/references/local-pricing-guide.md",
         "skills/rehab-estimator/references/real-deal-calibration.md",
         "skills/rehab-estimator/references/rehab-categories.md",
         "skills/rehab-estimator/references/wholetail-vs-rehab.md",
-        "skills/rehab-estimator/scripts/generate_rehab_excel.py",
-        "skills/rehab-estimator/SKILL.md"
+        "skills/rehab-estimator/scripts/generate_rehab_excel.py"
       ],
       "file_count": 18,
       "bytes": 312860,
       "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/deal-analyzer.plugin",
-      "sha256": "1c53a009c940eb1217cdda57647649a549b3e1490b05e70587f6ec84e1d4940d"
+      "sha256": "f7802ed3f4bc46b5ff29198f7d4e863391324f44f939048c91c6a0f090aa4414"
     },
     {
       "name": "deep-prospecting",
@@ -244,18 +244,18 @@
       "status": "superseded",
       "source_dir": "skills/deep-prospecting-v4",
       "files": [
+        "SKILL.md",
         "references/deed-analysis.md",
         "references/enformion-person-search.md",
         "references/google-dorking.md",
         "scripts/enformion_person_search.py",
         "scripts/scrapfly_fetch.py",
-        "SKILL.md",
         "templates/research-pack-template.md"
       ],
       "file_count": 7,
       "bytes": 85288,
       "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/deep-prospecting-v4.skill",
-      "sha256": "3d48f260e3d94f12e56ab8f6b01e6bb59d57f2095f12380486364f1c6b4a2350",
+      "sha256": "02ee79406e8f8cfffc7df2a0561a382956613a504849553108803538162d18af",
       "superseded_by": "deep-prospecting-v5"
     },
     {
@@ -267,6 +267,7 @@
       "status": "current",
       "source_dir": "skills/deep-prospecting-v5",
       "files": [
+        "SKILL.md",
         "references/deed-analysis.md",
         "references/entity-owners-enformion-business.md",
         "references/google-dorking.md",
@@ -276,14 +277,13 @@
         "scripts/enformion_person_search.py",
         "scripts/parse_smartskip.py",
         "scripts/smartskip_trace.py",
-        "SKILL.md",
         "templates/example-research-pack-ANONYMIZED.md",
         "templates/research-pack-template.md"
       ],
       "file_count": 12,
       "bytes": 79198,
       "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/deep-prospecting-v5.skill",
-      "sha256": "4ea31f2ebdffe302cf0424a62fa5a138049a7a82f5600a5248bdbf11e25243c6"
+      "sha256": "5a1527b3a13b5d9bc878ff5dba84dc5cf1a29399439fdb1b94df0b7f889b6554"
     },
     {
       "name": "probate-property-finder",
@@ -310,17 +310,17 @@
       "status": "current",
       "source_dir": "skills/real-estate-comping",
       "files": [
+        "SKILL.md",
         "references/adjustment-cheatsheet.md",
         "references/disclosure-prompt.md",
         "references/non-disclosure-prompt.md",
         "references/state-list.md",
-        "scripts/generate_excel_report.py",
-        "SKILL.md"
+        "scripts/generate_excel_report.py"
       ],
       "file_count": 6,
       "bytes": 83133,
       "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/real-estate-comping.skill",
-      "sha256": "fc4fb518666ed03274b5baa69171b95f1d5a26ddd3b43b2f71b45553fca89d6c"
+      "sha256": "33e7abcf50d360f19efd1b3fe71baf328f7dab346883a18087f90f35de3eefd9"
     },
     {
       "name": "rehab-estimator",
@@ -331,19 +331,19 @@
       "status": "current",
       "source_dir": "skills/rehab-estimator",
       "files": [
+        "SKILL.md",
         "data/master_material_list_37914.csv",
         "references/finish-tiers.md",
         "references/local-pricing-guide.md",
         "references/real-deal-calibration.md",
         "references/rehab-categories.md",
         "references/wholetail-vs-rehab.md",
-        "scripts/generate_rehab_excel.py",
-        "SKILL.md"
+        "scripts/generate_rehab_excel.py"
       ],
       "file_count": 8,
       "bytes": 222946,
       "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/rehab-estimator.skill",
-      "sha256": "cfc0429521d2f4cce147ee211a903fa4272109d507112356e575e3b48f712b1f"
+      "sha256": "e4108473498a3300cab4e7f5caec4513f72b9e93b2500c224fb7e2696346fef8"
     },
     {
       "name": "buyer-prospector",
@@ -354,15 +354,15 @@
       "status": "current",
       "source_dir": "skills/buyer-prospector",
       "files": [
+        "SKILL.md",
         "data/nationwide_buyers.csv",
         "references/research_guide.md",
-        "scripts/analyze_buyers.py",
-        "SKILL.md"
+        "scripts/analyze_buyers.py"
       ],
       "file_count": 4,
       "bytes": 6735501,
       "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/buyer-prospector.skill",
-      "sha256": "9cd99a8055eb188d4f144cb38e6ae92e95f32e5b1777cbc81a9cb9d31272fc25"
+      "sha256": "183e67e0cfbe0ee2c9b7711041d4d49b927a8d58afe8edaaf05a9790c674c516"
     },
     {
       "name": "first-market-county-data",
@@ -373,17 +373,17 @@
       "status": "current",
       "source_dir": "skills/first-market-county-data",
       "files": [
+        "SKILL.md",
         "references/common-offices.md",
         "references/extraction-normalization-import.md",
         "references/research-prompts.md",
         "references/state-law-matrix.md",
-        "references/worked-example.md",
-        "SKILL.md"
+        "references/worked-example.md"
       ],
       "file_count": 6,
       "bytes": 142423,
       "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/first-market-county-data.skill",
-      "sha256": "50e53f39a8e778fe61606e965181f28546b7f601a9cc377369affba73cc9958c"
+      "sha256": "cd2fb68216cf76da4ec0b3c3158bd9c2f64a38d7556a6d43445470e4901ba8f6"
     },
     {
       "name": "sift-market-research",
@@ -394,18 +394,18 @@
       "status": "current",
       "source_dir": "skills/sift-market-research",
       "files": [
+        "SKILL.md",
         "references/ComprehensiveAnalysisFramework.md",
         "references/MarketAnalysisPrompt.pdf",
         "references/MarketFinderNavigationAndAnalysisSOP.pdf",
         "scripts/datasift_core.py",
         "scripts/extract_market_finder.py",
-        "scripts/generate_market_excel.py",
-        "SKILL.md"
+        "scripts/generate_market_excel.py"
       ],
       "file_count": 7,
       "bytes": 12095045,
       "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/sift-market-research.skill",
-      "sha256": "fc776f20f25ece852ebfb3e3cdfa1ea3fa3928e04c11256158c8359ac6f32bb4"
+      "sha256": "fa33ec18ebc641fecd3dbafe2c0823ca063e989de3168f6836c5ad89cff6722a"
     },
     {
       "name": "caller-reputation-monitor",
@@ -416,6 +416,7 @@
       "status": "current",
       "source_dir": "skills/caller-reputation-monitor",
       "files": [
+        "SKILL.md",
         "references/methodology.md",
         "references/quick-start.md",
         "references/registration-and-remediation.md",
@@ -432,13 +433,12 @@
         "scripts/smrtphone_login.py",
         "scripts/telnyx_cdr.py",
         "scripts/telnyx_reputation.py",
-        "scripts/telnyx_setup.py",
-        "SKILL.md"
+        "scripts/telnyx_setup.py"
       ],
       "file_count": 18,
       "bytes": 215945,
       "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/caller-reputation-monitor.skill",
-      "sha256": "056bd432e2f237282629619c52fe34c8cd6441839158c51cfa11e028c0e1af0e"
+      "sha256": "6dfa469f64d4f911f680a9d45003050806b9e68f76ee3163d6ed094d72d53e5c"
     },
     {
       "name": "candidate-intake",
@@ -449,6 +449,7 @@
       "status": "current",
       "source_dir": "skills/candidate-intake",
       "files": [
+        "SKILL.md",
         "assets/config.template.json",
         "references/intake-facebook.md",
         "references/intake-gmail.md",
@@ -459,13 +460,12 @@
         "references/setup-and-config.md",
         "references/sheet-schema.md",
         "scripts/prepare_rows.py",
-        "scripts/score_candidates.py",
-        "SKILL.md"
+        "scripts/score_candidates.py"
       ],
       "file_count": 12,
       "bytes": 43658,
       "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/candidate-intake.skill",
-      "sha256": "1e5b756eeebfa7aed5d1d1ce5a4928f8c39b13e3c28c2975af8636dcc30de961"
+      "sha256": "17c513c2468cdd2125373950c1708783feeebeb483749ea35ad3a79dca5dff9f"
     },
     {
       "name": "phone-validator",
@@ -476,17 +476,17 @@
       "status": "current",
       "source_dir": "skills/phone-validator",
       "files": [
+        "SKILL.md",
         "references/datasift-phone-tags.md",
         "references/trestle-api-reference.md",
         "scripts/datasift_core.py",
         "scripts/upload_phone_tags.py",
-        "scripts/validate_phones.py",
-        "SKILL.md"
+        "scripts/validate_phones.py"
       ],
       "file_count": 6,
       "bytes": 76925,
       "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/phone-validator.skill",
-      "sha256": "c4a3ab257f7944a94c01e1508c40792084facc424bcafba4b3a555f6179767e5"
+      "sha256": "bc00ed89023f1c572b9beb2f390fa7cd465924d26e901f3f0be5c98ee293d850"
     },
     {
       "name": "playbook-creator",
@@ -497,6 +497,7 @@
       "status": "current",
       "source_dir": "skills/playbook-creator",
       "files": [
+        "SKILL.md",
         "evals/evals.json",
         "references/foreclosure-example.md",
         "references/playbook-template.md",
@@ -505,13 +506,12 @@
         "references/sop-template.md",
         "references/voice-guide.md",
         "scripts/build_docx.js",
-        "scripts/build_pdf.py",
-        "SKILL.md"
+        "scripts/build_pdf.py"
       ],
       "file_count": 10,
       "bytes": 113610,
       "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/playbook-creator.skill",
-      "sha256": "7f1e0b99d93c652340ead719d7e2185af7190ea549801833476b9e79a0dceba7"
+      "sha256": "9c24cd232114f77c115181b74f53a2a515f49c579b682b90d72f7fe297f95bc7"
     },
     {
       "name": "sequential-presets",
@@ -522,17 +522,17 @@
       "status": "current",
       "source_dir": "skills/sequential-presets",
       "files": [
+        "SKILL.md",
         "references/bulk-sequential-map.md",
         "references/filter-configurations.md",
         "references/niche-sequential-map.md",
         "scripts/datasift_core.py",
-        "scripts/manage_presets.py",
-        "SKILL.md"
+        "scripts/manage_presets.py"
       ],
       "file_count": 6,
       "bytes": 65292,
       "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/sequential-presets.skill",
-      "sha256": "ed6de923d8901ae2b149b0c12c68b18a225862b762fd769c898ee875d136a347"
+      "sha256": "7907c114b3bff2d4db9b663130f9e9e3805c42ba46b8017165255c2e55fc135d"
     },
     {
       "name": "text-touch-builder",
@@ -543,14 +543,14 @@
       "status": "current",
       "source_dir": "skills/text-touch-builder",
       "files": [
+        "SKILL.md",
         "references/message-recipe.md",
-        "scripts/build_text_touches.py",
-        "SKILL.md"
+        "scripts/build_text_touches.py"
       ],
       "file_count": 3,
       "bytes": 30795,
       "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/text-touch-builder.skill",
-      "sha256": "0821ef69ba1ace69741cc83452ff02259ff74b94e74b6087cfbbea974ccc5451"
+      "sha256": "ee627d292a0a2e4a03de07413bf91311e6db8f7365717097a221918acf8c7ea8"
     }
   ]
 }

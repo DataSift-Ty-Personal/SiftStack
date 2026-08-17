@@ -231,9 +231,18 @@ def unpack() -> None:
 # build
 # --------------------------------------------------------------------------
 def _iter_files(root: Path):
-    for p in sorted(root.rglob("*")):
-        if p.is_file() and "__pycache__" not in p.parts and p.name != ".DS_Store":
-            yield p
+    """Yield every real file under root, in a platform-independent order.
+
+    Sorting Path objects directly is NOT portable: PurePath comparison is
+    case-insensitive on Windows and case-sensitive on Linux, so "SKILL.md"
+    lands after "references/..." on one and before it on the other. That put
+    the archive entries and the manifest file lists in a different order
+    depending on who ran the build, which reads as a real diff and fails CI
+    on a tree where nothing changed. Sort the relative POSIX string instead.
+    """
+    files = [p for p in root.rglob("*")
+             if p.is_file() and "__pycache__" not in p.parts and p.name != ".DS_Store"]
+    return sorted(files, key=lambda p: p.relative_to(root).as_posix())
 
 
 def _zip_into(src: Path, out: Path) -> None:
@@ -261,7 +270,7 @@ def build() -> list[dict]:
     for base, suffix in ((SKILLS, ".skill"), (PLUGINS, ".plugin")):
         if not base.is_dir():
             continue
-        for src in sorted(p for p in base.iterdir() if p.is_dir()):
+        for src in sorted((p for p in base.iterdir() if p.is_dir()), key=lambda p: p.name):
             out = DIST / f"{src.name}{suffix}"
             _zip_into(src, out)
             built.append({"name": src.name, "path": out, "kind": suffix.lstrip(".")})
@@ -275,7 +284,7 @@ def verify() -> int:
     for base, suffix in ((SKILLS, ".skill"), (PLUGINS, ".plugin")):
         if not base.is_dir():
             continue
-        for src in sorted(p for p in base.iterdir() if p.is_dir()):
+        for src in sorted((p for p in base.iterdir() if p.is_dir()), key=lambda p: p.name):
             out = DIST / f"{src.name}{suffix}"
             if not out.exists():
                 problems.append(f"missing dist archive: {out.name}")
@@ -306,7 +315,7 @@ def manifest() -> dict:
     for base, suffix, kind in ((SKILLS, ".skill", "skill"), (PLUGINS, ".plugin", "plugin")):
         if not base.is_dir():
             continue
-        for src in sorted(p for p in base.iterdir() if p.is_dir()):
+        for src in sorted((p for p in base.iterdir() if p.is_dir()), key=lambda p: p.name):
             # A plugin's identity lives in .claude-plugin/plugin.json; a
             # skill's lives in SKILL.md frontmatter. Read whichever applies
             # rather than leaving every plugin with an empty description.
@@ -361,7 +370,9 @@ def manifest() -> dict:
         "skills": entries,
     }
     MANIFEST.parent.mkdir(parents=True, exist_ok=True)
-    MANIFEST.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+    # newline="\n" explicitly: write_text otherwise translates to CRLF on
+    # Windows, and this file is compared byte for byte against a CI rebuild.
+    MANIFEST.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8", newline="\n")
     print(f"manifest: {doc['counts']['total']} packages "
           f"({doc['counts']['current']} current) -> {MANIFEST.relative_to(ROOT).as_posix()}")
     return doc
