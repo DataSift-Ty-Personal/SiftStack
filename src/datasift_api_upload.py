@@ -48,20 +48,39 @@ FIELD_MAP = {
 
 
 def env() -> dict:
-    out = {}
-    with open(".env", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if line and not line.startswith("#") and "=" in line:
-                k, v = line.split("=", 1)
-                out[k.strip()] = v.strip()
+    """Credentials from the process environment, with .env as a fallback.
+
+    Environment FIRST, on purpose. This used to read ./.env unconditionally,
+    which meant the uploader could only ever run from a workstation checkout
+    with that file present and the right working directory. On a Fly machine
+    every secret arrives as an env var and there is no .env at all, so the old
+    version died on FileNotFoundError before it made a single call.
+    """
+    out = dict(os.environ)
+    try:
+        with open(".env", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    k, v = line.split("=", 1)
+                    # Never let a stale file shadow an explicitly-set env var.
+                    out.setdefault(k.strip(), v.strip())
+    except OSError:
+        pass
     return out
 
 
 class Api:
     def __init__(self):
         e = env()
-        self.email, self.pw = e["DATASIFT_EMAIL"], e["DATASIFT_PASSWORD"]
+        try:
+            self.email, self.pw = e["DATASIFT_EMAIL"], e["DATASIFT_PASSWORD"]
+        except KeyError as exc:
+            raise RuntimeError(
+                f"{exc.args[0]} is not set. The uploader mints its own JWT from "
+                "DATASIFT_EMAIL / DATASIFT_PASSWORD; set them as env vars "
+                "(Fly secrets) or in .env."
+            ) from None
         self.token = ""
         self.minted = 0.0
         self._mint()
@@ -159,25 +178,17 @@ def field_pairs(row: dict, idx: dict, warn: set) -> list[dict]:
     return pairs
 
 
-def main() -> int:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--csv", default="output/knox_ftm_pull.csv")
-    ap.add_argument("--commit", action="store_true")
-    ap.add_argument("--limit", type=int, default=0)
-    ap.add_argument("--start", type=int, default=0)
-    ap.add_argument("--sleep", type=float, default=0.1)
-    a = ap.parse_args()
+def upload_rows(rows: list[dict], *, commit: bool = False,
+                sleep: float = 0.1, out_dir: str = "output") -> dict:
+    """Push rows into DataSift. Returns counts so a caller can act on them.
 
-    rows = list(csv.DictReader(open(a.csv, encoding="utf-8")))
-    if a.start:
-        rows = rows[a.start:]
-    if a.limit:
-        rows = rows[:a.limit]
-
+    Broken out of main() so the scheduled runner can call it in-process and
+    report real numbers to Slack, instead of shelling out and parsing stdout.
+    """
     api = Api()
     idx = field_index(api)
     print("[%s] %d records | JWT minted | %d custom fields known\n"
-          % ("COMMIT" if a.commit else "DRY RUN", len(rows), len(idx)))
+          % ("COMMIT" if commit else "DRY RUN", len(rows), len(idx)))
 
     warn: set = set()
     created = fielded = failed = 0
@@ -186,7 +197,7 @@ def main() -> int:
     for i, row in enumerate(rows, 1):
         prop = build_property(row)
         pairs = field_pairs(row, idx, warn)
-        if not a.commit:
+        if not commit:
             if i <= 2:
                 print(json.dumps(prop, indent=1)[:420])
                 print("  -> %d custom-field values\n" % len(pairs))
@@ -208,29 +219,69 @@ def main() -> int:
                     pass
         except Exception as e:
             failed += 1
-            msg = "%s | %s" % (row["Property Street Address"][:30], str(e)[:150])
+            msg = "%s | %s" % (str(row.get("Property Street Address", ""))[:30], str(e)[:150])
             errors.append(msg)
             if len(errors) <= 5:
                 print("  FAIL", msg)
         if i % 100 == 0:
             print("   %d/%d created=%d fields=%d failed=%d %.0fs"
                   % (i, len(rows), created, fielded, failed, time.time() - t0), flush=True)
-        time.sleep(a.sleep)
+        time.sleep(sleep)
 
     if warn:
         print("\nWARNINGS (values skipped, never guessed):")
         for w in sorted(warn):
             print("   ", w)
-    if a.commit:
+
+    err_path = ""
+    if commit:
         print("\ncreated=%d  custom-fields-set=%d  failed=%d  %.0fs"
               % (created, fielded, failed, time.time() - t0))
         if errors:
-            os.makedirs("output", exist_ok=True)
-            with open("output/upload_errors.txt", "w", encoding="utf-8") as f:
+            os.makedirs(out_dir, exist_ok=True)
+            err_path = os.path.join(out_dir, "upload_errors.txt")
+            with open(err_path, "w", encoding="utf-8") as f:
                 f.write("\n".join(errors))
-            print("errors -> output/upload_errors.txt (%d)" % len(errors))
+            print("errors -> %s (%d)" % (err_path, len(errors)))
     else:
         print("\nNothing written. Re-run with --commit.")
+
+    return {
+        "submitted": len(rows), "created": created, "fielded": fielded,
+        "failed": failed, "warnings": sorted(warn), "errors": errors,
+        "error_file": err_path, "committed": commit,
+        "seconds": round(time.time() - t0, 1),
+    }
+
+
+def upload_csv(path: str, *, commit: bool = False, limit: int = 0,
+               start: int = 0, sleep: float = 0.1, out_dir: str = "output") -> dict:
+    """Read an upload CSV and push it. Same return shape as upload_rows."""
+    with open(path, encoding="utf-8") as fh:
+        rows = list(csv.DictReader(fh))
+    if start:
+        rows = rows[start:]
+    if limit:
+        rows = rows[:limit]
+    return upload_rows(rows, commit=commit, sleep=sleep, out_dir=out_dir)
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--csv", default="output/knox_ftm_pull.csv")
+    ap.add_argument("--commit", action="store_true")
+    ap.add_argument("--limit", type=int, default=0)
+    ap.add_argument("--start", type=int, default=0)
+    ap.add_argument("--sleep", type=float, default=0.1)
+    a = ap.parse_args()
+
+    res = upload_csv(a.csv, commit=a.commit, limit=a.limit,
+                     start=a.start, sleep=a.sleep)
+    # A commit run that created nothing from a non-empty file is a failure,
+    # not a quiet success, the same class of bug as the 13 "successful"
+    # zero-notice scrapes.
+    if a.commit and res["submitted"] and not res["created"]:
+        return 1
     return 0
 
 

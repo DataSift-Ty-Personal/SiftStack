@@ -1,0 +1,500 @@
+{
+  "deal_name": "[ADDRESS]",
+  "date": "2026-01-15",
+  "lender_name": "[LENDER LEGAL NAME]",
+  "lender_salutation": "[LENDER FIRST NAME]",
+  "closing_agent": "[CLOSING ATTORNEY / TITLE COMPANY]",
+  "under_contract": true,
+  "contract_price": 92000,
+  "work_budget": 87192,
+  "borrower": {
+    "entity": "[YOUR LLC LEGAL NAME]",
+    "state": "[STATE]",
+    "signer": "[SIGNER NAME]",
+    "title": "Managing Member",
+    "phone": "[PHONE]",
+    "email": "[EMAIL]",
+    "address": "[BUSINESS ADDRESS]",
+    "formation": "a [STATE] limited liability company",
+    "members": [
+      "[MEMBER 1 FULL NAME]",
+      "[MEMBER 2 FULL NAME]"
+    ]
+  },
+  "property": {
+    "full_address": "[ADDRESS], Anytown, ST 00000",
+    "short_address": "[ADDRESS]",
+    "county": "[COUNTY]",
+    "parcel_id": "[PARCEL ID] (verify on the title commitment)",
+    "type": "Single family detached, one story over a crawlspace",
+    "sqft": 948,
+    "lot": "0.207 acres",
+    "beds": 3,
+    "baths": 1,
+    "year_built": 1945,
+    "condition": "Vacant and unfinanceable in current condition. Hoarding-level contents throughout, active ceiling failure in two to three rooms from a long standing roof leak, carport roof framing rotted at the fascia and decking, heavy vine growth on the siding, original 1960s to 1970s paneling. Kitchen and single bath are dated but intact. Crawlspace confirmed on the walk as a dirt floor crawl with CMU perimeter, not a basement, so there is no unpermitted square footage.",
+    "occupancy": "Vacant at closing",
+    "zoning": "Residential, conforming use"
+  },
+  "loan": {
+    "amount": 180800,
+    "rate": 0.12,
+    "points": 0,
+    "term_months": 9,
+    "min_interest_months": 3,
+    "draws": 4,
+    "lien": "First lien, deed of trust",
+    "payment": "No monthly payments. Principal and all accrued interest are due in one payment at the earlier of the sale or the maturity date.",
+    "default_terms": "On an uncured default we move immediately to liquidate the property for as much as the market will pay, and the personal guarantee from every member of the company covers any amount still owed to the lender, including the interest still owed."
+  },
+  "plan": {
+    "strategy": "Renovate and resell to a retail buyer (fix and flip)",
+    "loan_purpose": "Acquisition and renovation of the property",
+    "summary": "Describe the house, the pocket it sits in, and why the spread is real. Two or three sentences. Name a number.",
+    "source": "Straight from the seller through our own courthouse and county data pull, so there was no agent and no competing offer.",
+    "closing_date": "[CLOSING DATE]",
+    "work_window": "8 to 9 weeks of construction, then 30 to 60 days on market",
+    "repayment_event": "Closing of the retail sale",
+    "draw_milestones": [
+      "Contents removed, roof replaced and dried in, demo complete, and the structure is open and inspectable",
+      "Rough mechanical, electrical and plumbing complete and inspected, windows set, insulation in",
+      "Drywall hung, finished and primed, exterior siding and carport repairs complete",
+      "Kitchen and bath set, flooring, trim, paint and fixtures complete, final clean and photographs delivered"
+    ],
+    "cover_paragraphs": [
+      "I've got a house under contract in East [CITY] and I'm looking for one lender on it. Everything you need to check my math is attached, so you shouldn't have to take my word for a single number in here.",
+      "Here's what we do. We buy distressed single family houses in East [CITY] directly from owners, renovate them, and sell them to retail buyers. I'm not asking you to invest in my company, buy into a fund, or split a profit or a loss with me. I'm asking you to be the bank on one house, in first position, at a fixed rate, for a fixed term.",
+      "This one is [ADDRESS], a 1945 ranch we have under signed contract at $92,000. Five renovated three beds of the same size within seven tenths of a mile have closed from $209,000 to $280,000 in the last year. The renovation budget is $87,192 and it's built line by line off our locked [COUNTY] County material list with real Home Depot pricing at 00000, not a dollar per square foot rule of thumb."
+    ],
+    "safety_bullets": [
+      "You're in first position on title, recorded at the [COUNTY] County Register of Deeds, with a lender's title policy in your name that the loan pays for.",
+      "On day one you're out $93,608 against a house worth $137,000 exactly as it sits today, before a dollar of work goes in.",
+      "The renovation money doesn't leave your account at closing. It releases in four draws of about $21,798, only after the work it paid for is in the building and you've had the chance to go look at it.",
+      "The house is insured before your money moves, with you named as mortgagee and loss payee, so if it burns the check comes to you and not to us.",
+      "The budget is built line by line off our locked [COUNTY] County material list with real Home Depot pricing at 00000, not a dollar per square foot rule of thumb. Every line is on the Repair Costs tab.",
+      "Every member of the company personally guarantees the note. If we ever default we liquidate the property immediately and the guarantee covers whatever the sale does not, including the interest still owed.",
+      "Read the loan to value block on Backups and Risk before you decide. This loan is above the 75% most private lenders want, and I'd rather hand you that fact than have you find it."
+    ],
+    "timeline": [
+      [
+        "Close and mobilize",
+        "Week 0",
+        "Fund, record the deed of trust, take possession. Contents removal starts the same week."
+      ],
+      [
+        "Roof and demo",
+        "Weeks 1 to 2",
+        "Full tear off and re-deck, carport structure rebuilt, interior demo to the studs where the ceilings failed."
+      ],
+      [
+        "Rough in",
+        "Weeks 3 to 4",
+        "Electrical service and partial rewire, plumbing repipe, heat pump set, nine windows replaced, insulation."
+      ],
+      [
+        "Drywall and exterior",
+        "Weeks 5 to 6",
+        "Full re-rock and finish, siding and vine remediation, exterior paint."
+      ],
+      [
+        "Finishes",
+        "Weeks 7 to 9",
+        "Kitchen, bath, flooring, trim, doors, paint, fixtures, final clean."
+      ],
+      [
+        "List and sell",
+        "Weeks 10 to 18",
+        "Photographs, MLS listing, showings, contract, buyer financing and closing."
+      ],
+      [
+        "Payoff",
+        "At sale closing",
+        "Principal and accrued interest paid to you directly from the settlement statement."
+      ]
+    ]
+  },
+  "resale": {
+    "point": 225000,
+    "lo": 209000,
+    "hi": 280000,
+    "basis": "Five closed sales of renovated three bed, one bath houses between 900 and 1,008 square feet, all inside the same pocket, all within seven tenths of a mile, all closed in the last twelve months. The $225,000 working figure is the median of that set, not the average and not the top. Our own rule caps a house at the median of its bedroom band, so the $280,000 sale at 3229 Wilson isn't allowed to pull the number up and neither is the extra square footage. Every calculation in this workbook runs on $225,000, and every stress test runs on $209,000, the bottom of the band."
+  },
+  "as_is": {
+    "point": 137000,
+    "basis": "What the house would sell for today, untouched, built from deed verified cash and entity purchases in the same pocket inside the investor size band and cross checked against the distressed bucket of the comp pull. This is the number your day one advance gets measured against, so it's the one that matters most on the first morning."
+  },
+  "comps": [
+    {
+      "address": "[COMP 1 ADDRESS]",
+      "dist": "0.23 mi",
+      "sqft": 936,
+      "beds": 3,
+      "baths": 1,
+      "sold": "2026-05-12",
+      "price": 224900,
+      "ppsf": 240,
+      "year": "",
+      "role": "THE ANCHOR. Median of the band and the closest match on size and configuration. Listing remarks confirm quartz counters, tile backsplash, stainless appliances, custom tile bath, new vinyl siding, gutters, roof and concrete carport. This is the exact finish level our budget is built to deliver."
+    },
+    {
+      "address": "[COMP 2 ADDRESS]",
+      "dist": "0.40 mi",
+      "sqft": 906,
+      "beds": 3,
+      "baths": 1,
+      "sold": "2026-04-16",
+      "price": 215000,
+      "ppsf": 237,
+      "year": "",
+      "role": "Most recent supporting sale. Full remodel with new flooring throughout, new windows and a new roof. Confirms the band holds at a slightly smaller footprint."
+    },
+    {
+      "address": "[COMP 3 ADDRESS]",
+      "dist": "0.68 mi",
+      "sqft": 1008,
+      "beds": 3,
+      "baths": 1,
+      "sold": "2025-09-19",
+      "price": 224999,
+      "ppsf": 223,
+      "year": "",
+      "role": "Original character sale, not a full renovation. Shows the band floor tolerates a dated finish, which is downside protection for you."
+    },
+    {
+      "address": "[COMP 4 ADDRESS]",
+      "dist": "0.58 mi",
+      "sqft": 900,
+      "beds": 3,
+      "baths": 1,
+      "sold": "2025-12-05",
+      "price": 209000,
+      "ppsf": 232,
+      "year": "",
+      "role": "BOTTOM OF THE BAND and the figure used in the stress case. New cabinets, counters and flooring with updated fixtures. Smallest house in the set."
+    },
+    {
+      "address": "[COMP 5 ADDRESS]",
+      "dist": "0.44 mi",
+      "sqft": 906,
+      "beds": 3,
+      "baths": 1,
+      "sold": "2025-12-08",
+      "price": 280000,
+      "ppsf": 309,
+      "year": "",
+      "role": "TOP OF THE BAND, shown for completeness and deliberately NOT used. Automated valuations on this house ran $180,000 to $198,000, so it very likely sold above its fundamentals. We exclude it from the working figure rather than lean on it."
+    }
+  ],
+  "comp_warnings": [
+    "The comp band runs 34% wide, from $209,000 to $280,000. Our rule only lets us publish a single point number when a five comp set comes in under 30%, so treat $225,000 as the working figure and $209,000 as the number that still has to work. It does, but barely, and that's exactly why the coverage block reads the way it does.",
+    "Year built didn't come through in the sold data feed for these five, so those cells are blank rather than guessed. All five are pre-1960 houses in the same platted subdivisions as the subject."
+  ],
+  "stress_cases": [
+    {
+      "scenario": "The renovation runs at full GC retail instead of our own crew",
+      "outcome": "The budget moves from $87,192 to $99,932. The loan does not move, because it is fixed at closing. The overrun comes out of our profit.",
+      "repaid": "Yes, unchanged"
+    },
+    {
+      "scenario": "It sells at the bottom of the comp band, $209,000",
+      "outcome": "$196,477 net of selling costs against a $197,072 payoff. It comes up about $600 short and the personal guarantee covers it.",
+      "repaid": "Yes, by guarantee"
+    },
+    {
+      "scenario": "It takes the full nine months instead of the eighteen week plan",
+      "outcome": "Interest accrues to $16,272, which is already the figure used everywhere in this package. Nothing changes.",
+      "repaid": "Yes, unchanged"
+    },
+    {
+      "scenario": "We stop work and you take the house back mid-renovation",
+      "outcome": "You hold a house you are into for the draws released to that point, with a roof, systems and drywall already in it, in a pocket where finished product closes at $209,000 or better.",
+      "repaid": "Yes, by resale of the collateral"
+    }
+  ],
+  "exit_backups": [
+    {
+      "name": "Sell the renovated house to a landlord or investor buyer instead of retail",
+      "proceeds": 200000,
+      "repays": "Yes",
+      "why": "Rental value on the finished product is roughly $1,600 a month, which supports an investor purchase in the high $190,000s. Slower to find, but it clears the payoff."
+    },
+    {
+      "name": "Assign or resell the contract before we ever close",
+      "proceeds": 104500,
+      "repays": "Yes, in full and immediately",
+      "why": "We have a deed verified buyer list of 138 active cash buyers in this ZIP. If the deal has to unwind before renovation starts, the contract itself resells at roughly $104,500 and your loan is repaid out of that closing."
+    },
+    {
+      "name": "Stop mid-renovation and sell the partially improved shell",
+      "proceeds": "Draw dependent",
+      "repays": "Yes at the early draws",
+      "why": "The draw structure exists precisely so that your exposure never runs ahead of the value in the building. A shell with a new roof and new systems sells to the same cash buyer pool for more than a shell without them."
+    },
+    {
+      "name": "Refinance into a rental hold and pay you off at the refinance",
+      "proceeds": 168750,
+      "repays": "Partially, not our first choice",
+      "why": "A 75% loan to value refinance at the working ARV returns $168,750, which is short of the full payoff. We list this so you can see we have looked at it and rejected it, not because we intend to use it."
+    }
+  ],
+  "risks": [
+    {
+      "risk": "Roof and structure scope is larger than the bid",
+      "likelihood": "Moderate",
+      "cost": "Roofing is carried as a $8,500 placeholder pending the roofer's signed bid",
+      "mitigation": "The roofing line is a flagged placeholder in our own budget, not a guess buried in a category. The bid is being obtained before closing. If it comes back materially higher we renegotiate the purchase price or we walk, and this loan never funds."
+    },
+    {
+      "risk": "Sewer lateral failure on a 1945 house",
+      "likelihood": "Moderate",
+      "cost": "Camera scope is roughly $350, repair allowance carried in the budget",
+      "mitigation": "Scoped before renovation starts, allowance already sitting in the budget rather than discovered later."
+    },
+    {
+      "risk": "Contents removal is larger than estimated",
+      "likelihood": "Low to moderate",
+      "cost": "Additional dumpster loads, low thousands",
+      "mitigation": "Absorbed in the borrower's margin. It does not change the loan amount or your payoff."
+    },
+    {
+      "risk": "Retail market softens during the hold",
+      "likelihood": "Low over a 4 to 6 month window",
+      "cost": "Sale lands nearer $209,000 than $225,000",
+      "mitigation": "The stress case on the coverage sheet runs exactly this. At the band floor the sale returns 0.98 times the payoff, so it is the personal guaranty and borrower cash that close the gap, not your principal. This is the single weakest point of the deal and it is the reason the lower loan alternative is offered."
+    },
+    {
+      "risk": "Loan sits above the conventional 75% loan to value ceiling",
+      "likelihood": "Certain, it is 79.6% as structured",
+      "cost": "Thinner cushion at the band floor",
+      "mitigation": "Two answers. First, the draw structure means the full balance only exists once $87,192 of verified work is in the building. Second, we will bring $10,442 of additional cash to closing and write the loan at $168,750 if you prefer to sit at 75%. The choice is yours and we would rather you took it than felt talked into the larger number."
+    }
+  ],
+  "deal_type": "flip",
+  "lender_address": "[LENDER MAILING ADDRESS]",
+  "insurance_agent": "[INSURANCE AGENT]",
+  "seller_name": "[SELLER NAME]",
+  "no_rehab_note": "",
+  "units": 1,
+  "occupied": "N",
+  "inspected_by": "[INSPECTED BY]",
+  "rehab_total": 87192,
+  "holding": {
+    "taxes_annual": 900,
+    "hoa_monthly": 0,
+    "insurance_annual": 2400,
+    "gas_monthly": 0,
+    "water_monthly": 40,
+    "electric_monthly": 90,
+    "other_monthly": 120,
+    "misc_monthly": 0
+  },
+  "buying_costs": {
+    "escrow": 900,
+    "title_pct": 0.0077,
+    "recording": 0,
+    "misc": 0
+  },
+  "selling_costs": {
+    "escrow": 900,
+    "recording": 400,
+    "realtor_pct": 0.05,
+    "transfer_pct": 0.0037,
+    "warranty": 0,
+    "staging": 0,
+    "marketing": 0,
+    "misc": 0
+  },
+  "repair_grid": [
+    [
+      "EXTERIOR",
+      [
+        [
+          "Siding and Finish",
+          [
+            {
+              "item": "Siding repair, vine remediation and exterior paint",
+              "include": "Y",
+              "qty": 1,
+              "unit": "ls",
+              "cost": 6046
+            }
+          ]
+        ],
+        [
+          "Windows and Doors",
+          [
+            {
+              "item": "Nine replacement vinyl windows",
+              "include": "Y",
+              "qty": 1,
+              "unit": "ls",
+              "cost": 3598
+            }
+          ]
+        ]
+      ]
+    ],
+    [
+      "INTERIOR",
+      [
+        [
+          "Kitchen",
+          [
+            {
+              "item": "Full kitchen: shaker cabinets, quartz counters, tile backsplash, stainless appliance set",
+              "include": "Y",
+              "qty": 1,
+              "unit": "ls",
+              "cost": 11461
+            }
+          ]
+        ],
+        [
+          "Bathroom",
+          [
+            {
+              "item": "Full bath gut, tiled tub walls, vanity and fixtures",
+              "include": "Y",
+              "qty": 1,
+              "unit": "ls",
+              "cost": 6090
+            }
+          ]
+        ],
+        [
+          "Flooring",
+          [
+            {
+              "item": "Luxury vinyl plank throughout",
+              "include": "Y",
+              "qty": 1,
+              "unit": "ls",
+              "cost": 4776
+            }
+          ]
+        ],
+        [
+          "Interior Painting",
+          [
+            {
+              "item": "Full repaint after the re-rock",
+              "include": "Y",
+              "qty": 1,
+              "unit": "ls",
+              "cost": 1455
+            }
+          ]
+        ],
+        [
+          "Walls and Ceilings",
+          [
+            {
+              "item": "Contents haul out, interior demo, full re-rock and insulation",
+              "include": "Y",
+              "qty": 1,
+              "unit": "ls",
+              "cost": 14220
+            }
+          ]
+        ],
+        [
+          "Framing and Structure",
+          [
+            {
+              "item": "Crawlspace repairs and carport structure",
+              "include": "Y",
+              "qty": 1,
+              "unit": "ls",
+              "cost": 4400
+            }
+          ]
+        ]
+      ]
+    ],
+    [
+      "MECHANICALS",
+      [
+        [
+          "HVAC",
+          [
+            {
+              "item": "New heat pump and full duct",
+              "include": "Y",
+              "qty": 1,
+              "unit": "ls",
+              "cost": 7207
+            }
+          ]
+        ],
+        [
+          "Plumbing",
+          [
+            {
+              "item": "Repipe in PEX and new water heater",
+              "include": "Y",
+              "qty": 1,
+              "unit": "ls",
+              "cost": 2882
+            }
+          ]
+        ],
+        [
+          "Electrical",
+          [
+            {
+              "item": "Service, panel and partial rewire",
+              "include": "Y",
+              "qty": 1,
+              "unit": "ls",
+              "cost": 3850
+            }
+          ]
+        ]
+      ]
+    ],
+    [
+      "OTHER",
+      [
+        [
+          "Permits and Soft Costs",
+          [
+            {
+              "item": "Permits, dumpsters, utilities during construction, contingency at 13%",
+              "include": "Y",
+              "qty": 1,
+              "unit": "ls",
+              "cost": 11497
+            }
+          ]
+        ],
+        [
+          "Flagged Items",
+          [
+            {
+              "item": "Roofing and sewer lateral, pending signed bids",
+              "include": "Y",
+              "qty": 1,
+              "unit": "ls",
+              "cost": 22450,
+              "placeholder": true,
+              "note": "PLACEHOLDER pending signed bids. Covers the full roof tear off, re-deck and carport tie-in, plus the sewer lateral camera scope and repair allowance on a 1945 house. Carried at a realistic assumed cost so the grand total is always a real number. Replace with the quotes and this whole workbook re-prices itself."
+            }
+          ]
+        ],
+        [
+          "Owner-Managed Savings",
+          [
+            {
+              "item": "We run project management plus our own subs rather than a general contractor. This line is the difference.",
+              "include": "Y",
+              "qty": 1,
+              "unit": "ls",
+              "cost": -12740,
+              "note": "The stress case on Backups and Risk removes this line, which puts the budget back at full GC retail of $99,932."
+            }
+          ]
+        ]
+      ]
+    ]
+  ]
+}

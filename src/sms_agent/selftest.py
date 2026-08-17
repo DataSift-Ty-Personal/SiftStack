@@ -189,6 +189,16 @@ def run(live_model: bool = False) -> int:
             store.recent_inbound_exists("8650009999", "Would love to", 90))
     r.check("a different body is not swallowed",
             not store.recent_inbound_exists("8650009999", "Actually yes", 90))
+    # An inbound that has arrived but is not yet processed still counts as
+    # received. Otherwise the backstop poller re-enqueues it during the window
+    # between the webhook landing and the worker draining the queue.
+    store.record_event(
+        "smrtphone", "smsIncoming", "st-pending-dupe",
+        {"event": "smsIncoming", "from": "8650009999", "to": "+18650000001",
+         "message": "Nope", "smsId": "st-pending-dupe"},
+    )
+    r.check("an unprocessed event counts as already received",
+            store.recent_inbound_exists("8650009999", "Nope", 90))
 
     # A live person asking a direct question must not sit in silence while the
     # agent is below the phase that can answer.
@@ -272,10 +282,16 @@ def run(live_model: bool = False) -> int:
     east = sorted(v for k, v in times.items() if k.startswith("865"))
     west = times.get("3109991447")
     now_iso = _dt.now(_tz.utc).isoformat(timespec="seconds")
-    r.check("eastern recipients are not pushed behind the western one",
-            bool(east) and east[0] < (west or "9999"), f"east={east[:1]} west={west}")
-    r.check("eastern sends start promptly", bool(east) and east[0][:13] <= now_iso[:13],
-            f"first={east[:1]} now={now_iso}")
+    # The real property: an Eastern recipient goes NOW, whatever the western one
+    # has to wait for. Asserting east < west only holds while Los Angeles is
+    # still asleep, so it would pass in the morning and fail after 11am Eastern.
+    from datetime import datetime as _dtp
+    delay_min = (
+        (_dtp.fromisoformat(east[0]) - _dtp.fromisoformat(now_iso)).total_seconds() / 60
+        if east else 999
+    )
+    r.check("eastern sends are not delayed by a western recipient",
+            delay_min < 10, f"first eastern send is {delay_min:.0f} min out (east={east[:1]})")
     with store.tx() as _c:
         _c.execute("DELETE FROM outbox WHERE body LIKE 'layout probe%'")
 

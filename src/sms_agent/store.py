@@ -359,6 +359,19 @@ def recent_inbound_exists(phone: str, body: str, minutes: int) -> bool:
         " AND created_at >= ? LIMIT 1",
         (phone, body, cutoff),
     ).fetchone()
+    if row:
+        return True
+
+    # Also look at events not yet processed. An inbound becomes a message only
+    # when the worker gets to it, so between the webhook landing and that moment
+    # the message table is empty and the backstop poller cannot tell the reply
+    # has already been received. That window is how "Nope" got classified twice
+    # with two different confidences on 2026-08-12.
+    row = _conn().execute(
+        "SELECT 1 FROM events WHERE processed_at IS NULL AND event_type='smsIncoming'"
+        " AND payload LIKE ? AND payload LIKE ? AND received_at >= ? LIMIT 1",
+        (f"%{body}%", f"%{phone}%", cutoff),
+    ).fetchone()
     return row is not None
 
 

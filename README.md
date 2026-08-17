@@ -1,336 +1,273 @@
 # SiftStack
 
-Full-stack real estate investing operations platform built for [DataSift.ai](https://datasift.ai). Pulls data from any source — web scrapes, scanned PDFs, courthouse terminal photos, Dropbox uploads — standardizes everything through a 10-step enrichment pipeline, and pushes it directly into DataSift ready for niche sequential marketing.
+Full-stack real estate investing operations platform built around [DataSift.ai](https://datasift.ai).
 
-**Requires a DataSift.ai account.** Works with any market, any county, any state.
+Two things live in this repo:
 
-## What It Does
+1. **The REI skill library.** 21 Claude skills that teach Claude to run a specific REI workflow: comp a property, estimate a rehab, find the heirs, score your phone numbers, grade your cold calls. Install them into Claude Code with one command, or upload them to a Claude Co-Work session. **You do not need the platform to use these.**
+2. **The platform.** The pipeline that pulls county distress data, enriches it through 10 steps, and pushes it into DataSift ready for sequential marketing. Requires a DataSift.ai account.
 
-**One pipeline, many inputs.** No matter how you get the data, it comes out the same way:
+Start with the skills. Most people never need anything else.
 
-```
-  Web Scrape (CAPTCHA sites)  ──┐
-  Scanned PDF Import (OCR)    ──┤
-  Courthouse Terminal Photos  ──┼──→  Enrichment Pipeline  ──→  DataSift Upload  ──→  Niche Sequential
-  Dropbox Auto-Polling        ──┤     (10 steps)                (automated)          Marketing
-  CSV Re-Import               ──┘
-```
+---
 
-### Data Intake (5 methods)
+## Install the skill library
 
-| Method | How It Works | Use Case |
-|--------|-------------|----------|
-| **Web Scrape** | Playwright browser automation with CAPTCHA solving | Public notice sites, county clerk portals |
-| **PDF Import** | pypdfium2 rendering + Tesseract OCR | Scanned tax sale lists, legal documents |
-| **Photo Import** | OpenCV preprocessing + OCR + LLM parsing | Phone photos of courthouse terminal screens |
-| **Dropbox Watch** | Auto-polls a Dropbox folder every 15 minutes | Runner uploads photos from the field, system processes automatically |
-| **CSV Re-Import** | Read existing data, re-enrich with latest APIs | Refresh stale records, merge datasets |
-
-All five methods produce the same `NoticeData` records and flow through the same enrichment pipeline.
-
-### Enrichment Pipeline (10 steps)
-
-Every record gets the same treatment, regardless of source:
-
-1. **Deduplicate** — same property in multiple notices? Keep the most recent
-2. **Vacant Land Filter** — remove parcels with no house number
-3. **Entity Filter** — flag LLC/Corp owners, research the person behind them
-4. **Probate Property Lookup** — 3-tier search: Tax API → Executor family → People search
-5. **Tax Delinquency** — parcel lookup, delinquent years + amount
-6. **Address Standardization** — Smarty USPS validation, ZIP+4, geocoding, vacancy detection
-7. **Commercial Filter** — remove commercial properties (RDI check)
-8. **Zillow Enrichment** — Zestimate, MLS status, equity estimate, property details
-9. **Obituary Search** — deceased owner detection, heir identification, decision-maker ranking
-10. **Data Validation** — catch garbage OCR, verify required fields, compute mailable flag
-
-### DataSift.ai Automation
-
-SiftStack is purpose-built for the DataSift CRM. After enrichment, records are automatically:
-- Formatted into 41-column DataSift CSV with tags, lists, and custom fields
-- Uploaded to DataSift via Playwright browser automation (5-step wizard)
-- Enriched with SiftMap property data (beds, baths, Zestimate)
-- Skip traced for phone numbers and emails (DataSift unlimited plan)
-- Routed into DataSift's niche sequential marketing campaigns (21 filter presets, 26 TCA sequences)
-
-### Deal Analysis Tools
-
-CLI tools for evaluating deals on the fly:
-
-- **Comp Analysis** — Two-Bucket ARV with 7-tab Excel workbook
-- **Rehab Estimator** — 4-tier room-by-room cost estimation
-- **Deal Analyzer** — MAO calculation, financing scenarios (HML/conventional), ROI projections
-- **Market Analysis** — Zip code scoring with 6 weighted factors
-- **Buyer Prospecting** — Cash buyer identification from county records
-- **Deep Prospecting** — 4-level research depth with PDF reports
-
-## Quick Start
+### Claude Code (one command)
 
 ```bash
-# Clone and install
-git clone https://github.com/YOUR_USERNAME/SiftStack.git
+# macOS / Linux
+curl -fsSL https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/install.py | python3 -
+
+# Windows PowerShell
+irm https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/install.py | python -
+```
+
+That downloads all 21 current skills into `~/.claude/skills/` and the 2 plugins into `~/.claude/plugins/`. Restart Claude Code and they are live. No clone, no `pip install`, no virtualenv. Python 3.9 or newer, standard library only.
+
+Prefer to read the script before running it? That is the right instinct:
+
+```bash
+curl -fsSL -o install.py https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/install.py
+less install.py
+python3 install.py
+```
+
+### Pick and choose
+
+```bash
+python3 install.py --list                                  # the catalog, with descriptions
+python3 install.py --only rehab-estimator comp-package     # just these
+python3 install.py --category "Deal Analysis"              # a whole category
+python3 install.py --dest .claude/skills                   # into a project, not your home dir
+python3 install.py --dry-run                               # report, write nothing
+```
+
+Re-running is safe. Anything already current is skipped, and a package is only swapped in after it downloads and unpacks cleanly, so a failed update cannot leave you with a half-written skill.
+
+### Claude Co-Work, Projects, and the claude.ai app
+
+Co-Work takes the packaged file rather than a folder. Download the `.skill` you want from [`dist/`](dist/) and upload it to your session or Project:
+
+```
+https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/rehab-estimator.skill
+```
+
+Every package in the catalog below is at that same path with its own name. `.plugin` files work the same way.
+
+### Point Claude at this repo and let it do the work
+
+If you are already in a Claude Code session, this is usually the fastest route:
+
+> Read https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/skills/manifest.json and install the Deal Analysis skills for me.
+
+The manifest is the machine-readable index of the whole library: every package, its category, its description, its download URL, and a SHA-256 of the exact bytes. It is what `install.py` reads, and it is regenerated by CI on every push so it cannot drift from what is actually published.
+
+---
+
+## The catalog
+
+21 current packages. `python3 install.py --list` prints this with full descriptions.
+
+### Deal Analysis
+
+| Package | What it does |
+|---|---|
+| `comp-package` | Boundary-filtered comps for one property. Pulls sold and active listings live, buckets each comp by condition, and produces a dual-track ARV that prices the same-bedroom base case separately from a labeled reconfiguration upside. Ships an Excel workbook. |
+| `rehab-estimator` | Room-by-room rehab costs across 4 tiers, with the locked Knox County master material list for exact SKU pricing. |
+| `deep-prospecting-v5` | Given a deceased owner, find the heirs and exactly who must sign to sell. SmartSkip relatives plus mandatory obituary research, about $0.24 per record. |
+| `probate-property-finder` | Find the real property behind a probate filing when all you have is a case number and a decedent name. |
+| `real-estate-comping` | The valuation method on its own: Two-Bucket ARV, adjustment tables, and disclosure vs non-disclosure state routing. |
+| `deal-analyzer` (plugin) | Comps plus rehab plus MAO plus financing in one pass, with exit strategy comparison. |
+
+### Market Intelligence
+
+| Package | What it does |
+|---|---|
+| `sift-market-research` | Zip code scoring off DataSift Market Finder, 6 weighted factors, delivered as a 7-sheet Excel report. |
+| `first-market-county-data` | Where to actually pull county distress lists for any US county, across all 7 notice types, including the FOIA templates. |
+| `buyer-prospector` | Build a cash buyer list for any county, categorize the LLCs and trusts, and resolve the humans behind them. |
+
+### Operations
+
+| Package | What it does |
+|---|---|
+| `phone-validator` | Trestle scoring with 5 dial-priority tiers and a litigator risk check. |
+| `text-touch-builder` | A four-touch pre-call SMS sequence per record, varied like cold email so no two reads as a form letter. Refuses any message that sounds machine-written. |
+| `sequential-presets` | Design and build the sequential marketing filter presets in DataSift. |
+| `caller-reputation-monitor` | Keep your outbound numbers out of carrier "Spam Likely" labels. |
+| `playbook-creator` | Turn a transcript or a recording into a real SOP with process maps. |
+| `candidate-intake` | Aggregate job applicants from Indeed, Gmail, and Facebook into one scored master list. |
+
+### Coaching and Performance
+
+| Package | What it does |
+|---|---|
+| `cold-call-coach` | Pull your real call recordings, transcribe them with tonality notes, and grade every conversation against the cold-calling rubric. |
+| `lead-manager-coach` | Same engine, graded on qualification: the 4 pillars, roadblocks, next-action discipline. |
+| `closer-coach` | Same engine, graded on the money conversation, the offer stack, and commitment locking. |
+| `kpi-engine` | Dials, connect rates, correct numbers, leads, and funnel pacing straight from your own DataSift account. |
+
+### CRM
+
+| Package | What it does |
+|---|---|
+| `sift-sequences` | 26 sequence templates and how to build them. |
+| `sift-operations` (plugin) | The CRM operations encyclopedia: SiftLine boards, drip campaigns, tasks, filters, tags, skip trace workflows. |
+
+Two superseded packages (`deep-prospecting`, `deep-prospecting-v4`) stay in the repo so old runs still resolve. The installer skips them unless you ask for one by name. Use `deep-prospecting-v5`, which is about 5x cheaper and returns relatives on records where v4 returned nothing.
+
+### What a skill needs from you
+
+Most skills call a paid API and read the key from your own environment. They degrade rather than fail: a missing key means that step is skipped and the run says so.
+
+| Skill group | Wants | Roughly |
+|---|---|---|
+| Comping, deal analysis | `OPENWEBNINJA_API_KEY` | 100 free lookups/month |
+| Deep prospecting | SmartSkip, Tracerfy, Trestle | about $0.24 per record end to end |
+| Phone validation | `TRESTLE_API_KEY` | $0.015 per number |
+| Coaching, KPI | Your SmrtPhone and DataSift logins | included in those plans |
+
+---
+
+## The agent system
+
+The platform is 54 agents across 8 divisions. [**docs/AGENT-MAP.md**](docs/AGENT-MAP.md) is the full map: what triggers each one, what it touches, where a human still signs off, and the specific trap each one exists to avoid.
+
+```
+  Web scrape (gated site)   ──┐
+  Scanned PDF (OCR)         ──┤
+  Courthouse photos         ──┼──►  Enrichment  ──►  DataSift  ──►  Sequential
+  Dropbox auto-poll         ──┤     (10 steps)       (API)          marketing
+  CSV re-import             ──┘
+                                          │
+                                          ▼
+                          Deal analysis ──► Dispo ──► Lender package
+```
+
+Divisions: Data Acquisition, Enrichment and Identity, Deal Analysis, Dispo and Buyers, Outreach and Marketing, CRM Operations, Market Intelligence, Coaching and Performance.
+
+Every gated action routes to a human. Outreach identity is anchored to the assigned person rather than a company name, and no agent sends a dollar figure to a seller or a buyer without a person approving it.
+
+---
+
+## The platform
+
+Requires a DataSift.ai account. Works with any market, any county, any state.
+
+### Quick start
+
+```bash
+git clone https://github.com/DataSift-Ty-Personal/SiftStack.git
 cd SiftStack
 pip install -r requirements.txt
 playwright install chromium
+cp .env.example .env          # then fill in your keys
 
-# Configure credentials
-cp .env.example .env
-# Edit .env with your API keys (see Configuration below)
-
-# Run your first scrape
-python src/main.py daily --counties Knox
-
-# Or import a scanned PDF
-python src/main.py pdf-import --pdf-path ./tax_sale.pdf --pdf-county Knox
-
-# Or process courthouse photos
-python src/main.py photo-import --folder ./photos --photo-county Knox --photo-type probate
-
-# Full automated pipeline (scrape + enrich + upload to DataSift + notify Slack)
-python src/main.py daily --upload-datasift --notify-slack
+python src/main.py daily                          # new notices since last run
+python src/main.py daily --upload-datasift        # scrape, enrich, upload
+python src/main.py daily --counties Knox --types foreclosure,probate
 ```
 
-## Adapting to Your Market
+### Data intake
 
-SiftStack is built for Knox/Blount County, TN but the architecture is market-agnostic. Use any county name — the pipeline accepts it and degrades gracefully if a county-specific API (like tax lookup) isn't available:
+| Method | How it works | Use case |
+|---|---|---|
+| Web scrape | Playwright plus a Cloudflare Turnstile solver | Public notice sites, county clerk portals |
+| PDF import | pypdfium2 rendering plus Tesseract OCR | Scanned tax sale lists, legal documents |
+| Photo import | OpenCV preprocessing, OCR, LLM parse | Phone photos of courthouse terminal screens |
+| Dropbox watch | Polls a folder every 15 minutes | A runner uploads from the field, the system processes |
+| CSV re-import | Re-enrich existing records | Refresh stale data, merge datasets |
 
-1. **Saved Searches** — Edit `SAVED_SEARCHES` in `src/config.py` to match your county's notice site
-2. **Tax API** — The tax enricher (`src/tax_enricher.py`) queries your county's property tax API. Knox is built in; add yours alongside it
-3. **Notice Parser** — The regex patterns in `src/notice_parser.py` handle 7 notice types: foreclosure, tax sale, tax delinquent, probate, eviction, code violation, divorce
-4. **Photo Import** — Works with any courthouse terminal in any county — the OCR + LLM pipeline is county-independent
-5. **Dropbox Watch** — Create folders for your county (`/YourCounty/foreclosure/`, etc.) and the watcher picks them up automatically
-6. **DataSift Presets** — The 21 filter presets and 26 sequence templates are reusable across markets
+All five produce the same records and flow through the same enrichment pipeline.
 
-The enrichment pipeline (Smarty, Zillow, obituary search, skip trace) works nationwide — no market-specific configuration needed.
+### Enrichment pipeline
 
-## Buy Box Configuration
+Deduplicate, filter vacant land, flag entity owners, resolve probate property, tax delinquency, address standardization (Smarty), property data (Zillow), obituary and heir research, skip trace (Tracerfy), phone scoring (Trestle).
 
-By default, SiftStack filters out property types that don't fit a typical residential wholesaling buy box. **Your strategy may be different.** Use these flags to match your buy box:
+Every API is optional. A missing key skips that step and the run reports it.
 
-### Property Type Filters
+### Scheduled cloud pull
 
-| Flag | Default | What It Does |
-|------|---------|-------------|
-| `--include-vacant` | OFF (removed) | Keep vacant land parcels. Turn ON for land deals, subdivisions, infill lots. |
-| `--include-commercial` | OFF (removed) | Keep commercial properties. Turn ON for commercial investing, mixed-use, multifamily. |
-| `--include-entities` | OFF (removed) | Keep LLC/Corp/Trust-owned records. Turn ON if you market to entity owners directly. |
-
-### Examples
+The county pull runs unattended on Fly.io rather than on a workstation. `deploy/FTM_RUNBOOK.md` is the runbook.
 
 ```bash
-# Default — residential only, no vacant land, no commercial, no entities
-python src/main.py daily --upload-datasift
-
-# Land investor — keep vacant parcels
-python src/main.py daily --include-vacant --upload-datasift
-
-# Commercial investor — keep everything
-python src/main.py daily --include-vacant --include-commercial --include-entities --upload-datasift
-
-# Entity researcher — keep entities AND research the person behind them
-python src/main.py daily --include-entities --research-entities --upload-datasift
+python src/ftm_runner.py --doctor        # credentials, egress, state, saved searches
+python src/ftm_runner.py --max-notices 2 # bounded dry run, writes nothing
+python src/ftm_runner.py --commit        # the real thing
+python src/ftm_schedule.py --next        # next 5 fire times
 ```
 
-### Apify Actor (Cloud)
+**The scrape is gated on egress IP, not on code.** From an office IP the notice page carries no CAPTCHA at all, just a refusal to serve. From a datacenter IP it serves the normal challenge. A blocked run exits `3` rather than `1`, because no retry fixes it and treating it as a normal failure sends you debugging the parser. Run `--doctor` before anything else.
 
-The same toggles are available in the Apify Console under your Actor's input configuration:
-- **Include Vacant Land** — checkbox
-- **Include Commercial Properties** — checkbox
-- **Include Entity-Owned Properties** — checkbox
+**Zero notices is a failure, not a quiet day.** There is deliberately no inference that a missing challenge means a cleared gate. That exact reasoning reported 13 consecutive dead runs as successful over 19 days.
 
-These apply to every scheduled run.
+### Deal analysis
 
-## Configuration
+```bash
+# Comps, ARV, rehab, buyers, into one workbook
+python src/comp_package.py --address "158 Old State Rd" --zip 37914 \
+    --beds 2 --baths 1 --sqft 1946 --bbox "35.996,36.016,-83.895,-83.840"
 
-### Required (for web scraping)
+# The hour after you walk a house: 9 sheets, anchored to the live CRM record
+python src/post_walkthrough.py --walkthrough-template
+python src/post_walkthrough.py --address "..." --walkthrough walk.json
+
+# The 8-piece private lender package
+python src/lender_package.py --spec deals/EXAMPLE_lender_spec.json
+python src/lender_docs.py    --spec deals/EXAMPLE_lender_spec.json
+```
+
+`deals/EXAMPLE_lender_spec.json` is a scrubbed, working spec. Copy it and fill it in.
+
+### Configuration
+
+Every variable is documented in `.env.example`. The ones that matter most:
+
 | Variable | Service | Cost |
-|----------|---------|------|
-| `TNPN_EMAIL` / `TNPN_PASSWORD` | Your state's public notice site | Free account |
-| `CAPTCHA_API_KEY` | [2Captcha](https://2captcha.com) | ~$3/1,000 solves |
+|---|---|---|
+| `DATASIFT_EMAIL` / `DATASIFT_PASSWORD` | DataSift.ai | Account required |
+| `CAPTCHA_API_KEY` | 2Captcha | about $3 per 1,000 solves |
+| `SMARTY_AUTH_ID` / `SMARTY_AUTH_TOKEN` | Smarty | 250 free/month |
+| `OPENWEBNINJA_API_KEY` | OpenWeb Ninja | 100 free/month |
+| `ANTHROPIC_API_KEY` | Anthropic | about $0.001 per record |
+| `TRACERFY_API_KEY` | Tracerfy | $0.02 per record |
+| `TRESTLE_API_KEY` | Trestle | $0.015 per phone |
+| `SLACK_WEBHOOK_URL` | Slack or Discord | Free |
 
-### Enrichment APIs (optional, pipeline degrades gracefully)
-| Variable | Service | Cost | What It Adds |
-|----------|---------|------|-------------|
-| `SMARTY_AUTH_ID` / `TOKEN` | [Smarty](https://smarty.com) | 250 free/month | USPS validation, geocoding, vacancy |
-| `OPENWEBNINJA_API_KEY` | [OpenWeb Ninja](https://openwebninja.com) | 100 free/month | Zestimate, MLS, equity |
-| `ANTHROPIC_API_KEY` | [Anthropic](https://console.anthropic.com) | ~$0.001/record | LLM parsing, obituary search |
-| `TRACERFY_API_KEY` | [Tracerfy](https://tracerfy.com) | $0.02/record | Phones, emails, mailing addresses |
-| `TRESTLE_API_KEY` | [Trestle](https://trestleiq.com) | $0.015/phone | Phone scoring (5-tier dial priority) |
+Running one county daily costs roughly $40 per month in API spend.
 
-### DataSift + Notifications (required for full pipeline)
-| Variable | Service | What It Does |
-|----------|---------|-------------|
-| `DATASIFT_EMAIL` / `PASSWORD` | [DataSift.ai](https://datasift.ai) | Auto-upload + SiftMap enrich + skip trace |
-| `SLACK_WEBHOOK_URL` | Slack / Discord | Daily summaries + error alerts |
+### Adapting to your market
 
-### All Intake Methods (optional)
-| Variable | Service | What It Does |
-|----------|---------|-------------|
-| `DROPBOX_APP_KEY` / `SECRET` / `TOKEN` | [Dropbox](https://www.dropbox.com/developers) | Auto-poll for courthouse photos |
-| `ANCESTRY_EMAIL` / `PASSWORD` | [Ancestry.com](https://ancestry.com) | SSDI + obituary collection |
+The architecture is market-agnostic. Knox and Blount County, TN are what it is proven on.
 
-Every API is optional. Missing a key? That enrichment step is skipped and the pipeline continues.
+1. Edit `SAVED_SEARCHES` in `src/config.py` for your county's notice site.
+2. Add your county's tax API alongside Knox in `src/tax_enricher.py`.
+3. The parser handles 7 notice types already: foreclosure, tax sale, tax delinquent, probate, eviction, code violation, divorce.
+4. Photo import and the enrichment pipeline are county-independent and work nationwide.
 
-## CLI Commands
+---
+
+## Contributing to the skill library
+
+The source of truth is the folder, not the ZIP. `skills/<name>/` is what you edit and what gets reviewed; `dist/<name>.skill` is a build product.
 
 ```bash
-# ── Data Acquisition ────────────────────────────────────────────
-python src/main.py daily                    # Scrape new notices since last run
-python src/main.py historical               # Scrape last 12 months
-python src/main.py pdf-import --pdf-path FILE --pdf-county Knox
-python src/main.py photo-import --folder DIR --photo-county Knox --photo-type probate
-python src/main.py dropbox-watch            # Auto-poll Dropbox for new photos
-python src/main.py csv-import --csv-path FILE
-
-# ── Deal Analysis ───────────────────────────────────────────────
-python src/main.py comp --address "123 Main St"
-python src/main.py rehab --address "123 Main St" --tier 2
-python src/main.py analyze-deal --address "123 Main St" --purchase-price 150000
-python src/main.py market-analysis --counties Knox
-python src/main.py buyer-prospect --counties Knox
-python src/main.py deep-prospect --csv-path output/records.csv --depth 3
-
-# ── CRM Operations ─────────────────────────────────────────────
-python src/main.py manage-presets --discover
-python src/main.py manage-sold --months-back 12
-python src/main.py phone-validate --list-name "Foreclosure"
-python src/main.py lead-manage --lead-action qualify
-
-# ── Workflow Tools ──────────────────────────────────────────────
-python src/main.py setup-sequences --dry-run
-python src/main.py niche-sequential --channel sms --day 1
-python src/main.py playbook --blueprint wholesale --market knoxville
+# edit skills/rehab-estimator/SKILL.md, then
+python tools/build_skills.py --build --manifest
+python tools/build_skills.py --verify        # CI runs this
 ```
 
-### Common Flags
-```bash
---upload-datasift          # Upload results to DataSift.ai
---notify-slack             # Send run summary to Slack/Discord
---skip-smarty              # Skip address standardization
---skip-zillow              # Skip Zillow enrichment
---skip-obituary            # Skip deceased owner detection
---split                    # Separate CSV per county + notice type
---verbose / -v             # Debug logging
-```
+CI blocks a merge if a distributed archive drifts from its source, if the manifest is stale, if any `SKILL.md` is missing its `name` or `description` frontmatter, or if anything that looks like a credential appears in a package.
 
-## Cloud Deployment (Apify)
+That frontmatter check exists because a skill with no frontmatter is silently undiscoverable. Claude has nothing to match a request against, so it simply never fires and no error is ever raised. One skill shipped that way for months.
 
-SiftStack runs as an [Apify Actor](https://apify.com) for scheduled daily automation:
-
-```bash
-# Install Apify CLI
-npm install -g apify-cli
-
-# Deploy
-apify login
-apify push
-
-# Configure schedule + secrets in Apify Console
-# The Actor runs the full pipeline: scrape → enrich → skip trace → DataSift upload → Slack notify
-```
-
-## Architecture
-
-```
-src/
-├── main.py                  # CLI entry + Apify Actor entry
-├── scraper.py               # Playwright web automation + CAPTCHA
-├── captcha_solver.py        # 2Captcha reCAPTCHA v2 integration
-├── notice_parser.py         # Regex extraction (7 notice types)
-├── foreclosure_filter.py    # Trustee sale language matching
-├── pdf_importer.py          # Scanned PDF → OCR → parse
-├── photo_importer.py        # Courthouse photos → OpenCV → OCR → LLM
-├── dropbox_watcher.py       # Cursor-based Dropbox polling
-├── image_utils.py           # Shared OCR utilities (Tesseract)
-├── llm_parser.py            # Claude Haiku structured extraction
-├── llm_client.py            # Multi-backend LLM (Anthropic/Ollama/OpenRouter)
-├── enrichment_pipeline.py   # 10-step canonical pipeline
-├── address_standardizer.py  # Smarty USPS batch standardization
-├── property_enricher.py     # Zillow via OpenWeb Ninja API
-├── tax_enricher.py          # County tax API (parcel, delinquency)
-├── property_lookup.py       # Async 3-tier probate property search
-├── obituary_enricher.py     # Deceased detection + heir identification
-├── ancestry_enricher.py     # Ancestry.com SSDI automation
-├── entity_researcher.py     # LLC/Corp person extraction
-├── tracerfy_skip_tracer.py  # Batch skip trace (phones + emails)
-├── phone_validator.py       # Trestle 5-tier scoring
-├── data_formatter.py        # CSV dedup + export
-├── datasift_formatter.py    # 41-column DataSift CSV builder
-├── datasift_uploader.py     # Full DataSift automation (Playwright)
-├── comp_analyzer.py         # Two-Bucket ARV analysis
-├── deal_analyzer.py         # MAO/ROI/financing scenarios
-├── rehab_estimator.py       # 4-tier room-by-room costs
-├── market_analyzer.py       # Zip code scoring (6 weights)
-├── buyer_prospector.py      # Cash buyer identification
-├── deep_prospector.py       # 4-level research + PDF reports
-├── lead_manager.py          # 4 Pillars qualification + STABM
-├── sequence_templates.py    # 26 TCA sequence definitions
-├── niche_sequential.py      # 21 filter preset orchestration
-├── playbook_generator.py    # SOP/script/checklist generator
-├── report_generator.py      # PDF deep prospecting reports
-├── excel_exporter.py        # Multi-sheet Excel workbooks
-├── drive_uploader.py        # Google Drive upload
-├── slack_notifier.py        # Slack/Discord notifications
-└── config.py                # Environment config + constants
-```
-
-## Notice Types Supported
-
-| Type | Source | What to Look For |
-|------|--------|-----------------|
-| Foreclosure | Web scrape, PDF | Trustee sale, deed of trust default |
-| Tax Sale | Web scrape, PDF | Delinquent property tax auction |
-| Tax Delinquent | Web scrape, PDF | Tax lien, unpaid property taxes |
-| Probate | Web scrape, Photos | Estate administration, executor appointment |
-| Eviction | Photos | Landlord-tenant, detainer warrant |
-| Code Violation | Photos | Building code, compliance deadline |
-| Divorce | Photos | Property division, marital assets |
-
-## API Cost Estimates
-
-Running daily in one county (Knox, TN — ~20-40 new notices/day):
-
-| Service | Monthly Cost | What It Does |
-|---------|-------------|-------------|
-| 2Captcha | ~$3 | CAPTCHA solving (~30 notices × 30 days) |
-| Smarty | Free | 250 lookups/month covers daily runs |
-| OpenWeb Ninja | Free | 100 lookups/month covers most records |
-| Anthropic (Haiku) | ~$2 | LLM parsing + obituary search |
-| Tracerfy | ~$20 | Skip trace @ $0.02/record |
-| Trestle | ~$15 | Phone scoring @ $0.015/phone |
-| **Total** | **~$40/month** | Full pipeline, one county |
-
-Requires a [DataSift.ai](https://datasift.ai) subscription ($97/month for unlimited skip trace plan).
-
-## REI Skill Library
-
-13 Claude Co-Work skill files for the DataSift community, distributed at [learn.datasift.ai/claude-skills-rei](https://learn.datasift.ai/claude-skills-rei). Each skill teaches Claude a specific REI workflow:
-
-| Skill | What It Does |
-|-------|-------------|
-| Market Research | Zip code scoring, Market Finder reports |
-| County Data | Notice extraction for all 7 types |
-| Buyer Prospector | Cash buyer identification from public records |
-| Real Estate Comping | Two-Bucket ARV with adjustment tables |
-| Rehab Estimator | 4-tier room-by-room cost estimation |
-| Deal Analyzer | Combined comp + rehab + MAO + financing |
-| Deep Prospecting | 4-level heir research framework |
-| Probate Property Finder | 3-tier property lookup for decedents |
-| Phone Validator | Trestle scoring with dial priority tiers |
-| Sequential Presets | 21 niche marketing filter presets |
-| Sift Sequences | 26 TCA automation templates |
-| Sift Operations | CRM operations encyclopedia |
-| Playbook Creator | SOP generator from transcripts |
+1. Fork, branch, commit.
+2. Run `python tools/build_skills.py --build --manifest` before you push.
+3. Open a pull request.
 
 ## License
 
-MIT License. See [LICENSE](LICENSE) for details.
-
-## Contributing
-
-1. Fork the repo
-2. Create a feature branch (`git checkout -b feature/your-market`)
-3. Commit your changes
-4. Push to the branch (`git push origin feature/your-market`)
-5. Open a Pull Request
+MIT. See [LICENSE](LICENSE).
 
 Built by [DataSift.ai](https://datasift.ai) for the REI community.

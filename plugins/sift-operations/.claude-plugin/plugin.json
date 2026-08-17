@@ -1,0 +1,9 @@
+{
+  "name": "sift-operations",
+  "version": "1.0.0",
+  "description": "Comprehensive REI Sift operations encyclopedia covering sequences, sequential presets, SiftLine boards, drip campaigns, events, tasks, filters, tags, skip tracing workflows, and step-by-step operational walkthroughs",
+  "author": {
+    "name": "DataFlik"
+  },
+  "keywords": ["sift", "sequences", "presets", "workflows", "automation", "real-estate", "wholesaling"]
+}

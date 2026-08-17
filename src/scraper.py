@@ -9,7 +9,7 @@ from pathlib import Path
 
 from playwright.async_api import Page, TimeoutError as PwTimeout, async_playwright
 
-from captcha_solver import solve_captcha_and_view
+from captcha_solver import NoticeAccessBlocked, solve_captcha_and_view
 import config
 from config import (
     BASE_URL,
@@ -91,13 +91,9 @@ async def _scrapfly_notice(notice_id: str, source_url: str, search, llm_api_key)
     client = _get_scrapfly_client()
     if client is None:
         return None
-    want_shot = (
-        config.CAPTURE_NOTICE_SCREENSHOTS
-        and search.notice_type in config.NOTICE_SCREENSHOT_TYPES
-    )
     try:
         res = client.fetch_notice(
-            notice_id or source_url, session=_SCRAPFLY_SESSION, want_screenshot=want_shot,
+            notice_id or source_url, session=_SCRAPFLY_SESSION, want_screenshot=False,
         )
     except Exception:
         logger.warning("  Scrapfly fetch raised for ID=%s", notice_id, exc_info=True)
@@ -110,16 +106,6 @@ async def _scrapfly_notice(notice_id: str, source_url: str, search, llm_api_key)
     notice = await parse_notice_html(
         res.content_html, search.county, search.notice_type, source_url, llm_api_key,
     )
-    if res.screenshot_bytes:
-        try:
-            from notice_screenshot import _screenshot_filename
-            out_dir = config.NOTICE_SCREENSHOT_DIR
-            out_dir.mkdir(parents=True, exist_ok=True)
-            shot_path = out_dir / _screenshot_filename(notice_id, notice.address)
-            shot_path.write_bytes(res.screenshot_bytes)
-            notice.notice_screenshot_path = str(shot_path)
-        except Exception:
-            logger.debug("  Saving Scrapfly screenshot failed", exc_info=True)
     return notice
 
 
@@ -228,7 +214,12 @@ async def _set_per_page(page: Page) -> None:
         if current != str(RESULTS_PER_PAGE):
             logger.info("Setting results per page to %d", RESULTS_PER_PAGE)
             await page.select_option(SEL_PER_PAGE_DROPDOWN, str(RESULTS_PER_PAGE))
-            await page.wait_for_load_state("networkidle")
+            # domcontentloaded + settle: networkidle can hang indefinitely
+            # through a proxy, and an unbounded wait here stalls the run.
+            try:
+                await page.wait_for_load_state("domcontentloaded", timeout=30_000)
+            except PwTimeout:
+                logger.warning("  Per-page postback slow to settle; continuing")
             await delay()
             await delay()  # extra wait — ASP.NET DOM rebuild after postback
 
@@ -261,6 +252,60 @@ async def _extract_published_date(row_text: str) -> str:
     return ""
 
 
+async def _apply_date_window(page: Page, date_from: str, date_to: str) -> bool:
+    """Override the selected search's date filter with an explicit range.
+
+    Selecting a saved search populates the ad-hoc form with that search's own
+    keywords and county checkboxes and sets "last 12 months". This switches the
+    date control to the explicit range and re-submits, keeping every other
+    criterion intact.
+
+    THIS IS THE ONLY WAY TO REACH OLDER NOTICES. The site truncates any result
+    set at 20 pages / 1000 rows, newest first, so a 12-month search simply loses
+    its tail: Knox probate and Knox foreclosure both hit that ceiling. Slicing
+    the window month by month keeps every slice under the cap.
+
+    Dates are M/D/YYYY, the format the form itself uses.
+    """
+    ok = await page.evaluate(
+        """([f, t]) => {
+            const setVal = (id, v) => {
+                const el = document.getElementById(id);
+                if (!el) return false;
+                // ASP.NET reads the posted value, but the page's own JS listens
+                // for input/change, so use the native setter and fire both.
+                const setter = Object.getOwnPropertyDescriptor(
+                    window.HTMLInputElement.prototype, 'value').set;
+                setter.call(el, v);
+                el.dispatchEvent(new Event('input', {bubbles: true}));
+                el.dispatchEvent(new Event('change', {bubbles: true}));
+                return true;
+            };
+            const radio = document.getElementById('ctl00_ContentPlaceHolder1_as1_rbRange');
+            if (!radio) return false;
+            radio.checked = true;
+            radio.dispatchEvent(new Event('click', {bubbles: true}));
+            radio.dispatchEvent(new Event('change', {bubbles: true}));
+            return setVal('ctl00_ContentPlaceHolder1_as1_txtDateFrom', f)
+                && setVal('ctl00_ContentPlaceHolder1_as1_txtDateTo', t);
+        }""",
+        [date_from, date_to],
+    )
+    if not ok:
+        logger.error("Date-range controls not found; cannot window this search")
+        return False
+
+    try:
+        async with page.expect_navigation(wait_until="domcontentloaded", timeout=45000):
+            await page.click(config.SEL_SEARCH_GO)
+    except Exception:
+        if "search" not in page.url.lower():
+            logger.error("Windowed search submit failed (%s .. %s)", date_from, date_to)
+            return False
+    await delay()
+    return True
+
+
 async def run_saved_search(
     page: Page,
     search: SavedSearch,
@@ -272,6 +317,8 @@ async def run_saved_search(
     seen_ids: dict[str, str] | None = None,
     captcha_failed_ids: dict[str, dict] | None = None,
     target_ids: set[str] | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
 ) -> list[NoticeData]:
     """Select a saved search from the dropdown, paginate, and scrape each notice.
 
@@ -284,10 +331,16 @@ async def run_saved_search(
                        to push results incrementally.
         start_page: Page number to start scraping from (default 1). Use this to
                     resume a previous run without re-scraping earlier pages.
+        date_from/date_to: M/D/YYYY window that overrides the saved search's own
+                    date filter. Required to reach anything older than the site's
+                    1000-row result cap. See _apply_date_window.
 
     Returns list of parsed and filtered NoticeData.
     """
-    logger.info("Running saved search: %s", search.saved_search_name)
+    label = search.saved_search_name
+    if date_from and date_to:
+        label = f"{label} [{date_from} .. {date_to}]"
+    logger.info("Running saved search: %s", label)
 
     # Navigate to dashboard and select the saved search from dropdown
     if not await _navigate_to_dashboard(page):
@@ -297,19 +350,42 @@ async def run_saved_search(
         else:
             return []
 
-    # Selecting from the dropdown triggers an ASP.NET postback → full page navigation.
-    # Must wait for navigation explicitly or the execution context gets destroyed.
+    # Selecting from the dropdown triggers an ASP.NET postback → full page
+    # navigation. Wait for it explicitly or the execution context is destroyed
+    # mid-call.
+    #
+    # domcontentloaded, NOT networkidle. The results grid is server-rendered and
+    # present at DOM parse, but the page keeps background chatter going (the
+    # translate widget, analytics), so through a proxy networkidle regularly
+    # never settles and the whole search was abandoned after a 30s timeout with
+    # "Could not select ... from dropdown", on a search that was working fine.
+    # Confirmation is the URL + grid check below, not the load state.
     try:
-        async with page.expect_navigation(wait_until="networkidle", timeout=30000):
+        async with page.expect_navigation(wait_until="domcontentloaded", timeout=45000):
             await page.select_option(
                 SEL_SAVED_SEARCHES_DROPDOWN,
                 label=search.saved_search_name,
             )
     except Exception:
-        logger.error("Could not select '%s' from dropdown", search.saved_search_name)
-        return []
+        # The postback may still have landed even though the wait gave up.
+        # Only treat it as a failure if we are not on the results page.
+        if "search" not in page.url.lower():
+            logger.error(
+                "Could not select '%s' from dropdown (still on %s)",
+                search.saved_search_name, page.url,
+            )
+            return []
+        logger.warning(
+            "Navigation wait timed out for '%s' but the results page loaded, continuing",
+            search.saved_search_name,
+        )
 
     await delay()
+
+    # Re-submit the same criteria over an explicit date window (backfill).
+    if date_from and date_to:
+        if not await _apply_date_window(page, date_from, date_to):
+            return []
 
     # Verify we're on search results
     if "search" not in page.url.lower():
@@ -340,9 +416,15 @@ async def run_saved_search(
 
     while True:
         logger.info("  Scraping page %d/%d", current_page, total_pages)
+        # stop_after bounds work WITHIN the page. Without it max_notices was
+        # only checked between pages, so `--max-notices 1` still ground through
+        # all 50 results on page 1, paying for 50 gate solves and 50 screenshots
+        # to honor a cap of one. That matters most on the unattended cloud run,
+        # where max_notices is the cost ceiling.
         page_notices = await _scrape_results_page(
             page, search, since_date, llm_api_key, seen_ids, captcha_failed_ids,
             target_ids=target_ids,
+            stop_after=(max_notices - len(notices)) if max_notices else 0,
         )
         notices.extend(page_notices)
 
@@ -488,18 +570,29 @@ async def _scrape_results_page(
                     logger.debug("  Skipping old notice (%s < %s)", pub_date, since_date)
                     break
 
-                # Backfill: read the notice ID from the row and skip non-targets
-                # WITHOUT clicking (the ID is in the row HTML), so we avoid slow
-                # detail navigation for everything except the targets.
-                if target_ids is not None:
-                    row_html = ""
-                    try:
-                        row_html = await row.evaluate("el => el.innerHTML")
-                    except Exception:
-                        pass
+                # The notice ID is in the row's own HTML, so both the target
+                # filter and the cross-run dedup can be decided WITHOUT opening
+                # the detail page. That matters most on a resumed backfill:
+                # thousands of already-captured notices are skipped for the cost
+                # of a regex instead of a page load each (roughly 5s -> 0s), so
+                # re-running a month range is cheap rather than a fresh 19 hours.
+                row_id = ""
+                try:
+                    row_html = await row.evaluate("el => el.innerHTML")
                     m = re.search(r"ID=(\d+)", row_html)
-                    if not m or m.group(1) not in target_ids:
-                        break  # not a target; move to next result without clicking
+                    row_id = m.group(1) if m else ""
+                except Exception:
+                    pass
+
+                if target_ids is not None:
+                    if not row_id or row_id not in target_ids:
+                        break  # not a target; move on without clicking
+
+                # Cross-run dedup, decided from the grid. Bypassed during a
+                # targeted backfill so already-seen targets re-process.
+                elif seen_ids is not None and row_id and row_id in seen_ids:
+                    logger.debug("  Skipping already-processed notice ID=%s (grid)", row_id)
+                    break  # next result, no navigation
 
                 # Click the View button → navigates to Details.aspx.
                 # domcontentloaded (not networkidle): the detail page is
@@ -616,18 +709,11 @@ async def _scrape_results_page(
                 elif match_address and not _address_matches(match_address, notice.address):
                     logger.debug("  Skipping non-matching address: %s", notice.address)
                 else:
-                    # Capture a proof-of-source screenshot of the live notice
-                    # page before navigating back (foreclosures only by default).
-                    # Best-effort: never let a screenshot failure drop a record.
-                    if (config.CAPTURE_NOTICE_SCREENSHOTS
-                            and notice.notice_type in config.NOTICE_SCREENSHOT_TYPES):
-                        from notice_screenshot import capture_notice_screenshot
-                        shot = await capture_notice_screenshot(
-                            page, notice_id=notice_id, address=notice.address,
-                            owner_name=notice.owner_name, auction_date=notice.auction_date,
-                        )
-                        if shot:
-                            notice.notice_screenshot_path = str(shot)
+                    # Proof-of-source screenshots were retired 2026-08-14: the
+                    # team no longer uses them for anything sourced from TN
+                    # Public Notice. Capturing one was the slowest step in a
+                    # foreclosure notice, so dropping it materially shortens a
+                    # backfill. The tooling is kept in archive/notice_screenshots/.
                     notices.append(notice)
                     logger.debug("  Kept notice: %s", notice.source_url)
 
@@ -653,6 +739,11 @@ async def _scrape_results_page(
                     pass
                 await delay()
 
+            except NoticeAccessBlocked:
+                # Not a per-notice failure: the site is refusing this IP for
+                # every notice. Abort the whole run instead of grinding the
+                # remaining results (and every later search) against a wall.
+                raise
             except Exception:
                 logger.exception("  Error on result %d (attempt %d/%d)", idx + 1, attempt, MAX_RETRIES)
                 # Only go back if we actually navigated away from search results
@@ -777,7 +868,12 @@ async def _is_session_valid(page: Page) -> bool:
     """Check if saved cookies give us a valid logged-in session."""
     try:
         await page.goto(SMART_SEARCH_URL)
-        await page.wait_for_load_state("networkidle")
+        # Bounded, and domcontentloaded: an unbounded networkidle wait here made
+        # a healthy session look invalid and forced an unnecessary re-login.
+        try:
+            await page.wait_for_load_state("domcontentloaded", timeout=30_000)
+        except PwTimeout:
+            pass
         # If we land on the dashboard, session is valid
         if "smartsearch" in page.url.lower():
             dropdown = await page.query_selector(SEL_SAVED_SEARCHES_DROPDOWN)
@@ -996,6 +1092,102 @@ async def scrape_by_keywords(
     return all_notices
 
 
+async def list_saved_searches(proxy_url: str | None = None) -> list[str]:
+    """Log in and return the exact option labels in the Saved Searches dropdown.
+
+    SAVED_SEARCHES entries must match these labels character for character, so
+    guessing a name silently scrapes nothing. Run this whenever a search is added
+    or renamed on the site:
+
+        python src/main.py list-searches
+    """
+    labels: list[str] = []
+    async with async_playwright() as p:
+        launch_opts: dict = {"headless": True}
+        if proxy_url:
+            from urllib.parse import urlparse
+            parsed = urlparse(proxy_url)
+            proxy_cfg: dict = {
+                "server": f"{parsed.scheme}://{parsed.hostname}:{parsed.port}",
+            }
+            if parsed.username:
+                proxy_cfg["username"] = parsed.username
+            if parsed.password:
+                proxy_cfg["password"] = parsed.password
+            launch_opts["proxy"] = proxy_cfg
+
+        browser = await p.chromium.launch(**launch_opts)
+        context = await browser.new_context(
+            user_agent=(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/120.0.0.0 Safari/537.36"
+            )
+        )
+        context.set_default_timeout(60_000)
+        await _load_cookies(context)
+        page = await context.new_page()
+
+        try:
+            if not await _is_session_valid(page):
+                if not await login(page):
+                    logger.error("Login failed, cannot list saved searches")
+                    return []
+                await _save_cookies(context)
+
+            if not await _navigate_to_dashboard(page):
+                logger.error("Could not reach the Smart Search dashboard")
+                return []
+
+            labels = await page.eval_on_selector_all(
+                f"{SEL_SAVED_SEARCHES_DROPDOWN} option",
+                "els => els.map(e => e.textContent.trim()).filter(Boolean)",
+            )
+        finally:
+            await browser.close()
+
+    return labels
+
+
+def month_windows(months: int, end: datetime | None = None,
+                  offset: int = 0) -> list[tuple[str, str]]:
+    """Calendar-month (from, to) pairs in M/D/YYYY, oldest first.
+
+    The site caps any result set at 20 pages / 1000 rows newest-first, so a
+    12-month search silently loses its tail. Month slices keep every request
+    well under that ceiling: Knox probate runs about 150 notices a month and
+    Knox foreclosure about 100, against a 1000-row cap.
+
+    Oldest first on purpose. The newest month is the one the daily run already
+    covers, so if a long backfill is interrupted the part still missing is the
+    part it has not reached yet, not a hole in the middle.
+
+    `offset` shifts the whole window back that many months, which is what makes
+    a 12-month backfill chunkable: offset 11 with months 1 is a single calendar
+    month, so one 19-hour job becomes twelve resumable ones.
+    """
+    end = end or datetime.now()
+    out: list[tuple[str, str]] = []
+    year, month = end.year, end.month
+    for _ in range(max(0, offset)):
+        month -= 1
+        if month == 0:
+            month, year = 12, year - 1
+    for _ in range(max(1, months)):
+        first = datetime(year, month, 1)
+        if month == 12:
+            nxt = datetime(year + 1, 1, 1)
+        else:
+            nxt = datetime(year, month + 1, 1)
+        last = nxt - timedelta(days=1)
+        out.append((f"{first.month}/{first.day}/{first.year}",
+                    f"{last.month}/{last.day}/{last.year}"))
+        month -= 1
+        if month == 0:
+            month, year = 12, year - 1
+    return list(reversed(out))
+
+
 async def scrape_all(
     mode: str = "daily",
     searches: list[SavedSearch] | None = None,
@@ -1010,11 +1202,18 @@ async def scrape_all(
     on_search_complete=None,
     target_ids: set[str] | None = None,
     persist_state: bool = True,
+    backfill_months: int = 0,
+    backfill_offset: int = 0,
 ) -> list[NoticeData]:
     """Main entry point for scraping.
 
     Args:
         mode: "daily" (only new since last run) or "historical" (last 12 months).
+        backfill_months: When > 0, run every search once per calendar month over
+                  the last N months instead of once over the whole period. This
+                  is the only way past the site's 1000-row result cap, which
+                  truncates a 12-month search to its newest few weeks. The site
+                  itself only retains 12 months, so N above 12 buys nothing.
         searches: Optional subset of searches to run. Defaults to all.
         proxy_url: Optional proxy URL (e.g. Apify residential proxy).
         on_batch: Optional async callback(list[NoticeData]) called after each search.
@@ -1051,7 +1250,15 @@ async def scrape_all(
 
     # Determine date cutoff
     since_date: str | None = None
-    if since_date_override:
+    if backfill_months:
+        # The date window IS the cutoff in backfill mode. Applying a since_date
+        # on top would discard exactly the older notices the backfill exists to
+        # reach: the March slice would be filtered against a July cutoff and
+        # return nothing, search after search, looking like an empty archive.
+        logger.info(
+            "Backfill mode: date windows drive the cutoff, since_date not applied"
+        )
+    elif since_date_override:
         since_date = since_date_override
         logger.info("Using since_date override: %s", since_date)
     elif mode == "daily":
@@ -1107,12 +1314,34 @@ async def scrape_all(
             # Save cookies for next run
             await _save_cookies(context)
 
-        for search in searches:
+        # Backfill runs each search once per calendar month; a normal run is
+        # modelled as the single "no window" job so the loop below is identical.
+        windows: list[tuple[str, str] | None] = (
+            list(month_windows(backfill_months, offset=backfill_offset))
+            if backfill_months else [None]
+        )
+        jobs = [(s, w) for s in searches for w in windows]
+        if backfill_months:
+            logger.info(
+                "BACKFILL: %d search(es) x %d month window(s) = %d jobs (%s .. %s)",
+                len(searches), len(windows), len(jobs),
+                windows[0][0], windows[-1][1],
+            )
+
+        for job_i, (search, window) in enumerate(jobs, 1):
             # Proactive session check — re-login if session died between searches
             if "authenticate" in page.url.lower():
                 if not await _try_relogin(page):
                     logger.error("Cannot recover session — aborting remaining searches")
                     break
+
+            d_from, d_to = window if window else (None, None)
+            if backfill_months:
+                logger.info(
+                    "[job %d/%d] %s %s..%s (%d notices so far)",
+                    job_i, len(jobs), search.saved_search_name, d_from, d_to,
+                    len(all_notices),
+                )
 
             remaining = (max_notices - len(all_notices)) if max_notices else 0
             try:
@@ -1122,8 +1351,16 @@ async def scrape_all(
                     max_notices=remaining, seen_ids=seen_ids,
                     captcha_failed_ids=captcha_failed_ids,
                     target_ids=target_ids,
+                    date_from=d_from, date_to=d_to,
                 )
                 all_notices.extend(search_notices)
+            except NoticeAccessBlocked as exc:
+                # Egress problem, not a scraping problem. Every remaining search
+                # would fail identically, so stop now and surface it as the
+                # actionable thing it is: this IP needs a proxy.
+                logger.error("ABORTING RUN, %s", exc)
+                await browser.close()
+                raise
             except Exception:
                 logger.exception("Failed to scrape: %s", search.saved_search_name)
                 # Check if failure was due to session expiration and re-login
@@ -1134,6 +1371,7 @@ async def scrape_all(
                             on_page_batch=on_batch, start_page=start_page,
                             max_notices=remaining, seen_ids=seen_ids,
                             target_ids=target_ids,
+                            date_from=d_from, date_to=d_to,
                         )
                         all_notices.extend(search_notices)
                     except Exception:

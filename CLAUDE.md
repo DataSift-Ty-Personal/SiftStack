@@ -14,7 +14,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 6. **Lead Management:** 4 Pillars of Motivation auto-qualification, STABM daily routine, pipeline reporting, deep prospecting (4-level framework)
 7. **Operations:** Acquisition playbook generator (SOPs, scripts, checklists), Slack/Discord notifications, Google Drive upload, Apify Actor deployment
 
-Currently focused on Knox and Blount counties, Tennessee.
+Currently focused on Knox and Blount counties, Tennessee. A realtor sphere-of-influence beta runs on the Columbus OH metro (the `soi_*` modules; see "Sphere of Influence Pipeline").
 
 8. **REI Skill Library:** 19 Claude Co-Work skill files (`.skill`/`.plugin` ZIPs) for distribution to DataSift community via [learn.datasift.ai/claude-skills-rei](https://learn.datasift.ai/claude-skills-rei). Skills teach Claude specific REI workflows when uploaded to Co-Work sessions or Projects.
 
@@ -127,6 +127,57 @@ Each scraped notice gets a full-page screenshot of its detail page on tnpublicno
 - **Hosting:** Apify run pushes each PNG to the key-value store and sets a shareable URL (mirrors the deep-prospecting PDF pattern). CLI run uploads to Google Drive when `GOOGLE_DRIVE_FOLDER_ID` + `GOOGLE_SERVICE_ACCOUNT_KEY` are set, else falls back to the local path. Helpers: `host_screenshots_via_drive()`, `set_local_screenshot_urls()`.
 - **Delivery to DataSift:** the URL rides along as the `Notice Screenshot` custom field plus a "Notice Screenshot:" line in record Notes (`datasift_formatter`). DataSift's CSV upload cannot push an image into the REISift Gallery panel, so the link is the supported route.
 
+## Scheduled First-to-Market Pull (build 1.0.42, 2026-08-14)
+
+The TN Public Notice scrape now runs unattended in the cloud instead of on a workstation, and covers **probate as well as foreclosure** for Knox and Blount. Entry points: `src/ftm_runner.py` (one run) and `src/ftm_schedule.py` (the long-lived scheduler, the container's CMD). Full runbook: `deploy/FTM_RUNBOOK.md`.
+
+```bash
+python src/ftm_runner.py --doctor              # credentials, egress, state dir, searches
+python src/main.py list-searches               # dump the LIVE saved-search dropdown labels
+python src/ftm_runner.py --max-notices 2       # bounded dry run, writes nothing
+python src/ftm_runner.py --commit              # the real thing
+python src/ftm_schedule.py --next              # next 5 fire times, business-local
+```
+
+**THE SCRAPE IS GATED ON EGRESS, NOT ON CODE. This is the finding that reframes everything else.** tnpublicnotice.com decides per-IP whether it will serve notice detail pages at all. Verified live 2026-08-14 against the same logged-in account: from the office IP the page carries **no CAPTCHA whatsoever**, just "You are not permitted to view public notices from this computer at this time"; through an Apify datacenter proxy the same notice serves the normal Turnstile gate and the text; through Scrapfly residential it serves with no gate at all. A Fly machine is a datacenter IP by definition, so `proxy_resolver.py` is mandatory infrastructure, not an optimization. Resolution order: `SIFTSTACK_PROXY_URL` -> `APIFY_PROXY_GROUPS` + `APIFY_TOKEN` (the API token is NOT the proxy password; it is used to look the password up) -> direct. Apify's RESIDENTIAL group is **not on the current plan** (`availableCount: 0`); `BUYPROXIES94952` (27 US datacenter IPs) clears the block today. A run blocked this way exits **3**, distinct from a normal failure, because no retry fixes it. The CLI path previously had no proxy support at all while the Apify Actor did, which is exactly why the scrape worked in the cloud and died on a workstation.
+
+**The gate is Cloudflare TURNSTILE, and the old solver never solved it.** `config.py` had recorded the 2026-07-13 migration but `captcha_solver.py` still called `solver.recaptcha()` and injected into `g-recaptcha-response`, a field the page no longer reads: every solve was billed and discarded. It now selects method and response field off `CAPTCHA_KIND`, reads the sitekey off the **live page** (a rotation logs `SITEKEY ROTATED` rather than silently killing the scrape), creates the `cf-turnstile-response` input when the headless widget never renders one, and runs the blocking 2Captcha call in a thread so the browser event loop keeps servicing the page. Verified live: gate cleared, notice text visible. **The gate is session-level, so one solve covers the rest of the run.** A blocked IP now raises `NoticeAccessBlocked` and aborts the whole run instead of grinding 50 results x 3 attempts against a wall.
+
+**Zero notices is a FAILURE.** Success requires positively seeing the notice body; there is deliberately no "the challenge markup is gone, so we must have passed" inference, which is precisely the reasoning that reported 13 consecutive dead runs as successful over 19 days. `ftm_runner` reports a 0-notice run as EMPTY and exits non-zero.
+
+**Probate (`Probate V2 Knox` / `Probate V2 Blount`, names verified live).** `main.py list-searches` dumps the real dropdown labels and flags configured-but-missing entries, because a mistyped saved search scrapes nothing and looks exactly like a quiet day. Three parsing bugs found by running real notices through the pipeline, all now regression-tested:
+- **The PR was the court.** "Notice to Creditors" names the role in prose ("issued to the referenced Personal Representative by the Chancery Court") before naming the human under a standalone `PERSONAL REPRESENTATIVE(S)` heading, so a same-line pattern set `owner_name` to "By The Chancery Court". Patterns are now tried block-form first, a rejected candidate falls through instead of ending the search, and court/clerk prose is in `_INVALID_NAMES`.
+- **The courthouse became the subject property.** A probate body's only street addresses belong to the court, the attorney, or the PR, so `_parse_address` now returns immediately for probate (it was uploading "400 W. Main Street", the Knox County courthouse). The real property is resolved downstream by `property_lookup` (Knox Tax API by decedent name -> executor family search -> people search), which works: a live run resolved 4100 Landon Dr from decedent "Doris O. Young".
+- **The vacant-land filter deleted the entire type.** It judges by house number and probate has no address yet, so on a mixed run every probate record vanished while the foreclosures came through and the run looked healthy. `NO_ADDRESS_TYPES = {"probate", "divorce"}` is exempt per-record, so the filter keeps doing its real job on types that do carry an address.
+
+**Two more fixes with reach beyond probate:** `max_notices` is now enforced **within** a results page (a cap of 1 still ground through all 50 results, paying a gate solve and screenshot for each, which matters because it is the cloud run's cost ceiling); and `_clean_and_split_name` no longer folds a spelled-out middle name into the surname ("Eric Lee Sharp" uploaded as last name "Lee Sharp", breaking record matching and skip trace), with a surname-particle list so "Van Buren" and "De La Cruz" stay whole.
+
+**Deployment: LIVE on Fly as `siftstack-ftm` (deployed 2026-08-14).** A separate app from the SMS agent's `siftstack` because the shapes are opposite: the SMS agent is a web service that must never stop, this is a 10-40 minute batch job idle the rest of the day, and sharing a machine would put a long scrape in contention with webhook handling. Four deliberate choices: the **Playwright base image is pinned to the client version** (the site is ASP.NET postbacks behind a JS gate, so there is no HTTP-only path); a **volume at `/data`** holds `seen_ids.json`, `last_run.json`, `cookies.json` and `ftm_runs.jsonl`, because losing the seen-ID cache means re-scraping and re-paying for months of notices; a **scheduler process rather than `fly machine run --schedule`**, since Fly's schedules are coarse and pick their own minute while a first-to-market pull wants a specific business-local hour; and **`FTM_ARGS` ships without `--commit`** so the first scheduled run does everything except write. `deploy/sync_ftm_secrets.py` pushes credentials from `.env` in one staged call, masked by default.
+
+**THE 407 THAT LOOKED LIKE BAD CREDENTIALS.** The first Fly deploy could not reach the site at all: 60s timeouts, then `407 Proxy Authentication Required` from Apify on a token and password that were byte-identical to the working local ones. The cause is that **Apify session ids accept only letters, digits, `_` and `.`** and `fly.ftm.toml` set `APIFY_PROXY_SESSION = 'tnpn-fly'`. Proven live from the machine on one credential set: `session-tnpn-fly` 407s while `tnpn_fly`, `tnpnfly`, `tnpn.fly` and `tnpn` all return 200. A hyphen in a session name is indistinguishable from a rejected password in the error, so `proxy_resolver._safe_session()` now rewrites illegal characters and logs the substitution. **The VM is `shared-cpu-2x` / 2GB, not 1x/1gb**: on one shared core Chromium took 60 seconds just to launch and the backfill would have run roughly twice as long as it needs to.
+
+**Backfill: the 1000-row cap is why 12 months was never reachable.** The site truncates EVERY result set at 20 pages / 1000 rows, newest first, so a plain 12-month search silently loses its tail: Knox foreclosure and Knox probate both sat on that ceiling showing only their most recent weeks. The site itself retains 12 months and no more ("Notices for the past 12 months are available in the current search"), so 12 is both the target and the maximum. `--backfill-months N` re-submits each saved search once per calendar month over an explicit date range (`rbRange` + `txtDateFrom`/`txtDateTo`, set after selecting the saved search so its keywords and county checkboxes stay intact), and `--backfill-offset M` shifts that window so one 19-hour job becomes twelve resumable ones. Measured monthly volume: Knox probate ~150, Knox foreclosure ~100, Blount probate ~80, Blount foreclosure ~33, about **4,350 raw notices over 12 months**. Resuming is cheap because the seen-ID check now reads the notice id out of the RESULTS GRID and skips before opening the page (was ~5s per already-seen notice, now zero).
+
+**Blount probate was returning nothing, for two stacked silent reasons.** `property_lookup._tpad_lookup` hit TPAD with bare `requests`: TPAD **403s anything without a browser User-Agent**, so every Blount lookup failed outright. Even fixed, the HTML page only ships an EMPTY table shell whose id is `searchResultsTable`, not the `resultsTable` the parser searched for; the rows come from `POST /TPAD/Search/GetSearchResults`, which returns clean JSON. Both failures were quiet (lookup returns [], address stays empty, validation later drops the record as "missing address"), so a Blount probate backfill would have produced ~950 records and zero usable ones. Also: **TPAD prints the house number LAST** ("LAKESHORE DR  5705"), which fails validation and Smarty unless normalized to "5705 Lakeshore Dr". A live test slice went from 0 usable to 3 of 5.
+
+**Trustee sales leak into the probate saved search.** Its keyword is "probate", which also appears in foreclosure notices, so a successor-trustee sale surfaces in probate results and uploads to the Probate list with the trustee's law firm as the personal representative (seen live: a Marinosci Law Group notice produced "PR = From Felicia F. Coalson"). `foreclosure_filter.looks_like_trustee_sale()` drops those, and requires the ABSENCE of a genuine probate anchor (notice to creditors, letters testamentary, personal representative) so a real estate filing that merely mentions a trustee still passes.
+
+**Probate notices never carry a phone number.** Measured on 10 Knox notices: 8 had no phone at all and the 2 that did carried the LAW FIRM's ("The Ebbert Law Firm ... Telephone (865) 234-2488", a successor trustee's office line). The PR is published with a mailing address only, so every probate phone must come from skip trace against the PR name and address; a number lifted from the notice body dials the estate's attorney.
+
+**Notice screenshots retired 2026-08-14** (Ty: not used for anything from TN Public Notice any more). Capture, Drive/Dropbox/KVS hosting and the CSV re-write are removed from the live path and the tooling is in `archive/notice_screenshots/`. It was also the slowest step in a foreclosure notice, which matters directly on a multi-thousand-notice backfill. The `notice_screenshot_path` / `notice_screenshot_url` fields, the CSV column and the DataSift custom-field mapping are deliberately KEPT so historical records retain their URLs.
+
+**BACKFILL COMPLETE 2026-08-16: 1,226 records, 936 distinct properties, all 12 months, 48 of 48 jobs.** Probate 786 / Foreclosure 476; Knox 910 / Blount 352. The daily schedule went live with `--commit` the same day (06:30 America/New_York).
+
+**The constraint that dictated the whole backfill shape: the site blocks an egress IP by VOLUME.** One month running all four searches through a single sticky Apify session viewed about **204 notices** before that IP began refusing, and every later month then failed in ~60s against the same dead IP. Two mechanisms fix it, and both are load-bearing: `ftm_runner` rotates to a fresh Apify session id per PROCESS (counter on the volume), and the backfill runs **one process per (saved search x month)**, 48 jobs, keeping the worst case (Knox probate ~150/month) under the threshold. Even so ~7% of jobs hit a burned IP; a retry pass that re-runs any non-zero exit with a fresh IP converged both stragglers within three passes. Do not "fix" a run of exit-3s by retrying immediately in a tight loop; the pool is 27 addresses and they need to cool.
+
+**seen_ids is persisted ONLY after a successful upload.** The scrape no longer writes it incrementally. Ordering is the whole point: the upload happens after the entire scrape, so persisting mid-scrape meant an aborted run left notices flagged as handled that were never sent anywhere. The first egress block did exactly that to **204 notices**, and a retry would have skipped every one of them permanently. `_revert_seen()` rolls back on failure, on `--no-upload`, and on any dry run.
+
+**Verified in production, not just in tests:** across the 675 post-fix rows checked mid-run there were 0 junk owner names, 0 courthouse addresses, 0 trustee sales on the Probate list, and 0 duplicate rows within a job, while legitimate multi-token surnames survived intact (St. John, St. Leger, Van Zandt, Van Gentry, VAN DAVIS). Repeats ACROSS months are expected and harmless: a foreclosure republished over a month boundary appears in both files and `POST /property/` upserts by address (confirmed by re-POSTing and getting the same uuid back).
+
+**Still workstation-only:** the `county` stage (`knox_ftm_pull.py`) skips in the container with the reason stated in the run summary, because its buy-box enrichment needs the SiftMap client from the Deal Room `_api` checkout. Vendoring it the way `sms_agent/crm_standalone.py` vendored the reisift client is the next step to get liens, condemnations, trustee deeds and evictions on the same schedule.
+
+**Also fixed here:** `python src/main.py <mode>` used to dispatch into the Apify Actor whenever `APIFY_TOKEN` was present in `.env` (it is, for `consolidate_foreclosures`), so every local CLI call died on "tn_username and tn_password are required". The Actor path now triggers only on `APIFY_IS_AT_HOME` (or an explicit `SIFTSTACK_FORCE_ACTOR=1`). `datasift_api_upload.env()` reads `os.environ` before falling back to a `.env` file, so the uploader works on a box that has no such file. State paths honor `SIFTSTACK_STATE_DIR` / `SIFTSTACK_OUTPUT_DIR` / `SIFTSTACK_LOG_DIR`. Saved-search selection and per-page postbacks wait on `domcontentloaded` rather than `networkidle`, which regularly never settles through a proxy and abandoned a working search after 30s.
+
 ## Scraping Backend: Scrapfly (build 1.0.31+)
 
 The gated notice detail fetch (the "caps structure": residential proxy, anti-bot, reCAPTCHA, and the proof-of-source screenshot) can run through the **Scrapfly API** instead of the in-house Playwright + 2Captcha path. Selected by `SCRAPE_BACKEND` (defaults to `scrapfly` when `SCRAPFLY_KEY` is set, otherwise `playwright`).
@@ -137,6 +188,7 @@ The gated notice detail fetch (the "caps structure": residential proxy, anti-bot
 - **Tooling:** `scrapfly_spike.py --id <id>` validates one notice (gate clears + screenshot) before relying on it. `backfill_screenshots.py [--csv ...]` logs in once and backfills screenshots for a master list (e.g. the output of `consolidate_foreclosures.py`), writing `notice_screenshot_path` / `notice_screenshot_url` back to the CSV.
 - **Env:** `SCRAPFLY_KEY` (required), `SCRAPE_BACKEND`, `SCRAPFLY_COUNTRY` (default `us`), `SCRAPFLY_RENDER_WAIT_MS`, `SCRAPFLY_TIMEOUT_MS`, `SCRAPFLY_MAX_RETRIES`. Needs `scrapfly-sdk` (in requirements.txt).
 - **Open validation:** whether Scrapfly's ASP clears this site's in-page reCAPTCHA "View Notice" gate is confirmed per-notice by the spike. A `gate_not_cleared` result means the JS scenario action schema or an explicit CAPTCHA step needs a tweak.
+- **STATUS 2026-08-14: the route wired into `scraper.py` is the broken one.** `_scrapfly_notice()` calls `fetch_notice()` (a direct `Details.aspx?ID=` fetch), and the client's own `fetch_notice_via_search` docstring explains why that cannot work: every Scrapfly scrape gets a fresh ASP.NET cookieless session, so a detail fetch lands in a session that never ran a search and the server returns an unpopulated shell. Live result is `gate_not_cleared` on every notice, ~3 minutes each, before falling back to Playwright. `fetch_notice_via_search` (search + walk inside ONE call) **does** work: verified live returning real notice content with no gate at all from Scrapfly's residential IP. Until the saved-search equivalent of that in-session walk is built, **leave `SCRAPE_BACKEND=playwright`** (`.env` currently overrides it to `scrapfly`, which is what makes runs slow rather than wrong).
 
 ## Foreclosure Master List Consolidation (build 1.0.31+)
 
@@ -265,6 +317,30 @@ python src/obituary_opportunity.py --min-months 6 --mail-cost 0.75 --touches 6
 
 **Rate limit:** `/api/internal/` throttles hard. Six threads at ~7 req/s 429'd 529 of 740; single-threaded at ~2 req/s with backoff on the server's "available in N seconds" hint completed cleanly. `pull()` is resumable and checkpoints every 25 records.
 
+## Sphere of Influence Pipeline (Columbus OH beta, build 1.0.43, 2026-08-14)
+
+Reverse-searches a realtor's exported Facebook/LinkedIn contacts (name + email ONLY, no addresses) into a Realtor-AI-scored priority list. Built for a Columbus OH realtor partner; the architecture is metro-agnostic. Chain: `soi_intake` (normalize/dedupe) -> `soi_county_pull` + `soi_owner_db` (free county owner rolls -> SQLite) -> `soi_owner_match` (name join) -> `soi_enformion` (paid resolve for misses) -> `soi_enrich` (SiftMap detail + `realtor_score`). First live run: 848 raw rows -> 728 unique people -> 222 confirmed metro homeowners -> 191 scored.
+
+```bash
+python src/soi_intake.py                                   # exports -> output/soi_contacts_normalized.csv/.json
+python src/soi_county_pull.py                              # 4 ArcGIS counties -> output/soi/raw/*.jsonl
+python src/soi_owner_db.py                                 # all 6 counties -> output/soi/owners.db (811K rows)
+python src/soi_owner_match.py                              # name join -> output/soi_owner_matches.csv/.json
+python src/soi_enformion.py                                # PAID (~$0.10/match) resolve of status=none
+python src/soi_enrich.py                                   # SiftMap realtor_score on unique matches
+python src/soi_enrich.py --matches output/soi_recovered_matches.json --out output/soi_enriched_recovered
+```
+
+**The whole Columbus metro is FREE data: 811,146 owner rows across six counties, $0.** Franklin (484K) from the open file server `apps.franklincountyauditor.com` - use `/Parcel_CSV/{yyyy}/{mm}/Parcel.csv` which carries NAME1/2/3 + MAILAD1-4 + values + TRANDT/PRICE; **the newer-looking `Outside_User_Files` Tab-Delimited appraisal extract has NO owner fields at all** (its Parcel.txt is values/situs only), and **the Parcel_CSV folder path is stale on purpose** (latest folder said 2025/07 but the file's Last-Modified was 3 days old - check the header, not the path). Fairfield (76K) from the nightly full CAMA dump `share.pivotpoint.us/oh/fairfield/cama/fairfieldaa407.zip` (iasWorld OWNDAT/PARDAT/APRVAL/DWELL, join on PARID, filter DEACTIVAT). Delaware/Licking/Pickaway/Union (250K) from open ArcGIS layers (endpoints + field maps in `soi_county_pull.py`; Licking serves 100K rows per call and inlines the last 3 transfers). The vendor SEARCH UIs (Schneider Beacon, DEVNET Pivot) are bot-walled and never needed. Ohio's statewide OGRIP parcel layer strips owner fields from the public view - counts and geometry only.
+
+**Name-join mechanics that decide the hit rate** (`soi_owner_match.py`): deeds store "LAST FIRST M" with co-owners as "... & FIRST [LAST]"; LinkedIn last names carry credentials ("Weatherford, CRS"); Facebook's middle token is usually a MAIDEN name and is searched as an alternate surname; the nickname map is multi-target (Nikki -> Nicole/Nichole, Kathy -> Katherine/Kathleen); and a **household-pair boost** rescues spouses - if two roster contacts hit the same deed, both are lifted (Charlie Wlodyka scored 2.0 alone, confirmed by Jamie Wlodyka on the same Dublin parcel). Same-name collisions group by DISTINCT owner-name string: one person on 5 parcels is a portfolio signal, five different "JOHN SMITH" strings is ambiguity. `owner_occupied` = mailing addr-key == situs addr-key; **do not fall back to Franklin's OWNER_ADD1, it sometimes echoes the situs** and false-flagged a Texas absentee as owner-occupied.
+
+**Enformion closes the gap, and EMAIL is the verifier.** Person Search accepts name + "Columbus, OH" city/state anchor (the name-alone 400 does not apply once a metro anchor is attached). The response's `emailAddresses` (a list of DICTS, `.emailAddress` inside) is matched against the contact's exported email - an exact hit grounds identity with no address needed; name-only OH matches are kept but flagged `name_metro`. Current address = `addresses[]` with `addressOrder == 1`, read `fullAddress` + `county`. Each resolved address is cross-checked back against owners.db: surname on the deed = `owns_here` (the roll join missed a name variation or trust - 37 of 349 on the live run), someone else = renter/other-titled (74), county outside the six = `out_of_metro` (106, cleans the sphere honestly). ~$24 total, misses free.
+
+**`realtor_score` off SiftMap `get_detail` IS the Realtor AI score. Ty's rule: 95+ is a priority call.** Enrichment runs autocomplete -> get_detail per matched address and REQUIRES a token overlap between the county deed owner and SiftMap's `owner_info` before trusting the row (8 mismatches flagged, not trusted). The live distribution is steep - 191 scored: one 95+ (97), six 80s, seventeen 60-79 - so the 95+ bar isolates a real call list rather than a third of the sphere. Rows also carry equity, mortgage, portfolio count and both investor scores for an investor-referral cut. Renters are kept on their own track (future first-time buyers), RE-industry contacts (kw.com/mortgage/title domains, 27 flagged at intake) are referral partners, not homeowner sphere.
+
+**Outputs:** `soi_contacts_normalized` -> `soi_owner_matches` -> `soi_enformion_resolved` -> `soi_enriched` / `soi_enriched_recovered` -> **`soi_priority_list.csv`** (merged, ranked by realtor_score). Enformion/SiftMap stages checkpoint to `soi_enrich_state.json` / `soi_enformion_state.json` and are resumable.
+
 ## Call Coaching Engine (2026-07)
 
 Pulls real call recordings from the SmrtPhone web session, transcribes them with tonality notes, and routes them to three grading skills (`~/.claude/skills/`): **cold-call-coach**, **lead-manager-coach**, **closer-coach**. Each skill grades transcripts against a rubric built from the DataSift Call Playbook KB.
@@ -334,6 +410,65 @@ The team committed to the Master Material List as THE material source. Knox pric
 - **Consumers needed zero changes** (post_walkthrough Repair Numbers, comp_package scenarios, deal_analyzer, main.py rehab). Knox totals SHIFTED on purpose: real SKUs raise the too-cheap tier 1 (~+17% grand) and trim the padded tier 3 (~-18%); non-Knox and tier-4 outputs are regression-tested byte-identical. `use_locked_materials=False` opts out.
 - **rehab-estimator.skill + deal-analyzer.plugin** now ship `data/master_material_list_37914.csv` with the doctrine: locked list is the material source for the vast majority of items on Knox deals (off-list only for an outstanding random issue, flagged), cheat sheet keeps labor + non-Knox markets, never multiply locked material prices. The skill's `material_specs` JSON contract is now wired (the Material Specs sheet renderer always existed but was never fed). deal-analyzer's bundled `skills/rehab-estimator/` was EMPTY despite instructing Claude to read 5 files from it; it now carries the full 8-file skill. Both zips rebuilt with forward-slash entry names (Compress-Archive backslash paths are non-portable).
 - Re-lock cadence: re-pull before each project cycle if desired, but re-lock (an explicit, dated, git-diffable act) only when the PM re-approves the list.
+
+## The Lender Package (build 1.0.44, 2026-08)
+
+An 8-piece set handed to a private money lender to fund ONE named property. The team hand-edited every template on 2026-08-16 and those edits are the spec; the originals live in `Lender Docs Templates-*.zip`.
+
+```
+1. Cover Letter                     lender_docs.py
+2. The Private Lender Package.xlsx  lender_package.py
+3. Promissory Note                  lender_docs.py
+4. Personal Guarantee               lender_docs.py
+5. Closing Instructions Letter      lender_docs.py
+6. Insurance Request Letter         lender_docs.py
+7. Investor Information Sheet       lender_docs.py
+8. Satisfaction and Release Request lender_docs.py
+```
+
+```bash
+python src/lender_package.py --spec deals/3014_sanland_lender.json
+python src/lender_docs.py    --spec deals/3014_sanland_lender.json
+```
+Both write to `output/lender/<Deal_Name>/`, one folder per deal, numbered 1 through 8.
+
+**THE FRONT END IS A BLOCK-FOR-BLOCK MIRROR OF THE REPAIR ESTIMATOR** (`Copy of The Repair Estimator`, Ty's Drive). Not "inspired by", mirrored: Property header, then `Property Values & Pricing | Holding Costs (Monthly)` with Annually and Monthly columns, then `Financing Costs | Buying Transaction Costs` and `Selling Transaction Costs` with Perc. Of Purch and Perc. Of ARV columns, then the `Estimated Net Profit and ROI Snapshot` band, then `Purchase and Deal Analysis | Lender Coverage and Return`. Six columns: label, percent, dollars on each side. Bold `Total X:` rows close every block. The single adaptation is the last right-hand block, which is the lender's coverage instead of our cash on cash, because this is their document. **Inputs live inline on that page**, never on a separate tab, for the same reason the Estimator does it: a blue cell next to the answer gets changed, a blue cell on another tab does not.
+
+**Repair Costs is the Estimator's detail grid on its own tab** (Category / Include Y-N / Repair Type / Qty / Unit / Unit Cost / Total / Notes, banded EXTERIOR / INTERIOR / MECHANICALS / OTHER, 65 lines) and it rolls up into Estimated Repair Costs on the front page. **On a straight relist every line is switched to N and the total is zero, which is the answer rather than a missing tab.** Switch a line to Y and the budget, the loan, the LTV and every coverage ratio move with it.
+
+**Selling costs are itemized, not a flat percentage.** Escrow, recording, realtor %, transfer %, warranty, staging, marketing, misc, exactly like the Estimator. That matters beyond cosmetics: `SellFixed` and `SellVarPct` are separate names so the band-floor case reprices commission against the LOWER sale price instead of carrying the ask's dollar figure down with it.
+
+**THE COVER LETTER IS THE SPEC FOR THE WORKBOOK.** It tells the lender the package contains an overview of the deal, an overview of their contribution, a term sheet, the numbers on repairs and re-sell value, the comps, backups and risk, and next steps to fill out. So the tabs ARE that list, in that order, and nothing else: **Deal Overview, Your Investment, Term Sheet, Repair Costs, Resale Value, Comps, Backups and Risk, Next Steps** (repairs and resale being the two halves of one bullet). Do not add a tab without adding it to the cover letter first.
+
+**Structure is lifted from The Repair Estimator** (`Copy of The Repair Estimator`, Ty's Drive), because that is the sheet the team actually trusts:
+- **Inputs live INLINE on the summary page, not on their own tab.** The Estimator puts its blue cells right next to the results, which is why people actually change them. Build 1.0.41 had a separate Inputs tab and it was the thing Ty disliked.
+- Banded full-width section headers, paired left and right blocks, dense rows.
+- **A percent column beside every dollar column.** "$16,272" means nothing until it reads as 7% of ARV.
+- Bold `TOTAL X` rows closing each block, and the detail page rolls UP into the summary.
+- **The repair grid carries a Y/N per line.** Switch a category to N and `RehabTotal`, the loan, and every coverage ratio drop with it.
+
+**Everything is a live Excel formula** off workbook defined names, including the sentences (`_say()` + `_t()` build `="..."&TEXT(Loan,"$#,##0")&"..."`, and the LTV paragraph is a live `IF(LTV>0.75,...)`). 240 formulas across the two live deals, verified by actually recalculating with the `formulas` pip package.
+
+**Derived, never typed:** `DayOne = Loan - RehabTotal`. Typing the closing advance let financed closing costs land in the draw tranche, so the holdback disagreed with the repair budget ($88,800 against an $87,192 scope). Anything definitionally equal to other cells is a formula. The one deliberate exception is **`Loan`, which is a single blue input**: it is a negotiated number, not a derived one, and making it the only lever that sets the deal is what keeps the front page simple. `Borrower Cash` then falls out as `Purchase + Repairs + BuyCosts + HoldTotal - Loan`, deliberately excluding interest because that is paid from sale proceeds rather than at closing.
+
+**Read the workbook back before regenerating over it.** Ty reviews in Excel and edits input cells directly. On the 158 review he made three changes and only mentioned one: realtor fees 6% to 5%, as-is raised to match the ask, and he deleted a comp. Diff the blue cells against the spec before overwriting, and rewrite any prose that cites a number or a comp he moved.
+
+**Contract changes from the team's edits, all of which move numbers:**
+- **The LOAN covers closing costs, document prep, recording and the lender's title policy**, repaid with interest and backed by the guarantee. It used to be borrower cash.
+- **Every member of the company personally guarantees the note**, so `borrower.members` is a list and the guarantee plus closing letter render one signature block each.
+- **Default is not a penalty rate and not a foreclosure lecture.** On default we liquidate immediately and the guarantee covers any shortfall including interest still owed. That framing replaced the old 15% default-rate language everywhere.
+- **Minimum interest is quoted as a percent as well as months** ("3% guaranteed" at 12% over 3 months).
+- `deal_type` picks the wholetail or flip branch in the cover letter; a non-zero repair budget picks builder's risk over vacant dwelling on the insurance letter. **Exactly one side of every OR gets written.**
+
+**The templates carry a NOTES FOR CLAUDE block that must never reach a lender.** `build_all()` re-reads each rendered document and raises if the string survives, rather than trusting the code path. Same reflex as the partial-set guard: `main()` exits 1 if fewer than 7 documents write, and stale files from a previous numbering are deleted so a folder cannot grow a second copy of everything.
+
+**No deed of trust template on purpose:** in TN the closing attorney draws it on their own form for the Register of Deeds and the title underwriter, so a downloaded form is a recording problem rather than a shortcut. Document 5 tells them exactly what to prepare instead.
+
+**Voice** comes from `CMO Stack/context/voice-guide.md`. The note and the guarantee stay in formal legal register; the letters are in Ty's voice. Audit scans rendered formula output as well as static cells for em/en dashes, ~30 AI tell words, leaked notes and unresolved `XXXXXX` placeholders. Current state on both deals: zero.
+
+**FORMATTING IS PART OF THE DELIVERABLE.** Nobody should drag a column or a row to read this workbook. `_polish()` runs over every sheet after the content is written: column widths come from the longest thing actually in each column, then wrapped rows get a height computed from the width they ended up with, plus landscape fit-to-width print setup. The trick that makes it work is **`_rendered_len()`, which measures what a cell will SHOW rather than what it holds.** A formula cell stores `="..."&TEXT(Loan,"$#,##0")&"..."` but displays a sentence, so sizing off the raw formula blows every column out; the function sums the quoted literals, adds 12 per `TEXT()`, and takes 62% when there is an `IF()` because only one branch ever renders. **Verify formatting against DISPLAYED text, not raw values:** a coverage cell holds 1.1176756139 and shows "1.12x", so a naive width check reports false overflows. Apply the number format first. Both live deals currently pass at zero fit problems.
+
+**Gotcha:** Excel holds an exclusive lock, so a workbook open on the desktop makes `wb.save()` raise `PermissionError` and `formulas` cannot even read it. Write to a `_PENDING_` name and swap.
 
 ## FTM Foreclosure: multi-pass skip-trace + screenshot-MMS (2026-06; orchestrated from `_api`)
 

@@ -1,0 +1,42 @@
+# Scheduled first-to-market runner: tnpublicnotice scrape -> enrich -> DataSift.
+#
+# Unlike deploy/Dockerfile (the SMS agent, which is API-only and has no browser),
+# this image NEEDS a real browser. tnpublicnotice.com is ASP.NET WebForms driven
+# entirely by __doPostBack/ViewState, and the notice gate is Cloudflare Turnstile,
+# so there is no HTTP-only path to the notice text.
+#
+# The Playwright base image pins the browser to the client library version. Keep
+# this tag and deploy/requirements-ftm.txt's playwright pin in lockstep, or the
+# run dies at launch with "Executable doesn't exist".
+FROM mcr.microsoft.com/playwright/python:v1.58.0-noble
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1
+
+WORKDIR /app
+
+COPY deploy/requirements-ftm.txt ./requirements.txt
+RUN pip install --no-cache-dir --break-system-packages -r requirements.txt
+
+# The pipeline imports flat modules from src/ (import config, import scraper),
+# so src/ itself is the import root rather than a package directory.
+COPY src/ ./src/
+
+# Run state lives on the mounted volume. Without this the seen-ID cache and
+# last_run.json reset on every redeploy and the next run re-scrapes months of
+# notices, paying a CAPTCHA solve for each one.
+ENV SIFTSTACK_STATE_DIR=/data \
+    SIFTSTACK_OUTPUT_DIR=/data/output \
+    SIFTSTACK_LOG_DIR=/data/logs \
+    PYTHONPATH=/app/src \
+    BUSINESS_TIMEZONE=America/New_York \
+    SCRAPE_BACKEND=playwright \
+    CAPTCHA_KIND=turnstile
+
+# Chromium in a container needs a writable home for its profile.
+ENV HOME=/tmp
+
+# There is no .env in the image. Every secret arrives as a Fly secret, which is
+# why datasift_api_upload reads os.environ before falling back to a file.
+CMD ["python", "src/ftm_schedule.py"]

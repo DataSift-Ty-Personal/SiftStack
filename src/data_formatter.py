@@ -143,59 +143,79 @@ def _notice_id_from_url(url: str) -> str:
 
 
 def deduplicate(notices: list[NoticeData]) -> list[NoticeData]:
-    """Remove duplicate notices by notice ID (from source URL).
+    """Collapse duplicates: the same notice twice, and one PROPERTY re-noticed.
 
-    The same notice can appear in multiple saved searches (e.g., a foreclosure
-    notice may match both "foreclosure" and "tax_sale" keyword searches).
-    We keep the first occurrence of each notice ID.
+    Two passes, and the second one is the point:
 
-    Falls back to address-based dedup if no notice ID is available.
+      1. by notice ID, which catches the identical notice arriving through two
+         saved searches.
+      2. by (notice_type, address, city), which catches the same property
+         advertised repeatedly. A continued or republished foreclosure sale gets
+         a NEW notice id every week, so pass 1 lets every one of them through:
+         a single staged month came out 134 rows for 88 distinct properties, 46
+         rows of pure repetition. `POST /property/` is upsert by address, so
+         those extra rows do not create duplicate CRM records, but they do mean
+         the same property is written several times and whichever row happens to
+         land last wins, which is not a decision anyone made.
+
+    Keyed on notice_type as well as address on purpose: a house with BOTH a
+    probate filing and a foreclosure notice is two real leads on two different
+    lists, and collapsing them would silently drop one.
+
+    Tie-break is publication date, most recent wins. date_added is the run date
+    and identical across a run, so it cannot order anything.
     """
     seen_ids: set[str] = set()
     seen_parcels: set[str] = set()
-    seen_addrs: dict[str, NoticeData] = {}
-    result: list[NoticeData] = []
+    id_pass: list[NoticeData] = []
 
     for notice in notices:
-        # Primary dedup: by notice ID from URL
         nid = _notice_id_from_url(notice.source_url)
         if nid:
             if nid in seen_ids:
                 continue
             seen_ids.add(nid)
-            result.append(notice)
+            id_pass.append(notice)
             continue
 
-        # Secondary dedup: by parcel_id (for PDF imports)
+        # By parcel_id (PDF imports carry no notice id)
         pid = notice.parcel_id.strip()
         if pid:
             if pid in seen_parcels:
                 continue
             seen_parcels.add(pid)
+        id_pass.append(notice)
+
+    # ── Pass 2: one row per property per notice type ──────────────────
+    best: dict[tuple, NoticeData] = {}
+    order: list[tuple] = []
+    result: list[NoticeData] = []
+
+    for notice in id_pass:
+        addr = notice.address.strip().lower()
+        if not addr:
+            # No address yet (probate before lookup). Nothing to key on, and
+            # collapsing them would merge unrelated estates into one row.
             result.append(notice)
             continue
 
-        # Tertiary: by address (for notices without ID or parcel)
-        key = notice.address.strip().lower()
-        if not key:
-            result.append(notice)
-            continue
+        key = (notice.notice_type, addr, notice.city.strip().lower())
+        existing = best.get(key)
+        if existing is None:
+            best[key] = notice
+            order.append(key)
+        elif ((notice.date_published or notice.date_added)
+                > (existing.date_published or existing.date_added)):
+            best[key] = notice
 
-        # Tie-break on publication date (most recent notice wins). date_added is
-        # the run date and is identical across a single run, so it can't order.
-        existing = seen_addrs.get(key)
-        if existing is None or (
-            (notice.date_published or notice.date_added)
-            > (existing.date_published or existing.date_added)
-        ):
-            seen_addrs[key] = notice
-
-    # Add address-deduped notices
-    result.extend(seen_addrs.values())
+    result.extend(best[k] for k in order)
 
     removed = len(notices) - len(result)
     if removed:
-        logger.info("Deduplicated: removed %d duplicate notices", removed)
+        logger.info(
+            "Deduplicated: %d -> %d (removed %d; same notice or re-noticed property)",
+            len(notices), len(result), removed,
+        )
     return result
 
 
