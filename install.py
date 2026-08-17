@@ -221,6 +221,110 @@ def install_one(entry: dict, dest_root: Path, local: bool, dry: bool, force: boo
     return "updated" if existed else "installed"
 
 
+def _load_dotenv() -> dict:
+    """Read a .env in the current directory, if there is one.
+
+    Not a dotenv library, and deliberately not exported into os.environ: the
+    doctor only needs to know which names are SET, never their values, so it
+    never has to hold a credential in memory or risk printing one.
+    """
+    found = {}
+    for path in (Path.cwd() / ".env", HERE / ".env"):
+        if not path.is_file():
+            continue
+        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, _, v = line.partition("=")
+            if v.strip().strip("'\""):
+                found[k.strip()] = True
+    return found
+
+
+def doctor(doc: dict) -> int:
+    """Report what runs right now, what needs a credential, what to do instead.
+
+    The point is that nobody discovers a missing key by watching a skill fail
+    halfway through a real deal. Every blocked skill prints its fallback on
+    the same line, so "I cannot run this" always comes with "do this instead".
+    """
+    dotenv = _load_dotenv()
+    have = lambda k: bool(os.environ.get(k)) or k in dotenv  # noqa: E731
+
+    entries = [e for e in doc["skills"] if e["status"] == "current"]
+    ready, login, blocked = [], [], []
+    for e in entries:
+        req = e["requires"]
+        missing = [k for k in req.get("env", []) if not have(k)]
+        if missing:
+            blocked.append((e, missing))
+        elif req.get("accounts"):
+            # Env vars are satisfied but the skill still drives a service you
+            # have to be signed in to. Calling that "ready" would be a lie the
+            # person only discovers when the browser lands on a login page.
+            login.append((e, []))
+        else:
+            ready.append((e, []))
+
+    say(f"\n{BOLD}SiftStack skill library, readiness check{OFF}")
+    say(f"{DIM}{len(entries)} current packages. Nothing here sends a request or spends money.{OFF}\n")
+
+    if dotenv:
+        say(f"{DIM}Read a .env with {len(dotenv)} value(s) set. Values are never displayed.{OFF}\n")
+
+    say(f"{GREEN}Works right now, nothing to configure{OFF}  {DIM}({len(ready)} of {len(entries)}){OFF}")
+    for e, _ in ready:
+        say(f"  {GREEN}+{OFF} {e['name']}")
+
+    if login:
+        say(f"\n{BOLD}Keys are set, but you need to be signed in{OFF}  {DIM}({len(login)}){OFF}")
+        for e, _ in login:
+            accts = ", ".join(e["requires"]["accounts"])
+            say(f"  {GREEN}+{OFF} {e['name']:<28} {DIM}sign in to {accts}{OFF}")
+
+    if blocked:
+        say(f"\n{YELLOW}Needs a credential{OFF}  {DIM}({len(blocked)}){OFF}")
+        for e, missing in blocked:
+            say(f"  {YELLOW}-{OFF} {e['name']:<28} {DIM}set {', '.join(missing)}{OFF}")
+            cost = e["requires"].get("cost")
+            if cost and cost != "Free":
+                say(f"      {DIM}cost: {cost}{OFF}")
+            fb = e["requires"].get("fallback")
+            if fb:
+                if "#" in fb:
+                    say(f"      {DIM}without it: docs/setup/{fb.replace('#', '.md, section ')}{OFF}")
+                else:
+                    known = [x["name"] for x, _ in ready] + [x["name"] for x, _ in login]
+                    ok = "already installed" if fb in known else "install it"
+                    say(f"      {DIM}without it: use the {fb} skill ({ok}){OFF}")
+            else:
+                say(f"      {DIM}without it: no substitute, this one needs the key{OFF}")
+
+    # Accounts are logins rather than env vars, so they cannot be detected.
+    # Listing them is the only honest thing to do.
+    accounts = {}
+    for e in entries:
+        for a in e["requires"].get("accounts", []):
+            accounts.setdefault(a, []).append(e["name"])
+    if accounts:
+        say(f"\n{BOLD}Logins these assume you already have{OFF}")
+        say(f"{DIM}Cannot be checked from here. Confirm you can sign in.{OFF}")
+        for a in sorted(accounts):
+            names = accounts[a]
+            shown = ", ".join(names[:3]) + (f" +{len(names) - 3} more" if len(names) > 3 else "")
+            say(f"  {a:<26} {DIM}{shown}{OFF}")
+
+    say(f"\n{BOLD}Next{OFF}")
+    if blocked:
+        say("  Copy .env.skills.example to .env and fill in only the keys you want.")
+        say("  Every skill degrades rather than failing: a missing key skips that step.")
+    say("  Full setup guide:   docs/setup/GETTING-STARTED.md")
+    say("  No-API routes:      docs/setup/no-api-playbook.md")
+    say("  API contracts:      docs/api/\n")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -233,10 +337,15 @@ def main() -> int:
     ap.add_argument("--dry-run", action="store_true", help="report what would change, write nothing")
     ap.add_argument("--force", action="store_true", help="reinstall even if already current")
     ap.add_argument("--remote", action="store_true", help="ignore a local checkout, always fetch")
+    ap.add_argument("--doctor", action="store_true",
+                    help="what works right now, what needs a key, and what to do instead")
     args = ap.parse_args()
 
     doc, local = load_manifest(prefer_local=not args.remote)
     entries = doc["skills"]
+
+    if args.doctor:
+        return doctor(doc)
 
     if args.list:
         say(f"\n{BOLD}SiftStack REI skill library{OFF}  "
