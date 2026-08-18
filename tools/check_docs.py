@@ -93,12 +93,69 @@ def check_platform_limits() -> tuple[list[str], list[str]]:
     return problems, warnings
 
 
+# Paths a skill tells Claude to open. A skill is mostly a routing table, so a
+# route that does not resolve is the whole feature failing: Claude reads the
+# table, opens the file, finds nothing, and the person who installed it reports
+# a broken command. That is how /sift-workflow shipped pointing at two
+# reference files nobody had written.
+ROUTE_RE = re.compile(
+    r"(?:\$\{CLAUDE_PLUGIN_ROOT\}/)?"
+    r"((?:[\w.-]+/)*(?:references|scripts|assets|data|commands)/[\w.-]+\.[\w]+)")
+
+
+def route_roots(md: Path) -> list[Path]:
+    """Every directory a route in this file could legitimately be written from.
+
+    Packages address each other three ways and all three are in use: inside a
+    plugin ${CLAUDE_PLUGIN_ROOT} is the plugin folder, deal-analyzer names its
+    bundled siblings as `rehab-estimator/references/...` relative to the
+    plugin's skills folder, and sift-operations names a companion skill's
+    script the same way relative to skills/. Checking only one of those turns
+    a working route into a false alarm, and a checker people learn to ignore
+    is worse than no checker.
+    """
+    roots = [md.parent]
+    for parent in md.parents:
+        if parent == ROOT:
+            break
+        if (parent / "SKILL.md").is_file() or (parent / ".claude-plugin").is_dir():
+            roots.append(parent)
+        if (parent / ".claude-plugin").is_dir() and (parent / "skills").is_dir():
+            roots.append(parent / "skills")
+    roots.append(ROOT / "skills")
+    roots.append(ROOT)
+    return roots
+
+
+def check_routes() -> list[str]:
+    """Every references/ or scripts/ path a package points at must exist."""
+    problems: list[str] = []
+    for base in ("skills", "plugins"):
+        top = ROOT / base
+        if not top.is_dir():
+            continue
+        for md in sorted(top.rglob("*.md")):
+            text = md.read_text(encoding="utf-8", errors="replace")
+            roots = route_roots(md)
+            for route in sorted(set(ROUTE_RE.findall(text))):
+                # SKILL_DIR is the placeholder a skill uses when it has to
+                # print a runnable command, not a folder on disk.
+                probe = route[len("SKILL_DIR/"):] if route.startswith("SKILL_DIR/") else route
+                if any((r / probe).exists() for r in roots):
+                    continue
+                problems.append(
+                    f"{md.relative_to(ROOT).as_posix()}: points at {route}, "
+                    f"which does not exist")
+    return problems
+
+
 def main() -> int:
     problems: list[str] = []
     doc = json.loads(MANIFEST.read_text(encoding="utf-8"))
 
     plat_problems, plat_warnings = check_platform_limits()
     problems.extend(plat_problems)
+    problems.extend(check_routes())
     for w in plat_warnings:
         print(f"::warning::{w}" if "--ci" in sys.argv else f"WARN    {w}")
     current = [e for e in doc["skills"] if e["status"] == "current"]

@@ -300,7 +300,7 @@ Or, if they want a combined file, you can modify the filtering to accept multipl
 
 ## Example Output
 
-An example of a completed buyer analysis for Knox County, TN is available at `references/example_output_knox_tn.xlsx`. This shows the expected quality level — 134 records with 113 decision-makers found (84% identification rate). The example demonstrates proper use of diverse verification sources (Secretary of State searches, Bizapedia, LinkedIn, company websites, public records, news articles) and consistent formatting of the DecisionMaker columns.
+A completed buyer analysis for Knox County, TN sets the quality bar: 134 records with 113 decision-makers found, an 84% identification rate. Reaching that rate takes diverse verification sources (Secretary of State searches, Bizapedia, LinkedIn, company websites, public records, news articles) and consistent formatting of the DecisionMaker columns.
 
 When researching, aim for a similar level of thoroughness — don't just rely on SOS searches. Cross-reference multiple sources to maximize the identification rate.
 

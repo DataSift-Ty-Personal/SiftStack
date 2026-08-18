@@ -28,12 +28,12 @@ This is a routing/reference skill that directs to other skills for implementatio
 
 | Task | Companion Skill | Automation Script |
 |------|----------------|-------------------|
-| Filter preset management | `sequential-presets.skill` | `scripts/manage_presets.py` |
-| Sequence creation | `sift-sequences.skill` | `scripts/manage_sequences.py` |
-| Phone tag upload | `phone-validator.skill` | `scripts/upload_phone_tags.py` |
-| Market research | `sift-market-research.skill` | `scripts/extract_market_finder.py` |
+| Filter preset management | `sequential-presets.skill` | `sequential-presets/scripts/manage_presets.py` |
+| Sequence creation | `sift-sequences.skill` | `sift-sequences/scripts/manage_sequences.py` |
+| Phone tag upload | `phone-validator.skill` | `phone-validator/scripts/upload_phone_tags.py` |
+| Market research | `sift-market-research.skill` | `sift-market-research/scripts/extract_market_finder.py` |
 
-All automation scripts use `scripts/datasift_core.py` for login, cookie persistence, and popup dismissal. Credentials are loaded from `.env` or environment variables — never hardcoded.
+Those scripts live in the companion skill, not in this plugin. Each one uses `scripts/datasift_core.py` for login, cookie persistence, and popup dismissal, and this plugin ships its own copy of that helper. Credentials are loaded from `.env` or environment variables, never hardcoded.
 
 ## How to Use This Skill
 
