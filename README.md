@@ -4,7 +4,7 @@ Full-stack real estate investing operations platform built around [DataSift.ai](
 
 Two things live in this repo:
 
-1. **The REI skill library.** 22 Claude skills that teach Claude to run a specific REI workflow: comp a property, estimate a rehab, find the heirs, score your phone numbers, grade your cold calls. Install them into Claude Code with one command, or upload them to a Claude Co-Work session. **You do not need the platform to use these.**
+1. **The REI skill library.** 24 Claude skills that teach Claude to run a specific REI workflow: comp a property, estimate a rehab, find the heirs, score your phone numbers, grade your cold calls. Install them into Claude Code with one command, or upload them to a Claude Co-Work session. **You do not need the platform to use these.**
 2. **The platform.** The pipeline that pulls county distress data, enriches it through 10 steps, and pushes it into DataSift ready for sequential marketing. Requires a DataSift.ai account.
 
 Start with the skills. Most people never need anything else.
@@ -23,7 +23,7 @@ curl -fsSL https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main
 irm https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/install.py | python -
 ```
 
-That downloads all 22 current skills into `~/.claude/skills/` and the 2 plugins into `~/.claude/plugins/`. Restart Claude Code and they are live. No clone, no `pip install`, no virtualenv. Python 3.9 or newer, standard library only.
+That downloads all 22 current skills (24 packages counting the 2 plugins) into `~/.claude/skills/` and the 2 plugins into `~/.claude/plugins/`. Restart Claude Code and they are live. No clone, no `pip install`, no virtualenv. Python 3.9 or newer, standard library only.
 
 Prefer to read the script before running it? That is the right instinct:
 
@@ -67,7 +67,7 @@ The manifest is the machine-readable index of the whole library: every package, 
 
 ## The catalog
 
-22 current packages. `python3 install.py --list` prints this with full descriptions.
+24 current packages. `python3 install.py --list` prints this with full descriptions.
 
 ### Deal Analysis
 
@@ -99,6 +99,8 @@ The manifest is the machine-readable index of the whole library: every package, 
 | `playbook-creator` | Turn a transcript or a recording into a real SOP with process maps. |
 | `candidate-intake` | Aggregate job applicants from Indeed, Gmail, and Facebook into one scored master list. |
 | `team-hiring` | Who to hire next and what they own. The five roles with their daily tasks and one North Star KPI each, hiring geography and pay bands, job post templates, the interview, and the first two weeks. |
+| `vendor-directory-builder` | Build a vetted contractor or vendor directory for any market: mine a local community for names people vouch for, verify every one against public records, sweep for geography and gaps, and ship a filterable Excel with top picks. Also the tool for vetting a found or AI-generated list. |
+| `contractor-call-sheet` | Turn a finished directory into action: a printable one-page call sheet of the top picks by trade, personalized first-contact texts and voicemails, and the vetting-call question script. |
 
 ### Coaching and Performance
 
@@ -120,7 +122,7 @@ Two superseded packages (`deep-prospecting`, `deep-prospecting-v4`) stay in the 
 
 ### What a skill needs from you
 
-**Nine of the 22 work the moment they are installed.** No key, no login, no card. Ask the library where you stand:
+**Eleven of the 24 work the moment they are installed.** No key, no login, no card. Ask the library where you stand:
 
 ```bash
 python3 install.py --doctor
@@ -130,7 +132,7 @@ It reads your environment and a `.env` if you have one, then prints what works n
 
 | Tier | Count | What it means |
 |---|---|---|
-| No credentials | 9 | Works on install |
+| No credentials | 11 | Works on install |
 | A login you already have | 8 | DataSift, SmrtPhone, Google. Browser-driven, no API access needed |
 | A metered API key | 5 | Faster and deeper, and every one has a free route |
 
@@ -149,7 +151,7 @@ Skills degrade rather than fail: a missing key means that step is skipped and th
 
 ## The agent system
 
-The platform is 74 agents across 9 divisions.
+The platform is 76 agents across 9 divisions.
 
 - [**The interactive map**](https://claude.ai/code/artifact/254afeb5-1fe5-4c8e-8179-0a7fa79d9039), searchable and filterable by division, status, and whether a human still signs off.
 - [**docs/AGENT-MAP.md**](docs/AGENT-MAP.md), the same thing as a document you can read in the repo or hand to Claude.

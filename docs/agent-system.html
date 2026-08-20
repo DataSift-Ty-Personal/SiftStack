@@ -249,22 +249,22 @@ footer p { margin:0 0 6px; }
 <div class="mast">
   <div class="wrap mast-in">
     <p class="eyebrow">
-      <span>SiftStack</span><span class="sep">/</span><span>Build 1.0.44</span>
-      <span class="sep">/</span><span>2026-08-17</span>
+      <span>SiftStack</span><span class="sep">/</span><span>Build 1.0.47</span>
+      <span class="sep">/</span><span>2026-08-20</span>
     </p>
     <h1>SiftStack AI Agent Org Chart</h1>
     <p class="lede">Every agent, what triggers it, what it touches, where a human still signs off, and the specific trap each one exists to avoid.</p>
 
     <div class="stats">
-      <div class="stat"><b>74</b><span>agents</span></div>
+      <div class="stat"><b>76</b><span>agents</span></div>
       <div class="stat"><b>9</b><span>divisions</span></div>
-      <div class="stat"><b>67</b><span>live in production</span></div>
-      <div class="stat"><b>48</b><span>with a human gate</span></div>
+      <div class="stat"><b>69</b><span>live in production</span></div>
+      <div class="stat"><b>50</b><span>with a human gate</span></div>
     </div>
 
     <div class="install">
       <h2>Install the skill library</h2>
-      <p>22 Claude skills that drive the agents below. One command, into Claude Code.
+      <p>24 Claude skills that drive the agents below. One command, into Claude Code.
          No clone, no pip, no virtualenv.</p>
       <div class="cmd">
         <code id="cmd">curl -fsSL https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/install.py | python3 -</code>
@@ -798,7 +798,7 @@ footer p { margin:0 0 6px; }
   <header class="dept-head">
     <h3>Deal Analysis</h3>
     <p class="dept-tag">What it is worth, what it costs, what you can pay</p>
-    <span class="dept-count"><b>11</b> agents</span>
+    <span class="dept-count"><b>13</b> agents</span>
   </header>
   <div class="grid"><article class="agent" data-dept="deal" data-status="live" data-phase="1" data-human="yes" data-search="post-walkthrough package the one workbook you build the hour after walking a house. nine sheets, sift-linked. src/post_walkthrough.py exact numbers, not ranges, in the cells. a wide band is not an answer you can take to a seller or a buyer. the lo/hi still drives the math and surfaces as one &#x27;if it moves&#x27; sensitivity line. sift deal room api siftmap zillow openpyxl">
   <details>
@@ -883,6 +883,40 @@ footer p { margin:0 0 6px; }
     <div class="agent-body">
       <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">Re-locked only when the PM re-approves the list.</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Pulls fresh Knox pricing by zip</li><li>--lock writes the git-tracked JSON and CSV twins</li><li>An ordinary re-pull refreshes cache but can never drift prices into estimates</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>PM re-approval required to re-lock</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">master_materials_locked_37914.json, CSV twin</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">Home Depot</span><span class="chip">SERP pull</span></div></div>
       <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>Only --lock writes to data/. That single rule is what stops a casual re-pull from silently changing every estimate in flight. Current lock: 94 of 94 search keys priced, 88 SKU rows plus 12 allowances.</p></div>
+    </div>
+  </details>
+</article><article class="agent" data-dept="deal" data-status="live" data-phase="1" data-human="yes" data-search="vendor directory builder community-sourced, record-verified contractor and vendor directory for a market. answers who does the work after the repair number is set. skills/vendor-directory-builder/skill.md service area is the most common silent failure: 5 of the first knox list served other counties entirely. and ai-found lists carry wrong phone numbers, so every unverifiable row ships as unverified rather than deleted or invented. never fabricate a field; someone will dial it. facebook group search state license boards bbb openpyxl">
+  <details>
+    <summary>
+      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="agent-name">Vendor Directory Builder</span>
+      <span class="agent-meta">
+        <span class="badge badge-live">Live</span>
+        <span class="badge badge-gate">Human gate</span>
+      </span>
+      <span class="agent-role">Community-sourced, record-verified contractor and vendor directory for a market. Answers who does the work after the repair number is set.</span>
+      <code class="src">skills/vendor-directory-builder/SKILL.md</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">New market, a crew gap, a specialty trade to fill, or a found list to vet. The vendor-directory-builder skill.</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Mine the local investor community by in-group search per trade, harvest self-promoters and recommendation-thread comments</li><li>Verify every name against public records: phone provenance, service area, rating with review count, license board, BBB</li><li>Geography sweep, gap analysis against the trade taxonomy, then the niche gatekeeper layer (utility districts, permit offices)</li><li>Render the filterable Excel directory with build_directory.py: Directory, Top Picks, Methodology, reference tabs</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>Logged-in browser for private Facebook groups</li><li>Vetting calls and the small-test-job filter before trusting a low-confidence row</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Filterable Excel directory with top picks and a serves-market flag on every row</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">Facebook group search</span><span class="chip">State license boards</span><span class="chip">BBB</span><span class="chip">openpyxl</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>Service area is the most common silent failure: 5 of the first Knox list served other counties entirely. And AI-found lists carry wrong phone numbers, so every unverifiable row ships as UNVERIFIED rather than deleted or invented. Never fabricate a field; someone will dial it.</p></div>
+    </div>
+  </details>
+</article><article class="agent" data-dept="deal" data-status="live" data-phase="1" data-human="yes" data-search="contractor call sheet turn a finished vendor directory into same-day outreach: a printable call sheet plus personalized first-contact drafts. skills/contractor-call-sheet/skill.md the sheet is mechanical so a script builds it; the outreach is judgment so the model drafts it. merging them into one mail-merge produces the exact spammy sameness the split exists to avoid. they talk to each other. openpyxl">
+  <details>
+    <summary>
+      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="agent-name">Contractor Call Sheet</span>
+      <span class="agent-meta">
+        <span class="badge badge-live">Live</span>
+        <span class="badge badge-gate">Human gate</span>
+      </span>
+      <span class="agent-role">Turn a finished vendor directory into same-day outreach: a printable call sheet plus personalized first-contact drafts.</span>
+      <code class="src">skills/contractor-call-sheet/SKILL.md</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">A finished directory and the words who do I call first. The contractor-call-sheet skill.</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Build the one-page call sheet from the directory Excel with build_call_sheet.py, top picks grouped by trade</li><li>Flag cross-validated call-first providers in a banner</li><li>Draft a personalized text and voicemail per top pick from that provider&#x27;s own row, varied so no two read alike</li><li>Attach the six vetting-call questions for whoever dials</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>A person sends every message. The skill drafts, it never sends.</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Printable HTML call sheet, Per-provider outreach drafts and the vetting-call script</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">openpyxl</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>The sheet is mechanical so a script builds it; the outreach is judgment so the model drafts it. Merging them into one mail-merge produces the exact spammy sameness the split exists to avoid. They talk to each other.</p></div>
     </div>
   </details>
 </article><article class="agent" data-dept="deal" data-status="live" data-phase="1" data-human="yes" data-search="exit strategy engine scores each lane off the conservative arv and says why each is in or out. src/post_walkthrough.py the template&#x27;s six exit slots were placeholders, not a quota. if nothing clears its gate, the two closest misses render under an explicit banner rather than fabricating a recommendation. novation is not modelled at all, it was removed rather than hidden. post_walkthrough.py">
