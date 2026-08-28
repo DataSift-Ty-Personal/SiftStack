@@ -3,8 +3,8 @@
   "title": "SiftStack AI Agent Org Chart",
   "subtitle": "Every agent, what triggers it, what it touches, where a human still signs off, and the specific trap each one exists to avoid",
   "org": "DataSift / DataFlik",
-  "version": "1.0.44",
-  "generated": "2026-08-17"
+  "version": "1.0.47",
+  "generated": "2026-08-20"
  },
  "phases": {
   "1": {
@@ -883,6 +883,61 @@
      "status": "live",
      "source": "src/material_list.py",
      "gotcha": "Only --lock writes to data/. That single rule is what stops a casual re-pull from silently changing every estimate in flight. Current lock: 94 of 94 search keys priced, 88 SKU rows plus 12 allowances."
+    },
+    {
+     "id": "vendordir",
+     "name": "Vendor Directory Builder",
+     "role": "Community-sourced, record-verified contractor and vendor directory for a market. Answers who does the work after the repair number is set.",
+     "trigger": "New market, a crew gap, a specialty trade to fill, or a found list to vet. The vendor-directory-builder skill.",
+     "steps": [
+      "Mine the local investor community by in-group search per trade, harvest self-promoters and recommendation-thread comments",
+      "Verify every name against public records: phone provenance, service area, rating with review count, license board, BBB",
+      "Geography sweep, gap analysis against the trade taxonomy, then the niche gatekeeper layer (utility districts, permit offices)",
+      "Render the filterable Excel directory with build_directory.py: Directory, Top Picks, Methodology, reference tabs"
+     ],
+     "human": [
+      "Logged-in browser for private Facebook groups",
+      "Vetting calls and the small-test-job filter before trusting a low-confidence row"
+     ],
+     "outputs": [
+      "Filterable Excel directory with top picks and a serves-market flag on every row"
+     ],
+     "tools": [
+      "Facebook group search",
+      "State license boards",
+      "BBB",
+      "openpyxl"
+     ],
+     "phase": 1,
+     "status": "live",
+     "source": "skills/vendor-directory-builder/SKILL.md",
+     "gotcha": "Service area is the most common silent failure: 5 of the first Knox list served other counties entirely. And AI-found lists carry wrong phone numbers, so every unverifiable row ships as UNVERIFIED rather than deleted or invented. Never fabricate a field; someone will dial it."
+    },
+    {
+     "id": "callsheet",
+     "name": "Contractor Call Sheet",
+     "role": "Turn a finished vendor directory into same-day outreach: a printable call sheet plus personalized first-contact drafts.",
+     "trigger": "A finished directory and the words who do I call first. The contractor-call-sheet skill.",
+     "steps": [
+      "Build the one-page call sheet from the directory Excel with build_call_sheet.py, top picks grouped by trade",
+      "Flag cross-validated call-first providers in a banner",
+      "Draft a personalized text and voicemail per top pick from that provider's own row, varied so no two read alike",
+      "Attach the six vetting-call questions for whoever dials"
+     ],
+     "human": [
+      "A person sends every message. The skill drafts, it never sends."
+     ],
+     "outputs": [
+      "Printable HTML call sheet",
+      "Per-provider outreach drafts and the vetting-call script"
+     ],
+     "tools": [
+      "openpyxl"
+     ],
+     "phase": 1,
+     "status": "live",
+     "source": "skills/contractor-call-sheet/SKILL.md",
+     "gotcha": "The sheet is mechanical so a script builds it; the outreach is judgment so the model drafts it. Merging them into one mail-merge produces the exact spammy sameness the split exists to avoid. They talk to each other."
     },
     {
      "id": "exits",

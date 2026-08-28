@@ -505,3 +505,7 @@ The following reference files from the comping and rehab skills contain detailed
 - `rehab-estimator/references/wholetail-vs-rehab.md` — Scope differences between exits
 - `rehab-estimator/references/local-pricing-guide.md` — Market-specific pricing adjustments
 - `rehab-estimator/data/master_material_list_37914.csv`: LOCKED Knox County Home Depot material prices (Budget/Standard/Upgrade); the material source on Knox-market deals, never multiplied by the regional factor
+
+## Staffing the rehab
+
+The analysis prices the work; it does not staff it. When the user asks who should do the rehab, or needs a contractor bench for the market, route to the **vendor-directory-builder** skill (vetted, community-sourced contractor directory) and then **contractor-call-sheet** (call sheet + outreach drafts) rather than guessing at providers.

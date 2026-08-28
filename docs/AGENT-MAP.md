@@ -2,7 +2,7 @@
 
 *Every agent, what triggers it, what it touches, where a human still signs off, and the specific trap each one exists to avoid*
 
-74 agents across 9 divisions. Generated from [`docs/agents.json`](agents.json) by `tools/agent_map.py`. Build 1.0.44, 2026-08-17.
+76 agents across 9 divisions. Generated from [`docs/agents.json`](agents.json) by `tools/agent_map.py`. Build 1.0.47, 2026-08-20.
 
 Do not hand-edit this file. Edit `docs/agents.json` and re-run the generator.
 
@@ -666,7 +666,7 @@ Finds the property when the court record has names but no address.
 
 *What it is worth, what it costs, what you can pay*
 
-11 agents.
+13 agents.
 
 #### Post-Walkthrough Package (division lead)
 
@@ -790,6 +790,57 @@ The frozen, git-tracked price source every Knox estimate reads from.
 **Touches.** Home Depot, SERP pull
 
 > **The trap this exists to avoid.** Only --lock writes to data/. That single rule is what stops a casual re-pull from silently changing every estimate in flight. Current lock: 94 of 94 search keys priced, 88 SKU rows plus 12 allowances.
+
+#### Vendor Directory Builder
+
+`skills/vendor-directory-builder/SKILL.md` &middot; phase 1 &middot; live
+
+Community-sourced, record-verified contractor and vendor directory for a market. Answers who does the work after the repair number is set.
+
+**Trigger.** New market, a crew gap, a specialty trade to fill, or a found list to vet. The vendor-directory-builder skill.
+
+**Does.**
+
+- Mine the local investor community by in-group search per trade, harvest self-promoters and recommendation-thread comments
+- Verify every name against public records: phone provenance, service area, rating with review count, license board, BBB
+- Geography sweep, gap analysis against the trade taxonomy, then the niche gatekeeper layer (utility districts, permit offices)
+- Render the filterable Excel directory with build_directory.py: Directory, Top Picks, Methodology, reference tabs
+
+**Human checkpoint.**
+
+- Logged-in browser for private Facebook groups
+- Vetting calls and the small-test-job filter before trusting a low-confidence row
+
+**Outputs.** Filterable Excel directory with top picks and a serves-market flag on every row
+
+**Touches.** Facebook group search, State license boards, BBB, openpyxl
+
+> **The trap this exists to avoid.** Service area is the most common silent failure: 5 of the first Knox list served other counties entirely. And AI-found lists carry wrong phone numbers, so every unverifiable row ships as UNVERIFIED rather than deleted or invented. Never fabricate a field; someone will dial it.
+
+#### Contractor Call Sheet
+
+`skills/contractor-call-sheet/SKILL.md` &middot; phase 1 &middot; live
+
+Turn a finished vendor directory into same-day outreach: a printable call sheet plus personalized first-contact drafts.
+
+**Trigger.** A finished directory and the words who do I call first. The contractor-call-sheet skill.
+
+**Does.**
+
+- Build the one-page call sheet from the directory Excel with build_call_sheet.py, top picks grouped by trade
+- Flag cross-validated call-first providers in a banner
+- Draft a personalized text and voicemail per top pick from that provider's own row, varied so no two read alike
+- Attach the six vetting-call questions for whoever dials
+
+**Human checkpoint.**
+
+- A person sends every message. The skill drafts, it never sends.
+
+**Outputs.** Printable HTML call sheet, Per-provider outreach drafts and the vetting-call script
+
+**Touches.** openpyxl
+
+> **The trap this exists to avoid.** The sheet is mechanical so a script builds it; the outreach is judgment so the model drafts it. Merging them into one mail-merge produces the exact spammy sameness the split exists to avoid. They talk to each other.
 
 #### Exit Strategy Engine
 

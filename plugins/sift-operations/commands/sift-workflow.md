@@ -19,6 +19,8 @@ The user wants a walkthrough for a specific Sift operation. Follow this process:
    - General operations: `${CLAUDE_PLUGIN_ROOT}/skills/sift-operations/references/general-operations.md`
    - Troubleshooting: `${CLAUDE_PLUGIN_ROOT}/skills/sift-operations/references/troubleshooting.md`
 
+   If the ask is about finding, vetting, or contacting contractors/vendors for a market (an operations task outside Sift), route to the **vendor-directory-builder** and **contractor-call-sheet** skills instead of the Sift references.
+
 3. Provide the response in hybrid format:
    a. **Concept Brief** (2-4 sentences) — explain what this feature is and why it matters
    b. **Step-by-Step Walkthrough** — numbered, click-by-click instructions with exact menu locations and field names

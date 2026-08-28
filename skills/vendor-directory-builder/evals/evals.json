@@ -1,0 +1,24 @@
+{
+  "skill_name": "vendor-directory-builder",
+  "notes": "Test prompts for the build → test → review → improve loop (skill-creator). Assertions can be added before a benchmark run; several of these depend on a logged-in browser for the community-mining step, so run them in a session where the target group is reachable, or swap in a public-sources-only market.",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "We're expanding our flipping into Chattanooga (Hamilton County, TN). Here's the local investor Facebook group: facebook.com/groups/<chatt-rei-group>. Can you mine it and build me a vetted contractor-crew directory (GCs plus all the subs) and make sure everyone actually services Hamilton County? Verify the license/reviews, don't give me numbers you didn't check.",
+      "expected_output": "An Excel directory built via scripts/build_directory.py: Directory tab (rows across the full flip-crew taxonomy, each with verified contact/service-area/rating/license/confidence and a 'Serves Hamilton County' flag), a Top Picks tab, and a Methodology tab. Unverifiable fields marked 'not found'. Clarifying questions asked up front (market, use case, access, priorities).",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "My assistant pulled together this list of 8 HVAC companies for the Knoxville area (pasting below). Half of it came out of ChatGPT and I don't trust the phone numbers. Can you verify each one (are they real, do the numbers work, do they actually serve Knox and Blount) and turn it into a clean directory I can hand my acquisitions guy?",
+      "expected_output": "Every provider treated as a claim and verified against public records: corrected/confirmed phones, service-area check for Knox + Blount, ratings with counts, any hallucinated or out-of-area entries flagged 'UNVERIFIED', corrections surfaced to the user. Output is the standard directory workbook. No fabricated data.",
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "I already have a solid contractor list for Blount County but it's missing the weird stuff. I need the niche folks (septic, termite/WDO, and whoever can run a brand-new water line to a property) plus whatever hidden gotchas there are with that. Add them, confirm they serve Blount, and fold them into my directory.",
+      "expected_output": "New niche categories sourced (mostly public, since a general group is thin on these), verified, and confirmed for Blount. A reference tab for the gatekeeper layer (water utility districts with tap fees + who taps the main). Methodology note on the new-water-line workflow (short vs long-side tap, who connects). Everything merged into the workbook via the builder.",
+      "files": []
+    }
+  ]
+}

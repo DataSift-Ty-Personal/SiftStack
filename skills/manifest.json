@@ -5,9 +5,9 @@
   "raw_base": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main",
   "install_target": "~/.claude/skills",
   "counts": {
-    "total": 24,
-    "current": 22,
-    "skills": 22,
+    "total": 26,
+    "current": 24,
+    "skills": 24,
     "plugins": 2
   },
   "categories": [
@@ -23,7 +23,7 @@
     "api": "Needs a third-party API key, usually metered."
   },
   "tier_counts": {
-    "none": 10,
+    "none": 12,
     "account": 7,
     "api": 5
   },
@@ -57,9 +57,9 @@
         "skills/sift-operations/scripts/datasift_core.py"
       ],
       "file_count": 18,
-      "bytes": 114877,
+      "bytes": 115112,
       "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/sift-operations.plugin",
-      "sha256": "b207047d1a114bec6f544cbb78d674794bdd64018f06fda1a2caa10f63782d9d",
+      "sha256": "efb2758d13f1a877eb707a3cccd9dff7decf76942a831d55da046ac86959c2c6",
       "requires": {
         "tier": "none",
         "fallback": null,
@@ -297,9 +297,9 @@
         "skills/rehab-estimator/scripts/generate_rehab_excel.py"
       ],
       "file_count": 18,
-      "bytes": 312860,
+      "bytes": 313732,
       "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/deal-analyzer.plugin",
-      "sha256": "f7802ed3f4bc46b5ff29198f7d4e863391324f44f939048c91c6a0f090aa4414",
+      "sha256": "90de537f12dc3cb54df90fd957f985e7c17dac2881a80d277a77229e4b0f1534",
       "requires": {
         "tier": "api",
         "env": [
@@ -482,9 +482,9 @@
         "scripts/generate_rehab_excel.py"
       ],
       "file_count": 8,
-      "bytes": 222946,
+      "bytes": 223456,
       "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/rehab-estimator.skill",
-      "sha256": "e4108473498a3300cab4e7f5caec4513f72b9e93b2500c224fb7e2696346fef8",
+      "sha256": "dec0fb3d066dec0e50482e3e050788e38d786c5557b75039c856a941a5b45756",
       "requires": {
         "tier": "none",
         "fallback": null,
@@ -669,6 +669,32 @@
       }
     },
     {
+      "name": "contractor-call-sheet",
+      "kind": "skill",
+      "category": "Operations",
+      "version": null,
+      "description": "Turn a finished contractor/vendor directory (the Excel from vendor-directory-builder, or any list of vetted providers with phones) into an action layer: a one-page printable CALL SHEET of the top picks by trade, plus personalized first-contact messages (text / voicemail) for each and a vetting-call question script. Use whenever someone has a provider/contractor list and wants to actually start reaching out: \"make a call sheet from this directory,\" \"who do I call first,\" \"draft outreach to these contractors,\" \"turn my top picks into a one-pager,\" \"give me a script for calling these subs,\" or \"write intro texts to these vendors.\" Works off the directory this team's research workflow produces, but also off any spreadsheet or pasted list that has company names and phone numbers. Trigger even if they don't say \"call sheet\": if the need is \"I have the list, now help me contact them,\" use this skill. Pairs with vendor-directory-builder (which builds the list); this skill works the list.",
+      "status": "current",
+      "source_dir": "skills/contractor-call-sheet",
+      "files": [
+        "SKILL.md",
+        "references/outreach-templates.md",
+        "scripts/build_call_sheet.py"
+      ],
+      "file_count": 3,
+      "bytes": 16664,
+      "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/contractor-call-sheet.skill",
+      "sha256": "268137694e22005b2eb95fddc5f13da4dec10e7f0b8759eb89b56d8aaa367ab7",
+      "requires": {
+        "tier": "none",
+        "fallback": null,
+        "note": "Drafts outreach for a human to send. Never sends anything itself.",
+        "env": [],
+        "accounts": [],
+        "cost": "Free"
+      }
+    },
+    {
       "name": "phone-validator",
       "kind": "skill",
       "category": "Operations",
@@ -810,6 +836,37 @@
       "requires": {
         "tier": "none",
         "fallback": null,
+        "env": [],
+        "accounts": [],
+        "cost": "Free"
+      }
+    },
+    {
+      "name": "vendor-directory-builder",
+      "kind": "skill",
+      "category": "Operations",
+      "version": null,
+      "description": "Build a vetted, filterable directory of local service providers (general contractors, subcontractors, trade crews, or any vendors) for a target market by mining a community source (a Facebook group, forum, subreddit, or referral list) and cross-checking every name against public records. Use whenever someone wants to find, vet, rank, or organize providers in a place: \"build me a contractor/sub list for X county,\" \"find a reliable flip crew in Y,\" \"who can do Z here,\" \"vet these vendors,\" \"build a service-provider or referral directory,\" or wants to geography-check or expand an existing list. Works for any trade or vendor type and any market: defaults to real-estate contractor crews but generalizes. ALSO use when the user hands you a raw or AI-generated provider list to verify and clean up. Trigger even if they never say \"directory\": if the need is \"find good local people who can do a thing and tell me which to actually call,\" use this skill.",
+      "status": "current",
+      "source_dir": "skills/vendor-directory-builder",
+      "files": [
+        "SKILL.md",
+        "assets/config_schema.md",
+        "assets/example_config.json",
+        "evals/evals.json",
+        "references/sourcing-playbook.md",
+        "references/use-case-taxonomies.md",
+        "references/vetting-checklist.md",
+        "scripts/build_directory.py"
+      ],
+      "file_count": 8,
+      "bytes": 52827,
+      "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/vendor-directory-builder.skill",
+      "sha256": "2eaa53631debabd1ef6f6decd669874d71d4c47873a0d747fc42caf8b0a3be2f",
+      "requires": {
+        "tier": "none",
+        "fallback": null,
+        "note": "Community mining needs your logged-in browser for private groups. The Excel engine is pure openpyxl.",
         "env": [],
         "accounts": [],
         "cost": "Free"
