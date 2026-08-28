@@ -41,9 +41,11 @@ OPTIONAL = [
     ("SMARTY_AUTH_TOKEN", "address standardization"),
     ("OPENWEBNINJA_API_KEY", "Zillow property enrichment"),
     ("SLACK_WEBHOOK_URL", "run summaries and dead-run alerts"),
+    ("FTM_HEALTH_WEBHOOK", "daily coverage digest channel; falls back to SLACK_WEBHOOK_URL"),
     ("TRACERFY_API_KEY", "skip trace (only with --deep-heirs)"),
     ("TRESTLE_API_KEY", "phone scoring"),
     ("SCRAPFLY_KEY", "alternate scraping backend"),
+    ("REISIFT_API_KEY", "SiftMap detail lookups for the county buy-box enrichment"),
 ]
 
 

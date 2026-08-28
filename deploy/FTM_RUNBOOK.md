@@ -97,12 +97,14 @@ fly ssh console -a siftstack-ftm -C "python /app/src/ftm_schedule.py --next"
 
 ### Go live
 
-`FTM_ARGS` in `fly.ftm.toml` is the safety switch. It ships as
-`--stages notices` (no `--commit`), so the first scheduled run does everything
-except write to DataSift. Read that Slack summary, then:
+`FTM_ARGS` in `fly.ftm.toml` is the safety switch. On a fresh app set it without
+`--commit` so the first scheduled run does everything except write to DataSift,
+read that Slack summary, then add `--commit`.
+
+**It has been live-committing since 2026-08-16** and currently reads:
 
 ```toml
-FTM_ARGS = "--stages notices --commit"
+FTM_ARGS = "--stages notices,capture,county --commit"
 ```
 
 ```bash
@@ -137,6 +139,51 @@ fly deploy --config fly.ftm.toml
 | 1 | a stage failed, details in the summary and in Slack |
 | 2 | misconfiguration, caught before any work started |
 | 3 | egress blocked: the site refuses this IP. Retrying will not help. |
+
+---
+
+## Daily health digest and the watchdog
+
+Two layers, because a run can only report on itself.
+
+**Inside the box.** `src/ftm_health.py` posts one message a day at `FTM_HEALTH_AT`
+(default 08:00 business-local, fired by `ftm_schedule.py` as a separate event from
+the run). It is sent whether the news is good or bad, so a missing message is
+itself a signal rather than an ambiguity.
+
+```bash
+python src/ftm_health.py                  # today's report, printed
+python src/ftm_health.py --days 14        # wider history window
+python src/ftm_health.py --post           # print and post to Slack
+python src/ftm_health.py --check          # one line, exit 1 if red
+python src/ftm_health.py --selftest       # 22 assertions, no network, no writes
+python src/ftm_schedule.py --health-once  # post right now, as the scheduler would
+```
+
+What it checks that the run summary cannot:
+
+- **Per feed, not aggregate.** The runner reports the notices stage as one number,
+  so a day where both probate searches returned nothing still reads healthy. On
+  2026-08-28 all 19 records were foreclosure. The digest counts by county and
+  notice type off the day's CSV and flags a feed that has produced nothing for
+  `FTM_FEED_STALE_DAYS` (default 7). A single quiet day is never an alarm: these
+  searches publish in bursts.
+- **New records, not rows written.** `POST /property/` is upsert by address and
+  the county stage re-uploads the same 10 condemnation rows every day. New is
+  measured against `/data/ftm_record_ledger.json`, and both figures are shown.
+- **Requested but skipped.** `StageResult.ok` counts `skipped` as OK, so a county
+  stage that loses its SiftMap client still exits 0. The digest compares the
+  stages that ran against the ones `FTM_ARGS` asked for.
+- **No run at all**, which the runner by definition cannot report.
+
+**Outside the box.** `.github/workflows/ftm-heartbeat.yml` runs daily at 14:00 UTC
+on GitHub's infrastructure, SSHes in, and reads `--check`. This is the only layer
+that catches a stopped machine or a dead scheduler thread. Needs repo secrets
+`FLY_API_TOKEN` and `FTM_HEALTH_WEBHOOK`.
+
+Set `FTM_HEALTH_WEBHOOK` to send the digest somewhere other than the run summary
+channel; it falls back to `SLACK_WEBHOOK_URL`. Push it with
+`python deploy/sync_ftm_secrets.py --commit`.
 
 ---
 
