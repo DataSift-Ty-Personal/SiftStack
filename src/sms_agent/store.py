@@ -47,6 +47,9 @@ CREATE TABLE IF NOT EXISTS phone_map (
     context       TEXT,                   -- JSON blob of deal facts for the responder
     updated_at    TEXT NOT NULL
 );
+-- Takeover fans out from one phone to every other line on the same record, so
+-- this lookup runs inside a webhook handler and must not scan the table.
+CREATE INDEX IF NOT EXISTS idx_phone_map_record ON phone_map(record_uuid);
 
 CREATE TABLE IF NOT EXISTS conversations (
     phone         TEXT PRIMARY KEY,
@@ -255,6 +258,30 @@ def lookup_phone(phone: str) -> Optional[dict]:
 
 # ------------------------------------------------------------- conversations
 
+def already_answered_who(phone: str) -> bool:
+    """Have we already sent this number the canned who-is-this answer?
+
+    The answer is fixed copy, so sending it twice adds nothing and reads as a
+    bot looping. A second question means a person should take the thread.
+    """
+    row = _conn().execute(
+        "SELECT 1 FROM outbox WHERE phone=? AND intent='ASKING_WHO' "
+        "AND status IN ('sent','queued') LIMIT 1", (clean_phone(phone),)).fetchone()
+    return row is not None
+
+
+def addressed_first_name(phone: str) -> str:
+    """The first name we actually greeted on this thread.
+
+    On the heir campaign the person we texted is NOT the record owner, so the
+    owner's first name is the wrong one to answer with. This is who we said
+    "Hi <name>" to, which is the only name they have seen from us.
+    """
+    row = _conn().execute(
+        "SELECT first_name FROM phone_map WHERE phone=?", (clean_phone(phone),)).fetchone()
+    return (row["first_name"] if row and row["first_name"] else "") or ""
+
+
 def get_conversation(phone: str) -> Optional[dict]:
     row = _conn().execute("SELECT * FROM conversations WHERE phone=?", (clean_phone(phone),)).fetchone()
     return dict(row) if row else None
@@ -343,21 +370,35 @@ def mark_notified(phone: str, kind: str) -> bool:
     return True
 
 
-def recent_inbound_exists(phone: str, body: str, minutes: int) -> bool:
-    """Has this exact inbound already been stored recently?
+def recent_inbound_exists(phone: str, body: str, minutes: int = 0) -> bool:
+    """Have we already stored this exact inbound from this number, ever?
 
     Identity by content, because smrtPhone gives the same text two different
-    ids depending on which surface you read it from.
+    ids depending on which surface you read it from: the webhook posts a uuid
+    and the SMS log returns an internal integer, so id-level dedupe cannot see
+    that they are the same reply.
+
+    THE WINDOW IS GONE ON PURPOSE. This used to bound the search to the last 90
+    minutes, and the backstop poller then re-replayed anything that had drifted
+    just past that edge. Measured on production 2026-08-28: 300 duplicated
+    inbound groups, clustered at 90 to 95 minutes apart (17:30 then 19:01,
+    17:33 then 19:06), each one answered a second time by the agent an hour and
+    a half after the seller wrote it. Every window has an edge, and this one sat
+    exactly where the poller lands.
+
+    Swallowing a genuine repeat costs nothing: the same text yields the same
+    disposition, and a seller who really does send "No" twice has already been
+    answered. Sending the same reply twice, ninety minutes late, does not.
+
+    `minutes` is accepted and ignored so existing callers keep working.
     """
     phone = clean_phone(phone)
     body = (body or "").strip()
     if not phone or not body:
         return False
-    cutoff = (datetime.now(timezone.utc) - timedelta(minutes=minutes)).isoformat()
     row = _conn().execute(
-        "SELECT 1 FROM messages WHERE phone=? AND direction='in' AND TRIM(body)=?"
-        " AND created_at >= ? LIMIT 1",
-        (phone, body, cutoff),
+        "SELECT 1 FROM messages WHERE phone=? AND direction='in' AND TRIM(body)=? LIMIT 1",
+        (phone, body),
     ).fetchone()
     if row:
         return True
@@ -369,8 +410,8 @@ def recent_inbound_exists(phone: str, body: str, minutes: int) -> bool:
     # with two different confidences on 2026-08-12.
     row = _conn().execute(
         "SELECT 1 FROM events WHERE processed_at IS NULL AND event_type='smsIncoming'"
-        " AND payload LIKE ? AND payload LIKE ? AND received_at >= ? LIMIT 1",
-        (f"%{body}%", f"%{phone}%", cutoff),
+        " AND payload LIKE ? AND payload LIKE ? LIMIT 1",
+        (f"%{body}%", f"%{phone}%"),
     ).fetchone()
     return row is not None
 
@@ -451,6 +492,204 @@ def phone_for_sms_id(sms_id: str) -> str:
         "SELECT phone FROM messages WHERE sms_id=? ORDER BY id DESC LIMIT 1", (sms_id,)
     ).fetchone()
     return row["phone"] if row else ""
+
+
+# --------------------------------------------------- did WE send this?
+#
+# Authorship used to be guessed: an outgoing text was "ours" if its wording
+# matched anything we had said on the thread, ever. The team hand sends the
+# same four touch templates from the smrtPhone inbox, so a rep sending our own
+# copy read as ours and the agent kept texting alongside them.
+#
+# These three helpers answer the question from what we actually recorded when
+# we sent. `messages.author='ai'` and `outbox.status='sent'` are written by the
+# worker itself, so they are evidence rather than resemblance.
+
+
+def _norm_body(body: str) -> str:
+    return " ".join(str(body or "").lower().split())
+
+
+def sms_id_is_ours(sms_id: str) -> bool:
+    """Dispositive: we minted this id ourselves when the send returned.
+
+    `author='ai'` is the only value the worker writes for an outbound message;
+    a human takeover writes `'human'`. So a hit here is proof, not a heuristic.
+    """
+    if not sms_id:
+        return False
+    row = _conn().execute(
+        "SELECT 1 FROM messages WHERE sms_id=? AND direction='out' AND author='ai' LIMIT 1",
+        (str(sms_id),),
+    ).fetchone()
+    return row is not None
+
+
+def _body_in_our_ledger(phone: str, body: str, from_number: str, cutoff: str) -> bool:
+    """Shared body comparison across both tables we write on a send.
+
+    Normalization happens in Python because SQL TRIM cannot collapse the
+    internal whitespace that smrtPhone reflows in the webhook echo.
+    """
+    phone = clean_phone(phone)
+    target = _norm_body(body)
+    if not phone or not target:
+        return False
+    want_from = clean_phone(from_number)
+
+    rows = _conn().execute(
+        "SELECT body, from_number FROM messages WHERE phone=? AND direction='out'"
+        " AND author='ai' AND created_at >= ?",
+        (phone, cutoff),
+    ).fetchall()
+    # The outbox leg covers the gap where mark_outbox('sent') committed but
+    # add_message had not yet: they are two separate transactions in worker.py,
+    # and a webhook can land between them.
+    rows += _conn().execute(
+        "SELECT body, from_number FROM outbox WHERE phone=? AND status='sent'"
+        " AND COALESCE(sent_at, created_at) >= ?",
+        (phone, cutoff),
+    ).fetchall()
+
+    for r in rows:
+        if _norm_body(r["body"]) != target:
+            continue
+        # from_number is a corroborator, never proof on its own: a rep's inbox
+        # send leaves from the same pool we send from.
+        if want_from and clean_phone(r["from_number"] or "") not in ("", want_from):
+            continue
+        return True
+    return False
+
+
+def we_sent_recently(phone: str, body: str, minutes: int, from_number: str = "") -> bool:
+    """Tight window check for the LIVE webhook path.
+
+    The window has to clear webhook plus write latency (seconds, or under a
+    minute across a worker restart) while sitting far under the manual touch
+    cadence of one per person per day, so our own send echoing back is never
+    confused with a rep hand sending the same template tomorrow.
+    """
+    cutoff = (datetime.now(timezone.utc) - timedelta(minutes=max(1, minutes))).isoformat()
+    return _body_in_our_ledger(phone, body, from_number, cutoff)
+
+
+def we_sent_body(phone: str, body: str, days: int = 14, from_number: str = "") -> bool:
+    """Unbounded-ish check for the RECONCILE replay path only.
+
+    Kept under a separate name so nobody reaches for it on the webhook path,
+    where the wide window is exactly the hole this whole change closes.
+    """
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=max(1, days))).isoformat()
+    return _body_in_our_ledger(phone, body, from_number, cutoff)
+
+
+def recent_outbound_exists(phone: str, body: str) -> bool:
+    """Mirror of `recent_inbound_exists` for the outbound replay path.
+
+    Deliberately NOT the same function. `recent_inbound_exists` hardcodes
+    `direction='in'` and filters unprocessed events on `smsIncoming`, so an
+    outbound replay would sail straight through it, and an inbound carrying the
+    same words would wrongly suppress a real takeover.
+    """
+    phone = clean_phone(phone)
+    body = (body or "").strip()
+    if not phone or not body:
+        return False
+    row = _conn().execute(
+        "SELECT 1 FROM messages WHERE phone=? AND direction='out' AND TRIM(body)=? LIMIT 1",
+        (phone, body),
+    ).fetchone()
+    if row:
+        return True
+    row = _conn().execute(
+        "SELECT 1 FROM events WHERE processed_at IS NULL AND event_type='smsOutgoing'"
+        " AND payload LIKE ? AND payload LIKE ? LIMIT 1",
+        (f"%{body}%", f"%{phone}%"),
+    ).fetchone()
+    return row is not None
+
+
+def has_inbound_before(phone: str, when: str) -> int:
+    """How many replies this number had already sent us at a point in time.
+
+    This is the discriminator that separates a cold outreach touch from a human
+    stepping into a live conversation, and it was derived from production
+    rather than guessed. See `engine._provably_ours`.
+    """
+    phone = clean_phone(phone)
+    if not phone:
+        return 0
+    row = _conn().execute(
+        "SELECT COUNT(*) n FROM messages WHERE phone=? AND direction='in'"
+        " AND created_at < ?",
+        (phone, when or now()),
+    ).fetchone()
+    return int(row["n"] if row else 0)
+
+
+def phones_for_record(record_uuid: str) -> list[str]:
+    """Every number we know for one CRM record.
+
+    Purely local: `seed.queue` already ran `crm.map_all_phones` for every record
+    it texted, so the sibling lines are in `phone_map` before the first send. A
+    webhook handler must never block on a CRM round trip to answer this.
+    """
+    if not record_uuid:
+        return []
+    rows = _conn().execute(
+        "SELECT phone FROM phone_map WHERE record_uuid=?"
+        " UNION SELECT phone FROM conversations WHERE record_uuid=?",
+        (record_uuid, record_uuid),
+    ).fetchall()
+    return [r["phone"] for r in rows if r["phone"]]
+
+
+def outbox_status(row_id: int) -> str:
+    row = _conn().execute("SELECT status FROM outbox WHERE id=?", (row_id,)).fetchone()
+    return row["status"] if row else ""
+
+
+def thread_moved_since(phone: str, when: str) -> str:
+    """Did anything happen on this thread after a queued row was written?
+
+    Returns a cancellation reason, or "" to send. Checks exactly two things.
+
+    It deliberately does NOT look at `conversations.last_outbound`: that is
+    stamped by every one of our own sends, and a seed touch is built hours
+    before it is released, so testing it would cancel legitimate follow up
+    touches across the whole batch.
+    """
+    phone = clean_phone(phone)
+    if not phone or not when:
+        return ""
+
+    # THE COMPARISONS ARE DELIBERATELY DIFFERENT, because `now()` only has
+    # second granularity and the two cases break opposite ways at that
+    # resolution.
+    #
+    # A human text uses >=. A rep typing in the same second the worker queues a
+    # message is precisely the collision this guard exists to stop, and a strict
+    # > silently lets it through: measured in a test, the queued row and the
+    # human message both stamped 19:33:30 and the guard did nothing.
+    row = _conn().execute(
+        "SELECT 1 FROM messages WHERE phone=? AND author='human' AND created_at >= ? LIMIT 1",
+        (phone, when),
+    ).fetchone()
+    if row:
+        return "a human texted them"
+
+    # A reply uses strict >. Our answer to an inbound is queued in the same
+    # second that inbound is stamped, so >= here would cancel every reply the
+    # agent ever writes.
+    row = _conn().execute(
+        "SELECT 1 FROM conversations WHERE phone=? AND last_inbound IS NOT NULL"
+        " AND last_inbound > ? LIMIT 1",
+        (phone, when),
+    ).fetchone()
+    if row:
+        return "they replied"
+    return ""
 
 
 def thread(phone: str, limit: int = 40) -> list[dict]:
@@ -660,6 +899,11 @@ def stats() -> dict:
         "events_unprocessed": one("SELECT COUNT(*) FROM events WHERE processed_at IS NULL"),
         "conversations": one("SELECT COUNT(*) FROM conversations"),
         "paused": one("SELECT COUNT(*) FROM conversations WHERE state='paused'"),
+        # Watch this after any change to authorship detection. A spike means the
+        # rule turned too tight and is pausing our own sends; a flat zero while
+        # the inbox shows hand-sent texts means it is not firing at all.
+        "takeovers": one("SELECT COUNT(*) FROM conversations WHERE paused_reason LIKE"
+                         " 'human took over%' OR paused_reason LIKE 'human called%'"),
         "opted_out": one("SELECT COUNT(*) FROM conversations WHERE state='opted_out'"),
         "inbound": one("SELECT COUNT(*) FROM messages WHERE direction='in'"),
         "outbound": one("SELECT COUNT(*) FROM messages WHERE direction='out'"),

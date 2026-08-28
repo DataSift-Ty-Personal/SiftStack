@@ -106,6 +106,16 @@ DRY_RUN = _env("SMS_AGENT_DRY_RUN", "1") not in ("0", "false", "False", "")
 MAX_AI_TURNS = int(_env("SMS_AGENT_MAX_TURNS", "6"))
 # Below this the reply is drafted for approval instead of sent.
 CONFIDENCE_FLOOR = float(_env("SMS_AGENT_CONFIDENCE_FLOOR", "0.80"))
+
+# How recently we must have recorded sending a text for its webhook echo to
+# count as ours. Wide enough to clear webhook plus write latency (seconds, or
+# under a minute across a worker restart), far under the one-per-day manual
+# touch cadence, and matched to MIN_SEND_GAP_SECONDS so the window can never
+# span two of our own sends to the same thread.
+AUTHORSHIP_WINDOW_MINUTES = int(_env("SMS_AGENT_AUTHORSHIP_WINDOW", "10"))
+# A call shorter than this is a voicemail or a wrong number, not a human taking
+# over the conversation. Same threshold the call coaching pipeline already uses.
+CALL_TAKEOVER_MIN_SECONDS = int(_env("SMS_AGENT_CALL_TAKEOVER_SECONDS", "60"))
 # Recipient-local send window. A bot texting at 11pm is both a compliance
 # problem and the clearest tell that it is a bot.
 QUIET_START_HOUR = int(_env("SMS_AGENT_QUIET_START", "8"))
@@ -153,6 +163,14 @@ TAG_AI_PAUSED = f"{TAG_PREFIX}ai_paused"
 TAG_AI_HANDLED = f"{TAG_PREFIX}ai_handled"
 TAG_ESCALATED = f"{TAG_PREFIX}escalated"
 TAG_OPT_OUT = "Do Not Market"
+# Marketing dispositions for sensitive replies (Ty, 2026-08-26). A grieving
+# family telling us to go away does not need a Slack post; it needs the record
+# marked so nobody contacts them again. The channel is for live sellers.
+TAG_MAIL_ONLY = _env("SMS_AGENT_TAG_MAIL_ONLY", "Mail Only")
+# Post a sensitive reply to Slack ONLY when it carries legal exposure (a lawyer,
+# a regulator, a harassment claim, a minor). Everything else is dispositioned
+# silently: suppressed, tagged, and noted on the record.
+SENSITIVE_SLACK_LEGAL_ONLY = _env("SMS_AGENT_SENSITIVE_SLACK_LEGAL_ONLY", "1") not in ("0", "false", "False", "")
 
 # Identity. The thread is signed by the person ACTUALLY ASSIGNED to the record
 # (the `assigned_to` uuid), so the name in the text is the name that calls.

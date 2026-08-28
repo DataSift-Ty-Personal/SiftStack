@@ -56,6 +56,13 @@ def drain_outbox(limit: int = 25) -> dict:
     for row in store.due_outbox(limit):
         phone = row["phone"]
 
+        # This row was read into the batch before the loop started. A takeover
+        # landing since then already cancelled it, and re-marking would bump
+        # attempts and overwrite the cancellation reason, so leave it alone.
+        if store.outbox_status(row["id"]) != "queued":
+            skipped += 1
+            continue
+
         reason = store.is_suppressed(phone)
         if reason:
             store.mark_outbox(row["id"], "cancelled", f"suppressed: {reason}")
@@ -65,6 +72,16 @@ def drain_outbox(limit: int = 25) -> dict:
         conv = store.get_conversation(phone) or {}
         if conv.get("state") not in ("active", None, ""):
             store.mark_outbox(row["id"], "cancelled", f"conversation {conv.get('state')}")
+            skipped += 1
+            continue
+
+        # Has the thread moved since this row was written? A seed touch is built
+        # hours before it is released, and in that gap a rep can step in or the
+        # seller can reply. Sending stale copy into a live conversation is the
+        # complaint this whole change exists to fix.
+        moved = store.thread_moved_since(phone, row["created_at"])
+        if moved:
+            store.mark_outbox(row["id"], "cancelled", moved)
             skipped += 1
             continue
 
@@ -287,10 +304,29 @@ def run_once(with_reconcile: bool = True) -> dict:
                 if rec.get("replayed"):
                     log.info("reconcile recovered %s missed inbound", rec["replayed"])
                     result["reconciled"] = rec["replayed"]
-                elif rec.get("error"):
+                if rec.get("outbound_replayed"):
+                    log.info("reconcile recovered %s missed takeover(s)", rec["outbound_replayed"])
+                    result["takeovers_recovered"] = rec["outbound_replayed"]
+                if rec.get("error"):
                     log.warning("reconcile failed: %s", rec["error"])
             except Exception:  # noqa: BLE001 - never let the backstop stop the loop
                 log.exception("reconcile pass failed")
+
+            # The dialer is how this team mostly works, and a connected call
+            # emits no SMS event at all. Same cadence, same session, same
+            # failure mode if it is missing: an automated text landing hours
+            # after a rep already had the conversation.
+            try:
+                from . import call_takeover
+
+                calls = call_takeover.run(pages=1, hours=6)
+                if calls.get("paused"):
+                    log.info("call takeover paused %s thread(s)", calls["paused"])
+                    result["call_takeovers"] = calls["paused"]
+                elif calls.get("error"):
+                    log.warning("call takeover failed: %s", calls["error"])
+            except Exception:  # noqa: BLE001 - never let the backstop stop the loop
+                log.exception("call takeover pass failed")
     return result
 
 

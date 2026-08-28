@@ -11,6 +11,7 @@ doing nothing.
 """
 from __future__ import annotations
 
+import re
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -125,7 +126,7 @@ def run(live_model: bool = False) -> int:
 
     ctx = crm.deal_context("rec-1")
     for phone in ("8650001111", "8650002222", "8650003333", "8650004444",
-                  "8650005555", "8650006666", "8650008888"):
+                  "8650004446", "8650005555", "8650006666", "8650008888"):
         store.map_phone(phone, record_uuid="rec-" + phone[-4:], context=ctx)
 
     def inbound(phone: str, message: str, sms_id: str = "") -> dict:
@@ -264,6 +265,83 @@ def run(live_model: bool = False) -> int:
             _camp.next_touch({"touches": {1, 2, 3, 4}, "last": "2026-08-01"}, 2, today)[0] is None)
     r.check("says why it stopped",
             "completed" in _camp.next_touch({"touches": {1, 2, 3, 4}, "last": ""}, 2, today)[1])
+
+    # ---- 1b1. hostile stops, bereavement is a lead ---------------------
+    # Both used to just pause the thread, which was wrong in both directions:
+    # a harassment claim left the number dialable, and a reported death (the
+    # most common reason a house sells) was treated as a problem.
+    print("\nsensitive handling")
+    from . import classify as _c
+    for text in ("this has become harassment", "I am 12 years old",
+                 "my attorney will be in touch"):
+        r.check(f"hostile: {text[:30]!r}",
+                bool(_c._hit(text.lower(), _c.HOSTILE_NOW))
+                and not _c._hit(text.lower(), _c.BEREAVEMENT_NOW))
+    for text in ("Judy died in 2022", "my husband passed away last month"):
+        r.check(f"bereavement, not hostile: {text[:26]!r}",
+                bool(_c._hit(text.lower(), _c.BEREAVEMENT_NOW))
+                and not _c._hit(text.lower(), _c.HOSTILE_NOW))
+
+    before_sup = store.is_suppressed("8650005555")
+    out = inbound("8650005555", "this has become harassment, my attorney will call")
+    r.check("a hostile reply suppresses the number",
+            bool(store.is_suppressed("8650005555")), f"was {before_sup}")
+    r.check("and dispositions the phone in Sift",
+            any(w[0] == "set_phone_status" and "DNC" in str(w[1][2])
+                for w in stub.crm_writes),
+            str([w for w in stub.crm_writes if w[0] == "set_phone_status"][-1:]))
+    # Ty, 2026-08-28: legal is silenced too. It still suppresses and dispositions
+    # DNC, it just does not page anybody. Only crisis reaches the channel now.
+    r.check("a hostile/legal reply does NOT reach the channel",
+            not any("Hard stop" in s2 for s2 in stub.slack), str(stub.slack[-2:]))
+    r.check("but is still marked do-not-market",
+            any(w[0] == "add_tags" and config.TAG_OPT_OUT in str(w[1])
+                for w in stub.crm_writes),
+            str([w for w in stub.crm_writes if w[0] == "add_tags"][-2:]))
+
+    slack_before = len(stub.slack)
+    out = inbound("8650004444", "Judy died in 2022")
+    r.check("bereavement does NOT suppress the number",
+            not store.is_suppressed("8650004444"))
+    # Ty, 2026-08-26: a plain bereavement is dispositioned, NOT posted. Grieving
+    # families telling us to go away were filling the channel, and a prospector
+    # who scrolls past four of those stops reading the fifth, which is a seller.
+    # The record still gets marked so it stays workable by mail.
+    r.check("bereavement is NOT posted to the channel",
+            len(stub.slack) == slack_before, str(stub.slack[slack_before:]))
+    r.check("bereavement is dispositioned as mail-only instead",
+            any(w[0] == "add_tags" and config.TAG_MAIL_ONLY in str(w[1])
+                for w in stub.crm_writes),
+            str([w for w in stub.crm_writes if w[0] == "add_tags"][-2:]))
+
+    # A crisis message ALWAYS reaches a person, whatever the disposition rules
+    # say. Live 2026-08-26: "Im blowing my brains out this Wednesday morning"
+    # carried no legal marker and no leave-me-alone wording, so the quiet
+    # disposition would have tagged it Mail Only and nobody would have read it.
+    slack_before = len(stub.slack)
+    out = inbound("8650004444", "my father died. Im blowing my brains out Wednesday morning")
+    r.check("a crisis reply IS posted, overriding the quiet disposition",
+            any("URGENT" in s2 for s2 in stub.slack[slack_before:]),
+            str(stub.slack[slack_before:])[:180])
+    r.check("and is not silently marked as a marketing preference",
+            "CRISIS" in " ".join(out.get("actions", [])), str(out.get("actions")))
+
+    # A demand to be left alone stops the MAIL too, not just the texts. The
+    # wording has to carry the death, or it classifies as a plain NOT_INTERESTED
+    # and never reaches the sensitive handler at all.
+    slack_before = len(stub.slack)
+    tags_before = len([w for w in stub.crm_writes if w[0] == "add_tags"])
+    out = inbound("8650004446",
+                  "Leave this family alone, my father died and the house is not for sale")
+    r.check("a leave-us-alone reply is not posted either",
+            len(stub.slack) == slack_before, str(stub.slack[slack_before:]))
+    new_tags = [w for w in stub.crm_writes if w[0] == "add_tags"][tags_before:]
+    r.check("and is marked do-not-market, not mail-only",
+            any(config.TAG_OPT_OUT in str(w[1]) for w in new_tags)
+            and not any(config.TAG_MAIL_ONLY in str(w[1]) for w in new_tags),
+            str(new_tags))
+    r.check("and suppresses the number",
+            bool(store.is_suppressed("8650004446")))
 
     # ---- 1b2. one timezone must not drag the whole batch ---------------
     # A Los Angeles recipient at the front of a 9am Eastern batch pushed every
@@ -418,7 +496,13 @@ def run(live_model: bool = False) -> int:
     # ---- 5. human takeover silences the agent ---------------------------
     print("\nhuman takeover")
     inbound("8650004444", "who is this")
-    before = len(store.due_outbox(50))
+    # Phone-scoped and two-sided. This assertion used to be
+    # `len(store.due_outbox(50)) <= before` across ALL phones, which passes when
+    # nothing is cancelled at all. That is how a takeover regression would have
+    # shipped silently, so the test now proves something was pending first.
+    store.queue_message("8650004444", "queued before the takeover", from_number="+18650000001")
+    before = [x for x in store.due_outbox(50) if x["phone"] == "8650004444"]
+    r.check("something was actually pending before the takeover", len(before) >= 1, str(len(before)))
     out = engine.process("smrtphone", {
         "event": "smsOutgoing", "smsId": "st-h", "from": "+18650000001",
         "to": "8650004444", "message": "Hey, this is Adriana, got a second?",
@@ -427,11 +511,142 @@ def run(live_model: bool = False) -> int:
     r.check("detects the takeover", out.get("action") == "human_takeover", str(out.get("action")))
     conv = store.get_conversation("8650004444") or {}
     r.check("conversation paused", conv.get("state") == "paused", str(conv.get("state")))
-    r.check("pending messages cancelled", len(store.due_outbox(50)) <= before)
+    after = [x for x in store.due_outbox(50) if x["phone"] == "8650004444"]
+    r.check("pending messages cancelled",
+            not after and int(out.get("cancelled") or 0) >= 1,
+            f"{len(after)} left, cancelled={out.get('cancelled')}")
     follow = inbound("8650004444", "sure, call me after 5")
     r.check("stays silent after takeover",
             "no reply" in " ".join(follow.get("actions", [])),
             str(follow.get("actions")))
+
+    # A second burst from the same rep must not re-tag the CRM or re-log.
+    tags_before = len(stub.crm_writes)
+    dupe = engine.process("smrtphone", {
+        "event": "smsOutgoing", "smsId": "st-h2", "from": "+18650000001",
+        "to": "8650004444", "message": "still there?",
+        "source": "web", "userName": "Adriana",
+    })
+    r.check("a second human text is idempotent",
+            dupe.get("action") == "already_paused", str(dupe.get("action")))
+    r.check("no second CRM tag write", len(stub.crm_writes) == tags_before,
+            f"{len(stub.crm_writes) - tags_before} extra writes")
+
+    # ---- 5a. authorship is proved, not guessed --------------------------
+    print("\nauthorship")
+    # Our own send, identified by the id the transport handed back. This is the
+    # check that catches an over-tight window: if it fails, the agent has
+    # started reading its own texts as a human and will pause every thread.
+    from . import worker as _w3
+
+    store.ensure_conversation("8650004466")
+    store.queue_message("8650004466", "ours going out", from_number="+18650000001")
+    _w3.drain_outbox()
+    mine = engine.process("smrtphone", {
+        "event": "smsOutgoing", "smsId": "stub", "from": "+18650000001",
+        "to": "8650004466", "message": "ours going out", "source": "api",
+    })
+    r.check("our own send is not a takeover", mine.get("action") == "ours", str(mine))
+
+    # source='api' is no longer a blanket excuse. A named user on any surface is
+    # a human, whatever the source field says.
+    store.ensure_conversation("8650004467")
+    api_h = engine.process("smrtphone", {
+        "event": "smsOutgoing", "smsId": "st-api", "from": "+18650000001",
+        "to": "8650004467", "message": "hey it is me, call when you can",
+        "source": "api", "userName": "Adriana",
+    })
+    r.check("source=api does not excuse a named human",
+            api_h.get("action") == "human_takeover", str(api_h.get("action")))
+
+    # The template collision that started all this: a rep hand-sending copy we
+    # also sent, long enough ago that the ledger window has closed.
+    store.ensure_conversation("8650004468")
+    store.add_message("8650004468", "out", "Hi! Are you the owner?", "+18650000001",
+                      sms_id="old-1", author="ai")
+    with store.tx() as c:
+        c.execute("UPDATE messages SET created_at='2000-01-01T00:00:00+00:00'"
+                  " WHERE sms_id='old-1'")
+    inbound("8650004468", "yes that is me")
+    stale = engine.process("smrtphone", {
+        "event": "smsOutgoing", "smsId": "st-old", "from": "+18650000001",
+        "to": "8650004468", "message": "Hi! Are you the owner?", "source": "api",
+    })
+    r.check("a stale template match is a takeover, not ours",
+            stale.get("action") == "human_takeover", str(stale.get("action")))
+
+    # A cold thread stays ours. This is the guard that stops the fail-closed
+    # rule from mass-pausing outreach sent from anywhere but this process, and
+    # in production that is 583 real messages, so it has to hold.
+    #
+    # It sends from a REAL pool number on purpose: the pool membership test is
+    # part of the path, and comparing E.164 against 10 digits silently marked
+    # every send as foreign until a run of this test caught it.
+    pool_number = (config.numbers() or ["+18650000001"])[0]
+    cold = engine.process("smrtphone", {
+        "event": "smsOutgoing", "smsId": "st-cold", "from": pool_number,
+        "to": "8650004469", "message": "Hi Pat! Adriana here, do you own 12 Elm St?",
+        "source": "api",
+    })
+    r.check("an unrecorded first touch stays ours", cold.get("action") == "ours", str(cold))
+
+    # ... and a send from a number that is NOT ours is a human, whatever it says.
+    store.ensure_conversation("8650004473")
+    foreign = engine.process("smrtphone", {
+        "event": "smsOutgoing", "smsId": "st-foreign", "from": "+18659990000",
+        "to": "8650004473", "message": "hey, following up on the house", "source": "api",
+    })
+    r.check("a send from outside the pool is a takeover",
+            foreign.get("action") == "human_takeover", str(foreign.get("action")))
+
+    # ---- 5b. takeover covers every line on the record -------------------
+    print("\ntakeover fan out")
+    store.map_phone("8650004470", record_uuid="rec-fanout")
+    store.map_phone("8650004471", record_uuid="rec-fanout")
+    store.ensure_conversation("8650004470", record_uuid="rec-fanout")
+    store.ensure_conversation("8650004471", record_uuid="rec-fanout")
+    store.queue_message("8650004471", "touch to the second line", from_number="+18650000001")
+    inbound("8650004470", "who is this")
+    fan = engine.process("smrtphone", {
+        "event": "smsOutgoing", "smsId": "st-fan", "from": "+18650000001",
+        "to": "8650004470", "message": "Hi, Adriana here, following up",
+        "source": "web", "userName": "Adriana",
+    })
+    r.check("takeover reaches the sibling line",
+            "8650004471" in (fan.get("siblings") or []), str(fan.get("siblings")))
+    sib = store.get_conversation("8650004471") or {}
+    r.check("sibling conversation paused", sib.get("state") == "paused", str(sib.get("state")))
+    r.check("sibling queue cleared",
+            not [x for x in store.due_outbox(50) if x["phone"] == "8650004471"])
+
+    # ---- 5c. the worker will not send into a moved thread ---------------
+    print("\nfreshness guard")
+    store.ensure_conversation("8650004472")
+    store.queue_message("8650004472", "stale copy", from_number="+18650000001")
+    row = [x for x in store.due_outbox(50) if x["phone"] == "8650004472"][0]
+    store.add_message("8650004472", "out", "a rep typed this", "+18650000001", author="human")
+    sent_before = len(stub.sent)
+    _w3.drain_outbox()
+    r.check("stale row cancelled once a human spoke",
+            store.outbox_status(row["id"]) == "cancelled", store.outbox_status(row["id"]))
+    r.check("nothing was sent into the moved thread", len(stub.sent) == sent_before,
+            f"{len(stub.sent) - sent_before} sent")
+
+    # ---- 5d. resume is the way back -------------------------------------
+    print("\nresume")
+    from types import SimpleNamespace
+
+    from . import cli as _cli
+
+    rc = _cli.cmd_resume(SimpleNamespace(phone="8650004444", force=False, siblings=False))
+    conv = store.get_conversation("8650004444") or {}
+    r.check("resume reactivates a paused thread",
+            rc == 0 and conv.get("state") == "active", f"rc={rc} state={conv.get('state')}")
+    store.update_conversation("8650003333", state="opted_out", paused_reason="opt-out")
+    rc = _cli.cmd_resume(SimpleNamespace(phone="8650003333", force=False, siblings=False))
+    conv = store.get_conversation("8650003333") or {}
+    r.check("resume refuses an opt-out without --force",
+            rc == 1 and conv.get("state") == "opted_out", f"rc={rc} state={conv.get('state')}")
 
     # ---- 6. delivery callback finds a dead number -----------------------
     print("\ndelivery callback")
@@ -495,6 +710,78 @@ def run(live_model: bool = False) -> int:
     r.check("rendering is deterministic",
             touches.render(2, "seed|x", "Pat", "1 Main St", "Maryville", "Adriana")
             == touches.render(2, "seed|x", "Pat", "1 Main St", "Maryville", "Adriana"))
+
+    # ---- 9b. the dispo (buyer) program -----------------------------------
+    # The buyer profile inverts exactly three rules and must invert no others.
+    # The load-bearing case is the invented price: allowing money at all is only
+    # safe because the figure is checked against the approved deal sheet.
+    print("\ndispo buyer copy and validator")
+    DEAL = 92000
+    for t in (1, 2, 3):
+        msg = touches.render_deal(t, "old state rd|josh", "Josh", "Old State Rd",
+                                  "East Knoxville", "$92,000", "Adriana")
+        ok, problems = respond.validate(msg, max_questions=2, program="buyer",
+                                        allowed_prices=[DEAL])
+        r.check(f"buyer touch {t} passes its own validator", ok,
+                "; ".join(problems) or msg[:70])
+        r.check(f"buyer touch {t} is signed", "Adriana" in msg, msg[:70])
+        r.check(f"buyer touch {t} carries no house number",
+                not re.search(r"\b\d{2,6}\s+[A-Z]", msg), msg[:70])
+    # Structural, not sampled: a rendered spot-check only covers the variants
+    # the hash happens to pick. Three variants shipped unsigned on the first
+    # write of this pool and only two of them surfaced in a sample.
+    unsigned = [v for pool, noname_pool in touches.BUYER_POOLS
+                for v in list(pool) + list(noname_pool) if "{sender}" not in v]
+    r.check("every buyer variant is signed", not unsigned,
+            "; ".join(u[:50] for u in unsigned))
+    missing_price = [v for pool, noname_pool in touches.BUYER_POOLS
+                     for v in list(pool) + list(noname_pool) if "{price}" not in v]
+    r.check("every buyer variant carries the price",
+            len(missing_price) <= 1,  # touch 3's buy-box pivot deliberately omits it
+            "; ".join(m[:50] for m in missing_price))
+    noname = touches.render_deal(1, "s", "", "Old State Rd", "East Knoxville",
+                                 "$92,000", "Adriana")
+    ok, _ = respond.validate(noname, max_questions=2, program="buyer",
+                             allowed_prices=[DEAL])
+    r.check("buyer no-name variant passes", ok, noname[:70])
+    r.check("buyer no-name variant greets nobody", "Hi ," not in noname)
+
+    ok, _ = respond.validate(
+        "Hi Josh, I have one on Old State Rd at $92,000. Want the details?",
+        program="buyer", allowed_prices=[DEAL])
+    r.check("buyer: the approved price passes", ok)
+    ok, probs = respond.validate(
+        "Hi Josh, I have one on Old State Rd at $85,000. Want the details?",
+        program="buyer", allowed_prices=[DEAL])
+    r.check("buyer: an INVENTED price is blocked", not ok, "; ".join(probs))
+    ok, _ = respond.validate("Hi Josh, got one on Old State Rd at 92k. Want it?",
+                             program="buyer", allowed_prices=[DEAL])
+    r.check("buyer: 92k normalizes to the approved 92000", ok)
+    ok, probs = respond.validate(
+        "Hi Josh, got one on Old State Rd in the mid 90s. Want it?",
+        program="buyer", allowed_prices=[DEAL])
+    r.check("buyer: vague pricing is blocked", not ok, "; ".join(probs))
+    for text, why in (
+        ("One on Old State Rd, Knoxville 37914 at $92,000. Want it?", "zip code"),
+        ("One on Old State Rd at $92,000, see dealsite.com?", "link"),
+        ("One on Old State Rd — $92,000. Want it?", "em dash"),
+        ("I am a bot texting about Old State Rd at $92,000. Want it?",
+         "self-identifies"),
+    ):
+        ok, _ = respond.validate(text, max_questions=2, program="buyer",
+                                 allowed_prices=[DEAL])
+        r.check(f"buyer still blocks {why}", not ok, text[:52])
+    # A price on the SELLER side stays blocked no matter what the dispo agent
+    # is allowed to say. These two programs must not leak into each other.
+    ok, _ = respond.validate("I could pay you $92,000 for it.")
+    r.check("seller: price still blocked after the buyer profile exists", not ok)
+    ok, _ = respond.validate("I saw the foreclosure notice, can we talk?")
+    r.check("seller: naming the list still blocked", not ok)
+    try:
+        respond.validate("hi", program="nonsense")
+        r.check("an unknown program is refused", False, "no error raised")
+    except ValueError:
+        r.check("an unknown program is refused", True)
 
     # ---- 9b. soft no closes and stays workable ----------------------------
     print()
