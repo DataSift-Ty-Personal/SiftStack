@@ -7,8 +7,9 @@ Three jobs:
      and breaks the thread on their phone.
   2. Spread the seeding load across the pool so no single number carries the
      volume that gets it filtered.
-  3. Refuse to send outside 8am-9pm in the RECIPIENT's timezone, derived from
-     their area code, not ours.
+  3. Refuse to send outside a civil hour in the RECIPIENT's timezone, derived
+     from their area code, not ours, AND outside our own business hours in one
+     fixed timezone. Both gates must agree. See `within_quiet_hours`.
 """
 from __future__ import annotations
 
@@ -89,29 +90,58 @@ def timezone_for(phone: str) -> ZoneInfo:
     return ZoneInfo("America/New_York")
 
 
+def within_business_hours(at: Optional[datetime] = None) -> bool:
+    """True when WE are open, in one fixed timezone.
+
+    Separate from the recipient check on purpose: see config.BUSINESS_TZ for
+    why neither gate can stand in for the other.
+    """
+    here = (at or datetime.now(timezone.utc)).astimezone(ZoneInfo(config.BUSINESS_TZ))
+    return config.BUSINESS_START_HOUR <= here.hour < config.BUSINESS_END_HOUR
+
+
 def within_quiet_hours(phone: str, at: Optional[datetime] = None) -> bool:
-    """True when it is an acceptable local time to text this recipient."""
+    """True when this message may go out right now.
+
+    Both gates have to agree: a civil hour where the recipient lives, AND
+    inside our own business hours. The name is kept because every caller and
+    the whole test suite already reads it as "is it OK to send".
+    """
     tz = timezone_for(phone)
-    local = (at or datetime.now(timezone.utc)).astimezone(tz)
-    return config.QUIET_START_HOUR <= local.hour < config.QUIET_END_HOUR
+    when = at or datetime.now(timezone.utc)
+    local = when.astimezone(tz)
+    if not (config.QUIET_START_HOUR <= local.hour < config.QUIET_END_HOUR):
+        return False
+    return within_business_hours(when)
 
 
 def next_send_window(phone: str, at: Optional[datetime] = None) -> datetime:
-    """The earliest UTC instant this recipient may be texted."""
-    tz = timezone_for(phone)
+    """The earliest UTC instant this message may go out.
+
+    Walks forward an hour at a time until both gates agree, rather than solving
+    the intersection in closed form. Two windows in two timezones, each with
+    its own DST, is exactly the arithmetic that produces a queue stuck one hour
+    before it is allowed to send; stepping and re-asking cannot get that wrong.
+    Cheap either way, since this only runs on a message that cannot go now.
+    """
     now_utc = at or datetime.now(timezone.utc)
-    local = now_utc.astimezone(tz)
-    if local.hour < config.QUIET_START_HOUR:
-        target = local.replace(hour=config.QUIET_START_HOUR, minute=0, second=0, microsecond=0)
-    elif local.hour >= config.QUIET_END_HOUR:
-        target = (local + timedelta(days=1)).replace(
-            hour=config.QUIET_START_HOUR, minute=0, second=0, microsecond=0
-        )
-    else:
+    if within_quiet_hours(phone, now_utc):
         return now_utc
-    # Jitter so a night's worth of queued replies does not fire as one burst at
-    # 08:00:00 sharp, which is the most machine-looking thing we could do.
-    return target.astimezone(timezone.utc) + timedelta(seconds=random.randint(0, 1800))
+
+    probe = now_utc.replace(minute=0, second=0, microsecond=0)
+    for _ in range(24 * 8):  # a week and a day, far past any real overlap gap
+        probe += timedelta(hours=1)
+        if within_quiet_hours(phone, probe):
+            # Jitter so a night's worth of queued replies does not fire as one
+            # burst at 09:00:00 sharp, the most machine-looking thing we could
+            # do. Capped to stay inside the hour we just cleared.
+            return probe + timedelta(seconds=random.randint(0, 1800))
+
+    # No overlap at all (a recipient zone far enough from ours that the two
+    # windows never meet). Say so loudly rather than parking the row forever.
+    log.warning("no send window for %s: recipient hours and %s business hours never overlap",
+                phone, config.BUSINESS_TZ)
+    return now_utc + timedelta(days=1)
 
 
 def pool(owner: str = "") -> list[str]:

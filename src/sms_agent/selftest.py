@@ -687,6 +687,37 @@ def run(live_model: bool = False) -> int:
             sender_pool.timezone_for("9315551234").key == "America/Chicago")
     r.check("602 resolves Phoenix (no DST)",
             sender_pool.timezone_for("6025551234").key == "America/Phoenix")
+    # The messaging window is 9am to 6pm Eastern (Ty, 2026-08-28), enforced as
+    # two gates that must both agree. These assert the boundaries in UTC so a
+    # DST change or a config edit cannot quietly widen the window.
+    from datetime import datetime as _dt
+    from datetime import timezone as _tz
+
+    def _utc(h, m=0, day=28):
+        return _dt(2026, 8, day, h, m, tzinfo=_tz.utc)
+
+    # 2026-08-28 is EDT, so Eastern is UTC-4: 9am ET = 13:00Z, 6pm ET = 22:00Z.
+    r.check("closed at 8:59 Eastern", not sender_pool.within_quiet_hours("8655551234", _utc(12, 59)))
+    r.check("open at 9:00 Eastern", sender_pool.within_quiet_hours("8655551234", _utc(13, 0)))
+    r.check("open at 5:59pm Eastern", sender_pool.within_quiet_hours("8655551234", _utc(21, 59)))
+    r.check("closed at 6:00pm Eastern", not sender_pool.within_quiet_hours("8655551234", _utc(22, 0)))
+
+    # A California number at 9am Eastern is 6am local. Our window says go, the
+    # recipient's says no, and the recipient wins. This is the case a single
+    # fixed-timezone window would get wrong.
+    r.check("a Pacific number is not texted at 6am local",
+            not sender_pool.within_quiet_hours("2135551234", _utc(13, 0)))
+    r.check("a Pacific number opens once it is 9am there",
+            sender_pool.within_quiet_hours("2135551234", _utc(16, 0)))
+    # ... and closes when WE close, at 6pm Eastern, not 6pm Pacific.
+    r.check("a Pacific number closes when we do",
+            not sender_pool.within_quiet_hours("2135551234", _utc(22, 30)))
+
+    nxt = sender_pool.next_send_window("8655551234", _utc(23, 0))
+    r.check("after hours reschedules into the next window",
+            sender_pool.within_business_hours(nxt) and nxt > _utc(23, 0),
+            nxt.astimezone(_tz.utc).isoformat())
+
     first = sender_pool.assign("8650006666")
     r.check("assigns a sender from the pool", bool(first), str(first))
     store.ensure_conversation("8650006666", from_number=first or "")

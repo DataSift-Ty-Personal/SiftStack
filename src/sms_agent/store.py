@@ -611,18 +611,24 @@ def recent_outbound_exists(phone: str, body: str) -> bool:
 
 
 def has_inbound_before(phone: str, when: str) -> int:
-    """How many replies this number had already sent us at a point in time.
+    """How many replies this number had sent us at or before a point in time.
 
     This is the discriminator that separates a cold outreach touch from a human
     stepping into a live conversation, and it was derived from production
     rather than guessed. See `engine._provably_ours`.
+
+    The comparison is inclusive because `now()` has second granularity: a
+    strict `<` misses a reply stamped in the same second as the question, which
+    reads the thread as cold and lets the message through. That is not
+    theoretical, it made a test flap depending on which second it ran in, and
+    in production it is a rep answering the instant the seller writes.
     """
     phone = clean_phone(phone)
     if not phone:
         return 0
     row = _conn().execute(
         "SELECT COUNT(*) n FROM messages WHERE phone=? AND direction='in'"
-        " AND created_at < ?",
+        " AND created_at <= ?",
         (phone, when or now()),
     ).fetchone()
     return int(row["n"] if row else 0)

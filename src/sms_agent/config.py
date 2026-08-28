@@ -134,6 +134,23 @@ CAMPAIGN_START_HOUR = int(_env("SMS_AGENT_CAMPAIGN_START", "9"))
 CAMPAIGN_END_HOUR = int(_env("SMS_AGENT_CAMPAIGN_END", "18"))
 CAMPAIGN_ENABLED = _env("SMS_AGENT_CAMPAIGN", "0") not in ("0", "false", "no")
 CAMPAIGN_DAILY_CAP = int(_env("SMS_AGENT_CAMPAIGN_DAILY_CAP", "0"))  # 0 = pool capacity
+
+# OUR OWN business hours, in one fixed timezone, applied to EVERY outbound
+# message rather than only to the campaign build (Ty, 2026-08-28: "9 am to
+# 6 pm Eastern from here on").
+#
+# This is a SECOND gate, not a replacement for recipient-local quiet hours.
+# The two answer different questions and neither covers the other. Recipient
+# local asks "is it a civil hour where they live", which is the compliance
+# question and cannot be expressed in a fixed zone, because 9am Eastern is 6am
+# in California. This one asks "are we open", so a reply never lands at an hour
+# when nobody here can take the callback it invites. A send needs BOTH, and the
+# queue waits for the overlap.
+#
+# Defaults follow the campaign window so there is one place to change the hours.
+BUSINESS_TZ = _env("SMS_AGENT_BUSINESS_TZ", CAMPAIGN_TZ)
+BUSINESS_START_HOUR = int(_env("SMS_AGENT_BUSINESS_START", str(CAMPAIGN_START_HOUR)))
+BUSINESS_END_HOUR = int(_env("SMS_AGENT_BUSINESS_END", str(CAMPAIGN_END_HOUR)))
 CAMPAIGN_DAYS = _env("SMS_AGENT_CAMPAIGN_DAYS", "0,1,2,3,4")  # Mon-Fri
 
 # Whole days between one owner's touches. A follow-up goes out EVERY day to
