@@ -417,6 +417,26 @@ The team committed to the Master Material List as THE material source. Knox pric
 - **rehab-estimator.skill + deal-analyzer.plugin** now ship `data/master_material_list_37914.csv` with the doctrine: locked list is the material source for the vast majority of items on Knox deals (off-list only for an outstanding random issue, flagged), cheat sheet keeps labor + non-Knox markets, never multiply locked material prices. The skill's `material_specs` JSON contract is now wired (the Material Specs sheet renderer always existed but was never fed). deal-analyzer's bundled `skills/rehab-estimator/` was EMPTY despite instructing Claude to read 5 files from it; it now carries the full 8-file skill. Both zips rebuilt with forward-slash entry names (Compress-Archive backslash paths are non-portable).
 - Re-lock cadence: re-pull before each project cycle if desired, but re-lock (an explicit, dated, git-diffable act) only when the PM re-approves the list.
 
+## The Offer Sheet: the default post-walkthrough deliverable (build 1.0.49, 2026-08-28)
+
+`src/offer_sheet.py` is THE deliverable after a walkthrough. It replaces the 8-tab post-walkthrough workbook: **one file, five tabs, Offer in front**, wholesale by default, answering exactly one question: **OFFER TO SELLER**. `--offer-only` renders just the front page.
+
+Tabs: **Offer** (the answer) | **The House** (walk condition, seller and probate intel, priced flags, gates) | **Repair Detail** | **Comps** | **Buyers**. Repair Detail, Comps and Buyers are the post_walkthrough builders REUSED as-is; The House condenses the old Overview and Repair Logic into one. Exit Strats is gone (the Offer page supersedes it and four lanes was the confusion Ty rejected), Active-Pending and Outreach are folded away.
+
+**`_hydrate()` is load-bearing.** The reused builders read `pack["sold"]` as live `MarketListing` objects, plus `finished` and an `exits["inputs"]` band; a saved pack carries comps SERIALIZED as `sold_comps`. Without the revive the Comps tab renders empty and reads like a thin market rather than a wiring bug. The buyers band is synthesized from the offer math, which is a truer target than the old exit spread.
+
+```bash
+python src/offer_sheet.py --pack output/<deal>_pack.json --walk walk_<deal>.json                           --out "<Address>_Offer.xlsx"
+```
+
+**Layout is the Fortune Builders "Deal Analyzer for Flips"** (the real file is `output/Copy of The Repair Estimator.xlsx`): paired left/right blocks under banded headers, a percent column beside every dollar column, and inputs INLINE on the same page. The three mortgage tranches are dropped, because financing is a lender-package concern and not an offer concern. Formatting helpers (`_band`, `_row`, `_kv`, `_para`, `_polish`, the INPUT/CALC/TOTAL palette) are IMPORTED from `lender_package.py`, never copied.
+
+**The math is live Excel formulas off defined names**, so one blue cell moves the whole page: `BuyerMax = RulePct * ARV - Rehab`, `OfferToSeller = BuyerMax - Fee`. Rule defaults 70%, fee $15,000 (Ty runs a flat $10-15K assignment fee, per the exit-analysis rule). The "if we buy and rehab it ourselves" block carries net profit, ROI on total cost, purchase-plus-rehab ROI and annualized cash on cash, and it is deliberately subordinate to the offer, not a competing option. Comps (5 lines) and gates (4) are condensed onto the page rather than dropped: an ARV with no visible support is unauditable.
+
+**THE STALE PACK TRAP, hit twice on one deal.** A `--save-pack` JSON is a snapshot and does NOT track later edits. On 1342 Grainger the pack still carried the original four-scenario rehab totals AND the original $481,000 engine ARV after both had been corrected, so a naive re-render produced a workbook three revisions out of date. Rules: recompute rehab via `build_rehab_matrix(subject, walk)` and NEVER read `pack["rehab"]["totals"]`; an explicit CLI `--arv` / `--as-is` WINS over the pack; and write corrections back into the pack so it stops being a landmine.
+
+**Verify by recalculating, not by reading.** The `formulas` package loads the saved xlsx and computes it the way Excel would; assert the offer figure and assert zero formula errors, then flip `RulePct` to 0.75 and confirm the offer, buyer profit and every ROI move together. **Column widths must be set AFTER `_polish`**: `_autofit` sizes off the longest string per column and the full-width paragraphs live in column A, which blew the page to 221 width units and scrolled sideways. Fixed widths total 135 and paragraph rows are re-heighted against the width the text actually gets.
+
 ## The Lender Package (build 1.0.44, 2026-08)
 
 An 8-piece set handed to a private money lender to fund ONE named property. The team hand-edited every template on 2026-08-16 and those edits are the spec; the originals live in `Lender Docs Templates-*.zip`.
