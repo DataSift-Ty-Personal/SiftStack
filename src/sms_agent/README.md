@@ -86,9 +86,15 @@ Each of these exists because of a specific way this goes wrong.
   natural language ("stop texting me", "take me off your list"). Local
   suppression, smrtPhone DNT, and the Do Not Market tag all fire.
 - **Turn cap.** Six AI turns, then a human takes it.
-- **Recipient-local quiet hours.** 8am to 9pm in *their* timezone, derived from
-  their area code. Queued messages wake with up to 30 minutes of jitter so a
-  night's backlog does not fire as one 08:00:00 burst.
+- **Two send windows, and a message needs both.** Ty's rule since 2026-08-28 is
+  9am to 6pm Eastern, and that is our own window in one fixed timezone
+  (`SMS_AGENT_BUSINESS_*`), so a reply never lands when nobody here can take the
+  callback it invites. On top of it sits the recipient-local window
+  (`SMS_AGENT_QUIET_*`), 9am to 6pm in *their* timezone from their area code,
+  which is the compliance half and cannot be written as a fixed zone: 9am
+  Eastern is 6am in California. The queue waits for the overlap and wakes with
+  up to 30 minutes of jitter, so a night's backlog does not fire as one
+  09:00:00 burst.
 - **Sticky sender.** A conversation keeps the number it started on even when
   that number is at its cap. Switching mid-thread reads as a spam farm.
 - **Per-number daily cap and pacing**, well under the 10DLC ceiling.
