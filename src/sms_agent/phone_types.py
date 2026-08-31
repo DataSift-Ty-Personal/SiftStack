@@ -66,7 +66,11 @@ def _save(state: dict) -> None:
     STATE_PATH.write_text(json.dumps(state, indent=1), encoding="utf-8")
 
 
-TRESTLE_ENDPOINT = "https://api.trestleiq.com/3.1/phone_intel"
+# 3.0, matching src/phone_validator.py. Verified 2026-08-31: this account 403s
+# on 3.1 and 3.2 with both the free and the paid key, so the version is an
+# entitlement rather than a preference. 3.0 returns line_type and
+# add_ons.litigator_checks["phone.is_litigator_risk"] together.
+TRESTLE_ENDPOINT = "https://api.trestleiq.com/3.0/phone_intel"
 
 
 def _trestle_key() -> str:
