@@ -80,7 +80,18 @@ def run(force: bool = False, dry_run: bool = False) -> dict:
     # candidates the cap then throws away.
     plan = campaign.build(limit=cap)
     ready = plan.candidates[:cap]
-    dropped_for_cap = len(plan.candidates) - len(ready)
+
+    # A source referenced BY NAME that does not resolve is a silent zero, and
+    # renaming a preset in DataSift is a normal thing to do. This is the alarm
+    # that turns "FTM sent nothing again" into a message on the day it breaks.
+    if plan.missing_presets:
+        escalate.alert(
+            "SMS campaign: a source preset is missing",
+            "These are referenced by name and returned nothing:\n  "
+            + "\n  ".join(plan.missing_presets)
+            + "\n\nCheck the titles in DataSift; a rename breaks the day silently.",
+            kind="campaign",
+        )
 
     if not ready:
         # Say so out loud. A quiet morning and a broken cohort query look
@@ -97,8 +108,8 @@ def run(force: bool = False, dry_run: bool = False) -> dict:
     if dry_run:
         return {
             "would_queue": len(ready),
-            "dropped_for_cap": dropped_for_cap,
             "per_stage": plan.per_stage,
+            "holds": plan.holds,
         }
 
     # Queued per touch (that is the seed API), then re-laid as ONE timeline.
@@ -118,19 +129,29 @@ def run(force: bool = False, dry_run: bool = False) -> dict:
     summary = {
         "queued": result.get("queued", 0),
         "released": released,
-        "dropped_for_cap": dropped_for_cap,
         "waiting_gap": plan.skipped_waiting,
         "completed": plan.skipped_completed,
         "duplicate_person": plan.skipped_duplicate_person,
+        "unreached_sources": plan.unreached,
         "window": f"{laid.get('first')} - {laid.get('last')} UTC",
         "avg_gap_seconds": laid.get("avg_gap_seconds"),
     }
     log.info("campaign run: %s", summary)
 
+    # Was "touch {info.get('touch')}", and per_stage has never carried a
+    # "touch" key, so every one of these lines has read "touch None" since it
+    # was written. Cohort -> rows -> sending is what actually answers "why so
+    # few", and the top hold reason says where they went.
     stages = "\n".join(
-        f"  {title}: touch {info.get('touch')}, {info.get('ready', 0)} sending"
+        f"  {title}: {info.get('cohort', 0)} in the preset, {info.get('rows', 0)} usable, "
+        f"{info.get('ready', 0)} sending"
+        + ("" if info.get("reached") else "  (never reached)")
+        + (f"\n      mostly held: {max(info['holds'], key=info['holds'].get)}"
+           if info.get("holds") else "")
         for title, info in plan.per_stage.items() if "error" not in info
     )
+    unknown_type = sum(1 for c in ready
+                       if getattr(c, "line_type_unknown", False))
     escalate.alert(
         f"SMS campaign started: {released} texts today",
         f"{stages}\n\n"
@@ -138,10 +159,24 @@ def run(force: bool = False, dry_run: bool = False) -> dict:
         f"{laid.get('avg_gap_seconds')}s average gap, "
         f"{sender_pool.capacity_today()['numbers']} numbers.\n"
         f"{plan.skipped_waiting} waiting out the {config.TOUCH_GAP_DAYS}-day gap, "
-        f"{plan.skipped_completed} have finished all four"
-        + (f", {dropped_for_cap} held back by the daily cap." if dropped_for_cap else "."),
+        f"{plan.skipped_completed} have finished all four.\n"
+        + (f"Held: {', '.join(f'{k} {n}' for k, n in sorted(plan.holds.items(), key=lambda kv: -kv[1])[:5])}.\n"
+           if plan.holds else "")
+        + (f"Stopped at the cap with {len(plan.unreached)} source(s) still holding rows.\n"
+           if plan.hit_cap and plan.unreached else ""),
         kind="campaign",
     )
+
+    # The alarm that would have caught 180/day falling to 19 on the day it
+    # happened, instead of a week later when Ty noticed.
+    floor = config.CAMPAIGN_MIN_EXPECTED
+    if floor and released < floor:
+        escalate.alert(
+            f"SMS campaign volume is low: {released} texts, expected at least {floor}",
+            f"{stages}\n\nHeld: "
+            + ", ".join(f"{k} {n}" for k, n in sorted(plan.holds.items(), key=lambda kv: -kv[1])[:6]),
+            kind="campaign",
+        )
     return summary
 
 

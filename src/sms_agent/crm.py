@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import functools
 import logging
+import time
+import re
 import sys
 from typing import Any, Optional
 
@@ -92,15 +94,116 @@ def _dry(action: str, **kw) -> dict:
 
 # ------------------------------------------------------------------- reads
 
-def get_record(record_uuid: str) -> Optional[dict]:
+# reisift throttles /api/internal hard and answers 429 with its own
+# 'available in N seconds' hint, and it returns 502s in bursts under load.
+# Neither is an answer, but the shared Deal Room CRMClient raises on both,
+# so a blast read them as buyers whose dial tier could not be determined.
+# On a 193-record dry run that silently held 15 real buyers. A GET is
+# idempotent, so retrying at this boundary is safe whichever client is
+# underneath, and it covers the shared client we do not own.
+_RETRY_HINT = re.compile('available in ([0-9]+)', re.I)
+
+
+def request_retry(c, *args, **kwargs):
+    """`c._request` with the throttle backoff every read here needs.
+
+    The shared Deal Room client raises on 429 rather than waiting, and reisift
+    throttles /api/internal hard enough that a morning build trips it. Only
+    `get_record` handled that; `resolve_preset` and `fetch_cohort` did not, so
+    one throttled call raised all the way out of the campaign build and cost
+    the entire day's sends. Both were hit on the first preview run.
+
+    Read paths only. A write must not be retried blindly.
+    """
+    last = None
+    for attempt in range(4):
+        try:
+            return c._request(*args, **kwargs)
+        except Exception as exc:  # noqa: BLE001
+            last = exc
+            wait = _transient_wait(exc, attempt) if attempt < 3 else 0.0
+            if not wait:
+                raise
+            log.info("crm read transient (%s); retrying in %ss", str(exc)[:70], wait)
+            time.sleep(wait)
+    raise last  # pragma: no cover - the loop either returns or raises
+
+
+def _transient_wait(exc: Exception, attempt: int) -> float:
+    """Seconds to wait before retrying, or 0 when this is a real failure."""
+    msg = str(exc)
+    low = msg.lower()
+    if '429' in msg or 'throttl' in low:
+        hit = _RETRY_HINT.search(msg)
+        return float(int(hit.group(1)) + 1) if hit else 2.0 * (attempt + 1)
+    if any(code in msg for code in ('500', '502', '503', '504')):
+        return float(2 ** attempt)
+    if 'timed out' in low or 'connection' in low:
+        return float(2 ** attempt)
+    return 0.0
+
+
+# Short-lived record cache.
+#
+# `dial_tier`'s docstring has claimed for months that "the full record is
+# lru-cached". It never was: there is no decorator here, and one candidate
+# through `seed.build` costs FOUR to FIVE separate fetches of the same record
+# (dial_tier_checked, dial_tier -> find_phone_object, deal_context for the
+# county, _resolve_sender -> deal_context, then map_all_phones). reisift
+# throttles /api/internal hard, and 429s show up in production logs during the
+# morning campaign build for exactly this reason.
+#
+# TTL rather than lru_cache because this runs inside a long-lived worker thread,
+# where a process-lifetime cache would serve a record from hours ago. Every
+# write invalidates, so the only staleness window is between two reads.
+_RECORD_TTL_SECONDS = 300
+_RECORD_CACHE_MAX = 2000
+_record_cache: dict[str, tuple[float, dict]] = {}
+
+
+def forget_record(record_uuid: str) -> None:
+    """Drop a record from the cache. Called after every write that changes it."""
+    _record_cache.pop(record_uuid, None)
+
+
+def get_record(record_uuid: str, fresh: bool = False) -> Optional[dict]:
+    """The full record, cached for `_RECORD_TTL_SECONDS`.
+
+    Pass `fresh=True` to bypass the cache. A write's read-back MUST do so, or
+    it verifies against the copy taken before the write and reports success for
+    a write that changed nothing.
+    """
     c = client()
     if not c or not record_uuid:
         return None
-    try:
-        return c.get_record(record_uuid)
-    except Exception as exc:  # noqa: BLE001
-        log.warning("get_record %s failed: %s", record_uuid, exc)
-        return None
+
+    if not fresh:
+        hit = _record_cache.get(record_uuid)
+        if hit and (time.time() - hit[0]) < _RECORD_TTL_SECONDS:
+            return hit[1]
+
+    last = None
+    for attempt in range(4):
+        try:
+            rec = c.get_record(record_uuid)
+            if rec:
+                if len(_record_cache) >= _RECORD_CACHE_MAX:
+                    # Cheap bound. Drop the oldest tenth rather than clearing,
+                    # so a long build does not lose everything at once.
+                    for key in sorted(_record_cache, key=lambda k: _record_cache[k][0])[:200]:
+                        _record_cache.pop(key, None)
+                _record_cache[record_uuid] = (time.time(), rec)
+            return rec
+        except Exception as exc:  # noqa: BLE001
+            last = exc
+            wait = _transient_wait(exc, attempt) if attempt < 3 else 0.0
+            if not wait:
+                break
+            log.info('get_record %s transient (%s); retrying in %ss',
+                     record_uuid, str(exc)[:60], wait)
+            time.sleep(wait)
+    log.warning('get_record %s failed: %s', record_uuid, last)
+    return None
 
 
 @functools.lru_cache(maxsize=1)
@@ -193,6 +296,36 @@ def deal_context(record_uuid: str) -> dict:
     return {k: v for k, v in ctx.items() if v not in (None, "", [])}
 
 
+_PRESETS_TTL_SECONDS = 300
+_presets_cache: tuple[float, list] | None = None
+
+
+def _all_presets(fresh: bool = False) -> Optional[list]:
+    """The account's filter presets, fetched once per build rather than per source.
+
+    This listing is ~107 presets and was re-fetched for EVERY source title, so
+    adding two FTM sources turned five identical calls into seven. That is both
+    wasteful and the most likely place to trip the throttle, which is exactly
+    what happened on the first preview run.
+    """
+    global _presets_cache
+    if not fresh and _presets_cache and (time.time() - _presets_cache[0]) < _PRESETS_TTL_SECONDS:
+        return _presets_cache[1]
+    c = client()
+    if not c:
+        return None
+    try:
+        resp = request_retry(c, "/api/internal/filter-preset/", params={"limit": 999})
+    except Exception as exc:  # noqa: BLE001
+        log.warning("could not list filter presets: %s", exc)
+        return None
+    presets = resp.get("results") or resp.get("data") or resp or []
+    if isinstance(presets, dict):
+        presets = presets.get("results") or []
+    _presets_cache = (time.time(), presets)
+    return presets
+
+
 def resolve_preset(title: str) -> tuple[Optional[dict], str]:
     """Find a filter preset by title and return its live `filters.must`.
 
@@ -201,13 +334,9 @@ def resolve_preset(title: str) -> tuple[Optional[dict], str]:
     call-attempt gates). A record Ty edits in DataSift drops out of our sends
     automatically, with no second list to keep in sync.
     """
-    c = client()
-    if not c:
+    presets = _all_presets()
+    if presets is None:
         return None, ""
-    resp = c._request("/api/internal/filter-preset/", params={"limit": 999})
-    presets = resp.get("results") or resp.get("data") or resp or []
-    if isinstance(presets, dict):
-        presets = presets.get("results") or []
     wanted = title.strip().lower()
     match = next((p for p in presets if (p.get("title") or "").strip().lower() == wanted), None)
     if match is None:
@@ -220,15 +349,44 @@ def resolve_preset(title: str) -> tuple[Optional[dict], str]:
 
 
 def fetch_cohort(must: dict, limit: int = 0) -> list[dict]:
-    """Page the records currently sitting in a preset."""
+    """Page the records currently sitting in a preset.
+
+    THE RETRY IS NOT OPTIONAL. reisift throttles /api/internal hard, and the
+    shared Deal Room client raises on a 429 rather than waiting. `get_record`
+    has handled that since the dispo build; this did not, so a single throttled
+    page anywhere in the sweep raised through `from_preset`, through
+    `campaign.build`, into the worker's bare except, and dropped the whole
+    day's campaign with one line in the log. Caught live on the first preview
+    run with seven sources instead of five, because more sweeps means more
+    chances to be throttled.
+    """
     c = client()
     if not c:
         return []
     seen, out, offset = set(), [], 0
     while True:
         body = {"limit": 250, "offset": offset, "query": {"must": must}}
-        resp = c._request("/api/internal/property/", method="POST", body=body,
-                          method_override="GET")
+        resp = None
+        last = None
+        for attempt in range(4):
+            try:
+                resp = request_retry(c, "/api/internal/property/", method="POST", body=body,
+                                     method_override="GET")
+                break
+            except Exception as exc:  # noqa: BLE001
+                last = exc
+                wait = _transient_wait(exc, attempt) if attempt < 3 else 0.0
+                if not wait:
+                    break
+                log.info("fetch_cohort page at offset %s transient (%s); retrying in %ss",
+                         offset, str(exc)[:60], wait)
+                time.sleep(wait)
+        if resp is None:
+            # Return what we have rather than raising. A partial cohort sends
+            # to fewer people; an exception sends to nobody all day.
+            log.warning("fetch_cohort stopped at offset %s: %s", offset, last)
+            break
+
         rows = resp.get("results") or resp.get("data") or []
         count = resp.get("count", 0)
         for row in rows:
@@ -239,16 +397,57 @@ def fetch_cohort(must: dict, limit: int = 0) -> list[dict]:
         offset += len(rows)
         if not rows or offset >= count or (limit and len(out) >= limit):
             break
+        # reisift refuses offset+limit beyond 10,000 outright.
+        if offset + 250 > 10000:
+            log.warning("fetch_cohort capped at %s rows; the preset holds %s", len(out), count)
+            break
     return out[:limit] if limit else out
 
 
 def list_presets() -> list[str]:
-    c = client()
-    if not c:
-        return []
-    resp = c._request("/api/internal/filter-preset/", params={"limit": 999})
-    presets = resp.get("results") or resp.get("data") or []
+    presets = _all_presets() or []
     return sorted((p.get("title") or "") for p in presets if isinstance(p, dict))
+
+
+def phone_is_dnc(phone: str) -> Optional[bool]:
+    """Is THIS number flagged do-not-call? True / False / None when unknown.
+
+    The flag lives only on a search row's representative phone, and the full
+    record omits the field entirely rather than returning false. That is fine
+    while we only ever text the representative phone. It is not fine now that
+    the campaign picks the best phone off the record, because roughly half of
+    those numbers have never appeared as anyone's representative and their flag
+    has therefore never been seen.
+
+    KNOW WHAT THIS CANNOT DO. Measured 2026-08-31, 6 of 6: searching for a
+    number that is NOT its record's representative phone returns the record
+    with the REPRESENTATIVE phone attached, so the searched number's own flag
+    never appears and this returns None. The full record and
+    `/api/internal/owner/{uuid}/` both expose only number, type, status, tags
+    and is_connected. The flag is therefore unavailable for those numbers,
+    not merely unread, and no endpoint in this API surfaces it.
+
+    So: reliable for a representative phone, None for the rest. The caller
+    decides what None means; see `config.REQUIRE_VISIBLE_DNC`.
+    """
+    c = client()
+    digits = store.clean_phone(phone)
+    if not c or len(digits) != 10:
+        return None
+    try:
+        resp = request_retry(
+            c, "/api/internal/property/", method="POST",
+            body={"limit": 5, "query": {"must": {"search": digits}}},
+            method_override="GET",
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.warning("DNC probe failed for %s: %s", digits, exc)
+        return None
+    for row in resp.get("results") or []:
+        ph = row.get("phone") if isinstance(row.get("phone"), dict) else {}
+        if store.clean_phone(ph.get("number") or "") == digits:
+            return bool(ph.get("doNotCall"))
+    return None
 
 
 def find_records_by_phone(phone: str, limit: int = 10) -> list[dict]:
@@ -337,9 +536,10 @@ def owner_uuid_for(record_uuid: str) -> str:
     return owner.get("uuid") or ""
 
 
-def find_phone_object(record_uuid: str, phone: str) -> tuple[str, Optional[dict]]:
+def find_phone_object(record_uuid: str, phone: str,
+                      fresh: bool = False) -> tuple[str, Optional[dict]]:
     """(owner_uuid, phone object) for a number on a record."""
-    rec = get_record(record_uuid)
+    rec = get_record(record_uuid, fresh=fresh)
     if not rec:
         return "", None
     owner = rec.get("owner") if isinstance(rec.get("owner"), dict) else {}
@@ -469,7 +669,7 @@ def dial_tier(record_uuid: str, phone: str) -> str:
     Deliberately name-based. The slim search payload exposes phone tags as
     uuids, which are per-account values that would silently match nothing if
     this ever ran against a different Sift account; the tag names are the
-    stable contract. The full record is lru-cached, so this costs one fetch per
+    stable contract. `get_record` is TTL-cached, so this costs one fetch per
     record rather than one per phone.
 
     Returns "" when the phone carries no tier tag at all.
@@ -485,6 +685,91 @@ def dial_tier(record_uuid: str, phone: str) -> str:
         if tier in names:
             return tier
     return ""
+
+
+def _phone_payload(phone_obj: dict, **overrides) -> dict:
+    """The FULL phone object the upsert endpoint requires.
+
+    `upsert-phones` matches by number and REPLACES the object, so anything left
+    out is wiped: the type, the dial tier tags, the status, the connected flag.
+    Every writer builds its payload here so the two of them cannot drift, and
+    so adding a third does not reintroduce the wipe.
+    """
+    tags = [
+        t.get("title") or t.get("name") or t.get("tag") if isinstance(t, dict) else str(t)
+        for t in (phone_obj.get("tags") or [])
+    ]
+    payload = {
+        "number": store.clean_phone(phone_obj.get("number")),
+        "type": (phone_obj.get("type") or "UNKNOWN").upper(),
+        "tags": [t for t in tags if t],
+        "status": (phone_obj.get("status") or "UNKNOWN").upper(),
+        "is_connected": phone_obj.get("is_connected", True),
+        "verified": phone_obj.get("verified", False),
+    }
+    payload.update(overrides)
+    return payload
+
+
+def set_phone_type(record_uuid: str, phone: str, line_type: str) -> dict:
+    """Write the real line type onto a phone, preserving everything else."""
+    line_type = (line_type or "").upper()
+    if line_type not in ("MOBILE", "LANDLINE", "UNKNOWN"):
+        return {"error": f"refusing to write line type {line_type!r}"}
+    c = client()
+    if not c:
+        return {"error": unavailable_reason()}
+    owner_uuid, phone_obj = find_phone_object(record_uuid, phone)
+    if not owner_uuid or not phone_obj:
+        return {"error": "owner_uuid or phone not found on record"}
+    if (phone_obj.get("type") or "UNKNOWN").upper() == line_type:
+        return {"skipped": "already " + line_type, "verified": True}
+
+    payload = _phone_payload(phone_obj, type=line_type)
+    if config.DRY_RUN:
+        return _dry("set_phone_type", owner=owner_uuid, payload=payload)
+    try:
+        c._request(f"/api/internal/owner/{owner_uuid}/upsert-phones/",
+                   method="POST", body={"phones": [payload]})
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"write failed: {exc}"}
+
+    forget_record(record_uuid)
+    _, after = find_phone_object(record_uuid, phone, fresh=True)
+    got = (after or {}).get("type", "")
+    return {"written": line_type, "verified": (got or "").upper() == line_type}
+
+
+def add_phone_tag(record_uuid: str, phone: str, tag: str) -> dict:
+    """Add a tag to one phone, keeping the tier tags it already carries.
+
+    Used to mark a litigator where the dialer and the mail lanes can see it,
+    not only this program.
+    """
+    c = client()
+    if not c:
+        return {"error": unavailable_reason()}
+    owner_uuid, phone_obj = find_phone_object(record_uuid, phone)
+    if not owner_uuid or not phone_obj:
+        return {"error": "owner_uuid or phone not found on record"}
+
+    payload = _phone_payload(phone_obj)
+    if tag in payload["tags"]:
+        return {"skipped": "already tagged", "verified": True}
+    payload["tags"] = payload["tags"] + [tag]
+    if config.DRY_RUN:
+        return _dry("add_phone_tag", owner=owner_uuid, payload=payload)
+    try:
+        c._request(f"/api/internal/owner/{owner_uuid}/upsert-phones/",
+                   method="POST", body={"phones": [payload]})
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"write failed: {exc}"}
+
+    forget_record(record_uuid)
+    _, after = find_phone_object(record_uuid, phone, fresh=True)
+    names = {(t.get("title") or t.get("name") or t.get("tag")) if isinstance(t, dict) else str(t)
+             for t in ((after or {}).get("tags") or [])}
+    return {"written": tag, "verified": tag in names}
 
 
 def set_phone_status(record_uuid: str, phone: str, status: str) -> dict:
@@ -507,18 +792,7 @@ def set_phone_status(record_uuid: str, phone: str, status: str) -> dict:
     if (phone_obj.get("status") or "UNKNOWN").upper() == status:
         return {"skipped": "already " + status}
 
-    tags = [
-        t.get("title") or t.get("name") or t.get("tag") if isinstance(t, dict) else str(t)
-        for t in (phone_obj.get("tags") or [])
-    ]
-    payload = {
-        "number": store.clean_phone(phone_obj.get("number")),
-        "type": phone_obj.get("type") or "UNKNOWN",
-        "tags": [t for t in tags if t],
-        "status": status,
-        "is_connected": phone_obj.get("is_connected", True),
-        "verified": phone_obj.get("verified", False),
-    }
+    payload = _phone_payload(phone_obj, status=status)
     if config.DRY_RUN:
         return _dry("set_phone_status", owner=owner_uuid, payload=payload)
     try:
@@ -531,8 +805,11 @@ def set_phone_status(record_uuid: str, phone: str, status: str) -> dict:
         return {"error": f"write failed: {exc}"}
 
     # Read back. A write that 200s and changes nothing is the failure mode
-    # this whole codebase keeps rediscovering.
-    _, after = find_phone_object(record_uuid, phone)
+    # this whole codebase keeps rediscovering. `fresh=True` is load bearing:
+    # without it the cache hands back the copy taken before the write and this
+    # check verifies the write against its own stale input.
+    forget_record(record_uuid)
+    _, after = find_phone_object(record_uuid, phone, fresh=True)
     got = (after or {}).get("status", "")
     return {"written": status, "verified": (got or "").upper() == status}
 
@@ -544,7 +821,9 @@ def add_tags(record_uuid: str, tags: list[str]) -> dict:
     if config.DRY_RUN:
         return _dry("add_tags", uuid=record_uuid, tags=tags)
     try:
-        return c.add_tags(record_uuid, tags, dry_run=False)
+        out = c.add_tags(record_uuid, tags, dry_run=False)
+        forget_record(record_uuid)
+        return out
     except Exception as exc:  # noqa: BLE001
         return {"error": str(exc)}
 
@@ -556,7 +835,9 @@ def set_status(record_uuid: str, status: str) -> dict:
     if config.DRY_RUN:
         return _dry("set_status", uuid=record_uuid, status=status)
     try:
-        return c.update_status(record_uuid, status, dry_run=False)
+        out = c.update_status(record_uuid, status, dry_run=False)
+        forget_record(record_uuid)
+        return out
     except Exception as exc:  # noqa: BLE001
         return {"error": str(exc)}
 
@@ -574,11 +855,13 @@ def assign(record_uuid: str, user_uuid: str) -> dict:
     if config.DRY_RUN:
         return _dry("assign", uuid=record_uuid, assigned_to=user_uuid)
     try:
-        return c._request(
+        out = c._request(
             f"/api/internal/property/{record_uuid}/",
             method="PATCH",
             body={"assigned_to": user_uuid},
         )
+        forget_record(record_uuid)
+        return out
     except Exception as exc:  # noqa: BLE001
         return {"error": str(exc)}
 
@@ -611,6 +894,7 @@ def bump_sms_attempts(record_uuid: str) -> dict:
             f"/api/internal/property/{record_uuid}/", method="PATCH",
             body={"sms_attempts": count},
         )
+        forget_record(record_uuid)
         return {"sms_attempts": count}
     except Exception as exc:  # noqa: BLE001 - never fail a send over a counter
         return {"error": str(exc)}

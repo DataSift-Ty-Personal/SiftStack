@@ -93,7 +93,16 @@ def run(live_model: bool = False) -> int:
         stub.sent.append((to, body, frm)) or smrtphone.SendResult(True, sms_id="stub")
     )
     smrtphone.add_to_dnt = lambda phone: (stub.dnt.append(phone) or (True, "stub"))
-    escalate._post = lambda text, blocks=None: (stub.slack.append(text) or True)
+    # record the program too, so a routing regression (dispo traffic
+    # posted to the seller channel) is visible to a test.
+    # Keep stub.slack a list of TEXT (existing assertions read it as a
+    # string) and record the routing program alongside, so a hot BUYER
+    # lead posted to the seller channel is a visible test failure.
+    stub.slack_programs = []
+    escalate._post = lambda text, blocks=None, program="": (
+        stub.slack.append(text)
+        or stub.slack_programs.append(program or "seller")
+        or True)
     for name in ("add_tags", "set_status", "post_note", "assign", "bump_sms_attempts"):
         setattr(
             crm, name,
@@ -119,7 +128,7 @@ def run(live_model: bool = False) -> int:
         classify.classify_llm = lambda text, history=None: classify.Classification(
             "OTHER", 0.0, "fallback", "stubbed"
         )
-        respond.draft = lambda thread, context=None, intent="", intent_rationale="": respond.Reply(
+        respond.draft = lambda thread, context=None, intent="", intent_rationale="", program="seller": respond.Reply(
             message="Hi Maron! Sorry to bother you. Is 158 Old State Rd yours?",
             confidence=0.92, handoff=(intent == "INTERESTED"), reason="stub", ok=True,
         )
@@ -432,6 +441,127 @@ def run(live_model: bool = False) -> int:
     for bad in ("Dial Third", "Dial Fourth", "Drop", ""):
         r.check(f"tier {bad or 'untagged'!r} is not textable",
                 bad not in seed.ALLOWED_DIAL_TIERS)
+
+    # ---- 1b. the line-type policy --------------------------------------
+    #
+    # This triple IS the policy. The FTM book is 604 records whose every phone
+    # is type UNKNOWN while carrying real tier tags, so the rule has to open
+    # for those without opening for a known landline.
+    print("\nline type policy")
+    r.check("a mobile is textable", seed.textable_line("MOBILE", "")[0])
+    r.check("unknown type defers to a good tier",
+            seed.textable_line("UNKNOWN", "Dial First")[0])
+    r.check("blank type defers to a good tier",
+            seed.textable_line("", "Dial Second")[0])
+    r.check("a KNOWN landline is blocked even at Dial First",
+            not seed.textable_line("LANDLINE", "Dial First")[0],
+            str(seed.textable_line("LANDLINE", "Dial First")))
+    r.check("unknown type with a weak tier is blocked",
+            not seed.textable_line("UNKNOWN", "Dial Fourth")[0])
+    r.check("unknown type with no tier is blocked",
+            not seed.textable_line("UNKNOWN", "")[0])
+    r.check("allow_non_mobile is gone",
+            "allow_non_mobile" not in seed.from_preset.__code__.co_varnames,
+            str(seed.from_preset.__code__.co_varnames[:6]))
+
+    # ---- 1c. best phone on the record, not the search row ---------------
+    print("\nbest phone")
+    _saved_get = crm.get_record
+    crm.get_record = lambda uuid, fresh=False: {
+        "uuid": uuid,
+        "owner": {"uuid": "own-1", "phones": [
+            {"number": "8650009001", "type": "UNKNOWN", "status": "UNKNOWN",
+             "tags": [{"title": "Dial Fourth"}]},
+            {"number": "8650009002", "type": "UNKNOWN", "status": "UNKNOWN",
+             "tags": [{"title": "Dial First"}]},
+            {"number": "8650009003", "type": "LANDLINE", "status": "UNKNOWN",
+             "tags": [{"title": "Dial First"}]},
+        ]},
+    }
+    _saved_dnc = crm.phone_is_dnc
+    crm.phone_is_dnc = lambda number: False
+    row = {"uuid": "rec-best", "phone": "8650009001", "street": "1 Main St"}
+    got, why = seed.resolve_best_phone(row, set())
+    r.check("picks the Dial First number over the representative one",
+            got and got["phone"] == "8650009002", f"{got and got.get('phone')} ({why})")
+    r.check("never picks a known landline", not got or got["phone"] != "8650009003")
+    got2, why2 = seed.resolve_best_phone(row, {"8650009002"})
+    r.check("a DNC number from the search rows is never chosen",
+            not got2 or got2["phone"] != "8650009002", f"{got2 and got2.get('phone')} ({why2})")
+    crm.get_record = lambda uuid, fresh=False: {
+        "uuid": uuid, "owner": {"uuid": "own-1", "phones": [
+            {"number": "8650009004", "type": "UNKNOWN", "status": "UNKNOWN",
+             "tags": [{"title": "Drop"}]}]},
+    }
+    got3, why3 = seed.resolve_best_phone(row, set())
+    r.check("a record with no good tier is refused, with a reason",
+            got3 is None and "Dial First" in why3, str(why3))
+
+    # The per-number do-not-call probe. Half the numbers this picks have never
+    # been a representative phone, so this is the only place their flag is seen.
+    crm.get_record = lambda uuid, fresh=False: {
+        "uuid": uuid, "owner": {"uuid": "own-1", "phones": [
+            {"number": "8650009005", "type": "UNKNOWN", "status": "UNKNOWN",
+             "tags": [{"title": "Dial First"}]}]},
+    }
+    crm.phone_is_dnc = lambda number: True
+    got4, why4 = seed.resolve_best_phone(row, set())
+    r.check("a do-not-call number is refused even when it is the best tier",
+            got4 is None and "do-not-call" in why4, str(why4))
+    # The registry flag is unavailable for a non-representative phone, so this
+    # is a policy switch rather than a bug. Ty chose to send (2026-08-31); the
+    # hard block is the litigator list, asserted below.
+    crm.phone_is_dnc = lambda number: None
+    _saved_req = config.REQUIRE_VISIBLE_DNC
+    config.REQUIRE_VISIBLE_DNC = True
+    got5, _ = seed.resolve_best_phone(row, set())
+    r.check("with REQUIRE_VISIBLE_DNC on, an unverifiable flag is refused", got5 is None)
+    config.REQUIRE_VISIBLE_DNC = False
+    got6, why6 = seed.resolve_best_phone(row, set())
+    r.check("with it off, the best phone is used", got6 is not None, str(why6))
+    config.REQUIRE_VISIBLE_DNC = _saved_req
+    crm.phone_is_dnc = _saved_dnc
+
+    # ---- 1e. litigator suppression blocks every path --------------------
+    #
+    # Ty, 2026-08-31: suppress the litigation list "throughout the entire
+    # process". Writing it to the suppression table is what makes that true
+    # without a per-program filter, so this asserts the whole chain.
+    print("\nlitigator suppression")
+    store.suppress("8650007790", config.LITIGATOR_SUPPRESSION_REASON)
+    r.check("a litigator is suppressed locally",
+            store.is_suppressed("8650007790") == config.LITIGATOR_SUPPRESSION_REASON)
+    lit_rows = seed.build([{"phone": "8650007790", "uuid": "rec-lit",
+                            "street": "9 Court St", "city": "Maryville",
+                            "first": "Pat", "last": "Doe", "owner": "Pat Doe",
+                            "county": "Blount", "assigned": "", "dial_tier": "verified"}],
+                          touch=1, sender_fallback="Adriana")
+    r.check("outreach refuses a litigator",
+            lit_rows and lit_rows[0].status != "ready",
+            str(lit_rows and lit_rows[0].reasons))
+    from . import worker as _wlit
+
+    store.queue_message("8650007790", "should never leave", from_number="+18650000001")
+    _before = len(stub.sent)
+    _wlit.drain_outbox()
+    r.check("the worker refuses a litigator even once queued",
+            len(stub.sent) == _before, f"{len(stub.sent) - _before} sent")
+    crm.get_record = _saved_get
+
+    # ---- 1d. every source keeps its own share of the day ----------------
+    print("\ncampaign sources")
+    from . import campaign as _camp
+
+    titles = [s.title for s in _camp.SOURCES]
+    r.check("FTM is one of the swept sources",
+            "FTM - 02 Ready to Call" in titles, str(titles))
+    r.check("FTM resolves the full record",
+            any(s.deep for s in _camp.SOURCES if s.title.startswith("FTM")))
+    r.check("shares cover the day without over-committing it",
+            0.99 <= sum(s.share for s in _camp.SOURCES) <= 1.01,
+            str(round(sum(s.share for s in _camp.SOURCES), 3)))
+    r.check("FTM holds the largest share",
+            max(_camp.SOURCES, key=lambda s: s.share).title.startswith("FTM"))
 
     # ---- 2. opt-out is honored on every surface ------------------------
     print("\nopt-out")
@@ -746,11 +876,169 @@ def run(live_model: bool = False) -> int:
     # The buyer profile inverts exactly three rules and must invert no others.
     # The load-bearing case is the invented price: allowing money at all is only
     # safe because the figure is checked against the approved deal sheet.
+    print("")
+    print("a buyer thread is routed as a buyer thread")
+    # The dispo blast and the seller campaign share one agent, one
+    # database and one inbox, and NOTHING distinguished them: a buyer's
+    # reply was answered with the seller playbook, validated under the
+    # seller profile (which blocks every dollar figure, so the approved
+    # asking price could never be quoted), and a hot BUYER lead paged
+    # the seller channel. The number it arrived ON is the signal.
+    _rp2 = config.number_pools
+    try:
+        config.number_pools = lambda: {
+            'Adriana': ['+15550001111'], 'Dispo': ['+15559990001']}
+        _buyer = sender_pool.program_for('+15559990001')
+        _seller = sender_pool.program_for('+15550001111')
+        _unknown = sender_pool.program_for('+15557654321')
+    finally:
+        config.number_pools = _rp2
+    r.check("a reply to a dispo number is a buyer thread",
+            _buyer == 'buyer', _buyer)
+    r.check("a reply to a seller number is a seller thread",
+            _seller == 'seller', _seller)
+    r.check("an unknown number defaults to seller, never buyer",
+            _unknown == 'seller', _unknown)
+
+    print("")
+    print("the price band cannot silently vanish")
+    # REGISTRY was hardcoded in a second place and missed when the path
+    # went env-driven, so on Fly _bands() returned {} and match_band,
+    # which keeps unknown bands by design, passed all 192 buyers
+    # including ones whose cheapest purchase is over $600,000.
+    from sms_agent import dispo_campaign as _dc
+    r.check("REGISTRY is derived from OUT, not hardcoded",
+            str(_dc.REGISTRY).replace(chr(92), '/').endswith(
+                str(_dc.OUT).replace(chr(92), '/') + '/registry.json'),
+            str(_dc.REGISTRY))
+    _real = _dc.REGISTRY
+    try:
+        _dc.REGISTRY = _real.parent / 'definitely_not_here.json'
+        try:
+            _dc._bands()
+            _raised = False
+        except SystemExit:
+            _raised = True
+    finally:
+        _dc.REGISTRY = _real
+    r.check("a missing registry refuses to run, never returns {}",
+            _raised)
+
+    print("")
+    print("the sending pool cannot leak across programs")
+    # The cap is a carrier-risk knob PER PROGRAM. It used to be one
+    # global number, so raising it to fit a 156-message dispo blast in
+    # one day would have raised the acquisitions numbers too.
+    _caps = getattr(config, 'POOL_CAPS', {})
+    _rp = config.number_pools
+    try:
+        config.POOL_CAPS = {'Dispo': 35}
+        config.number_pools = lambda: {
+            'Adriana': ['+15550001111'], 'Dispo': ['+15559990001']}
+        _dispo_cap = sender_pool.cap_for('+15559990001')
+        _sell_cap = sender_pool.cap_for('+15550001111')
+    finally:
+        config.POOL_CAPS = _caps
+        config.number_pools = _rp
+    r.check("a per-pool cap applies to that pool", _dispo_cap == 35,
+            str(_dispo_cap))
+    r.check("and leaves other pools alone",
+            _sell_cap == config.DAILY_CAP_PER_NUMBER, str(_sell_cap))
+    # Unpinned, the dispo blast spread across all 24 numbers including
+    # the 19 seller lines: seller 10DLC budget spent invisibly, one
+    # number carrying two programs, and callbacks ringing acquisitions.
+    _fp = sender_pool.forced_pool()
+    _real_pools = config.number_pools
+    try:
+        # Own fixture: the suite's number config has no Dispo pool, so
+        # asserting against it would test the fixture, not the rule.
+        config.number_pools = lambda: {
+            'Adriana': ['+15550001111', '+15550002222'],
+            'Dispo': ['+15559990001'],
+        }
+        sender_pool.set_forced_pool('Dispo')
+        _pinned = sender_pool.pool()
+        _pinned_other = sender_pool.pool('Adriana')
+        sender_pool.set_forced_pool('NoSuchPool')
+        _missing = sender_pool.pool()
+    finally:
+        sender_pool.set_forced_pool(_fp)
+        config.number_pools = _real_pools
+    r.check("a pinned pool ignores the owner's own numbers",
+            _pinned == ['+15559990001']
+            and _pinned_other == ['+15559990001'],
+            str(_pinned) + ' / ' + str(_pinned_other))
+    r.check("a pinned pool that is missing returns NOTHING",
+            _missing == [], str(_missing))
+
+    print("")
+    print("staging cannot double-text")
+    # Staging the same batch twice left 312 held rows for 156 buyers.
+    # Released, every one of them would have been texted twice, which is
+    # the worst thing a cold number can do.
+    from . import seed as _seed
+    _c = _seed.Candidate(phone='8655550111', record_uuid='rec-dup',
+                         first='Pat', street='1 Main St', city='Knoxville',
+                         county='Knox', sender='Ty')
+    _c.message = 'Hi Pat, test. -Ty'
+    _c.status = 'ready'
+    _dr2 = config.DRY_RUN
+    config.DRY_RUN = False
+    try:
+        _first = _seed.queue([_c], touch=1)
+        _again = _seed.queue([_c], touch=1)
+    finally:
+        config.DRY_RUN = _dr2
+    r.check("a fresh phone stages", _first.get("queued") == 1, str(_first))
+    r.check("the SAME phone cannot be staged twice",
+            _again.get("queued") == 0 and _again.get("duplicates") == 1,
+            str(_again))
+    _prev = config.DRY_RUN
+    try:
+        config.DRY_RUN = True
+        _c2 = _seed.Candidate(phone='8655550222', record_uuid='rec-dry',
+                              first='Pat', street='1 Main St',
+                              city='Knoxville', county='Knox', sender='Ty')
+        _c2.message = 'Hi Pat, test. -Ty'
+        _c2.status = 'ready'
+        _dry = _seed.queue([_c2], touch=1)
+    finally:
+        config.DRY_RUN = _prev
+    r.check("a dry run stages NOTHING",
+            _dry.get("queued") == 0 and _dry.get("dry_run") is True,
+            str(_dry))
+
+    print("")
+    print("transient CRM errors")
+    # A throttle or a gateway error is the absence of an answer, not an
+    # answer. Read as failure, they held 15 real buyers on a 193-record
+    # dry run and looked exactly like missing dial-tier data.
+    r.check("429 waits the server's own hint",
+            crm._transient_wait(
+                Exception('HTTP 429: Expected available in 7 second.'), 0)
+            == 8.0)
+    r.check("502 backs off",
+            crm._transient_wait(Exception("HTTP 502"), 2) == 4.0)
+    r.check("404 is a real answer, not a retry",
+            crm._transient_wait(Exception("HTTP 404 Not found"), 0) == 0.0)
+    r.check("a 4xx validation error is not retried",
+            crm._transient_wait(Exception("HTTP 400 bad request"), 0) == 0.0)
+
     print("\ndispo buyer copy and validator")
     DEAL = 92000
+    # render_deal's signature is a contract between touches and the
+    # campaign. It drifted once and surfaced as a TypeError that aborted
+    # the whole suite rather than as a failing check, so assert it here.
+    import inspect as _inspect
+    _sig = list(_inspect.signature(touches.render_deal).parameters)
+    r.check("render_deal signature is unchanged",
+            _sig == ["touch", "seed", "who", "city", "road", "price",
+                     "beds", "baths", "sqft", "sender", "note"],
+            ", ".join(_sig))
     for t in (1, 2, 3):
-        msg = touches.render_deal(t, "old state rd|josh", "Josh", "Old State Rd",
-                                  "East Knoxville", "$92,000", "Adriana")
+        msg = touches.render_deal(t, "old state rd|josh", "Josh", "Knoxville",
+                                  "Old State Rd", "$92,000", "2", "1",
+                                  "1,946", "Adriana")
         ok, problems = respond.validate(msg, max_questions=2, program="buyer",
                                         allowed_prices=[DEAL])
         r.check(f"buyer touch {t} passes its own validator", ok,
@@ -758,24 +1046,70 @@ def run(live_model: bool = False) -> int:
         r.check(f"buyer touch {t} is signed", "Adriana" in msg, msg[:70])
         r.check(f"buyer touch {t} carries no house number",
                 not re.search(r"\b\d{2,6}\s+[A-Z]", msg), msg[:70])
+    r.check("BUYER_POOLS is one flat pool per touch",
+            len(touches.BUYER_POOLS) == 3 and all(
+                isinstance(p, (list, tuple)) and p and all(
+                    isinstance(v, str) for v in p)
+                for p in touches.BUYER_POOLS))
     # Structural, not sampled: a rendered spot-check only covers the variants
     # the hash happens to pick. Three variants shipped unsigned on the first
     # write of this pool and only two of them surfaced in a sample.
-    unsigned = [v for pool, noname_pool in touches.BUYER_POOLS
-                for v in list(pool) + list(noname_pool) if "{sender}" not in v]
+    unsigned = [v for pool in touches.BUYER_POOLS
+                for v in pool if "{sender}" not in v]
     r.check("every buyer variant is signed", not unsigned,
             "; ".join(u[:50] for u in unsigned))
-    missing_price = [v for pool, noname_pool in touches.BUYER_POOLS
-                     for v in list(pool) + list(noname_pool) if "{price}" not in v]
+    missing_price = [v for pool in touches.BUYER_POOLS
+                     for v in pool if "{price}" not in v]
     r.check("every buyer variant carries the price",
             len(missing_price) <= 1,  # touch 3's buy-box pivot deliberately omits it
             "; ".join(m[:50] for m in missing_price))
-    noname = touches.render_deal(1, "s", "", "Old State Rd", "East Knoxville",
-                                 "$92,000", "Adriana")
+    noname = touches.render_deal(1, "s", "", "Knoxville", "Old State Rd",
+                                 "$92,000", "2", "1", "1,946", "Adriana")
     ok, _ = respond.validate(noname, max_questions=2, program="buyer",
                              allowed_prices=[DEAL])
     r.check("buyer no-name variant passes", ok, noname[:70])
+    # How a buyer is addressed, from four real rows that each went wrong a
+    # different way. A cold text with the wrong name reads like a list.
+    bg = touches.buyer_greeting
+    r.check("an entity is addressed as a team",
+            bg("NEON GOBY INVESTMENTS LLC", "", is_entity=True)
+            == "Neon Goby Investments team")
+    r.check("a trust keeps its own name and is not a team",
+            bg("Thresa L Steidlmayer Trust", "", is_entity=True)
+            == "Thresa L Steidlmayer Trust")
+    r.check("Real Estate is a company, not a trust",
+            bg("Affordable Houses and Real Estate", "", is_entity=True)
+            .endswith("team"))
+    r.check("a person we cannot name gets NO addressee, never team",
+            bg("Haddad Amer Michael", "", is_entity=False) == "")
+    r.check("an initial is not a first name",
+            touches.clean_first("E J E Bourgeois") == "")
+    # A long company name plus the transparency note pushed a variant to
+    # 326 chars and the validator rejected it, silently costing a real
+    # buyer. The fix fits the MESSAGE, never the NAME: trimming the name
+    # produced 'Affordable Houses and Real team'.
+    _long = touches.render_deal(
+        1, "s", bg("Advanced Home Services Properties Partnership", "",
+                  is_entity=True),
+        "Knoxville", "Old State Road", "$75,000", "2", "1", "1,946",
+        "Ty", "(sorry, couldn't find the signing member)")
+    r.check("a long entity name still fits the SMS limit",
+            len(_long) <= touches.MAX_SMS, str(len(_long)))
+    r.check("the brand name is never trimmed to fit",
+            bg("Affordable Houses and Real Estate", "", is_entity=True)
+            == "Affordable Houses and Real Estate team")
+
+    r.check("a single-letter token stays capitalised in a company name",
+            bg("J A Murphy Group Llc", "", is_entity=True)
+            == "J A Murphy Group team")
+
     r.check("buyer no-name variant greets nobody", "Hi ," not in noname)
+    r.check("an unknown buyer yields no addressee at all",
+            touches.buyer_greeting("", "") == "",
+            repr(touches.buyer_greeting("", "")))
+    r.check("no-name copy still opens like a real text",
+            noname.startswith(("Hi, ", "Hey, ", "Hello, ")),
+            noname[:40])
 
     ok, _ = respond.validate(
         "Hi Josh, I have one on Old State Rd at $92,000. Want the details?",
@@ -852,7 +1186,15 @@ def run(live_model: bool = False) -> int:
             str(by_phone.get("8650001111").reasons))
     r.check("holds a record with no phone",
             any(c.status == "hold" and "no usable phone" in " ".join(c.reasons) for c in cands))
-    queued = seed.queue(cands, touch=1)
+    # seed.queue is a no-op under DRY_RUN by design (a dry run that wrote
+    # 156 held rows is what caused the double-staging). This test is about
+    # staging mechanics and the DB is a throwaway, so opt out explicitly.
+    _dr = config.DRY_RUN
+    config.DRY_RUN = False
+    try:
+        queued = seed.queue(cands, touch=1)
+    finally:
+        config.DRY_RUN = _dr
     r.check("queues only ready records", queued["queued"] == 1, str(queued))
     seeded = [x for x in store.due_outbox(50) if x["phone"] == "8650007777"]
     r.check("seed is held, not queued", not seeded,

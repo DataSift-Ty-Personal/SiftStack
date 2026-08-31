@@ -85,6 +85,12 @@ REISIFT_API_KEY = _env("REISIFT_API_KEY", "")
 
 # ---------------------------------------------------------------- Slack
 SLACK_WEBHOOK_URL = _env("SMS_AGENT_SLACK_WEBHOOK") or _env("SLACK_WEBHOOK_URL", "")
+# The dispo program posts to its OWN channel. Buyer traffic and seller
+# traffic are different audiences and different people act on them, so
+# a single webhook would put 'a price went out to 156 buyers' in the
+# seller text-leads channel. Falls back to the seller webhook, which is
+# wrong-channel but not silent, and doctor() says so.
+DISPO_SLACK_WEBHOOK_URL = _env("SMS_AGENT_DISPO_SLACK_WEBHOOK", "")
 
 # ---------------------------------------------------------------- model
 ANTHROPIC_API_KEY = _env("ANTHROPIC_API_KEY", "")
@@ -134,6 +140,40 @@ CAMPAIGN_START_HOUR = int(_env("SMS_AGENT_CAMPAIGN_START", "9"))
 CAMPAIGN_END_HOUR = int(_env("SMS_AGENT_CAMPAIGN_END", "18"))
 CAMPAIGN_ENABLED = _env("SMS_AGENT_CAMPAIGN", "0") not in ("0", "false", "no")
 CAMPAIGN_DAILY_CAP = int(_env("SMS_AGENT_CAMPAIGN_DAILY_CAP", "0"))  # 0 = pool capacity
+# Post an alert when a day releases fewer than this. 0 disables it. Daily volume
+# fell from 180 to 19 over four days in August and nothing said so; this is the
+# line that would have caught it the first morning.
+CAMPAIGN_MIN_EXPECTED = int(_env("SMS_AGENT_CAMPAIGN_MIN_EXPECTED", "0"))
+
+# May we text a phone whose do-not-call flag we cannot see?
+#
+# The flag exists ONLY on a records-search row's representative phone.
+# Verified 2026-08-31 against the full record, the owner endpoint, and a
+# targeted search: the phone object carries number/type/status/tags/
+# is_connected and nothing else, and searching a non-representative number
+# returns the record's representative phone instead. So for any other number
+# on a record the flag is not merely unread, it is unavailable.
+#
+# It is DataSift's registry scrub, not a person's opt-out: a real opt-out
+# writes DNC / CORRECT_DNC / WRONG_DNC into the phone STATUS, which we do see
+# on every phone and always honour. This setting governs only the scrub.
+#
+# Ty, 2026-08-31: "DNC is okay, but the litigation list here on sellers is what
+# we'd want to suppress throughout the entire process." So this defaults OFF
+# and the hard block is the litigator list below, which is the real exposure.
+#
+# 1: refuse a phone whose flag cannot be seen. Costs about 62 FTM candidates a
+#    day, roughly 136 sends instead of 175.
+# 0 (default): text the best phone on the record, honouring the phone status
+#    and our own suppression, accepting that the registry scrub is invisible.
+REQUIRE_VISIBLE_DNC = _env("SMS_AGENT_REQUIRE_VISIBLE_DNC", "0") not in ("0", "false", "no")
+
+# TCPA serial-plaintiff suppression. Trestle returns
+# `add_ons.litigator_checks["phone.is_litigator_risk"]` on the SAME call that
+# returns line type, so one pass answers both. A hit is written into the local
+# suppression table, which every send path already consults, so the block
+# covers outreach, replies and any future program without new plumbing.
+LITIGATOR_SUPPRESSION_REASON = "litigator"
 
 # OUR OWN business hours, in one fixed timezone, applied to EVERY outbound
 # message rather than only to the campaign build (Ty, 2026-08-28: "9 am to
@@ -163,6 +203,25 @@ TOUCH_GAP_DAYS = int(_env("SMS_AGENT_TOUCH_GAP_DAYS", "1"))
 HEARTBEAT_STALE_MINUTES = int(_env("SMS_AGENT_HEARTBEAT_STALE", "20"))
 # Per-number daily send cap, well under the 10DLC ceiling.
 DAILY_CAP_PER_NUMBER = int(_env("SMS_AGENT_DAILY_CAP", "25"))
+
+# PER-POOL overrides, e.g. {"Dispo": 35}. The cap is a compliance knob,
+# and it used to be one global number: raising it so a 156-message dispo
+# blast fits in one day would also have raised the acquisitions numbers
+# from 25, which is a carrier-risk change to a different program nobody
+# asked for. Pools that are not listed keep DAILY_CAP_PER_NUMBER.
+def _pool_caps():
+    import json as _json
+    raw = _env("SMS_AGENT_POOL_CAPS", "")
+    if not raw:
+        return {}
+    try:
+        data = _json.loads(raw)
+        return {str(k): int(v) for k, v in data.items()}
+    except Exception:
+        return {}
+
+
+POOL_CAPS = _pool_caps()
 # Minimum seconds between two sends from the SAME number. A real person does
 # not fire three texts off one phone in a minute; carriers notice, and so do
 # recipients. Ten minutes keeps each number's pattern human.

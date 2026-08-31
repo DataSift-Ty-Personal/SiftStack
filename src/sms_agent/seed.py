@@ -95,7 +95,38 @@ SKIP_PHONE_STATUSES = {"DNC", "CORRECT_DNC", "WRONG_DNC", "WRONG", "DEAD"}
 ALLOWED_DIAL_TIERS = {"Dial First", "Dial Second"}
 
 
-def from_preset(title: str, limit: int = 0, allow_non_mobile: bool = False) -> tuple[list[dict], str]:
+# Line types we will text outright, and the ones where the field is simply
+# missing so the dial tier is the better evidence.
+TEXTABLE_TYPES = {"MOBILE"}
+DEFERRABLE_TYPES = {"", "UNKNOWN"}
+
+
+def textable_line(phone_type: str, tier: str) -> tuple[bool, str]:
+    """May we text this line? (ok, reason it was refused).
+
+    A MOBILE always passes. A line type we do not KNOW defers to the dial tier,
+    because Trestle already scored that number for reachability and its verdict
+    is better evidence than a field DataSift never populated. A known LANDLINE
+    stays blocked even at Dial First.
+
+    That last clause is the whole point of this function existing rather than a
+    boolean. The FTM book is 604 records whose every phone is type UNKNOWN
+    (measured 2026-08-31: 151 phones, zero MOBILE) while carrying real tier
+    tags, so a blanket "allow non-mobile" would unlock them and let genuine
+    landlines through everywhere else at the same time.
+    """
+    t = (phone_type or "").upper()
+    if t in TEXTABLE_TYPES:
+        return True, ""
+    if t in DEFERRABLE_TYPES:
+        if tier in ALLOWED_DIAL_TIERS:
+            return True, ""
+        return False, f"line type unknown and tier {tier or 'untagged'}"
+    return False, f"not a mobile number ({t.lower()})"
+
+
+def from_preset(title: str, limit: int = 0, keep_unresolved: bool = False,
+                stats: Optional[dict] = None) -> tuple[list[dict], str]:
     """Pull the cohort straight from a DataSift filter preset.
 
     This is the version that survives without a laptop: the box pulls the list
@@ -104,56 +135,182 @@ def from_preset(title: str, limit: int = 0, allow_non_mobile: bool = False) -> t
     skiptraced, call-attempt gates) is inherited automatically. A record Ty
     edits in DataSift drops out of our sends with no second list to maintain.
 
-    Mobiles only, per the standing rule from the MMS build: a text to a landline
-    is a wasted send and a wasted segment.
+    `stats` is an optional counter dict filled in place. Everything this
+    function drops used to vanish without a trace, which is how a cohort of
+    1,577 producing 17 sends went unnoticed for a week.
+
+    `keep_unresolved` returns rows this function would have dropped on the
+    SEARCH ROW's phone alone, marked `_needs_best_phone`, so the caller can
+    look at the whole record instead. The search payload carries one
+    representative phone, and on the FTM cohort it is the wrong one 52% of the
+    time. Off by default, so every existing caller keeps today's behaviour at
+    zero extra CRM reads.
     """
+    counts = stats if stats is not None else {}
+
+    def drop(reason: str, row: Optional[dict] = None) -> Optional[dict]:
+        counts[reason] = counts.get(reason, 0) + 1
+        if keep_unresolved and row is not None:
+            row["_needs_best_phone"] = reason
+            return row
+        return None
+
     must, matched = crm.resolve_preset(title)
     if not must:
         return [], ""
     # Learned once and cached, so this is a dict lookup per record.
     tier_uuids = set((crm.dial_tier_uuids() or {}).values())
     rows = []
-    for rec in crm.fetch_cohort(must, limit=limit):
+    cohort = crm.fetch_cohort(must, limit=limit)
+    counts["cohort"] = len(cohort)
+    for rec in cohort:
         phone = rec.get("phone") if isinstance(rec.get("phone"), dict) else {}
+        number = store.clean_phone(phone.get("number") or "")
+
+        # The DNC flag lives ONLY on this search row: the full record comes back
+        # with the field absent, not false (verified live 2026-08-28). So this
+        # is the one place it can be seen, and the caller needs the number even
+        # when the row is kept for a deeper look.
         if phone.get("doNotCall"):
+            if number:
+                counts.setdefault("_dnc_numbers", set()).add(number)
+            drop("phone flagged do-not-call")
             continue
+
+        deferred = None
         # Tier filtered here, on the search payload, so it costs nothing. Doing
         # it per candidate meant one record fetch each, which is tolerable for
         # 300 records and impossible for the 9,000 the cadences actually hold.
+        row_tier = ""
         if tier_uuids:
             tags = set(phone.get("tags") or [])
             if not tags & tier_uuids:
-                continue
-            row_tier = "verified"
-        else:
-            row_tier = ""
+                deferred = deferred or "search-row tier not first or second"
+            else:
+                row_tier = "verified"
+
         # The phone's own disposition is the suppression. An opt-out writes
         # DNC / CORRECT_DNC / WRONG_DNC onto the number in Sift, so honouring
         # it here is what makes that stick across every future campaign,
         # including ones this code did not build. WRONG and DEAD are excluded
         # for the same reason: someone already established the line is no good.
         if (phone.get("status") or "").upper() in SKIP_PHONE_STATUSES:
-            continue
-        if not allow_non_mobile and (phone.get("type") or "").upper() != "MOBILE":
-            continue
+            deferred = deferred or "phone status DNC/WRONG/DEAD"
+
+        ok, why = textable_line(phone.get("type"), "Dial First" if row_tier else "")
+        if not ok:
+            deferred = deferred or why
+
         addr = rec.get("address") or {}
         owner = rec.get("owner") or {}
-        rows.append(
-            {
-                "phone": phone.get("number") or "",
-                "dial_tier": row_tier,
-                "uuid": rec.get("uuid") or "",
-                "street": addr.get("street") or "",
-                "city": addr.get("city") or "",
-                "county": "",  # not on the slim search record; resolved per candidate
-                "first": owner.get("first_name") or "",
-                "last": owner.get("last_name") or "",
-                "owner": owner.get("company")
-                or " ".join(x for x in (owner.get("first_name"), owner.get("last_name")) if x),
-                "assigned": "",  # resolved from the full record by _resolve_sender
-            }
-        )
+        row = {
+            "phone": phone.get("number") or "",
+            "dial_tier": row_tier,
+            "uuid": rec.get("uuid") or "",
+            "street": addr.get("street") or "",
+            "city": addr.get("city") or "",
+            "county": "",  # not on the slim search record; resolved per candidate
+            "first": owner.get("first_name") or "",
+            "last": owner.get("last_name") or "",
+            "owner": owner.get("company")
+            or " ".join(x for x in (owner.get("first_name"), owner.get("last_name")) if x),
+            "assigned": "",  # resolved from the full record by _resolve_sender
+        }
+
+        if deferred:
+            kept = drop(deferred, row)
+            if kept is None:
+                continue
+            counts["deferred to the full record"] = counts.get("deferred to the full record", 0) + 1
+            rows.append(kept)
+            continue
+
+        counts["kept"] = counts.get("kept", 0) + 1
+        rows.append(row)
     return rows, matched
+
+
+_TIER_RANK = {"Dial First": 0, "Dial Second": 1}
+
+
+def resolve_best_phone(row: dict, dnc_numbers: set) -> tuple[Optional[dict], str]:
+    """Swap the search row's phone for the best textable one on the record.
+
+    Returns (row, "") or (None, reason).
+
+    The search payload carries ONE representative phone per record, and it is
+    frequently not the good one. Measured on the FTM cohort 2026-08-31: 29 of
+    30 records hold a Dial First/Second non-DNC number, but for 15 of those 29
+    it is a different number than the one the search row returned. Judging a
+    record by that one phone throws away half a reachable book.
+
+    Same shape `dispo_campaign.rows_from_registry` already uses for the dispo
+    list, and for the same measured reason. Nothing in `build()` is relaxed:
+    every candidate still goes through the tier, suppression and copy checks.
+    """
+    uuid = row.get("uuid") or ""
+    if not uuid:
+        return None, "no record uuid"
+    rec = crm.get_record(uuid)
+    if not rec:
+        return None, "could not read the record"
+
+    owner = rec.get("owner") if isinstance(rec.get("owner"), dict) else {}
+    best = None
+    for p in owner.get("phones") or []:
+        if not isinstance(p, dict):
+            continue
+        number = store.clean_phone(p.get("number"))
+        if len(number) != 10:
+            continue
+        # The DNC flag is absent from the full record, so the only place it can
+        # be known is the search rows collected across every swept preset.
+        if number in dnc_numbers:
+            continue
+        if (p.get("status") or "").upper() in SKIP_PHONE_STATUSES:
+            continue
+        tier = ""
+        for tag in (p.get("tags") or []):
+            name = (tag.get("title") or tag.get("name") or tag.get("tag")
+                    if isinstance(tag, dict) else str(tag))
+            if name in ALLOWED_DIAL_TIERS:
+                tier = name
+                break
+        if not tier:
+            continue
+        ok, _ = textable_line(p.get("type"), tier)
+        if not ok:
+            continue
+        # Dial First over Second, then a known mobile over an unknown line.
+        rank = (_TIER_RANK.get(tier, 9),
+                0 if (p.get("type") or "").upper() == "MOBILE" else 1,
+                0 if p.get("is_connected", True) else 1)
+        if best is None or rank < best[0]:
+            best = (rank, number, tier)
+
+    if best is None:
+        return None, "no Dial First or Second phone on the record"
+
+    # The do-not-call flag exists ONLY on a search row's representative phone.
+    # Measured 2026-08-31 across the full record, the owner endpoint and a
+    # targeted search: for any other number on the record it is unavailable,
+    # not merely unread. So this probe answers for some numbers and returns
+    # None for exactly the ones deep resolution exists to reach.
+    #
+    # A real opt-out is not affected either way: that writes DNC / CORRECT_DNC
+    # / WRONG_DNC into the phone STATUS, which is on every phone and was
+    # already refused above. This governs the registry scrub alone.
+    flagged = crm.phone_is_dnc(best[1])
+    if flagged:
+        return None, "best phone is flagged do-not-call"
+    if flagged is None and config.REQUIRE_VISIBLE_DNC:
+        return None, "could not verify do-not-call status"
+
+    out = dict(row)
+    out.pop("_needs_best_phone", None)
+    out["phone"] = best[1]
+    out["dial_tier"] = best[2]
+    return out, ""
 
 
 def build(rows: Iterable[dict], touch: int, sender_fallback: str = "") -> list[Candidate]:
@@ -466,13 +623,42 @@ def queue(candidates: list[Candidate], touch: int) -> dict:
 
     Queued as `held` so nothing leaves without `--commit`, which is the same
     gate a drafted reply passes through.
+
+    TWO GUARDS, both from staging the same batch twice on 2026-08-31 and
+    ending up with 312 held rows for 156 buyers.
+
+      * SMS_AGENT_DRY_RUN never reached this function. It gates sends and
+        CRM writes, so a dry run still wrote the whole batch to the local
+        outbox while reporting itself as a dry run. Staging is a write.
+      * Nothing stopped a second identical row. store.queue_message is a
+        plain INSERT, and the in-batch duplicate check in build() cannot
+        see a batch staged an hour ago. Released, that would have texted
+        every buyer twice, which is the single worst outcome for a cold
+        number.
+
+    Returns `duplicates` so a caller can say what it skipped instead of
+    silently queueing fewer than it reported.
     """
+    if config.DRY_RUN:
+        log.info("DRY_RUN: not staging %d candidates", len(candidates))
+        return {"queued": 0, "held_back": len(candidates), "dry_run": True}
+
+    pending = {
+        store.clean_phone(r["phone"])
+        for r in store._conn().execute(
+            "SELECT phone FROM outbox WHERE status IN ('held','queued')"
+        )
+    }
     # Schedule first: spacing, rotation and per-number rest are decided for the
     # batch as a whole, not per message.
     plan = {c.phone: (n, t) for c, n, t in schedule(candidates)}
     queued = 0
+    duplicates = 0
     for cand in candidates:
         if cand.status != "ready":
+            continue
+        if store.clean_phone(cand.phone) in pending:
+            duplicates += 1
             continue
         context = {
             "owner_first": cand.first,
@@ -509,7 +695,8 @@ def queue(candidates: list[Candidate], touch: int) -> dict:
             confidence=1.0,
         )
         queued += 1
-    return {"queued": queued, "held_back": sum(1 for c in candidates if c.status != "ready")}
+    return {"queued": queued, "duplicates": duplicates,
+            "held_back": sum(1 for c in candidates if c.status != "ready")}
 
 
 def release(touch: int, limit: int = 0) -> int:
@@ -528,12 +715,22 @@ def release(touch: int, limit: int = 0) -> int:
     return len(rows)
 
 
+def reason_key(reason: str) -> str:
+    """Collapse a hold reason to the bucket it should be counted under.
+
+    "dial tier Dial Fourth, not first or second" and "suppressed (opt_out)"
+    are one bucket each, not one per record. Three hand-rolled copies of this
+    line existed; this is the one.
+    """
+    return str(reason).split(":")[0].split("(")[0].strip()
+
+
 def summary(candidates: list[Candidate]) -> dict:
     ready = [c for c in candidates if c.status == "ready"]
     reasons: dict[str, int] = {}
     for cand in candidates:
         for reason in cand.reasons:
-            key = reason.split(":")[0].split("(")[0].strip()
+            key = reason_key(reason)
             reasons[key] = reasons.get(key, 0) + 1
     return {
         "total": len(candidates),

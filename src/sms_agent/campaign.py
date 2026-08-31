@@ -25,6 +25,7 @@ log, because the manual program is invisible to our database.
 from __future__ import annotations
 
 import logging
+import math
 import re
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
@@ -48,19 +49,43 @@ log = logging.getLogger(__name__)
 # still owed the rest of its text sequence, and the text is what warms the next
 # dial. Where they are in the CALL cadence decides nothing about which text they
 # get; that comes from their own text history in next_touch().
-FAMILIES = ["Hottest"]
-STAGES = [
-    "02 Ready to Call",
-    "03 Call Attempt 1",
-    "04 Call Attempt 2",
-    "05 Call Attempt 3",
-]
-PROSPECTING_PRESETS = [f"{config.HANDOFF_NAME} - Actively Prospecting"]
+# EVERY SOURCE GETS A RESERVED SHARE OF THE DAY, which is the difference
+# between this list and the one it replaces.
+#
+# The old loop walked sources in order and RETURNED at the cap, so anything
+# after the first productive source was never even queried. That was survivable
+# while every source was a Hottest stage. It is not survivable now: FTM is the
+# largest and freshest book we have (604 records, 549 never contacted), and
+# appended to a sequential list it would be starved by Adriana's 1,476 every
+# single morning.
+#
+# Shares are of the daily cap. Pass one fills each source to its share; pass two
+# hands the unspent remainder back out in priority order, so a thin source never
+# wastes the day's capacity.
+#
+# `deep` means resolve the best phone from the FULL record rather than trusting
+# the search row's representative one. Measured on FTM: 97% of records hold a
+# Dial First/Second number, but 52% of the time it is not the one the search row
+# returns. Only FTM pays that extra read.
+@dataclass(frozen=True)
+class Source:
+    title: str
+    share: float
+    deep: bool = False
 
-STAGE_TOUCHES = (
-    [(f"{fam} - {stage}", 0) for fam in FAMILIES for stage in STAGES]
-    + [(p, 0) for p in PROSPECTING_PRESETS]
-)
+
+SOURCES = [
+    Source("Hottest - 02 Ready to Call", 0.12),
+    Source("Hottest - 03 Call Attempt 1", 0.01),
+    Source("Hottest - 04 Call Attempt 2", 0.01),
+    Source("Hottest - 05 Call Attempt 3", 0.01),
+    Source(f"{config.HANDOFF_NAME} - Actively Prospecting", 0.25),
+    Source("FTM - 02 Ready to Call", 0.55, deep=True),
+    Source("FTM - 03 Call Attempt 1", 0.05, deep=True),
+]
+
+# Kept so anything still importing it keeps working; the shares live above.
+STAGE_TOUCHES = [(s.title, 0) for s in SOURCES]
 
 
 def _fingerprints() -> dict[int, list[str]]:
@@ -169,11 +194,16 @@ class Plan:
     candidates: list = field(default_factory=list)
     per_stage: dict = field(default_factory=dict)
     per_touch: dict = field(default_factory=dict)
-    skipped_already_touched: int = 0
     skipped_duplicate_person: int = 0
     skipped_waiting: int = 0
     skipped_completed: int = 0
     hit_cap: bool = False
+    # Why vetted candidates were held, bucketed. These used to be thrown away
+    # the moment seed.build returned, which is why nobody could say why a
+    # 1,577 record cohort produced 17 sends.
+    holds: dict = field(default_factory=dict)
+    unreached: list = field(default_factory=list)
+    missing_presets: list = field(default_factory=list)
 
 
 def build(sender_fallback: str = "", log_pages: int = 6,
@@ -201,18 +231,66 @@ def build(sender_fallback: str = "", log_pages: int = 6,
     plan = Plan()
     seen_phone: set = set()
 
-    for title, _stage_touch in STAGE_TOUCHES:
-        rows, matched = seed.from_preset(title)
+    # Fetch every source's cohort up front. This is search paging only, no
+    # per-record reads, so it is cheap; the expensive part is vetting, and that
+    # stays bounded by the quotas below.
+    fetched: dict[str, list] = {}
+    dnc_numbers: set = set()
+    for src in SOURCES:
+        stats: dict = {}
+        rows, matched = seed.from_preset(src.title, keep_unresolved=src.deep, stats=stats)
+        dnc_numbers |= stats.pop("_dnc_numbers", set())
         if not matched:
-            plan.per_stage[title] = {"error": "preset not found"}
+            # A source that does not resolve is a silent zero, and these are
+            # referenced BY NAME, so a rename in DataSift breaks the day with
+            # no other symptom. The scheduler turns this into an alert.
+            plan.per_stage[src.title] = {"error": "preset not found"}
+            plan.missing_presets.append(src.title)
             continue
+        fetched[src.title] = rows
+        plan.per_stage[src.title] = {
+            "cohort": stats.get("cohort", len(rows)),
+            "rows": len(rows),
+            "ready": 0,
+            "reached": False,
+            "quota": 0,
+            "drops": {k: v for k, v in stats.items() if k not in ("cohort", "kept")},
+            "holds": {},
+        }
 
-        stage_ready = 0
-        for row in rows:
+    def take(src: Source, quota: int) -> int:
+        """Vet this source's rows until `quota` candidates are ready."""
+        if quota <= 0 or src.title not in fetched:
+            return 0
+        stage = plan.per_stage[src.title]
+        stage["reached"] = True
+        stage["quota"] += quota
+        taken = 0
+        rows = fetched[src.title]
+        while rows and taken < quota:
+            if limit and len(plan.candidates) >= limit:
+                plan.hit_cap = True
+                break
+            row = rows.pop(0)
             phone = store.clean_phone(row.get("phone"))
-            if phone in seen_phone:
+            if phone and phone in seen_phone:
                 plan.skipped_duplicate_person += 1
                 continue
+
+            # Deep sources: the search row's phone is often not the record's
+            # best. Resolve now, at the moment we would actually use the row,
+            # so an unused row never costs a record fetch.
+            if row.get("_needs_best_phone"):
+                resolved, why = seed.resolve_best_phone(row, dnc_numbers)
+                if not resolved:
+                    stage["holds"][why] = stage["holds"].get(why, 0) + 1
+                    plan.holds[why] = plan.holds.get(why, 0) + 1
+                    continue
+                row = resolved
+                phone = store.clean_phone(row.get("phone"))
+                if phone in seen_phone:
+                    plan.skipped_duplicate_person += 1
+                    continue
 
             touch, why = next_touch(history.get(phone), min_days, today)
             if touch is None:
@@ -225,46 +303,71 @@ def build(sender_fallback: str = "", log_pages: int = 6,
             built = seed.build([row], touch=touch, sender_fallback=sender_fallback)
             cand = built[0] if built else None
             if not cand or cand.status != "ready":
+                # Every hold reason used to be discarded right here.
+                for reason in (cand.reasons if cand else ["seed produced nothing"]):
+                    key = seed.reason_key(reason)
+                    stage["holds"][key] = stage["holds"].get(key, 0) + 1
+                    plan.holds[key] = plan.holds.get(key, 0) + 1
                 continue
 
             seen_phone.add(phone)
             cand.touch = touch  # type: ignore[attr-defined]
             plan.per_touch[touch] = plan.per_touch.get(touch, 0) + 1
             plan.candidates.append(cand)
-            stage_ready += 1
+            stage["ready"] += 1
+            taken += 1
+        return taken
 
-            # Stop as soon as the day is full. Vetting a candidate costs a CRM
-            # read, and the scheduler runs inside the worker pass, so building
-            # the whole book every morning would block reply processing for
-            # minutes to then discard most of it at the cap. Sources are in
-            # priority order, so stopping early keeps the best leads.
-            if limit and len(plan.candidates) >= limit:
-                plan.per_stage[title] = {
-                    "mobile_records": len(rows), "ready": stage_ready, "stopped_at_cap": True,
-                }
-                plan.hit_cap = True
-                return plan
+    cap = limit or 0
+    if cap:
+        # Pass one: each source fills its own reserved share, so a big source
+        # cannot eat a small one's allocation.
+        for src in SOURCES:
+            take(src, math.ceil(cap * src.share))
+        # Pass two: hand the remainder back out in priority order.
+        for src in SOURCES:
+            if len(plan.candidates) >= cap:
+                break
+            take(src, cap - len(plan.candidates))
+    else:
+        for src in SOURCES:
+            take(src, len(fetched.get(src.title, [])))
 
-        plan.per_stage[title] = {"mobile_records": len(rows), "ready": stage_ready}
+    plan.unreached = [s.title for s in SOURCES
+                      if s.title in fetched and fetched[s.title]
+                      and not plan.per_stage[s.title]["ready"]]
     return plan
 
 
 def summary(plan: Plan) -> str:
-    lines = [f"{'stage':32} {'mobile':>7} {'to send':>8}"]
-    lines.append("-" * 50)
+    lines = [f"{'source':34} {'cohort':>7} {'rows':>6} {'quota':>6} {'send':>5}"]
+    lines.append("-" * 62)
     for title, info in plan.per_stage.items():
         if "error" in info:
-            lines.append(f"{title:32} {info['error']}")
+            lines.append(f"{title:34} {info['error']}")
             continue
-        lines.append(f"{title:32} {info['mobile_records']:>7} {info['ready']:>8}")
-    lines.append("-" * 50)
-    lines.append(f"{'TOTAL':32} {'':>7} {len(plan.candidates):>8}")
+        lines.append(f"{title:34} {info.get('cohort', 0):>7} {info.get('rows', 0):>6} "
+                     f"{info.get('quota', 0):>6} {info.get('ready', 0):>5}"
+                     + ("" if info.get("reached") else "   (not reached)"))
+        # The drop from cohort to rows, which used to be invisible entirely.
+        for reason, n in sorted(info.get("drops", {}).items(), key=lambda kv: -kv[1])[:4]:
+            lines.append(f"     -{reason:44} {n:>5}")
+        for reason, n in sorted(info.get("holds", {}).items(), key=lambda kv: -kv[1])[:4]:
+            lines.append(f"     held: {reason:40} {n:>5}")
+    lines.append("-" * 62)
+    lines.append(f"{'TOTAL':34} {'':>7} {'':>6} {'':>6} {len(plan.candidates):>5}")
     lines.append("")
     by_touch = ", ".join(f"touch {t}: {n}" for t, n in sorted(plan.per_touch.items()))
     lines.append(f"sending                         : {by_touch or 'nothing'}")
     lines.append(f"waiting out the {config.TOUCH_GAP_DAYS}-day gap        : {plan.skipped_waiting}")
     lines.append(f"finished all four touches       : {plan.skipped_completed}")
     lines.append(f"same person in 2 stages         : {plan.skipped_duplicate_person}")
+    if plan.holds:
+        top = sorted(plan.holds.items(), key=lambda kv: -kv[1])[:6]
+        lines.append("held overall                    : "
+                     + ", ".join(f"{k} {n}" for k, n in top))
+    if plan.missing_presets:
+        lines.append("PRESETS NOT FOUND               : " + ", ".join(plan.missing_presets))
     cap = sender_pool.capacity_today()
     lines.append(f"pool capacity today             : {cap['remaining']} of {cap['capacity']}")
     return "\n".join(lines)

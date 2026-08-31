@@ -233,6 +233,20 @@ def cmd_pause(args) -> int:
     return 0
 
 
+def cmd_phone_types(args) -> int:
+    """Suppress litigators and write real line types, in one Trestle pass."""
+    from . import phone_types
+
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+    store.init()
+    out = phone_types.run(args.preset, limit=args.limit, commit=args.commit,
+                          voip_as=args.voip_as)
+    print(json.dumps(out, indent=2))
+    if not args.commit:
+        print("\ndry run: no Trestle calls made, nothing written. Add --commit.")
+    return 0
+
+
 def cmd_resume(args) -> int:
     """Hand a paused thread back to the agent.
 
@@ -444,7 +458,12 @@ def cmd_campaign(args) -> int:
     """Touch-aware run across the whole Hottest cadence."""
     logging.basicConfig(level=logging.WARNING, format="%(levelname)s: %(message)s")
     store.init()
-    plan = campaign.build(sender_fallback=args.sender or "", log_pages=args.log_pages)
+    # Default to the real daily cap so a preview costs what a real build costs
+    # and shows the same answer. Unbounded would vet every record in every
+    # source, which is thousands of CRM reads to then discard most of them.
+    limit = args.limit or config.CAMPAIGN_DAILY_CAP or sender_pool.capacity_today()["remaining"]
+    plan = campaign.build(sender_fallback=args.sender or "", log_pages=args.log_pages,
+                          limit=limit)
     print(campaign.summary(plan))
     if args.show:
         print()
@@ -653,6 +672,14 @@ def main() -> int:
     p.add_argument("--reason")
     p.set_defaults(fn=cmd_pause)
 
+    p = sub.add_parser("phone-types",
+                       help="Trestle pass: suppress litigators and write real line types")
+    p.add_argument("--preset", default="FTM - 02 Ready to Call")
+    p.add_argument("--limit", type=int, default=0)
+    p.add_argument("--commit", action="store_true", help="call Trestle and write")
+    p.add_argument("--voip-as", choices=("mobile", "unknown"), default="unknown")
+    p.set_defaults(fn=cmd_phone_types)
+
     p = sub.add_parser("resume", help="hand a paused conversation back to the agent")
     p.add_argument("phone")
     p.add_argument("--siblings", action="store_true",
@@ -693,8 +720,11 @@ def main() -> int:
     p.add_argument("--commit", action="store_true")
     p.set_defaults(fn=cmd_backfill)
 
-    p = sub.add_parser("campaign", help="touch-aware run across the whole Hottest cadence")
+    p = sub.add_parser("campaign", help="touch-aware run across every source cadence")
     p.add_argument("--sender", help="fallback caller first name")
+    p.add_argument("--limit", type=int, default=0,
+                   help="stop after this many candidates (default: the daily cap, "
+                        "so the preview matches what the scheduler would build)")
     p.add_argument("--show", type=int, default=6)
     p.add_argument("--log-pages", type=int, default=6, help="pages of SMS history to read")
     p.add_argument("--queue", action="store_true", help="stage as HELD outbox rows")
