@@ -174,9 +174,47 @@ python src/ftm_schedule.py --next              # next 5 fire times, business-loc
 
 **Verified in production, not just in tests:** across the 675 post-fix rows checked mid-run there were 0 junk owner names, 0 courthouse addresses, 0 trustee sales on the Probate list, and 0 duplicate rows within a job, while legitimate multi-token surnames survived intact (St. John, St. Leger, Van Zandt, Van Gentry, VAN DAVIS). Repeats ACROSS months are expected and harmless: a foreclosure republished over a month boundary appears in both files and `POST /property/` upserts by address (confirmed by re-POSTing and getting the same uuid back).
 
-**Still workstation-only:** the `county` stage (`knox_ftm_pull.py`) skips in the container with the reason stated in the run summary, because its buy-box enrichment needs the SiftMap client from the Deal Room `_api` checkout. Vendoring it the way `sms_agent/crm_standalone.py` vendored the reisift client is the next step to get liens, condemnations, trustee deeds and evictions on the same schedule.
+**The `county` stage now runs in the container** (was workstation-only): `_stage_county` falls back to `siftmap_standalone.SiftMapClient`, which needs nothing but `REISIFT_API_KEY`, when the Deal Room `_api` checkout is absent. A `capture` stage was added alongside it to snapshot the Knox City condemnation agendas, which are **overwritten at source** and cannot be recovered later, so it is in `DEFAULT_STAGES` despite uploading nothing. Live `FTM_ARGS` is `--stages notices,capture,county --commit`.
 
 **Also fixed here:** `python src/main.py <mode>` used to dispatch into the Apify Actor whenever `APIFY_TOKEN` was present in `.env` (it is, for `consolidate_foreclosures`), so every local CLI call died on "tn_username and tn_password are required". The Actor path now triggers only on `APIFY_IS_AT_HOME` (or an explicit `SIFTSTACK_FORCE_ACTOR=1`). `datasift_api_upload.env()` reads `os.environ` before falling back to a `.env` file, so the uploader works on a box that has no such file. State paths honor `SIFTSTACK_STATE_DIR` / `SIFTSTACK_OUTPUT_DIR` / `SIFTSTACK_LOG_DIR`. Saved-search selection and per-page postbacks wait on `domcontentloaded` rather than `networkidle`, which regularly never settles through a proxy and abandoned a working search after 30s.
+
+## FTM Daily Health Digest + Watchdog (build 1.0.50, 2026-08-31)
+
+`src/ftm_health.py` answers every morning whether the first-to-market data actually got pulled, and posts one short message saying so. Built because `ftm_runner._notify` fires only when a run COMPLETES: a stopped machine or a dead scheduler thread emits nothing at all, and a missing message reads exactly like a quiet morning. Measured over the nine scheduled days to 2026-08-28: five OK, three EMPTY, one egress-blocked, and nobody was told in a way that carried the trend.
+
+```bash
+python src/ftm_health.py                  # the two-line daily summary
+python src/ftm_health.py --full           # detailed report: feeds, stages, inventory
+python src/ftm_health.py --check          # one line, exit 1 if red (the watchdog probe)
+python src/ftm_health.py --selftest       # 45 assertions, no network, no writes
+python src/ftm_schedule.py --health-once  # post right now, as the scheduler would
+```
+
+**The post is deliberately two lines, three when broken** (Ty, 2026-08-31: the first version shipped at 1,490 characters and was too much to read at 8am). `WHAT GETS SAID IS NOT WHAT GETS CHECKED` — every test in `analyze()` runs on every pass; a green day just has nothing worth saying, and a red day surfaces its top finding as the single reason line, trimmed to one sentence by `_short_reason()` because the runner's empty-notices detail runs 180 chars and ends in a command to paste.
+
+```
+:white_check_mark: *FTM Aug 28* - 8 new records
+Foreclosure 8 - Probate 0 - Condemned 0
+```
+
+**Three counting rules, each from what the live volume actually showed:**
+- **UPLOADED IS NOT NEW.** `POST /property/` is upsert by address and the county stage re-uploads the same 10 condemnation rows every day (proven: the address column of `knox_ftm_pull_*.csv` hashes identically across 08-22, 08-25, 08-28). New is measured against `<STATE_DIR>/ftm_record_ledger.json`, seeded once from history excluding the reported day so day one does not claim 977 new records. Idempotent: re-running the same day counts zero.
+- **A ZERO DAY IS NOT A DEAD FEED.** Saved searches publish in bursts (Knox probate landed 08-24 and 08-25 and nothing either side), so the metric is DAYS SINCE a feed last produced, against `FTM_FEED_STALE_DAYS` (default 7), never a single quiet day.
+- **A SKIPPED STAGE IS NOT A HEALTHY STAGE.** `StageResult.ok` counts `skipped` as OK, so a county stage that loses its SiftMap client still exits 0 and Slack still shows green. The audit compares what ran against what `FTM_ARGS` asked for. Checked here rather than by changing the runner's exit contract, which the scheduler rides on.
+
+**Per feed, not aggregate.** The runner reports notices as one number, so 2026-08-28 uploaded 19 records that were all foreclosure while both probate feeds sat silent, and it read as healthy. Counts come by county x notice type off the day's CSV.
+
+**List names are read from the CSV's own `Lists` column, never re-derived**, because the two mappings in this repo disagree: `datasift_formatter.NOTICE_TYPE_TO_LIST` sends `code_violation` to "Code Violation" while `knox_ftm_pull.LIST_NAME` sends it to "Condemned", and knox_ftm_pull is what writes those rows.
+
+**`_csvs_by_day` must keep EVERY CSV per day, not the last one.** A day can hold several (the backfill wrote 48), and keeping one path per day undercounted the ledger seed by an order of magnitude (105 properties instead of 977).
+
+**Two layers, because a run cannot report on itself.** Inside the box, `ftm_schedule.py` fires the digest at `FTM_HEALTH_AT` (default 08:00 business-local, `off` disables) as a separate event kind interleaved with the run, not a second `FTM_SCHEDULE` slot, since every slot would otherwise run `FTM_ARGS`. It stays in the same process because the run history, seen-ID cache and ledger all live on one volume and Fly attaches a volume to one machine. Outside the box, `.github/workflows/ftm-heartbeat.yml` runs daily at 14:00 UTC on GitHub, SSHes in and reads `--check`; it parses the verdict off the printed line rather than trusting flyctl to propagate a remote exit code, because a watchdog that silently always passes is worse than none. **Scheduled workflows only run from the default branch, so the watchdog is inert until this is merged to `main`.** Repo secrets `FLY_API_TOKEN` (scoped `fly tokens create ssh`, one app) and `FTM_HEALTH_WEBHOOK` are already set.
+
+**Trade-off accepted:** reporting new records only means a healthy quiet day prints all zeros and resembles a broken one, so the tick against the siren is load-bearing rather than decorative. Amber renders as the all-clear, since amber means nothing is broken and its note is exactly the noise being cut.
+
+`FTM_HEALTH_WEBHOOK` falls back to `SLACK_WEBHOOK_URL`; register any new env var in `deploy/sync_ftm_secrets.py`'s `OPTIONAL` or it never reaches the machine.
+
+**Also fixed here:** `main.py`'s zero-notice alert passed the webhook URL and the message in the wrong argument order, so `requests` raised on a non-URL, `_send_webhook`'s bare `except` swallowed it, and that alert had never once fired since it was written. Exactly the class of silent failure it exists to warn about.
 
 ## Scraping Backend: Scrapfly (build 1.0.31+)
 
