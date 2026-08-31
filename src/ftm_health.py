@@ -4,11 +4,17 @@ Answers one question every morning: is all of our FTM data actually being pulled
 and if not, which feed stopped. Posts one message a day, green or red, so silence
 is never the signal.
 
-    python src/ftm_health.py                 # print today's report
+    python src/ftm_health.py                 # the two-line daily summary
+    python src/ftm_health.py --full          # the detailed report, on demand
     python src/ftm_health.py --days 14       # wider history window
     python src/ftm_health.py --post          # print and post to Slack
     python src/ftm_health.py --check         # one line, exit 1 if red (watchdog)
     python src/ftm_health.py --selftest      # assertions, no network, no writes
+
+WHAT GETS SAID IS NOT WHAT GETS CHECKED. The daily post is deliberately two lines
+(new records per DataSift list) plus one reason line when something is wrong. Every
+check below still runs on every pass; a green day just has nothing worth saying.
+The detailed version is `--full`.
 
 WHY THIS EXISTS. `ftm_runner._notify` fires only when a run COMPLETES. If the
 machine stops or the scheduler dies, nothing is emitted at all, and a dead box
@@ -262,16 +268,31 @@ def _save_ledger(led: dict) -> bool:
         return False
 
 
-def _addresses_for(day: str) -> list[tuple[str, str]]:
-    """(key, source) for every row this day's pipelines wrote."""
-    out: list[tuple[str, str]] = []
+def _row_list(row: dict, src: str) -> str:
+    """The DataSift list a row actually landed on, read off the CSV.
+
+    Taken from the data rather than re-derived from a notice_type mapping,
+    because the two mappings in this repo disagree: datasift_formatter sends
+    code_violation to "Code Violation" while knox_ftm_pull sends it to
+    "Condemned", and knox_ftm_pull is what writes those rows. The column is the
+    only thing that knows where a record really went.
+    """
+    raw = (row.get("Lists") or "").strip()
+    if raw:
+        return raw.split(",")[0].strip()
+    return src.capitalize()
+
+
+def _addresses_for(day: str) -> list[tuple[str, str, str]]:
+    """(key, source, list_name) for every row this day's pipelines wrote."""
+    out: list[tuple[str, str, str]] = []
     for src, table in (("notices", _notice_csvs()), ("county", _county_csvs())):
         for p in table.get(day, []):
             for r in _read_csv(p):
                 k = _norm_addr(r.get("Property Street Address", ""),
                                r.get("Property ZIP Code", ""))
                 if k and not k.startswith("|"):
-                    out.append((k, src))
+                    out.append((k, src, _row_list(r, src)))
     return out
 
 
@@ -286,7 +307,7 @@ def _seed_ledger(led: dict, exclude_day: str) -> int:
     for d in days:
         if d >= exclude_day:
             continue
-        for k, _src in _addresses_for(d):
+        for k, _src, _lst in _addresses_for(d):
             if k not in led["addresses"]:
                 led["addresses"][k] = d
                 n += 1
@@ -415,14 +436,18 @@ def collect(days: int = WINDOW_DAYS, *, update_ledger: bool = True) -> dict:
     todays = _addresses_for(today)
     new_by_source: Counter = Counter()
     uploaded_by_source: Counter = Counter()
+    new_by_list: Counter = Counter()
+    uploaded_by_list: Counter = Counter()
     seen_this_run: set[str] = set()
-    for key, src in todays:
+    for key, src, lst in todays:
         uploaded_by_source[src] += 1
+        uploaded_by_list[lst] += 1
         if key not in led["addresses"] and key not in seen_this_run:
             new_by_source[src] += 1
+            new_by_list[lst] += 1
         seen_this_run.add(key)
     if update_ledger:
-        for key, _src in todays:
+        for key, _src, _lst in todays:
             led["addresses"].setdefault(key, today)
         _save_ledger(led)
 
@@ -446,12 +471,81 @@ def collect(days: int = WINDOW_DAYS, *, update_ledger: bool = True) -> dict:
     data["baseline"] = sorted(volumes)[len(volumes) // 2] if volumes else 0
     data["ledger_size"] = len(led["addresses"])
     data["history"] = window
+    data["new_by_list"] = dict(new_by_list)
+    data["uploaded_by_list"] = dict(uploaded_by_list)
     return data
 
 
 def _icon(verdict: str) -> str:
     return {"green": ":white_check_mark:", "amber": ":large_yellow_circle:",
             "red": ":rotating_light:"}[verdict]
+
+
+# The lists the automated pipeline feeds. Always rendered, even at zero, so a
+# list that stops producing shows as 0 rather than vanishing from the message.
+EXPECTED_LISTS = ["Foreclosure", "Probate", "Condemned"]
+
+REASON_LIMIT = 120
+
+
+def _short_reason(text: str, limit: int = REASON_LIMIT) -> str:
+    """Trim a finding to one glanceable sentence.
+
+    The runner writes long, useful detail strings (the empty-notices one runs to
+    180 characters and ends in a command to paste). That belongs in --full and in
+    ftm_runs.jsonl, not in a message whose whole purpose is being short. Cuts on a
+    sentence boundary where there is one, so the line never ends mid-thought.
+    """
+    t = " ".join((text or "").split())
+    t = re.sub(r"\s*\([^)]*\)\s*$", "", t)          # trailing command hints
+    if len(t) <= limit:
+        return t
+    cut = t[:limit]
+    for sep in (". ", ", ", " "):
+        i = cut.rfind(sep)
+        if i > 40:
+            return cut[:i].rstrip(" ,.:;") + "."
+    return cut.rstrip() + "."
+
+
+def render_short(data: dict) -> str:
+    """The daily post. Two lines when healthy, three when not.
+
+    Every check in analyze() still runs; this only decides how much of the result
+    is worth saying out loud. On a green day that is a tick and the counts. On a
+    red day the top finding is appended, and it is the ONLY detail carried, so it
+    has to be the one that names what broke.
+
+    Because this reports new records only, a healthy quiet day prints all zeros
+    and looks much like a broken one. The icon is what separates them, which is
+    why the verdict is in the first character rather than buried.
+    """
+    new_by_list = data.get("new_by_list", {})
+    total_new = sum(new_by_list.values())
+
+    # Expected lists first in a stable order, then anything unexpected, so a new
+    # notice type appears instead of being silently dropped.
+    names = EXPECTED_LISTS + sorted(k for k in new_by_list if k not in EXPECTED_LISTS)
+    counts = " · ".join(f"{n} {new_by_list.get(n, 0)}" for n in names)
+
+    when = data["today"]
+    try:
+        when = date.fromisoformat(data["today"]).strftime("%b %-d")
+    except (ValueError, TypeError):
+        try:                                    # %-d is not portable to Windows
+            when = date.fromisoformat(data["today"]).strftime("%b %d").replace(" 0", " ")
+        except (ValueError, TypeError):
+            pass
+
+    # Two states only. Amber means nothing is broken and the note it carries is
+    # exactly the noise being cut here, so it reads as the all-clear.
+    icon = ":rotating_light:" if data["verdict"] == "red" else ":white_check_mark:"
+    noun = "record" if total_new == 1 else "records"
+    lines = [f"{icon} *FTM {when}* · {total_new} new {noun}", "", counts]
+
+    if data["verdict"] == "red" and data["red"]:
+        lines.append(_short_reason(data["red"][0]))
+    return "\n".join(lines)
 
 
 def render(data: dict) -> str:
@@ -536,8 +630,9 @@ def render(data: dict) -> str:
     return "\n".join(lines)
 
 
-def run(days: int = WINDOW_DAYS, post: bool = False) -> str:
-    text = render(collect(days))
+def run(days: int = WINDOW_DAYS, post: bool = False, full: bool = False) -> str:
+    data = collect(days)
+    text = render(data) if full else render_short(data)
     if post:
         _post(text)
     return text
@@ -653,6 +748,76 @@ def selftest() -> int:
     r.check("render lists the inventory", "Full source inventory" in text)
     r.check("render shows new vs written", "New records today" in text)
 
+    # The daily post. Shape matters as much as content: this is read at a glance.
+    green = analyze([_mkrun(T, notices=("ok",), capture=("ok",), county=("ok",))],
+                    T, **base)
+    green.update(window_days=14, baseline=8, ledger_size=979, history=[],
+                 new_by_list={"Foreclosure": 3, "Probate": 1})
+    s = render_short(green)
+    body = [ln for ln in s.split("\n") if ln.strip()]
+    r.check("green post is two lines", len(body) == 2, repr(s))
+    r.check("green post ticks", s.startswith(":white_check_mark:"))
+    r.check("green post totals the lists", "4 new records" in s, s.split("\n")[0])
+    r.check("green post shows every expected list",
+            all(n in s for n in EXPECTED_LISTS), s)
+    r.check("green post carries no reason line", "::" not in s)
+
+    one = dict(green); one["new_by_list"] = {"Probate": 1}
+    r.check("singular record reads right", "1 new record\n" in render_short(one) + "\n",
+            render_short(one).split("\n")[0])
+
+    zero = dict(green); zero["new_by_list"] = {}
+    z = render_short(zero)
+    r.check("a quiet day still lists all three", "Foreclosure 0" in z and "Probate 0" in z)
+    r.check("a quiet day still ticks", z.startswith(":white_check_mark:"))
+
+    redd = analyze([_mkrun(T, notices=("empty", "0 notices scraped."))], T, **base)
+    redd.update(window_days=14, baseline=8, ledger_size=979, history=[],
+                new_by_list={})
+    rs = render_short(redd)
+    rbody = [ln for ln in rs.split("\n") if ln.strip()]
+    r.check("red post is three lines", len(rbody) == 3, repr(rs))
+    r.check("red post sirens", rs.startswith(":rotating_light:"))
+    r.check("red post names the cause", "returned nothing" in rs)
+    r.check("red reason line stays short",
+            len(rbody[-1]) <= REASON_LIMIT, f"{len(rbody[-1])} chars")
+    r.check("red reason drops the pasted command", "list-searches" not in rs)
+
+    verbose = ("Stage notices returned nothing. 0 notices scraped. Not a normal "
+               "quiet day: check the notice gate, egress IP, login, and that the "
+               "saved searches still exist (python src/main.py list-searches).")
+    trimmed = _short_reason(verbose)
+    r.check("long finding cuts on a sentence", trimmed.endswith("."), trimmed)
+    r.check("long finding keeps the headline",
+            trimmed.startswith("Stage notices returned nothing"), trimmed)
+    short_in = "No run recorded today. The scheduler or the machine may be down."
+    r.check("a short finding is left alone", _short_reason(short_in) == short_in)
+
+    amber = analyze([_mkrun(T, notices=("ok",), county=("ok",))], T,
+                    **{**base, "uploaded_by_source": {"county": 10},
+                       "new_by_source": {"county": 0}})
+    amber.update(window_days=14, baseline=8, ledger_size=979, history=[],
+                 new_by_list={})
+    r.check("amber reads as the all-clear",
+            render_short(amber).startswith(":white_check_mark:"))
+    r.check("amber stays two lines",
+            len([x for x in render_short(amber).split("\n") if x.strip()]) == 2)
+
+    r.check("short post has no em dash",
+            "—" not in rs and "–" not in rs and "—" not in s)
+
+    # An unexpected list must surface rather than be dropped.
+    extra = dict(green); extra["new_by_list"] = {"Eviction": 2}
+    r.check("unexpected list still shows", "Eviction 2" in render_short(extra))
+
+    # List name comes from the data, not from a notice_type mapping.
+    r.check("list read off the Lists column",
+            _row_list({"Lists": "Condemned"}, "county") == "Condemned")
+    r.check("multi-list cell takes the first",
+            _row_list({"Lists": "Probate, Courthouse"}, "notices") == "Probate")
+    r.check("missing Lists falls back to the source",
+            _row_list({}, "notices") == "Notices")
+
     # Address key behavior.
     a = _norm_addr("2905 WASHINGTON PIKE", "37917")
     b = _norm_addr("2905 Washington Pike", "37917")
@@ -673,6 +838,9 @@ def main(argv=None) -> int:
     p.add_argument("--days", type=int, default=WINDOW_DAYS,
                    help=f"History window (default {WINDOW_DAYS})")
     p.add_argument("--post", action="store_true", help="Post the report to Slack")
+    p.add_argument("--full", action="store_true",
+                   help="The detailed report (feeds, stages, source inventory) "
+                        "instead of the two-line daily summary")
     p.add_argument("--check", action="store_true",
                    help="One line verdict, exit 1 if red. For the watchdog.")
     p.add_argument("--no-ledger-update", action="store_true",
@@ -698,7 +866,7 @@ def main(argv=None) -> int:
         print(f"{data['verdict'].upper()} {data['today']} last_run={when} :: {first}")
         return 1 if data["verdict"] == "red" else 0
 
-    text = render(data)
+    text = render(data) if args.full else render_short(data)
     print(text)
     if args.post:
         ok = _post(text)
