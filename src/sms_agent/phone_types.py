@@ -34,7 +34,6 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import sys
 import time
 from pathlib import Path
 
@@ -67,23 +66,52 @@ def _save(state: dict) -> None:
     STATE_PATH.write_text(json.dumps(state, indent=1), encoding="utf-8")
 
 
-def _trestle():
-    """The existing client, never a new one.
+TRESTLE_ENDPOINT = "https://api.trestleiq.com/3.1/phone_intel"
 
-    `phone_validator.call_trestle` already handles retries and the add-on
-    parameter, and `_api/clients/trestle_router.py` handles free-then-paid key
-    routing. Writing a third client here would be the fourth Trestle
-    implementation in this repo.
-    """
-    sys.path.insert(0, str(config.ROOT / "src"))
-    import phone_validator as pv
 
+def _trestle_key() -> str:
     key = (config._env("TRESTLE_PAID_API_KEY")
            or config._env("TRESTLE_API_KEY")
            or config._env("TRESTLE_FREE_API_KEY"))
     if not key:
-        raise RuntimeError("no TRESTLE_API_KEY / TRESTLE_PAID_API_KEY in the environment")
-    return pv, key
+        raise RuntimeError("no TRESTLE_PAID_API_KEY / TRESTLE_API_KEY in the environment")
+    return key
+
+
+def call_trestle(number: str, key: str) -> dict:
+    """One phone_intel lookup, asking for the litigator add-on.
+
+    `src/phone_validator.py` already has this call and would be the obvious
+    thing to import, but it imports the project-wide `src/config.py` and the
+    agent's container deliberately ships only the `sms_agent` package (see
+    deploy/Dockerfile). Importing it when present and falling back when absent
+    would mean this behaves differently on the workstation than in production,
+    which is a worse failure than fifteen duplicated lines.
+
+    line_type and add_ons.litigator_checks come back together, so the litigator
+    answer costs nothing on top of the line-type pass.
+    """
+    import requests
+
+    for attempt in range(4):
+        try:
+            resp = requests.get(
+                TRESTLE_ENDPOINT,
+                params={"phone": number, "add_ons": "litigator_checks"},
+                headers={"x-api-key": key, "Accept": "application/json"},
+                timeout=20,
+            )
+            if resp.status_code == 200:
+                return resp.json()
+            if resp.status_code in (429, 500, 502, 503, 504):
+                time.sleep(2 ** attempt)
+                continue
+            return {"error": f"HTTP {resp.status_code}: {resp.text[:120]}"}
+        except Exception as exc:  # noqa: BLE001
+            if attempt == 3:
+                return {"error": str(exc)[:120]}
+            time.sleep(2 ** attempt)
+    return {"error": "exhausted retries"}
 
 
 def targets(preset: str, limit: int = 0) -> list[dict]:
@@ -136,7 +164,7 @@ def seed_tiers() -> set:
 def run(preset: str, limit: int = 0, commit: bool = False,
         voip_as: str = "unknown") -> dict:
     """Score the pool, suppress litigators, write line types back."""
-    pv, key = _trestle()
+    key = _trestle_key()
     state = _load()
     rows = targets(preset, limit=limit)
 
@@ -151,7 +179,7 @@ def run(preset: str, limit: int = 0, commit: bool = False,
                 # A dry run must not spend money. Report what it would check.
                 checked += 1
                 continue
-            data = pv.call_trestle(number, key, add_litigator=True)
+            data = call_trestle(number, key)
             if "error" in data and not data.get("is_valid"):
                 errors += 1
                 log.warning("  %s: %s", number, str(data.get("error"))[:80])
