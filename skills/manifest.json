@@ -750,9 +750,9 @@
         "scripts/validate_sop.py"
       ],
       "file_count": 14,
-      "bytes": 149217,
+      "bytes": 146280,
       "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/playbook-creator.skill",
-      "sha256": "380cb173f21109924ee23cda4322bc4baf5001550b148f82fb5e283c9b327c96",
+      "sha256": "d46bf9fb064f5dd20927e6bb6687a6ced081405e1ffe5cfd67a7f0f3217f214a",
       "requires": {
         "tier": "none",
         "fallback": null,
