@@ -1,19 +1,30 @@
-# Line endings are a build input here, not a cosmetic detail.
+# Line endings, and why this file has to exist.
 #
-# The .skill archives under dist/ are byte-compared against the source trees
-# under skills/ by CI. A file authored on Windows carries CRLF, the ZIP
-# captures it verbatim, and git normalises the committed copy to LF. The
-# comparison then fails on Linux for a file nobody edited, and the diff that
-# would explain it is invisible because a ZIP has no diff.
+# core.autocrlf=true on Windows checks text files out as CRLF. The skill
+# archives under dist/ are built by zipping the working tree, so a Windows
+# build embeds CRLF while a Linux CI checkout has LF, and `--verify` then
+# reports all 36 text files in the plugins as drifted when nothing changed.
+# The build is only reproducible if the working tree is byte-identical on
+# every platform.
 #
-# Forcing LF in the working tree keeps the archive and the source identical on
-# every machine that builds them.
-* text=auto eol=lf
-*.mp4 binary
-*.pdf binary
-*.skill binary
-*.plugin binary
-*.xlsx binary
-*.docx binary
-*.png binary
-*.jpg binary
+# text=auto rather than text: it lets git's own binary detection skip the
+# 11MB PDF and the material-list CSVs. Forcing eol on a PDF corrupts it.
+skills/**    text=auto eol=lf
+plugins/**   text=auto eol=lf
+tools/**     text=auto eol=lf
+install.py   text=auto eol=lf
+
+# Built archives. Never diffed, never line-ending converted.
+dist/**      binary
+*.skill      binary
+*.plugin     binary
+
+# The rules above normalise on checkout and on add. They do NOT rewrite a file
+# already sitting in the working tree with CRLF, and the archives are zipped
+# from the working tree, so a stale file drifts even with this in place. After
+# changing these rules, or after any file arrives from a Windows editor, run:
+#
+#     git add --renormalize .
+#
+# That is what actually made the working tree match, in 2026-09.
+
