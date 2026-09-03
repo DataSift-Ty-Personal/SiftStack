@@ -730,7 +730,7 @@
       "kind": "skill",
       "category": "Operations",
       "version": null,
-      "description": "Create professional playbooks, SOPs, and Scribe-style step guides with process maps, structured workflows, and agent-executable SOP files. Accepts raw transcripts, meeting recordings, screen-share walkthroughs, or written descriptions and transforms them into polished documentation with Mermaid flowcharts, decision trees, and screenshot capture specs. SOPs ship as a pair, a human Word doc plus a machine-readable .sop.md twin (Agent SOPs standard, RFC 2119 constraints) that an AI agent can execute directly. Use when the user requests a playbook, SOP, standard operating procedure, process documentation, training manual, workflow guide, how-to guide, click-path guide, or says things like \"turn this into a playbook\", \"create an SOP from this call\", \"document this process\", \"make a training doc\", \"make a guide like Scribe\", \"write up how to do X\", or \"make this runnable by an agent\". Also triggers for \"process map\", \"flowchart\", \"workflow diagram\", or any request to visualize or systematize a process. Even if the user just gives you a transcript and says \"make this into something useful\", if it describes a repeatable process, use this skill.",
+      "description": "Create professional playbooks, SOPs, and Scribe-style step guides with process maps and agent-executable SOP files. Accepts raw transcripts, meeting recordings, screen-share walkthroughs, or written descriptions and turns them into polished documentation with Mermaid flowcharts, decision trees, and screenshot capture specs. SOPs ship as a pair: a human Word doc plus a machine-readable .sop.md twin (Agent SOPs standard, RFC 2119 constraints) an AI agent can execute directly. Use when someone asks for a playbook, SOP, standard operating procedure, process documentation, training manual, workflow guide, click-path guide, process map or flowchart, or says \"turn this into a playbook\", \"create an SOP from this call\", \"document this process\", \"make a guide like Scribe\", or \"make this runnable by an agent\". Also use when a transcript describes a repeatable process and the ask is just to make it useful.",
       "status": "current",
       "source_dir": "skills/playbook-creator",
       "files": [
@@ -750,9 +750,9 @@
         "scripts/validate_sop.py"
       ],
       "file_count": 14,
-      "bytes": 146280,
+      "bytes": 146427,
       "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/playbook-creator.skill",
-      "sha256": "d46bf9fb064f5dd20927e6bb6687a6ced081405e1ffe5cfd67a7f0f3217f214a",
+      "sha256": "66818a29d53480c3f4b33e5d70f54bc884a802d0c4fb9707d3a21a687fa5365f",
       "requires": {
         "tier": "none",
         "fallback": null,
