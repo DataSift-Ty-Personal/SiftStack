@@ -576,6 +576,101 @@ Three rails on the harvest: an existing phone **disposition outranks it** (DNC, 
 
 **Open:** dedicated dispo DIDs are still unbought, so a blast shares the 18-number seller pool (450/day) and the pools must be disjoint before going live, since per-number caps are counted per database. Threads currently sign as **Adriana** because the dispo records' `assigned_to` resolves to her; the dispo program wants its own sender identity. The cross-program collision check (a buyer who is also an open seller lead) is designed but not yet built, and it matters because 89% of pending-flip owners were already in the marketing ecosystem.
 
+## Dispo Blast, Live: two deals, two shapes (build 1.0.51, 2026-09-03)
+
+The dispo program went from staged to sold. **158 Old State Rd**: 156 of 156
+delivered, **25 replies (16.0%)**, one offer, **full ask $75,000** from Chabella
+LLC against a $65,000 contract, so a $10,000 assignment. **3014 Sanland Ave**
+at $104,000 (contract $92,000): 159 sent in one day, and the first response was
+a **phone call from Litton Properties 12 minutes after their text**.
+
+**The two blasts deliberately have opposite copy, and that is the finding.**
+Blast 1 WITHHELD the address and let the offer do the redacting, so "send me
+the address" became the call to action: 14 of the 25 repliers asked for exactly
+that. Blast 2 leads WITH the full address, price and specs and offers the
+lockbox. Reply rate fell and the first contact arrived as a CALL instead of a
+text. Withholding buys conversation; disclosing buys showings. Watch lockbox
+requests, not raw replies, when the address is public.
+
+`disclose_address` is a per-deal opt-in and the four guards INVERT rather than
+disappear: a redacted deal still refuses a house number and a zip, an
+address-forward deal REQUIRES both, `audit()` asserts the exact address is
+present, and `_deal_facts_block` includes it only when disclosing. **The lockbox
+code is never in the deal sheet at all**, so the agent can offer it and cannot
+give it; that code is physical access to a house.
+
+**The money check is a WHITELIST, not a blocklist.** Every money-looking token
+in a message must equal the approved asking price. That catches an invented
+number AND the contract price without the audit ever being told what the
+contract price is, which is why `deals/3014-sanland.json` carries no
+`contract_price` field. Written without a regex on purpose, after a `` escape
+reached a file through a shell heredoc as a literal backspace byte for the third
+time in one session.
+
+**Never imply a price relationship that is not true** (Ty, 2026-09-02). "Another
+one at this price" on a $104,000 deal, to people who saw $75,000, is a factual
+claim a buyer can catch. The warm variant references the RELATIONSHIP instead
+("since you looked at the last one").
+
+**A NEW DEAL may reopen a thread a human paused, but never an opt-out.** The
+takeover pause is per conversation and meant the last property; on blast 2 it
+held all 16 buyers who had engaged on blast 1, excluding the most valuable
+audience precisely because they had been good leads. `seed.build(new_deal=True)`
+allows `paused` and never `opted_out`, and `queue` reactivates the thread, since
+otherwise the text goes out and the reply lands on a paused conversation where
+it is never classified.
+
+**`dispo_phonebook` turns a finished blast into an asset.** The engine already
+sets phone status CORRECT with a Dial First tag when someone engages, so
+verified-number capture is free; what was missing is grouping and a summary a
+caller can read. Classification comes from what people actually typed: 16
+verified, 131 silent, 9 suppressed (3 opt-out, 3 wrong number, 3 hard no).
+**Scope it to the sending pool** or an unscoped pass classifies 947 recipients
+across both programs and suppresses seller numbers as a side effect of a dispo
+cleanup.
+
+**Operational lessons that cost real time:**
+- **Fly SECRETS override `fly.toml` `[env]`.** `fly config env` shows the file
+  and confirms the wrong answer. Ask the running system: `/health` reports the
+  effective phase and dry-run. The box was live at phase 2 the whole time.
+- **`nohup` does not survive `fly ssh console`.** Use `setsid`; Fly kills the
+  process group on hangup. A long run also drops mid-flight, so stage detached
+  and poll the DATABASE, never the command's exit.
+- **A probe whose pattern appears in its own command line always matches
+  itself.** Searching `/proc` for `*dispo_campaign*` from a shell whose own
+  cmdline contained that string reported a dead job as alive for twenty
+  minutes. List the processes and read them instead.
+- **A killed run leaves a partial batch.** Stopping the band-less run left 34
+  already-queued rows, exactly the out-of-band buyers. Always read the held
+  count back.
+- **Carrier registration is invisible to tests.** 262 passing checks cannot know
+  four of five numbers were unregistered for A2P 10DLC. Canary one message per
+  number and read the result.
+
+**Shipped public (2026-09-03).** Four agents added to the org chart under Dispo
+& Buyers (`dispobuyers`, `dispoblast`, `dispobook`, `dispoflow`) plus updates to
+`sender`, `classifier` and `responder`; `docs/AGENT-MAP.md` and
+`docs/agent-system.html` regenerate from `docs/agents.json` and publish at
+learn.datasift.ai/agent-org-chart. New community skill **`dispo-deal-blast`**
+(tier none, 27 packages in the manifest) carrying the method and every guard.
+
+**Two things the CI gates caught that a review would not.** A `.skill` archive
+has no diff, so drift between what people download and what they can read is
+invisible: `dist/playbook-creator.skill` was stale, and separately its
+description was 1,154 characters against a hard 1,024 limit that makes Claude
+Code reject the WHOLE package at install time, after the download. Both were
+inherited, both are fixed. The drift itself was **line endings**: the archive is
+zipped from the WORKING TREE, `.gitattributes` normalises on checkout and add
+but never rewrites a file already sitting there with CRLF, so
+`git add --renormalize .` is the command that actually makes them match.
+
+**Never commit this repo blind; it is PUBLIC.** The sweep for this session found
+a SmartSkip session file holding live access and refresh tokens, county eviction
+records naming tenants and their court dates, vendor webpack bundles saved while
+reverse-engineering filter keys, and a 39MB screen recording carrying seller
+data. All now gitignored. The sending DIDs were also removed from this file and
+replaced with a pointer to the gitignored pool.
+
 ## Contractor Research Workflow (build 1.0.47, 2026-08-20)
 
 The team's contractor/sub sourcing method, imported from the Desktop Contractor-Research-Toolkit and registered as two community-safe skills: `skills/vendor-directory-builder/` (research engine: community mining -> public-record verification -> geo sweep + gap analysis + niche gatekeeper layer -> Excel via `scripts/build_directory.py`) and `skills/contractor-call-sheet/` (action layer: printable call sheet via `scripts/build_call_sheet.py` + personalized outreach drafts, never sends). Both tier none (pure openpyxl), category Operations, on the agent map under Deal Analysis (`vendordir`, `callsheet`). Internal SOP with the real Knox+Blount worked example (68 providers): `docs/contractor-research-workflow.md`.
