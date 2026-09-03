@@ -249,17 +249,17 @@ footer p { margin:0 0 6px; }
 <div class="mast">
   <div class="wrap mast-in">
     <p class="eyebrow">
-      <span>SiftStack</span><span class="sep">/</span><span>Build 1.0.47</span>
-      <span class="sep">/</span><span>2026-08-20</span>
+      <span>SiftStack</span><span class="sep">/</span><span>Build 1.0.51</span>
+      <span class="sep">/</span><span>2026-09-03</span>
     </p>
     <h1>SiftStack AI Agent Org Chart</h1>
     <p class="lede">Every agent, what triggers it, what it touches, where a human still signs off, and the specific trap each one exists to avoid.</p>
 
     <div class="stats">
-      <div class="stat"><b>76</b><span>agents</span></div>
+      <div class="stat"><b>80</b><span>agents</span></div>
       <div class="stat"><b>9</b><span>divisions</span></div>
-      <div class="stat"><b>69</b><span>live in production</span></div>
-      <div class="stat"><b>50</b><span>with a human gate</span></div>
+      <div class="stat"><b>73</b><span>live in production</span></div>
+      <div class="stat"><b>54</b><span>with a human gate</span></div>
     </div>
 
     <div class="install">
@@ -1026,7 +1026,7 @@ footer p { margin:0 0 6px; }
   <header class="dept-head">
     <h3>Dispo &amp; Buyers</h3>
     <p class="dept-tag">Deed-verified buyers before you need them</p>
-    <span class="dept-count"><b>4</b> agents</span>
+    <span class="dept-count"><b>8</b> agents</span>
   </header>
   <div class="grid"><article class="agent" data-dept="dispo" data-status="live" data-phase="1" data-human="yes" data-search="deal package generator six-sheet workbook that turns analysis into a dial sheet somebody can work today. src/deal_package.py per-buyer ask prices are tuned to each buyer&#x27;s model, self-performer above landlord above out-of-state. one blast number leaves money on the table and burns credibility. openpyxl buyer_sweep output">
   <details>
@@ -1096,6 +1096,74 @@ footer p { margin:0 0 6px; }
       <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>This is the cold-start answer for a new market. The buyer sweep needs deed history you do not have yet; the prospector gives you a list on day one.</p></div>
     </div>
   </details>
+</article><article class="agent" data-dept="dispo" data-status="live" data-phase="1" data-human="yes" data-search="dispo buyer registry turns a county&#x27;s investor transactions into a deduped registry of people with scored phones, so a deal blast has somebody real to text. src/dispo_buyers.py the rental label lags over a year. siftmap cannot call a purchase a rental until it observes the property being rented, so a recent buy-and-hold sits under &#x27;pending&#x27;. requiring txn_types == {&#x27;rental&#x27;} took 111 landlords to zero the moment recency was applied. the rule is &#x27;any rental history and holds at least as many as it exits&#x27;. siftmap enformion businessv2 smartskip tracerfy trestleiq reisift">
+  <details>
+    <summary>
+      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="agent-name">Dispo Buyer Registry</span>
+      <span class="agent-meta">
+        <span class="badge badge-live">Live</span>
+        <span class="badge badge-gate">Human gate</span>
+      </span>
+      <span class="agent-role">Turns a county&#x27;s investor transactions into a deduped registry of PEOPLE with scored phones, so a deal blast has somebody real to text.</span>
+      <code class="src">src/dispo_buyers.py</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">python src/dispo_buyers.py --phase sweep|recent|hydrate|aggregate|unmask|principals|skipinput|phones|crm-phones|profiles|score</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Sweeps SiftMap by investor transaction type, collapsed by owner for the hold types</li><li>Hydrates each property for the deed owner, since search rows carry no name</li><li>Dedupes by mailing address with a suite guard, logging every merge AND every refusal</li><li>Unmasks LLC principals free by reverse-address, then pays Enformion only for what that missed</li><li>Harvests phones the CRM already holds, then Trestle-scores and writes dial tiers</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>Approves the paid Enformion and SmartSkip passes before they bill</li><li>Reads the agent-titled principals, which are often the company&#x27;s lawyer</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">registry.json, buyer_profiles.json, phones.json, phone_scores.json, 5-sheet buyer workbook</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">SiftMap</span><span class="chip">Enformion BusinessV2</span><span class="chip">SmartSkip</span><span class="chip">Tracerfy</span><span class="chip">TrestleIQ</span><span class="chip">reisift</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>THE RENTAL LABEL LAGS OVER A YEAR. SiftMap cannot call a purchase a rental until it observes the property being rented, so a recent buy-and-hold sits under &#x27;pending&#x27;. Requiring txn_types == {&#x27;rental&#x27;} took 111 landlords to ZERO the moment recency was applied. The rule is &#x27;any rental history AND holds at least as many as it exits&#x27;.</p></div>
+    </div>
+  </details>
+</article><article class="agent" data-dept="dispo" data-status="live" data-phase="1" data-human="yes" data-search="dispo deal blast texts one named deal to the buyers whose own deed history says they buy at that price, then hands every reply to a human. src/sms_agent/dispo_campaign.py the price band is asymmetric. above a buyer&#x27;s band is affordability; below it is only interest. a symmetric 0.35 tolerance kept 68 of 199 buyers at a $75,000 ask and dropped people for being too big, which is the wrong reason to skip anyone. the floor is divided by a multiple while the ceiling keeps the tolerance. reisift smrtphone slack">
+  <details>
+    <summary>
+      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="agent-name">Dispo Deal Blast</span>
+      <span class="agent-meta">
+        <span class="badge badge-live">Live</span>
+        <span class="badge badge-gate">Human gate</span>
+      </span>
+      <span class="agent-role">Texts one named deal to the buyers whose own deed history says they buy at that price, then hands every reply to a human.</span>
+      <code class="src">src/sms_agent/dispo_campaign.py</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">python src/sms_agent/dispo_campaign.py --deal deals/&lt;id&gt;.json --queue, then cli.py release --touch 1</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Builds the cohort from verified registry data, not the search&#x27;s one representative phone</li><li>Matches each buyer&#x27;s real price band against the ask, asymmetrically</li><li>Renders copy per cohort and AUDITS every message, never a sample</li><li>Stages as HELD and writes the deal onto each thread so the responder can answer</li><li>Release is a separate, deliberate step</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>Owns release: staging sends nothing</li><li>Sends the address, photos and lockbox code; the agent only offers them</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Held outbox rows, A Slack launch notice naming what was staged</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">reisift</span><span class="chip">smrtPhone</span><span class="chip">Slack</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>THE PRICE BAND IS ASYMMETRIC. Above a buyer&#x27;s band is affordability; below it is only interest. A symmetric 0.35 tolerance kept 68 of 199 buyers at a $75,000 ask and dropped people for being too BIG, which is the wrong reason to skip anyone. The floor is divided by a multiple while the ceiling keeps the tolerance.</p></div>
+    </div>
+  </details>
+</article><article class="agent" data-dept="dispo" data-status="live" data-phase="1" data-human="yes" data-search="dispo buyer phonebook converts a finished blast into a durable asset: verified buyers grouped and summarised, and the people who asked out suppressed forever. src/sms_agent/dispo_phonebook.py scope it to the sending pool. both programs share one database, so an unscoped pass classified 947 recipients including the acquisitions traffic, and committing it would have suppressed seller numbers as a side effect of a dispo cleanup. the pools are disjoint, so the sending number is the program. reisift">
+  <details>
+    <summary>
+      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="agent-name">Dispo Buyer Phonebook</span>
+      <span class="agent-meta">
+        <span class="badge badge-live">Live</span>
+        <span class="badge badge-gate">Human gate</span>
+      </span>
+      <span class="agent-role">Converts a finished blast into a durable asset: verified buyers grouped and summarised, and the people who asked out suppressed forever.</span>
+      <code class="src">src/sms_agent/dispo_phonebook.py</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">python -m sms_agent.dispo_phonebook --commit</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Classifies every recipient from what they actually typed, never a hand-kept list</li><li>Suppresses opt-outs, wrong numbers and hard nos, and marks wrong numbers WRONG in the CRM</li><li>Writes a pinned per-buyer summary a caller can read before dialling</li><li>Leaves non-responders alone so the next blast can reach them</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>Reads the VERIFY flag where a principal came back with an agent title</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Suppression rows, Pinned CRM notes, Verified-buyer tags</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">reisift</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>SCOPE IT TO THE SENDING POOL. Both programs share one database, so an unscoped pass classified 947 recipients including the acquisitions traffic, and committing it would have suppressed SELLER numbers as a side effect of a dispo cleanup. The pools are disjoint, so the sending number is the program.</p></div>
+    </div>
+  </details>
+</article><article class="agent" data-dept="dispo" data-status="live" data-phase="1" data-human="yes" data-search="dispo sequential flow the crm lanes a buyer moves through, mirroring the acquisitions preset system so nobody is texted twice. src/dispo_flow.py counter-driven, not tag-driven. a preset that gates calling behind a &#x27;texted&#x27; tag shows zero forever and reads as broken. progression rides sms_attempts and predictivecall_attempts, which the dialer increments itself. reisift">
+  <details>
+    <summary>
+      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="agent-name">Dispo Sequential Flow</span>
+      <span class="agent-meta">
+        <span class="badge badge-live">Live</span>
+        <span class="badge badge-gate">Human gate</span>
+      </span>
+      <span class="agent-role">The CRM lanes a buyer moves through, mirroring the acquisitions preset system so nobody is texted twice.</span>
+      <code class="src">src/dispo_flow.py</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">python src/dispo_flow.py --phase infra|clean --commit</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Creates the buyer list, tags and filter presets</li><li>Gates progression on the dialer&#x27;s OWN counters, not on flow tags</li><li>Rebuilds the folder from scratch and reads every preset back</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>Approves deleting and rebuilding a preset folder</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">A DataSift list, tags and the sequential presets</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">reisift</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>COUNTER-DRIVEN, NOT TAG-DRIVEN. A preset that gates calling behind a &#x27;texted&#x27; tag shows zero forever and reads as broken. Progression rides sms_attempts and predictivecall_attempts, which the dialer increments itself.</p></div>
+    </div>
+  </details>
 </article></div>
 </section><section class="dept" id="dept-outreach" data-dept="outreach">
   <header class="dept-head">
@@ -1120,7 +1188,7 @@ footer p { margin:0 0 6px; }
       <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>DataSift webhooks CANNOT see an inbound text. Webhooks shipped as a sequence ACTION, so all ten triggers are CRM state changes. smrtPhone&#x27;s smsIncoming is the only inbound leg. That single constraint shapes the entire architecture.</p></div>
     </div>
   </details>
-</article><article class="agent" data-dept="outreach" data-status="gated" data-phase="2" data-human="yes" data-search="reply classifier reads an inbound text and decides what it means, with a confidence floor. src/sms_agent/respond.py backfill proved it on 9 real replies before anything was wired, and it was correct on all 9. it also caught that &#x27;i&#x27;d like to get the house in auction if it&#x27;s cheap enough&#x27; is a buyer, not a seller, and correctly refused to escalate at 0.55. claude smrtphone">
+</article><article class="agent" data-dept="outreach" data-status="gated" data-phase="2" data-human="yes" data-search="reply classifier reads an inbound text and decides what it means, with a confidence floor. src/sms_agent/respond.py the reply path could not tell a buyer thread from a seller thread. the buyer profile, the dispo playbook and the deal facts block all existed and were tested, but nothing in the live path passed program, so a buyer asking &#x27;how much?&#x27; got the seller playbook and a validator that blocks every dollar figure. the signal is the number the reply arrived on: the pools are disjoint, so sender_pool.program_for() decides it with nothing to keep in sync. claude smrtphone">
   <details>
     <summary>
       <span class="dot dot-gated" aria-hidden="true"></span>
@@ -1134,10 +1202,10 @@ footer p { margin:0 0 6px; }
     </summary>
     <div class="agent-body">
       <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">Every inbound SMS.</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Regex rules handle opt-outs and obvious cases</li><li>Model handles the rest at a 0.80 confidence floor</li><li>Below the floor it drafts for a human instead of paging a prospector</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>Anything under the confidence floor</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Intent label, Confidence, Soft vs hard no</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">Claude</span><span class="chip">smrtPhone</span></div></div>
-      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>Backfill proved it on 9 real replies before anything was wired, and it was correct on all 9. It also caught that &#x27;I&#x27;d like to get the house in auction if it&#x27;s cheap enough&#x27; is a BUYER, not a seller, and correctly refused to escalate at 0.55.</p></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>THE REPLY PATH COULD NOT TELL A BUYER THREAD FROM A SELLER THREAD. The buyer profile, the dispo playbook and the deal facts block all existed and were tested, but nothing in the live path passed program, so a buyer asking &#x27;how much?&#x27; got the SELLER playbook and a validator that blocks every dollar figure. The signal is the number the reply arrived ON: the pools are disjoint, so sender_pool.program_for() decides it with nothing to keep in sync.</p></div>
     </div>
   </details>
-</article><article class="agent" data-dept="outreach" data-status="planned" data-phase="3" data-human="yes" data-search="reply drafter writes the reply in a human voice, inside a validator that hard-blocks anything risky. src/sms_agent/respond.py the model invents an identity. with no name configured it introduced itself as &#x27;alex&#x27;. unresolved identity now means the agent is explicitly told it has no name and no company name rather than being left to fill the gap. claude playbook.md">
+</article><article class="agent" data-dept="outreach" data-status="planned" data-phase="3" data-human="yes" data-search="reply drafter writes the reply in a human voice, inside a validator that hard-blocks anything risky. src/sms_agent/respond.py a dispo agent may quote exactly one figure: the approved asking price on the deal sheet. an invented number is blocked, and the contract price is blocked without the audit ever being told what it is, because every money token must equal the approved price. on an address-forward deal the address is whitelisted the same way; the lockbox code is never in the facts at all, so the agent can offer it but cannot give it. claude playbook.md">
   <details>
     <summary>
       <span class="dot dot-planned" aria-hidden="true"></span>
@@ -1151,7 +1219,7 @@ footer p { margin:0 0 6px; }
     </summary>
     <div class="agent-body">
       <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">A classified reply that warrants a response.</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Given almost nothing on purpose: first name, street line, city, county</li><li>Signs as the record&#x27;s assigned human, resolved from the assignee uuid</li><li>Validator blocks dollar amounts, list names, links, zips, two questions, or self-identifying as automated</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>Phase 3 holds every draft in Slack for approval</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Draft reply</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">Claude</span><span class="chip">playbook.md</span></div></div>
-      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>The model invents an identity. With no name configured it introduced itself as &#x27;Alex&#x27;. Unresolved identity now means the agent is explicitly told it has NO name and NO company name rather than being left to fill the gap.</p></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>A DISPO AGENT MAY QUOTE EXACTLY ONE FIGURE: the approved asking price on the deal sheet. An invented number is blocked, and the contract price is blocked without the audit ever being told what it is, because every money token must equal the approved price. On an address-forward deal the address is whitelisted the same way; the lockbox code is never in the facts at all, so the agent can offer it but cannot give it.</p></div>
     </div>
   </details>
 </article><article class="agent" data-dept="outreach" data-status="live" data-phase="1" data-human="yes" data-search="text touch builder four pre-call sms touches per hot record, varied like cold email so nothing looks blasted. skills/text-touch-builder clean_first(&#x27;e a henry&#x27;) took the first token of length 2 or more, walked past the initials, and greeted people by their surname. the fix is positional: only tokens before the surname can supply a first name. this bug shipped in two places and was fixed in both. datasift add-data text-touch-builder skill">
@@ -1222,7 +1290,7 @@ footer p { margin:0 0 6px; }
       <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>The phone number is the asset. Every autonomy decision in the SMS agent exists to protect it.</p></div>
     </div>
   </details>
-</article><article class="agent" data-dept="outreach" data-status="gated" data-phase="2" data-human="no" data-search="sender pool manager owner-bound number pool so a callback reaches the person who claimed to text. src/sms_agent/sender_pool.py this module was originally named numbers.py, which shadowed the stdlib numbers module and broke pydantic inside the anthropic sdk. the exception was swallowed and every classification silently degraded to the weak keyword fallback while still returning a plausible answer. smrtphone sms_numbers.json">
+</article><article class="agent" data-dept="outreach" data-status="gated" data-phase="2" data-human="no" data-search="sender pool manager owner-bound number pool so a callback reaches the person who claimed to text. src/sms_agent/sender_pool.py the pool fell back to the seller numbers. pool() returned every number in the account when the owner had no pool of their own, so a dispo blast spread across all 24 numbers including the 19 acquisitions lines. three things break at once: the 10dlc cap is counted per database so the other program&#x27;s budget is spent invisibly, one number carries two programs, and a callback rings the wrong flow. no numbers is a loud failure; the seller pool is a silent one. smrtphone sms_numbers.json">
   <details>
     <summary>
       <span class="dot dot-gated" aria-hidden="true"></span>
@@ -1235,8 +1303,8 @@ footer p { margin:0 0 6px; }
       <code class="src">src/sms_agent/sender_pool.py</code>
     </summary>
     <div class="agent-body">
-      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">Every outbound send.</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>18 numbers at 25 a day, 450 a day total</li><li>Prefers the assigned caller&#x27;s own numbers</li><li>Sticky number per conversation wins over owner preference</li><li>Quiet hours 8am-9pm recipient-local with up to 30 minutes of wake jitter</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><div class="fact-v muted">Nobody. Runs unattended.</div></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Assigned sender number</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">smrtPhone</span><span class="chip">sms_numbers.json</span></div></div>
-      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>This module was originally named numbers.py, which SHADOWED the stdlib numbers module and broke pydantic inside the Anthropic SDK. The exception was swallowed and every classification silently degraded to the weak keyword fallback while still returning a plausible answer.</p></div>
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">Every outbound send.</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>18 numbers at 25 a day, 450 a day total</li><li>Prefers the assigned caller&#x27;s own numbers</li><li>Sticky number per conversation wins over owner preference</li><li>Quiet hours 8am-9pm recipient-local with up to 30 minutes of wake jitter</li><li>Pins a program to ONE pool; a pinned pool that is missing returns nothing rather than falling back</li><li>Applies per-pool daily caps and per-pool send gaps, so one program&#x27;s pacing never moves another&#x27;s</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><div class="fact-v muted">Nobody. Runs unattended.</div></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Assigned sender number</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">smrtPhone</span><span class="chip">sms_numbers.json</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>THE POOL FELL BACK TO THE SELLER NUMBERS. pool() returned every number in the account when the owner had no pool of their own, so a dispo blast spread across all 24 numbers including the 19 acquisitions lines. Three things break at once: the 10DLC cap is counted per database so the other program&#x27;s budget is spent invisibly, one number carries two programs, and a callback rings the wrong flow. No numbers is a loud failure; the seller pool is a silent one.</p></div>
     </div>
   </details>
 </article><article class="agent" data-dept="outreach" data-status="gated" data-phase="2" data-human="yes" data-search="obituary mail export turns the ranked obituary opportunity list into a validated mail file. src/obituary_mail_export.py every row ships a must-verify note. whether the person who died is the owner of record is not verifiable from crm data, and the spouse-obituary trap is live on every single row: an obituary on the record does not mean the owner died. datasift api smarty">
@@ -1583,7 +1651,7 @@ footer p { margin:0 0 6px; }
       <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>Benchmarks ship as tune-per-operation baselines. Publishing someone else&#x27;s conversion rate as a target is how you get a team optimizing for a number that never applied to them.</p></div>
     </div>
   </details>
-</article><article class="agent" data-dept="coach" data-status="live" data-phase="1" data-human="yes" data-search="playbook creator turns a transcript or a recorded process into an sop with process maps. skills/playbook-creator seven nodes per chart and a 5th grade reading level are hard limits, not style preferences. an sop nobody can follow at 7am is not an sop. mermaid docx">
+</article><article class="agent" data-dept="coach" data-status="live" data-phase="1" data-human="yes" data-search="playbook creator turns a narrated screen recording or transcript into an sop, a playbook, or a scribe-style step guide, with real screenshots and an agent-executable .sop.md twin. skills/playbook-creator seven nodes per chart and a 5th grade reading level are hard limits, not style preferences. an sop nobody can follow at 7am is not an sop. ffmpeg openrouter (optional) mermaid docx validate_sop.py">
   <details>
     <summary>
       <span class="dot dot-live" aria-hidden="true"></span>
@@ -1592,11 +1660,11 @@ footer p { margin:0 0 6px; }
         <span class="badge badge-live">Live</span>
         <span class="badge badge-gate">Human gate</span>
       </span>
-      <span class="agent-role">Turns a transcript or a recorded process into an SOP with process maps.</span>
+      <span class="agent-role">Turns a narrated screen recording or transcript into an SOP, a playbook, or a Scribe-style step guide, with real screenshots and an agent-executable .sop.md twin.</span>
       <code class="src">skills/playbook-creator</code>
     </summary>
     <div class="agent-body">
-      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">Any repeatable process worth documenting.</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Transcript to structured workflow</li><li>Mermaid flowcharts, decision trees, screenshot placeholders</li><li>Seven-node chart limit, 5th grade reading level</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>Operator supplies screenshots</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Word doc SOP, Process maps</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">Mermaid</span><span class="chip">docx</span></div></div>
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">Any repeatable process worth documenting. Best input: a narrated screen recording.</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Video to transcript + actions + judgment (transcribe_video.py, OpenRouter Gemini)</li><li>Frames extracted at action timestamps become the real screenshots</li><li>Mermaid flowcharts, decision trees, Scribe-style step format</li><li>Agent twin: RFC 2119 constraints, validated .sop.md, served from sops/ as a slash prompt</li><li>Seven-node chart limit, 5th grade reading level</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>Operator records the walkthrough and narrates the decisions</li><li>Verify frames and blur customer data before sharing</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Word doc SOP with embedded screenshots, Agent-executable .sop.md, Process maps</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">ffmpeg</span><span class="chip">OpenRouter (optional)</span><span class="chip">Mermaid</span><span class="chip">docx</span><span class="chip">validate_sop.py</span></div></div>
       <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>Seven nodes per chart and a 5th grade reading level are hard limits, not style preferences. An SOP nobody can follow at 7am is not an SOP.</p></div>
     </div>
   </details>

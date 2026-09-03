@@ -137,13 +137,36 @@ ASKING_WHO = [
 
 # Anything here forces a human regardless of what else matched. These are the
 # situations where a wrong word from an automated system does real damage.
-ESCALATE_NOW = [
+# Sensitive replies split in two, because they need OPPOSITE handling and
+# lumping them together got both wrong in the first live week.
+#
+# HOSTILE is a hard stop. A harassment claim, a threat to report, or a child
+# answering means the number is never contacted again on any channel. These
+# were only PAUSING the conversation, which blocks our next campaign but leaves
+# the number live for a dialler and unmarked in Sift. One of them was a twelve
+# year old.
+HOSTILE_NOW = [
     r"\b(lawyer|attorney|sue|suing|legal\s+action|cease\s+and\s+desist)\b",
-    r"\b(passed\s+away|died|deceased|funeral|in\s+hospice)\b",
+    r"\b(harass|harassment|report\s+you|fcc|attorney\s+general)\b",
+    r"\bi\s*'?a?m\s+(only\s+)?\d{1,2}\s+years?\s+old\b",
+    r"\b(a\s+minor|a\s+child|my\s+kid'?s?\s+phone)\b",
+    r"\bnever\s+(text|call|contact|mail)\b",
+]
+
+# BEREAVEMENT is the opposite. A death is the most common reason a house gets
+# sold, so "Judy died in 2022" is a probate lead, not a number to burn. It still
+# leaves the agent, because condolences are not something to automate, but the
+# number stays workable and a person is told.
+BEREAVEMENT_NOW = [
+    r"\b(passed\s+away|passed\s+on|died|deceased|funeral|in\s+hospice)\b",
+]
+
+SENSITIVE_OTHER = [
     r"\b(bankrupt|bankruptcy|chapter\s+(7|13))\b",
     r"\bauction\s+is\s+(today|tomorrow)\b",
-    r"\b(harass|harassment|report\s+you|fcc|attorney\s+general)\b",
 ]
+
+ESCALATE_NOW = HOSTILE_NOW + BEREAVEMENT_NOW + SENSITIVE_OTHER
 
 INTENTS = (
     "OPT_OUT",

@@ -313,7 +313,8 @@ def resolve_best_phone(row: dict, dnc_numbers: set) -> tuple[Optional[dict], str
     return out, ""
 
 
-def build(rows: Iterable[dict], touch: int, sender_fallback: str = "") -> list[Candidate]:
+def build(rows: Iterable[dict], touch: int, sender_fallback: str = "",
+          new_deal: bool = False) -> list[Candidate]:
     """Turn export rows into vetted, rendered candidates. Sends nothing."""
     out: list[Candidate] = []
     # One human, one text. Owners routinely hold several properties in the same
@@ -370,10 +371,19 @@ def build(rows: Iterable[dict], touch: int, sender_fallback: str = "") -> list[C
             continue
 
         conv = store.get_conversation(phone)
-        if conv and conv.get("state") not in ("active", None, ""):
-            out.append(cand.hold(f"conversation is {conv['state']}"))
+        state = (conv or {}).get("state")
+        # A NEW DEAL is a fresh reason to reach out, and a `paused` thread
+        # means a human took over the LAST one. On blast 2 that dropped all
+        # 16 buyers who engaged on blast 1: the most valuable audience on the
+        # list, excluded precisely because they had been good leads.
+        # `opted_out` and `closed` are never overridden, and suppression is a
+        # separate gate that still applies.
+        reopenable = new_deal and state == "paused"
+        if state not in ("active", None, "") and not reopenable:
+            out.append(cand.hold(f"conversation is {state}"))
             continue
-        if conv and conv.get("last_inbound"):
+            continue
+        if conv and conv.get("last_inbound") and not new_deal:
             # They already replied. A scheduled touch landing on a live
             # conversation is the same failure as two people texting at once.
             out.append(cand.hold("already replied; touch would interrupt a live thread"))
@@ -618,7 +628,7 @@ def schedule_summary(plan: list[tuple[Candidate, str, str]]) -> dict:
     }
 
 
-def queue(candidates: list[Candidate], touch: int) -> dict:
+def queue(candidates: list[Candidate], touch: int, new_deal: bool = False) -> dict:
     """Register the mappings and queue the ready candidates.
 
     Queued as `held` so nothing leaves without `--commit`, which is the same
@@ -685,6 +695,16 @@ def queue(candidates: list[Candidate], touch: int) -> dict:
             continue
         store.ensure_conversation(cand.phone, from_number=from_number,
                                   record_uuid=cand.record_uuid)
+        if new_deal:
+            # Reopen a thread a human paused on the PREVIOUS deal. Without
+            # this the outreach goes out but the reply lands on a paused
+            # conversation and is never classified or escalated, which is
+            # the worst combination: we spend the text and drop the answer.
+            conv = store.get_conversation(cand.phone) or {}
+            if conv.get("state") == "paused":
+                store.update_conversation(
+                    cand.phone, state="active",
+                    paused_reason="reopened for a new deal")
         store.queue_message(
             cand.phone,
             cand.message,

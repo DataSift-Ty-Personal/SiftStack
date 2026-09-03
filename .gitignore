@@ -165,3 +165,26 @@ deals/*
 # Skip-trace and list exports. Real owners, real phone numbers.
 vacant_top100*.csv
 *_top100*.csv
+
+# --- session 2026-09-02: things that must never reach a PUBLIC repo ---
+# Live SmartSkip access + refresh JWTs. Account access in plaintext.
+.skiptrace_run/
+# Named tenants facing eviction, with court dates, plus the docket PDFs.
+# Real people in distress; county records being public does not make
+# republishing them here acceptable.
+knox/
+# DataSift's own webpack bundles, saved while reverse-engineering the SiftMap
+# filter keys. Someone else's minified application code.
+c[0-9]*.js
+c_*.js
+main.js
+beta.js
+app.html
+beta.html
+map.html
+pb.html
+# Screen recordings carry real seller data and Ty's webcam; blur before any
+# distribution, and never commit 39MB of video to git.
+*.mp4
+# Windows artifact from a stray shell redirect.
+NUL

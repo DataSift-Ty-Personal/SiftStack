@@ -901,6 +901,78 @@ def run(live_model: bool = False) -> int:
             _unknown == 'seller', _unknown)
 
     print("")
+    print("address-forward deals (blast 2)")
+    # Blast 1 withheld the address and four guards enforced it. Blast 2
+    # leads WITH the address and offers the lockbox. The guards invert
+    # per deal; they are not removed, because the redaction default
+    # still protects every deal that does not opt in.
+    from sms_agent import dispo_campaign as _dc2
+    ADDR = '3014 Sanland Ave, Knoxville, TN 37914'
+    # The warm variant references the RELATIONSHIP, never the price:
+    # $104,000 is not the $75,000 of the last deal, and implying it is
+    # reads as careless to a buyer who remembers.
+    for _coh, _want in (('warm', 'the last one'),
+                        ('cold', 'we have another one')):
+        _m = touches.render_addr(_coh, 'sd|1', 'Smithbilt team', ADDR,
+                                 '$104,000', '3', '1', '948', 'Ty')
+        r.check("%s copy carries the exact address" % _coh,
+                ADDR in _m, _m[:70])
+        r.check("%s copy uses its own wording" % _coh,
+                _want in _m.lower(), _m[:70])
+        r.check("%s copy offers the lockbox" % _coh,
+                'lockbox' in _m.lower(), _m[:70])
+        r.check("%s copy offers the photos too" % _coh,
+                'photo' in _m.lower(), _m[:70])
+        # The Drive link is never in the copy: links are blocked and read
+        # as spam. A human sends it when the buyer replies.
+        r.check("%s copy carries no link" % _coh,
+                'http' not in _m.lower() and '.com' not in _m.lower())
+        _ok, _pr = respond.validate(_m, max_questions=2, program='buyer',
+                                    allowed_prices=[104000],
+                                    allowed_address=ADDR)
+        r.check("%s copy passes with the address allowance" % _coh,
+                _ok, '; '.join(_pr))
+    # The zip is exempt ONLY as part of the approved address.
+    _ok2, _ = respond.validate(_m, max_questions=2, program='buyer',
+                               allowed_prices=[104000])
+    r.check("without the allowance the zip is still blocked", not _ok2)
+    _ok3, _ = respond.validate(_m + ' also 37918', max_questions=2,
+                               program='buyer', allowed_prices=[104000],
+                               allowed_address=ADDR)
+    r.check("a stray zip is still blocked", not _ok3)
+    # The money check is a whitelist, so the contract price is caught
+    # without the audit ever being told what it is.
+    r.check("money tokens are found in every spelling",
+            _dc2._money_tokens('at $92,000 or 92k or 104,000')
+            == ['$92,000', '$92,000', '$104,000'],
+            str(_dc2._money_tokens('at $92,000 or 92k or 104,000')))
+    r.check("specs are not mistaken for prices",
+            _dc2._money_tokens('3/1, 948 sqft, built 1945') == [],
+            str(_dc2._money_tokens('3/1, 948 sqft, built 1945')))
+    # load_deal: the opt-in must require a real address, and the
+    # redaction default must still refuse one.
+    import json as _json, tempfile as _tf, os as _os
+    def _deal(**kw):
+        d = {'deal_id': 'x', 'road': 'Sanland Ave', 'area': 'Knoxville',
+             'price': 104000}
+        d.update(kw)
+        fh = _tf.NamedTemporaryFile('w', suffix='.json', delete=False)
+        _json.dump(d, fh); fh.close()
+        return fh.name
+    try:
+        _dc2.load_deal(_deal(disclose_address=True))
+        _refused = False
+    except SystemExit:
+        _refused = True
+    r.check("disclose_address with no address is refused", _refused)
+    try:
+        _dc2.load_deal(_deal(road='3014 Sanland Ave'))
+        _refused2 = False
+    except SystemExit:
+        _refused2 = True
+    r.check("a redacted deal still refuses a house number", _refused2)
+
+    print("")
     print("the price band cannot silently vanish")
     # REGISTRY was hardcoded in a second place and missed when the path
     # went env-driven, so on Fly _bands() returned {} and match_band,
@@ -944,6 +1016,23 @@ def run(live_model: bool = False) -> int:
             str(_dispo_cap))
     r.check("and leaves other pools alone",
             _sell_cap == config.DAILY_CAP_PER_NUMBER, str(_sell_cap))
+    # Same shape for PACING: holding the sticky-number rule concentrates
+    # a blast on whichever numbers carried the last one, so the busiest
+    # number needs a tighter rest. Acquisitions must not move.
+    _gaps = getattr(config, 'POOL_GAPS', {})
+    _rp3 = config.number_pools
+    try:
+        config.POOL_GAPS = {'Dispo': 300}
+        config.number_pools = lambda: {
+            'Adriana': ['+15550001111'], 'Dispo': ['+15559990001']}
+        _dg = sender_pool.gap_for('+15559990001')
+        _sg = sender_pool.gap_for('+15550001111')
+    finally:
+        config.POOL_GAPS = _gaps
+        config.number_pools = _rp3
+    r.check("a per-pool send gap applies to that pool", _dg == 300, str(_dg))
+    r.check("and other pools keep the global gap",
+            _sg == config.MIN_SEND_GAP_SECONDS, str(_sg))
     # Unpinned, the dispo blast spread across all 24 numbers including
     # the 19 seller lines: seller 10DLC budget spent invisibly, one
     # number carrying two programs, and callbacks ringing acquisitions.
@@ -1007,6 +1096,39 @@ def run(live_model: bool = False) -> int:
     r.check("a dry run stages NOTHING",
             _dry.get("queued") == 0 and _dry.get("dry_run") is True,
             str(_dry))
+
+    # A NEW DEAL may reopen a thread a human paused on the last deal,
+    # but must never reopen one that opted out. Blast 2 dropped all 16
+    # engaged buyers before this existed.
+    _pc = _seed.Candidate(phone='8655551234', record_uuid='rec-paused',
+                          first='Pat', street='1 Main St',
+                          city='Knoxville', county='Knox', sender='Ty')
+    _pc.message = 'Hi Pat, test. -Ty'
+    store.ensure_conversation('8655551234', from_number='+18650000001')
+    store.update_conversation('8655551234', state='paused',
+                              paused_reason='human took over')
+    _blocked = _seed.build([{'phone': '8655551234', 'uuid': 'rec-paused',
+        'street': '1 Main St', 'city': 'Knoxville', 'first': 'Pat',
+        'last': 'Doe', 'owner': 'Pat Doe', 'county': 'Knox',
+        'assigned': 'Ty', 'dial_tier': 'verified'}], touch=1)
+    _open = _seed.build([{'phone': '8655551234', 'uuid': 'rec-paused',
+        'street': '1 Main St', 'city': 'Knoxville', 'first': 'Pat',
+        'last': 'Doe', 'owner': 'Pat Doe', 'county': 'Knox',
+        'assigned': 'Ty', 'dial_tier': 'verified'}], touch=1, new_deal=True)
+    r.check("a paused thread is held on a normal touch",
+            _blocked and _blocked[0].status != 'ready',
+            str(_blocked and _blocked[0].reasons))
+    r.check("a NEW DEAL may reopen a paused thread",
+            _open and 'paused' not in ' '.join(_open[0].reasons),
+            str(_open and _open[0].reasons))
+    store.update_conversation('8655551234', state='opted_out')
+    _never = _seed.build([{'phone': '8655551234', 'uuid': 'rec-paused',
+        'street': '1 Main St', 'city': 'Knoxville', 'first': 'Pat',
+        'last': 'Doe', 'owner': 'Pat Doe', 'county': 'Knox',
+        'assigned': 'Ty', 'dial_tier': 'verified'}], touch=1, new_deal=True)
+    r.check("a NEW DEAL never reopens an opt-out",
+            _never and _never[0].status != 'ready',
+            str(_never and _never[0].reasons))
 
     print("")
     print("transient CRM errors")

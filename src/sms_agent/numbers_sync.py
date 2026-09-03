@@ -37,7 +37,11 @@ GRID = "/phoneNumbers/filtered"
 EXCLUDE_PATTERNS = [
     (re.compile(r"\bwebsite\b", re.I), "website number"),
     (re.compile(r"\btest\b", re.I), "test number"),
-    (re.compile(r"\bdispo\b", re.I), "dispo number"),
+    # NOTE: there is deliberately no dispo exclusion. It used to be here,
+    # from when the only 'Dispo' line was Ty's personal test number. Ty then
+    # bought real dispo numbers and this rule silently excluded the entire
+    # pool, so `numbers --refresh` reported 19 numbers and no dispo lane at
+    # all. See DISPO_RX below.
     (re.compile(r"\binbound\b", re.I), "inbound call flow"),
 ]
 
@@ -121,11 +125,28 @@ def excluded_reason(row: dict) -> Optional[str]:
     return None
 
 
+# The dispo lane is identified by the NUMBER'S NAME, not its flow, and it is
+# checked BEFORE the exclusions on purpose. Every dispo number currently
+# sits on the routing flow 'Ty Test', so the generic test rule dropped all
+# five and the refresh reported a healthy 19 numbers with no dispo lane.
+# Grouping by flow is still right for everyone else: the flow is what a
+# callback actually rings.
+#
+# THAT FLOW IS ALSO A REAL PROBLEM, not a naming quirk. A buyer who calls
+# one of these numbers back rings 'Ty Test', and this campaign exists to
+# turn interest into a phone call with a human. These numbers need their own
+# Dispo routing flow in smrtPhone before a blast goes out.
+DISPO_RX = re.compile(r"\bdispo\b", re.I)
+
+
 def build_pools(rows: list[dict]) -> tuple[dict, dict]:
     """Group into {owner: [numbers]} by FLOW, and report what was excluded."""
     pools: dict[str, list[str]] = {}
     excluded: dict[str, str] = {}
     for row in rows:
+        if DISPO_RX.search(row.get("name") or ""):
+            pools.setdefault("Dispo", []).append(row["e164"])
+            continue
         why = excluded_reason(row)
         if why:
             excluded[f"{row['digits']} ({row['name']})"] = why

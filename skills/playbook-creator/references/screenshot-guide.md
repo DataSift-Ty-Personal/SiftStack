@@ -1,201 +1,99 @@
-# Screenshot Guide
+# Screenshot Guide (Scribe-Style Capture Specs)
 
-This guide explains when and how to add screenshot placeholders. All visuals should be **actual screenshots of software interfaces**—not custom illustrations, diagrams, or graphics. This keeps the workload low while still adding value.
-
----
-
-## Screenshots Only—No Custom Graphics
-
-| Use | Don't Use |
-|-----|-----------|
-| Screenshots of software interfaces | Custom illustrations |
-| Screenshots of dashboards and data | Hand-drawn diagrams |
-| Screenshots of buttons and menus | Infographics |
-| Screenshots of forms and settings | Flowcharts (unless from software) |
-| Screenshots of results and outputs | Custom icons or graphics |
-
-**Why screenshots only?** Custom graphics take a lot of time to create. Screenshots are quick to capture and show exactly what the reader will see.
+All visuals are **actual screenshots of software interfaces**, never custom illustrations or generic graphics. The documents this skill produces contain screenshot SPECS: precise instructions for whoever captures the shots. A good spec reads like a Scribe step: it names the screen, the one element to highlight, and how tight to crop.
 
 ---
 
-## Screenshot Placeholder Format
+## The Spec Format
 
-Use this format for all screenshot placeholders:
+Every screenshot placeholder uses this blockquote format (the docx builder styles it as a yellow callout):
 
 ```markdown
-> **SCREENSHOT: [Brief Description]**
-> 
-> *Capture: [What to show in the screenshot]*
-> *Purpose: [Why this screenshot helps]*
-```
-
-### Placeholder Best Practices
-
-1. **Format:** Always use `[SCREENSHOT: {description of what to capture}]` or the blockquote format above. Be consistent within one document.
-2. **Placement:** Put screenshots AFTER the step they illustrate, not before. The reader does the action first, then sees the confirmation.
-3. **Be specific about context:** Include what screen the user should be on, what element to highlight, and what state it should be in.
-
-**Good placeholder:**
-```markdown
-> **SCREENSHOT: DataSift Upload Wizard - Column Mapping (Step 4)**
+> **SCREENSHOT: [Short label]**
 >
-> *Capture: The column mapping screen with "Tags" column highlighted, showing the drag-and-drop area. The "Property Street" column should already be auto-mapped (green check).*
-> *Purpose: Shows which columns need manual mapping vs auto-mapped ones*
+> *Capture: [What screen or window, in what state]*
+> *Highlight: [The ONE element to box or circle]*
+> *Crop: [How tight to zoom, keeping enough context to orient]*
 ```
 
-**Bad placeholder:**
+The three lines mirror how Scribe annotates automatically:
+
+| Line | What it controls | Rule |
+|------|------------------|------|
+| **Capture** | The raw shot | Full screen or window, in the exact state the reader will see. Before the click for actions, after the click for results. |
+| **Highlight** | The annotation | Exactly ONE element per shot, boxed or circled. It is the element named in the step's action sentence. |
+| **Crop** | The zoom | Center on the highlighted element with roughly a third of the frame as surrounding context. Never so tight the reader cannot tell what screen they are on. |
+
+**Good spec:**
+```markdown
+> **SCREENSHOT: Column mapping, Tags column**
+>
+> *Capture: DataSift Upload Wizard step 4, with Property Street already auto-mapped (green check)*
+> *Highlight: The Tags column's drag-and-drop area*
+> *Crop: Zoom to the mapping table; keep the wizard step bar visible at the top*
+```
+
+**Bad spec:**
 ```markdown
 > **SCREENSHOT: Upload screen**
 >
 > *Capture: The screen*
-> *Purpose: For reference*
+> *Highlight: The button*
+> *Crop: Whatever fits*
 ```
-
-4. **Minimum coverage:** At least 1 screenshot per major decision point or unfamiliar UI screen. If a step involves a screen the reader has never seen, add a placeholder.
-5. **Do not over-screenshot:** Skip obvious steps like clicking "OK", "Save", or "Close" buttons. If the reader can figure it out without a picture, skip it.
 
 ---
 
-## When to Add Screenshots
+## Placement
 
-### Always Add Screenshots For:
+1. **Actions:** spec goes right under the action it illustrates. In a step guide, directly under the step heading. In an SOP, after the numbered action line it shows.
+2. **Results:** after the step, showing the success state the reader should compare against.
+3. One blank line before and after the blockquote.
+
+## When to Add a Screenshot
+
+### Always
 
 | Situation | Example |
 |-----------|---------|
-| **First time showing a tool** | "Main Dashboard" - Shows the overall layout |
-| **Where to click** | "Left Menu" - Shows which menu to open |
-| **Buttons to press** | "Export Button" - Shows where the button is |
-| **Forms to fill out** | "Settings Form" - Shows what to enter |
-| **What success looks like** | "Upload Complete Message" - Shows the result |
-| **What errors look like** | "Error Message" - Shows what went wrong |
-| **Data and numbers** | "Analytics View" - Shows charts or metrics |
-| **Before and after** | "Record Before" vs "Record After" |
-| **Decision points** | "Good Record vs Bad Record" - Shows what each looks like |
+| First time showing a tool | Main dashboard, so the reader knows the layout |
+| Where to click | The button or menu, highlighted |
+| Forms to fill | The form with the right values entered |
+| What success looks like | The confirmation message or finished state |
+| What errors look like | The error message, so the reader recognizes it |
+| Decision points | Good record vs bad record, side by side |
 
-### Skip Screenshots For:
+### Skip
 
-- Simple text steps that don't involve clicking anything
-- Ideas or concepts without a visual part
-- Steps that are just thinking or deciding
-- Actions you already showed earlier
-- Obvious UI actions (clicking OK, Save, Close, or Cancel buttons)
+- Steps with nothing on screen (thinking, deciding, phone calls)
+- Actions already shown earlier in the same document
+- Obvious confirmations (clicking OK, Save, Close) unless the button is hard to find
 
----
+## Coverage by Document Type
 
-## Good vs Bad Descriptions
+| Document type | Coverage |
+|---------------|----------|
+| **Step guide** | Every step, no exceptions. One action = one shot. Plus a final result shot at "Done when". |
+| **SOP** | Every unfamiliar screen and every decision point; roughly 1 spec per 2-3 UI actions. |
+| **Playbook** | 1 per major section that touches a tool. |
 
-### Good Descriptions
+Every document ships at least: one overview shot (the main screen), one action shot (what to click), one result shot (what done looks like).
 
-| Part | Good Example | Why It Works |
-|------|-------------|--------------|
-| **Brief Description** | "Filter Panel Settings" | Clear and specific |
-| **Capture** | "The filter menu with 'Date Range' selected" | Says exactly what to show |
-| **Purpose** | "Shows which filters to pick" | Explains why it helps |
+## Redaction
 
-### Bad Descriptions
+Assume every guide gets forwarded. Before a document leaves the team, the capture person blurs:
 
-| Part | Bad Example | Problem |
-|------|-------------|---------|
-| **Brief Description** | "Screenshot" | Too vague |
-| **Capture** | "The screen" | Not specific |
-| **Purpose** | "For reference" | Doesn't explain why |
+- Email addresses, phone numbers, and mailing addresses of real people
+- Customer or seller names in records
+- Account balances, API keys, anything in a settings screen you would not post publicly
 
----
+Put a redaction reminder in the document's capture notes when the tool shows live records (CRMs always do).
 
-## Screenshot Types
+## Capturing the Shots
 
-### Overview Screenshots
+For whoever fills the placeholders in:
 
-Use when showing a new tool for the first time:
-
-```markdown
-> **📸 SCREENSHOT: [Tool Name] Main Screen**
-> 
-> *Capture: The full screen showing the main dashboard*
-> *Purpose: Shows the reader the overall layout before going into details*
-```
-
-### Action Screenshots
-
-Use when showing what to click:
-
-```markdown
-> **📸 SCREENSHOT: [Button/Menu Name]**
-> 
-> *Capture: The button or menu item, highlighted or circled*
-> *Purpose: Shows exactly where to click*
-```
-
-### Settings Screenshots
-
-Use when showing forms or configuration:
-
-```markdown
-> **📸 SCREENSHOT: [Feature] Settings**
-> 
-> *Capture: The settings screen with the right values filled in*
-> *Purpose: Shows the reader what to enter*
-```
-
-### Result Screenshots
-
-Use when showing what happens after a step:
-
-```markdown
-> **📸 SCREENSHOT: [Process] Complete**
-> 
-> *Capture: The success message or result screen*
-> *Purpose: Shows what the reader should see when done*
-```
-
-### Before/After Screenshots
-
-Use when showing a change:
-
-```markdown
-> **📸 SCREENSHOT: Before vs After**
-> 
-> *Capture: Two screenshots showing the change*
-> *Purpose: Shows what changed and why it matters*
-```
-
----
-
-## Where to Put Screenshots
-
-1. **After the step, not before**: Put the screenshot right after the action it shows
-2. **One screenshot per big action**: Don't over-do it on simple steps
-3. **Show enough context**: Include enough of the screen so readers know where they are
-
-### Spacing
-
-Add a blank line before and after each screenshot:
-
-```markdown
-Click the **Export** button in the top-right corner.
-
-> **📸 SCREENSHOT: Export Button**
-> 
-> *Capture: Top-right toolbar with Export button highlighted*
-> *Purpose: Shows where the button is*
-
-After clicking Export, you'll see the download options.
-```
-
----
-
-## How Many Screenshots
-
-| Document Type | How Often |
-|--------------|-----------|
-| **SOP (Technical)** | 1 screenshot every 2-3 steps |
-| **SOP (Simple)** | 1 screenshot every 4-5 steps |
-| **Playbook (Concept-heavy)** | 1 screenshot per major section |
-| **Playbook (Process-heavy)** | 1 screenshot every 3-4 steps |
-
-### Minimum Screenshots
-
-Every document should have at least:
-- 1 overview screenshot (shows the main screen)
-- 1 action screenshot (shows what to click)
-- 1 result screenshot (shows what success looks like)
+1. Work through the process for real; capture at each spec as you go. The shots must show real state, not a staged empty account (redact after, not fake before).
+2. Use the OS screenshot tool at full resolution; annotate with a single rectangle or circle in one consistent color across the whole document.
+3. Crop per the spec. Keep the original uncropped shot until the document is approved, in case a wider view is needed.
+4. Drop each image directly under its yellow placeholder box in the Word doc, then delete the placeholder.

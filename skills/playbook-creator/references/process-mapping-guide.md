@@ -1,8 +1,8 @@
 # Process Mapping Guide
 
-Process maps turn complex workflows into visual diagrams that anyone can follow at a glance. This guide covers how to build them using Mermaid — a text-based diagramming tool that renders inside Markdown.
+Process maps turn complex workflows into visual diagrams that anyone can follow at a glance. This guide covers how to build them using Mermaid - a text-based diagramming tool that renders inside Markdown.
 
-The goal of a process map is simple: show the reader the whole journey before they take the first step. Think of it like a trail map at a trailhead. You can see every turn, every fork, and where you'll end up — all before you start walking.
+The goal of a process map is simple: show the reader the whole journey before they take the first step. Think of it like a trail map at a trailhead. You can see every turn, every fork, and where you'll end up - all before you start walking.
 
 ---
 
@@ -10,9 +10,9 @@ The goal of a process map is simple: show the reader the whole journey before th
 
 A wall of text describing a 12-step process with 4 decision points is hard to hold in your head. A flowchart showing the same thing takes 5 seconds to scan. Process maps help in three ways:
 
-1. **Orientation** — the reader sees the full workflow before reading any details
-2. **Decision clarity** — branching paths are obvious instead of buried in paragraphs
-3. **Reference** — the reader can glance back at the map mid-process to see where they are
+1. **Orientation** - the reader sees the full workflow before reading any details
+2. **Decision clarity** - branching paths are obvious instead of buried in paragraphs
+3. **Reference** - the reader can glance back at the map mid-process to see where they are
 
 ---
 
@@ -227,11 +227,11 @@ flowchart TB
 
 ### How to Count Nodes
 
-Count every shape in the diagram — rectangles, diamonds, stadiums, circles. If you're at 8 or more, split it.
+Count every shape in the diagram - rectangles, diamonds, stadiums, circles. If you're at 8 or more, split it.
 
 | Node Count | Action |
 |-----------|--------|
-| 1-7 | Good — keep as one chart |
+| 1-7 | Good - keep as one chart |
 | 8-10 | Split into 2 charts |
 | 11-15 | Split into 3 charts (overview + 2 detail) |
 | 16+ | Split into overview + one chart per phase |
@@ -252,7 +252,7 @@ Put the **overview chart** right after the Purpose section. Put each **detail ch
 
 1. **Keep charts under 7 nodes.** This is the most important rule. A chart with more than 7 nodes will be too small to read in the final document. Break large processes into segmented charts (overview + detail charts per phase).
 
-2. **Use descriptive node labels.** Not just "Step 1" — say what the step actually does: "Pull Foreclosure Notices" or "Check Property Type."
+2. **Use descriptive node labels.** Not just "Step 1" - say what the step actually does: "Pull Foreclosure Notices" or "Check Property Type."
 
 3. **Label your arrows.** When paths branch, label the arrows with the condition: "Yes", "No", "Single Family", "Commercial", etc.
 

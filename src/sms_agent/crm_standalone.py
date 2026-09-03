@@ -103,6 +103,22 @@ class StandaloneCRM:
                 time.sleep(wait)
                 continue
 
+            if resp.status_code >= 500:
+                # A gateway error is not an answer, it is the absence of one.
+                # These were raising on the first try, and a burst of 502s
+                # during a blast read as 15 buyers whose dial tier "could not
+                # be read", which is indistinguishable from missing data.
+                if attempt == 3:
+                    raise StandaloneCRMError(
+                        f"HTTP {resp.status_code} on {method} {path} after "
+                        f"4 tries: {resp.text[:150]}"
+                    )
+                wait = 2 ** attempt
+                log.info("reisift %s on %s; retrying in %ss",
+                         resp.status_code, path, wait)
+                time.sleep(wait)
+                continue
+
             if resp.status_code >= 400:
                 raise StandaloneCRMError(
                     f"HTTP {resp.status_code} on {method} {path}: {resp.text[:250]}"

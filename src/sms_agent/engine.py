@@ -96,6 +96,14 @@ def handle_inbound(payload: dict) -> dict:
     if not phone:
         return {"action": "ignored", "reason": "no from number"}
 
+    # WHICH PROGRAM IS THIS THREAD? The dispo blast and the seller campaign
+    # share one agent, one database and one inbox, and nothing distinguished
+    # them: a buyer's reply was answered with the seller playbook, validated
+    # under the seller profile (which blocks every dollar figure, so the
+    # approved asking price could never be quoted back), and a hot BUYER lead
+    # paged the seller channel. The number it arrived ON is the signal: the
+    # pools are disjoint by construction.
+    program = sender_pool.program_for(to_number)
     conv = store.ensure_conversation(phone, from_number=to_number)
     store.add_message(phone, "in", body, from_number=to_number, sms_id=sms_id, author="owner")
 
@@ -179,7 +187,8 @@ def handle_inbound(payload: dict) -> dict:
     # posts once per conversation, so the original spam concern is handled there
     # rather than by staying silent.
     if result.intent == "INTERESTED":
-        outcome["actions"] += _do_hot_lead(phone, record_uuid, body, result, context, thread)
+        outcome["actions"] += _do_hot_lead(
+            phone, record_uuid, body, result, context, thread, program)
 
     # Turn cap: a thread that has gone six rounds without a handoff is not
     # going to be rescued by a seventh.
@@ -230,7 +239,8 @@ def handle_inbound(payload: dict) -> dict:
         outcome["action"] = "classified"
         return outcome
 
-    outcome["actions"] += _do_reply(phone, record_uuid, body, result, context)
+    outcome["actions"] += _do_reply(phone, record_uuid, body, result,
+                                    context, program)
     outcome["action"] = "replied"
     return outcome
 
@@ -309,7 +319,8 @@ def _do_wrong_number(phone: str, record_uuid: str, body: str, context: dict,
 
 
 def _do_hot_lead(
-    phone: str, record_uuid: str, body: str, result, context: dict, thread: list[dict]
+    phone: str, record_uuid: str, body: str, result, context: dict, thread: list[dict],
+    program: str = "",
 ) -> list[str]:
     """A positive reply is a handoff, not a conversation to continue.
 
@@ -640,10 +651,12 @@ def _wants_no_contact(text: str) -> bool:
     return bool(_NO_CONTACT_RX.search(t) or _HOSTILE_TONE_RX.search(t))
 
 
-def _do_reply(phone: str, record_uuid: str, body: str, result, context: dict) -> list[str]:
+def _do_reply(phone: str, record_uuid: str, body: str, result, context: dict,
+              program: str = "") -> list[str]:
     acts = []
     thread = store.thread(phone)
-    reply = respond.draft(thread, context, result.intent, result.rationale)
+    reply = respond.draft(thread, context, result.intent, result.rationale,
+                          program=program)
 
     if not reply.message:
         acts.append(f"no reply drafted: {reply.reason}")

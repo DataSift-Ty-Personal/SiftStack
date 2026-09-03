@@ -144,8 +144,37 @@ def next_send_window(phone: str, at: Optional[datetime] = None) -> datetime:
     return now_utc + timedelta(days=1)
 
 
+# A program can PIN its pool. Without this, pool() falls back to every
+# number in the account when the owner has no pool of their own, and the
+# dispo blast duly spread itself across all 24 numbers including Adriana's
+# 19 seller lines. Three things break at once when that happens: the 10DLC
+# per-number cap is counted per database so the seller program's budget is
+# spent invisibly, one number carries two programs, and a buyer who calls
+# back rings the acquisitions flow instead of dispo. A pinned pool that is
+# missing or empty returns nothing, deliberately: no numbers is a loud
+# failure, the seller pool is a silent one.
+_FORCED_POOL = None
+
+
+def set_forced_pool(name):
+    """Restrict every assignment to one named pool, or None to unpin."""
+    global _FORCED_POOL
+    _FORCED_POOL = name or None
+
+
+def forced_pool():
+    return _FORCED_POOL
+
+
 def pool(owner: str = "") -> list[str]:
     """The numbers available to this caller, or everything when unbound."""
+    if _FORCED_POOL:
+        pools = config.number_pools()
+        for name, numbers in pools.items():
+            if name and name.strip().lower() == _FORCED_POOL.strip().lower():
+                return list(numbers)
+        log.error("pinned pool %r does not exist; refusing to fall back to the full pool", _FORCED_POOL)
+        return []
     pools = config.number_pools()
     if owner:
         for name, numbers in pools.items():
@@ -155,18 +184,72 @@ def pool(owner: str = "") -> list[str]:
     return config.numbers()
 
 
+# Which PROGRAM a number belongs to. The pools are disjoint by
+# construction (asserted when they are built), so the number a reply
+# arrived ON is a reliable signal with no schema change and nothing to
+# keep in sync. This matters because the reply path had no idea a
+# thread was a buyer thread: it answered with the seller playbook,
+# validated under the seller profile (which blocks every price, so the
+# approved $75,000 could never be quoted), and paged the SELLER Slack
+# channel on a hot BUYER lead.
+BUYER_POOLS = ("dispo",)
+
+
+def program_for(number: str) -> str:
+    """"buyer" if this number belongs to a dispo pool, else "seller"."""
+    if not number:
+        return "seller"
+    for name, numbers in config.number_pools().items():
+        if number in numbers:
+            return "buyer" if (name or "").strip().lower() in BUYER_POOLS else "seller"
+    return "seller"
+
+
+def cap_for(number: str) -> int:
+    """The daily cap that applies to this number.
+
+    Per-pool, because the cap is a carrier-risk setting per program. The
+    dispo blast needs 32 per number to clear 156 messages in one day across
+    5 numbers; the acquisitions numbers must stay where they are.
+    """
+    caps = getattr(config, "POOL_CAPS", {}) or {}
+    if caps:
+        for name, numbers in config.number_pools().items():
+            if number in numbers and name in caps:
+                return caps[name]
+    return config.DAILY_CAP_PER_NUMBER
+
+
+def gap_for(number: str) -> int:
+    """The per-number rest that applies to this number.
+
+    Per pool, because pacing is a carrier-risk setting per program. Holding
+    the sticky-number rule concentrates a blast on whichever numbers carried
+    the last one, so the busiest number needs a tighter rest to clear its
+    window. Acquisitions is untouched.
+    """
+    gaps = getattr(config, "POOL_GAPS", {}) or {}
+    if gaps:
+        for name, numbers in config.number_pools().items():
+            if number in numbers and name in gaps:
+                return gaps[name]
+    return config.MIN_SEND_GAP_SECONDS
+
+
 def available(from_number: str) -> tuple[bool, str]:
     """Whether this number may send right now: daily cap plus a pacing gap."""
-    if config.DAILY_CAP_PER_NUMBER and store.sends_today(from_number) >= config.DAILY_CAP_PER_NUMBER:
-        return False, f"daily cap {config.DAILY_CAP_PER_NUMBER} reached"
+    cap = cap_for(from_number)
+    if cap and store.sends_today(from_number) >= cap:
+        return False, f"daily cap {cap} reached"
     last = store.last_send_at(from_number)
+    gap = gap_for(from_number)
     if last:
         try:
             elapsed = (datetime.now(timezone.utc) - datetime.fromisoformat(last)).total_seconds()
         except ValueError:
-            elapsed = config.MIN_SEND_GAP_SECONDS
-        if elapsed < config.MIN_SEND_GAP_SECONDS:
-            return False, f"pacing: {int(config.MIN_SEND_GAP_SECONDS - elapsed)}s to go"
+            elapsed = gap
+        if elapsed < gap:
+            return False, f"pacing: {int(gap - elapsed)}s to go"
     return True, ""
 
 
@@ -188,7 +271,13 @@ def assign(phone: str, owner: str = "") -> Optional[str]:
 
     conv = store.get_conversation(phone)
     if conv and conv.get("from_number"):
-        if conv["from_number"] in numbers or conv["from_number"] in config.numbers():
+        # Sticky, but never across a pinned pool. 89% of these buyers were
+        # already in the seller marketing ecosystem, so their sticky number
+        # is often Adriana's. A dispo text signed -Ty arriving from the
+        # acquisitions number is worse than a number change.
+        sticky_ok = conv["from_number"] in numbers or (
+            not _FORCED_POOL and conv["from_number"] in config.numbers())
+        if sticky_ok:
             return conv["from_number"]
 
     load = store.number_load()

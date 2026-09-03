@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-build_pdf.py — Converts a playbook/SOP markdown file into a polished PDF.
+build_pdf.py - Converts a playbook/SOP markdown file into a polished PDF.
 
 Extracts Mermaid code blocks, renders them as PNG images via mmdc (Mermaid CLI),
 then builds a formatted PDF using ReportLab with the images embedded inline.
@@ -385,7 +385,7 @@ def build_pdf(md_text: str, output_path: str, title: str = None):
                 # Fallback: show as code
                 code_text = block["code"].replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
                 story.append(Paragraph(
-                    f'<font face="Courier" size="8">[Flowchart — renders in Mermaid-compatible viewers]<br/>{code_text[:500]}</font>',
+                    f'<font face="Courier" size="8">[Flowchart - renders in Mermaid-compatible viewers]<br/>{code_text[:500]}</font>',
                     styles["CodeStyle"]
                 ))
 

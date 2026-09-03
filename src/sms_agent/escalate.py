@@ -25,7 +25,7 @@ log = logging.getLogger(__name__)
 # The only alert kinds allowed to reach the channel. A live seller, and the
 # daily campaign summary that was explicitly asked for. Everything else is
 # bookkeeping and belongs in the digest.
-ALWAYS_POST = {"handoff", "campaign"}
+ALWAYS_POST = {"handoff", "campaign", "sensitive"}
 
 RECORD_URL = "https://app.reisift.io/records/properties/{uuid}/details"
 
@@ -34,8 +34,15 @@ def _is_discord(url: str) -> bool:
     return "discord.com" in (url or "")
 
 
-def _post(text: str, blocks: Optional[list] = None) -> bool:
-    url = config.SLACK_WEBHOOK_URL
+def _post(text: str, blocks: Optional[list] = None,
+          program: str = "") -> bool:
+    if program in ("buyer", "dispo"):
+        url = (config.DISPO_SLACK_WEBHOOK_URL
+               or config.SLACK_WEBHOOK_URL)
+        if not config.DISPO_SLACK_WEBHOOK_URL and url:
+            log.warning("no SMS_AGENT_DISPO_SLACK_WEBHOOK; posting dispo traffic to the SELLER channel")
+    else:
+        url = config.SLACK_WEBHOOK_URL
     if not url:
         log.warning("no SMS_AGENT_SLACK_WEBHOOK configured; escalation not delivered")
         return False
@@ -71,6 +78,7 @@ def hot_lead(
     thread: Optional[list[dict]] = None,
     record_uuid: str = "",
     note: str = "",
+    program: str = "",
 ) -> bool:
     """The one that matters: a positive response needs a human on it now."""
     ctx = context or {}
@@ -113,7 +121,7 @@ def hot_lead(
         blocks.append(
             {"type": "context", "elements": [{"type": "mrkdwn", "text": f"```{convo[:2500]}```"}]}
         )
-    return _post(text, blocks)
+    return _post(text, blocks, program=program)
 
 
 def draft_for_approval(
@@ -142,7 +150,8 @@ def draft_for_approval(
     return _post(text, [{"type": "section", "text": {"type": "mrkdwn", "text": text}}])
 
 
-def alert(title: str, detail: str = "", record_uuid: str = "", kind: str = "ops") -> bool:
+def alert(title: str, detail: str = "", record_uuid: str = "",
+          kind: str = "ops", program: str = "") -> bool:
     """Something a human should see that is not itself a lead.
 
     The channel is for interested parties (Ty, 2026-08-11). Opt-out bookkeeping
@@ -163,7 +172,9 @@ def alert(title: str, detail: str = "", record_uuid: str = "", kind: str = "ops"
     text = f"*{title}*" + (f"\n{detail}" if detail else "")
     if record_uuid:
         text += f"\n{RECORD_URL.format(uuid=record_uuid)}"
-    return _post(text, [{"type": "section", "text": {"type": "mrkdwn", "text": text}}])
+    return _post(text, [{"type": "section",
+                         "text": {"type": "mrkdwn", "text": text}}],
+                 program=program)
 
 
 def unknown_number(phone: str, inbound: str) -> bool:

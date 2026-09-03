@@ -203,6 +203,53 @@ def _facts_block(context: dict) -> str:
     return "FACTS (the only property facts you may use):\n" + "\n".join(lines)
 
 
+def _deal_facts_block(context: dict) -> str:
+    """The only deal facts the dispo responder may use.
+
+    Mirrors `_facts_block`'s discipline with the opposite content. The road name
+    and the price are here because the message exists to carry them. The house
+    number and zip are NOT here at all: they are not withheld by a rule the
+    model could talk itself out of, they are simply absent from what it is
+    given, which is the only reliable way to not send something.
+
+    ARV, rehab and rent ARE included, because the agent needs to know what is
+    true to recognise a question it must hand off. The playbook forbids stating
+    them, and the validator's price whitelist blocks them if it tries.
+
+    On an ADDRESS-FORWARD deal the full address IS included, because the
+    message exists to carry it. The LOCKBOX CODE is never included on any
+    deal: that code is physical access to the house, so it is a human send
+    on request. The agent may offer it; it cannot give it.
+    """
+    if not context:
+        return "FACTS: none available. You know only what is in the thread."
+    order = [
+        ("buyer_first", "Buyer first name (empty means greet nobody by name)"),
+        # Present ONLY on address-forward deals. On a redacted deal this key
+        # is absent from the context entirely, so the model has nothing to
+        # leak rather than a rule it could talk itself out of.
+        ("address", "Full property address (you MAY state this one)"),
+        ("road", "Road name ONLY (never add a house number, city or zip)"),
+        ("area", "Area or part of town"),
+        ("county", "County"),
+        ("price", "Asking price (the ONLY figure you may state)"),
+        ("beds", "Bedrooms"),
+        ("baths", "Bathrooms"),
+        ("sqft", "Square feet"),
+        ("year", "Year built"),
+        ("rehab_level", "Rough rehab level"),
+        ("status", "Deal status"),
+    ]
+    lines = [f"- {label}: {context[key]}" for key, label in order if context.get(key)]
+    hidden = [k for k in ("arv_note", "rehab_cost", "rent") if context.get(k)]
+    if hidden:
+        lines.append("- Context you may NOT state, for recognising a handoff: "
+                     + ", ".join(f"{k}={context[k]}" for k in hidden))
+    if not lines:
+        return "FACTS: none available. You know only what is in the thread."
+    return "FACTS (the only deal facts you may use):\n" + "\n".join(lines)
+
+
 def _thread_block(thread: list[dict]) -> str:
     if not thread:
         return "THREAD: (no prior messages)"
@@ -213,7 +260,38 @@ def _thread_block(thread: list[dict]) -> str:
     return "\n".join(out)
 
 
-def validate(message: str, max_questions: int = 1) -> tuple[bool, list[str]]:
+# Individual money tokens, so the buyer profile can check WHICH number was
+# said rather than only whether one was. Same coverage as _MONEY above.
+_MONEY_TOKEN = re.compile(
+    r"\$\s*\d[\d,]*(?:\.\d+)?\s*[kK]?"
+    r"|\b\d[\d,]*\s*[kK]\b"
+    r"|\b\d[\d,]*\s*(?:thousand|grand|million)\b"
+    r"|\b(?:low|mid|high)\s+\d{2,3}s?\b",
+)
+
+
+def _norm_money(token: str) -> Optional[int]:
+    """A money token as a plain integer, or None if it is deliberately vague."""
+    t = token.strip().lower()
+    if re.match(r"^(low|mid|high)\b", t):
+        return None  # "mid 100s" is not a price you can hold someone to
+    mult = 1
+    if re.search(r"\bmillion\b", t):
+        mult = 1_000_000
+    elif re.search(r"\b(thousand|grand)\b", t) or re.search(r"\d\s*k$", t):
+        mult = 1_000
+    digits = re.sub(r"[^\d.]", "", re.sub(r"(thousand|grand|million|k)", "", t))
+    if not digits:
+        return None
+    try:
+        return int(round(float(digits) * mult))
+    except ValueError:
+        return None
+
+
+def validate(message: str, max_questions: int = 1, program: str = "seller",
+             allowed_prices: Optional[list] = None,
+             allowed_address: str = "") -> tuple[bool, list[str]]:
     """Hard gate. Returns (ok, reasons blocked).
 
     `max_questions` is 1 for AI-written replies, where two questions in a row
@@ -221,21 +299,61 @@ def validate(message: str, max_questions: int = 1) -> tuple[bool, list[str]]:
     because a confirm-then-rephrase ("does 12 Elm St happen to be yours? Do I
     have the right person?") is how people actually text and it is already
     tested copy. Blocking it silently held 18% of the cohort.
+
+    `program` selects the profile. "seller" is the acquisition agent and is
+    unchanged. "buyer" is the dispo agent, where three rules invert because the
+    job inverts:
+
+      * A price is the POINT of a deal blast, so money is allowed, but only a
+        figure from the approved deal sheet (`allowed_prices`). A number the
+        model made up is still blocked, which is the whole reason this is a
+        whitelist and not simply a relaxed rule.
+      * Distress vocabulary ("foreclosure", "estate") is ordinary deal
+        description when you are selling TO an investor rather than texting a
+        homeowner, so the name-the-list rule does not apply.
+      * Zip codes stay blocked, but the check runs on the text with approved
+        prices removed. Otherwise a legitimate $92,000 reads as a 5-digit zip.
     """
+    if program not in ("seller", "buyer"):
+        raise ValueError("program must be 'seller' or 'buyer'")
     problems = []
     text = (message or "").strip()
     if not text:
         return False, ["empty"]
     if len(text) > MAX_SMS_CHARS:
         problems.append(f"too long ({len(text)} > {MAX_SMS_CHARS})")
-    if _MONEY.search(text):
-        problems.append("contains a dollar amount or price signal")
+
+    zip_text = text
+    if program == "seller":
+        if _MONEY.search(text):
+            problems.append("contains a dollar amount or price signal")
+    else:
+        allowed = {int(p) for p in (allowed_prices or [])}
+        seen = _MONEY_TOKEN.findall(text)
+        for tok in seen:
+            val = _norm_money(tok)
+            if val is None:
+                problems.append(f"vague price wording ('{tok.strip()}')")
+            elif val not in allowed:
+                problems.append(
+                    f"price '{tok.strip()}' is not on the approved deal sheet")
+        # Approved prices are not zip codes.
+        zip_text = _MONEY_TOKEN.sub(" ", text)
+
     if _LINK.search(text):
         problems.append("contains a link")
-    hit = _LIST_WORDS.search(text)
-    if hit:
-        problems.append(f"names the list ('{hit.group(0)}'); the seller must feel found, not targeted")
-    if _FULL_ADDRESS.search(text):
+    if program == "seller":
+        hit = _LIST_WORDS.search(text)
+        if hit:
+            problems.append(f"names the list ('{hit.group(0)}'); the seller must feel found, not targeted")
+    if allowed_address:
+        # ADDRESS-FORWARD deals (Ty, blast 2): the full address IS the
+        # message, so its zip must not read as a leaked database row. Only
+        # THIS address is exempt, matched literally, so a different address
+        # or a bare stray zip is still blocked. Same shape as the price
+        # whitelist: permit exactly the approved value, nothing near it.
+        zip_text = zip_text.replace(allowed_address, " ")
+    if _FULL_ADDRESS.search(zip_text):
         problems.append("contains a zip code; use the street line only")
     hit = _BANNED.search(text)
     if hit:
@@ -262,8 +380,16 @@ def draft(
     context: Optional[dict] = None,
     intent: str = "",
     intent_rationale: str = "",
+    program: str = "seller",
 ) -> Reply:
-    """Draft the next message. Never sends; the caller decides what to do with it."""
+    """Draft the next message. Never sends; the caller decides what to do with it.
+
+    `program` picks the system prompt, the facts the model is shown, and the
+    validator profile applied to its output. All three have to move together:
+    handing the dispo prompt a seller facts block would leave it with no price
+    to quote, and validating a dispo draft with the seller profile would block
+    the very price it was told to send.
+    """
     if not config.ANTHROPIC_API_KEY:
         return Reply(reason="no ANTHROPIC_API_KEY", blocked=["no model access"])
     try:
@@ -271,16 +397,18 @@ def draft(
     except ImportError:
         return Reply(reason="anthropic SDK not installed", blocked=["no model access"])
 
+    prompt_program = "dispo" if program == "buyer" else "seller"
     system = [
         {
             "type": "text",
-            "text": knowledge.playbook(),
+            "text": knowledge.playbook(prompt_program),
             "cache_control": {"type": "ephemeral"},
         }
     ]
+    facts = _deal_facts_block if program == "buyer" else _facts_block
     user = (
         f"{_identity_block(context or {})}\n\n"
-        f"{_facts_block(context or {})}\n\n"
+        f"{facts(context or {})}\n\n"
         f"{_thread_block(thread)}\n\n"
         f"Classifier read the latest owner message as: {intent or 'unknown'}"
         f"{' (' + intent_rationale + ')' if intent_rationale else ''}\n\n"
@@ -319,7 +447,18 @@ def draft(
         reply.blocked = ["model chose to send nothing"]
         return reply
 
-    ok, problems = validate(reply.message)
+    allowed = []
+    if program == "buyer" and (context or {}).get("price_value"):
+        allowed = [(context or {})["price_value"]]
+    # The address is whitelisted the same way the price is: a dispo
+    # agent that is told the address and then blocked from saying it
+    # would fail the one question every buyer asks next.
+    allowed_addr = ""
+    if program == "buyer":
+        allowed_addr = (context or {}).get("address") or ""
+    ok, problems = validate(reply.message, program=program,
+                            allowed_prices=allowed,
+                            allowed_address=allowed_addr)
     reply.ok = ok
     reply.blocked = problems
     if not ok:

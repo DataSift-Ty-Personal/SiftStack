@@ -100,7 +100,7 @@ Keep transitions simple.
 | "Subsequently..." | "Then..." or "Next..." |
 | "Furthermore..." | Just start the next sentence |
 | "It is important to note that..." | Say it directly |
-| "In conclusion..." | Don't conclude—just end |
+| "In conclusion..." | Don't conclude, just end |
 
 ---
 

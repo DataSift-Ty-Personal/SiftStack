@@ -1,6 +1,8 @@
 # SOP Template
 
-Use this template when creating Standard Operating Procedures. Change sections as needed for the process. Write at a **5th-grade reading level** using short sentences and simple words. Use **Mermaid flowcharts** for process maps and decision trees. Use **UI screenshots** for software interfaces — no custom graphics or illustrations.
+Use this template when creating Standard Operating Procedures. Change sections as needed for the process. Write at a **5th-grade reading level** using short sentences and simple words. Use **Mermaid flowcharts** for process maps and decision trees. Use **UI screenshots** for software interfaces, specified Scribe-style (capture + highlight + crop), never custom graphics.
+
+**Every SOP is a pair.** The human document below is for the team. If the steps are things an AI agent could do or help with, also produce the agent-executable twin: a `.sop.md` file in the format from [agent-sop-format.md](agent-sop-format.md), validated with `scripts/validate_sop.py`. Same process, two readers. The human doc explains and shows; the twin parameterizes and constrains.
 
 ---
 
@@ -9,7 +11,7 @@ Use this template when creating Standard Operating Procedures. Change sections a
 ```markdown
 # [Process Name]
 
-**SOP**
+**SOP** · [N] steps · Created [Month D, YYYY] · Owner: [role]
 
 ---
 
@@ -17,9 +19,11 @@ Use this template when creating Standard Operating Procedures. Change sections a
 
 [One paragraph: what this process does and why it matters. Be specific about the result.]
 
-**Purpose:** [One sentence—what are we trying to do?]
+**Purpose:** [One sentence: what are we trying to do?]
 
-**How:** [One sentence—how are we going to do it?]
+**How:** [One sentence: how are we going to do it?]
+
+**Done when:** [The observable end state. What exists when this worked?]
 
 ---
 
@@ -52,7 +56,16 @@ flowchart TB
 |------|---------------|---------------|
 | [Tool 1] | [Purpose] | [Link or steps] |
 | [Tool 2] | [Purpose] | [Link or steps] |
-| [Tool 3] | [Purpose] | [Link or steps] |
+
+### Inputs
+
+[What you start with, and where it comes from. These become the Parameters
+of the agent twin, so name them the same way.]
+
+| Input | Where It Comes From | Example |
+|-------|--------------------|---------|
+| [county] | [Assigned by manager] | Knox |
+| [source_csv] | [Output of the daily pull] | output/knox_daily.csv |
 
 ### Setup
 
@@ -61,8 +74,9 @@ flowchart TB
 
 > **SCREENSHOT: [Setup Screen]**
 >
-> *Capture: [The settings screen]*
-> *Purpose: [Shows where to find the settings]*
+> *Capture: [The settings screen, in the state the reader will see]*
+> *Highlight: [The one control to find]*
+> *Crop: [How tight to zoom, keeping enough context to orient]*
 
 ---
 
@@ -76,24 +90,27 @@ flowchart TB
 
 **Actions:**
 
-1. [First action]
-2. [Second action]
-3. [Third action]
+1. [Action-verb sentence naming the exact UI label: "Click the **Upload File** button in the sidebar"]
+2. [Next action]
+3. [Next action]
+
+**Rules:**
+- Always [the thing that must happen every time]
+- Never [the thing that breaks it], because [reason]
 
 > **SCREENSHOT: [Step 1 Screen]**
 >
-> *Capture: [The button, menu, or screen to show]*
-> *Purpose: [What the reader should see]*
+> *Capture: [The screen at this moment]*
+> *Highlight: [The button or field just used]*
+> *Crop: [Zoom guidance]*
 
-> **Pro Tip:** [Practical insight from experience — something a trainer would mention]
+> **Pro Tip:** [Practical insight from experience - something a trainer would mention]
 
 ---
 
 ### Step 2: [Step Name]
 
 **Goal:** [What this step does]
-
-[Say what to do and why.]
 
 **Actions:**
 
@@ -118,37 +135,16 @@ flowchart TB
     style D fill:#ffebee,stroke:#c62828
 ```
 
-> **SCREENSHOT: [Step 2 Result]**
->
-> *Capture: [The result screen]*
-> *Purpose: [Shows the step worked]*
+**Check:** [How to know this step worked before moving on]
+
+**Record it:** [Where the result of this step gets written - the tracker,
+the CRM note, the file. Every step that produces something names where it lands.]
 
 ---
 
 ### Step 3: [Step Name]
 
-**Goal:** [What this step does]
-
-[Explain what to do]
-
-**Actions:**
-
-1. [Action]
-2. [Action]
-3. [Action]
-
-**Check:** [How to know this worked]
-
-> **SCREENSHOT: [Check Screen]**
->
-> *Capture: [What success looks like]*
-> *Purpose: [Reader can compare their result]*
-
----
-
-### Step 4: [Step Name]
-
-[Continue pattern for remaining steps]
+[Continue the pattern: Goal, Actions, Rules where needed, Check, Record it.]
 
 ---
 
@@ -156,7 +152,7 @@ flowchart TB
 
 [Walk through ONE complete real scenario applying every step above.]
 
-**Starting point:** [What you begin with — e.g., "A new foreclosure notice from Knox County"]
+**Starting point:** [What you begin with - e.g., "A new foreclosure notice from Knox County"]
 
 **Step 1 applied:** [What you do and what you see]
 **Decision:** [What you decided and why]
@@ -175,7 +171,6 @@ flowchart TB
 |----------|-----------|------------|
 | [Criteria 1] | [Value or condition] | [Action] |
 | [Criteria 2] | [Value or condition] | [Action] |
-| [Criteria 3] | [Value or condition] | [Action] |
 
 ### Formula
 
@@ -201,7 +196,6 @@ flowchart TB
 |---------|-------|-----|
 | [Problem 1] | [Why it happens] | [How to fix] |
 | [Problem 2] | [Why it happens] | [How to fix] |
-| [Problem 3] | [Why it happens] | [How to fix] |
 
 ---
 
@@ -214,57 +208,14 @@ flowchart TB
 **Fix:**
 1. [First step]
 2. [Second step]
-3. [Third step]
 
 ### [Problem Type 2]
 
 **Problem:** [What goes wrong]
 
-**Fix:**
-[Steps to fix]
+**Fix:** [Steps to fix]
 
----
-
-## Advanced Uses
-
-### [Use Case 1]
-
-**When to Use:** [Specific situation]
-
-**Steps:**
-1. [Changed step]
-2. [Changed step]
-
-### [Use Case 2]
-
-**When to Use:** [Specific situation]
-
-**Steps:**
-[Steps for this version]
-
----
-
-## Best Practices
-
-### What Good Looks Like
-
-1. **[Sign 1]**: [What this looks like]
-2. **[Sign 2]**: [What this looks like]
-3. **[Sign 3]**: [What this looks like]
-
-### What to Avoid
-
-1. **[Problem 1]**: [What it looks like and what to do instead]
-2. **[Problem 2]**: [Warning sign and fix]
-3. **[Problem 3]**: [Warning sign and fix]
-
----
-
-## Next Steps
-
-1. [First action—do this now]
-2. [Second action—do this week]
-3. [Third action—keep doing this]
+**Stuck?** [Who to ask, and what to have ready when you ask.]
 
 ---
 
@@ -277,73 +228,79 @@ flowchart TB
 | 1 | [Brief action] | [Result] |
 | 2 | [Brief action] | [Result] |
 | 3 | [Brief action] | [Result] |
-| 4 | [Brief action] | [Result] |
 
 ### Key Numbers
 
 | Metric | Minimum | Target | Maximum |
 |--------|---------|--------|---------|
 | [Metric 1] | [Value] | [Value] | [Value] |
-| [Metric 2] | [Value] | [Value] | [Value] |
 ```
+
+---
+
+## The Agent Twin
+
+When the process is agent-runnable, translate the finished human SOP into the `.sop.md` format. The mapping is mechanical:
+
+| Human SOP section | Agent twin section |
+|-------------------|--------------------|
+| Title | `# Title` (same name) |
+| Purpose & Overview | `## Overview` (2-4 self-contained sentences) |
+| Inputs table | `## Parameters` (snake_case names, required first, defaults stated) |
+| Steps (Goal + Actions) | `### N. Step Name` + plain description |
+| Rules, Checks, Decision Gates | `**Constraints:**` lines (You MUST / SHOULD / MAY; every MUST NOT carries a because) |
+| Record it | Constraint naming the exact artifact path |
+| Worked Example | `## Examples` |
+| Common Problems + Troubleshooting | `## Troubleshooting` |
+
+What does NOT carry over: screenshots, Mermaid charts, pro tips, reading-level prose. The twin is lean; the human doc carries the teaching.
+
+Save it next to the human doc as `[process-name].sop.md` and run:
+
+```bash
+python <skill-path>/scripts/validate_sop.py [process-name].sop.md
+```
+
+Fix every error before delivering. See [agent-sop-format.md](agent-sop-format.md) for the full format spec.
 
 ---
 
 ## Section Guidelines
 
 ### Purpose & Overview
-- Keep to 2-3 sentences
-- Say the purpose and how plainly
-- Focus on results
+- Keep to 2-3 sentences plus the three labeled lines
+- "Done when" is mandatory: an SOP without an observable end state cannot be checked
 
-### Process Map (NEW)
+### Process Map
 - Mermaid flowchart showing all steps and decision points
 - Place right after the overview, before the detailed steps
-- Use color coding: green = keep/success, red = skip/dead, orange = review/caution
-- Keep it focused — one diagram per major workflow
-- Reference the diagram from the text ("Here's how each step works in detail")
+- Color coding: green = keep/success, red = skip/dead, orange = review/caution
+- Max 7 nodes per chart; split into overview + detail charts past that
 
-### What You Need Section
-- List all tools with how to get them
-- Include setup steps
-- Add screenshot for complex setup screens (UI only)
+### What You Need
+- Tools with how to get them, inputs with where they come from
+- The Inputs table is the bridge to the agent twin's Parameters: use the same names
 
-### Steps Section
-- Each step needs a goal
-- Say what to do and why
-- Actions should be numbered and specific
-- Include decision gates where paths split
-- For complex decisions (3+ branches), add a Mermaid decision tree diagram
-- Add checks for important steps
-- Screenshot placeholders for screens and buttons (UI only)
+### Steps
+- Each step: Goal, numbered Actions, Check, and Record it when the step produces anything
+- Actions are action-verb sentences naming the exact UI label in bold ("Click the **Finish Upload** button"), one action per line
+- Rules capture the must/never lines, with the reason on every never
+- Decision gates where paths split; Mermaid decision tree at 3+ branches
+- Screenshot spec (capture + highlight + crop) for screens and buttons, placed after the action it shows
 - Pro Tip callouts for experienced insights
 
-### Worked Example (NEW)
-- Walk through ONE complete scenario from start to finish
-- Apply every step to the same record/case
-- Show the decisions made and why
-- This is often the most valuable section for new team members
+### Worked Example
+- ONE complete scenario through every step, decisions included
+- Often the most valuable section for new team members
+- When working from a transcript, the trainer's own walkthrough IS the worked example
 
-### Decision Guide Section
-- Use tables for threshold-based decisions
-- Include formulas with worked examples
+### Decision Guide
+- Tables for threshold-based decisions, formulas with worked numbers
 - Make criteria measurable
 
-### Quality Check Section
-- Give a checklist
-- List common problems with fixes
-
-### Troubleshooting Section
-- Group by problem type
-- Give step-by-step fixes
-- Include who to ask if stuck
-
-### Advanced Uses
-- Cover 2-3 advanced cases
-- Say when to use each one
-- Keep steps short
+### Quality Check + Troubleshooting
+- A checklist someone actually runs, common problems with causes and fixes
+- End with who to ask when stuck
 
 ### Quick Reference
-- Summarize key steps in a table
-- Include key numbers
-- Make it easy to scan
+- The whole SOP in one scannable table, plus key numbers

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * build_docx.js — Converts a playbook/SOP markdown file into a polished Word document.
+ * build_docx.js - Converts a playbook/SOP markdown file into a polished Word document.
  *
  * Extracts Mermaid code blocks, renders them as PNG images via mmdc (Mermaid CLI),
  * then builds a formatted .docx with the images embedded inline using docx-js.
@@ -104,6 +104,49 @@ const COLORS = {
 // ---------------------------------------------------------------------------
 // Markdown parser
 // ---------------------------------------------------------------------------
+// Read pixel dimensions from a PNG, JPEG, or GIF buffer. Returns null if unknown.
+function imageDims(buf) {
+  try {
+    if (buf.length > 24 && buf[0] === 0x89 && buf[1] === 0x50) {
+      // PNG: width at offset 16, height at offset 20, big-endian
+      return { width: buf.readUInt32BE(16), height: buf.readUInt32BE(20), type: "png" };
+    }
+    if (buf.length > 10 && buf[0] === 0xff && buf[1] === 0xd8) {
+      // JPEG: walk markers until a SOF frame
+      let off = 2;
+      while (off + 9 < buf.length) {
+        if (buf[off] !== 0xff) { off++; continue; }
+        const marker = buf[off + 1];
+        if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) {
+          return { width: buf.readUInt16BE(off + 7), height: buf.readUInt16BE(off + 5), type: "jpg" };
+        }
+        off += 2 + buf.readUInt16BE(off + 2);
+      }
+    }
+    if (buf.length > 10 && buf.toString("ascii", 0, 3) === "GIF") {
+      return { width: buf.readUInt16LE(6), height: buf.readUInt16LE(8), type: "gif" };
+    }
+  } catch {}
+  return null;
+}
+
+// Resolve an image block's src (data URI or file path) to {data, dims}.
+function loadImage(src, baseDir) {
+  const dataUri = src.match(/^data:image\/(png|jpe?g|gif);base64,(.+)$/i);
+  let data;
+  if (dataUri) {
+    data = Buffer.from(dataUri[2], "base64");
+  } else if (/^https?:/i.test(src)) {
+    return null; // remote images are not fetched; keep exports self-contained
+  } else {
+    const p = path.isAbsolute(src) ? src : path.join(baseDir, decodeURI(src));
+    if (!fs.existsSync(p)) return null;
+    data = fs.readFileSync(p);
+  }
+  const dims = imageDims(data);
+  return dims ? { data, dims } : null;
+}
+
 function parseMarkdown(md) {
   const blocks = [];
   const lines = md.split("\n");
@@ -168,6 +211,14 @@ function parseMarkdown(md) {
       continue;
     }
 
+    // Standalone image: ![alt](src) with a local path or a data URI
+    const imgMatch = line.trim().match(/^!\[([^\]]*)\]\(([^)\s]+)\)$/);
+    if (imgMatch) {
+      blocks.push({ type: "image", alt: imgMatch[1], src: imgMatch[2] });
+      i++;
+      continue;
+    }
+
     // Blockquote
     if (line.trim().startsWith(">")) {
       const quoteLines = [];
@@ -224,6 +275,7 @@ function parseMarkdown(md) {
         !lines[i].trim().startsWith(">") &&
         !/^\s*\d+\.\s+/.test(lines[i]) &&
         !/^\s*[-*]\s+/.test(lines[i]) &&
+        !/^!\[[^\]]*\]\([^)\s]+\)$/.test(lines[i].trim()) &&
         !(lines[i].includes("|") && i + 1 < lines.length && lines[i + 1] && lines[i + 1].includes("|"))
       ) {
         paraLines.push(lines[i].trim());
@@ -257,7 +309,7 @@ function inlineToRuns(text, baseStyle = {}) {
       // Code
       runs.push(new TextRun({ text: match[4], font: "Courier New", size: 18, ...baseStyle }));
     } else if (match[5]) {
-      // Plain text — replace → with ->
+      // Plain text - replace → with ->
       runs.push(new TextRun({ text: match[5].replace(/→/g, "->"), ...baseStyle }));
     }
   }
@@ -270,7 +322,7 @@ function inlineToRuns(text, baseStyle = {}) {
 // ---------------------------------------------------------------------------
 // Build the document
 // ---------------------------------------------------------------------------
-async function buildDocx(mdText, outputPath, docTitle) {
+async function buildDocx(mdText, outputPath, docTitle, baseDir = process.cwd()) {
   const mmdc = findMmdc();
   if (!mmdc) console.error("Warning: mmdc not found. Mermaid diagrams will be placeholders.");
 
@@ -390,14 +442,14 @@ async function buildDocx(mdText, outputPath, docTitle) {
             // Use full content width (6.5 inches = 624px at 96dpi) for better readability
             const maxW = 624;
             const maxH = 700;  // Allow taller charts since segmented charts are narrower
-            const minW = 400;  // Minimum width — never shrink below this
+            const minW = 400;  // Minimum width - never shrink below this
             const minH = 200;  // Minimum height
 
             let ratio = Math.min(maxW / width, maxH / height, 1);
             let finalW = Math.round(width * ratio);
             let finalH = Math.round(height * ratio);
 
-            // Enforce minimum dimensions — if the chart would be too small, scale up
+            // Enforce minimum dimensions - if the chart would be too small, scale up
             if (finalW < minW && width > 0) {
               const upRatio = minW / width;
               finalW = minW;
@@ -424,13 +476,50 @@ async function buildDocx(mdText, outputPath, docTitle) {
           } catch (e) {
             console.error(`  Warning: Could not embed image: ${e.message}`);
             children.push(new Paragraph({
-              children: [new TextRun({ text: `[Flowchart — see source .md file]`, italics: true, color: "999999", font: "Arial", size: 18 })],
+              children: [new TextRun({ text: `[Flowchart - see source .md file]`, italics: true, color: "999999", font: "Arial", size: 18 })],
             }));
           }
         } else {
           children.push(new Paragraph({
             shading: { fill: "F5F5F5", type: ShadingType.CLEAR },
-            children: [new TextRun({ text: `[Flowchart — install @mermaid-js/mermaid-cli to render]`, italics: true, color: "999999", font: "Courier New", size: 16 })],
+            children: [new TextRun({ text: `[Flowchart - install @mermaid-js/mermaid-cli to render]`, italics: true, color: "999999", font: "Courier New", size: 16 })],
+          }));
+        }
+        break;
+      }
+
+      case "image": {
+        const img = loadImage(block.src, baseDir);
+        if (img) {
+          // Screenshots scale to content width; never upscale small crops.
+          const maxW = 624, maxH = 640;
+          const ratio = Math.min(maxW / img.dims.width, maxH / img.dims.height, 1);
+          const finalW = Math.round(img.dims.width * ratio);
+          const finalH = Math.round(img.dims.height * ratio);
+          children.push(new Paragraph({ spacing: { before: 120 } }));
+          children.push(new Paragraph({
+            alignment: AlignmentType.CENTER,
+            children: [new ImageRun({
+              type: img.dims.type,
+              data: img.data,
+              transformation: { width: finalW, height: finalH },
+              altText: { title: block.alt || "Screenshot", description: block.alt || "Step screenshot", name: `img_${children.length}` },
+            })],
+          }));
+          if (block.alt) {
+            children.push(new Paragraph({
+              alignment: AlignmentType.CENTER,
+              spacing: { after: 120 },
+              children: [new TextRun({ text: block.alt, italics: true, color: COLORS.medGray, font: "Arial", size: 16 })],
+            }));
+          } else {
+            children.push(new Paragraph({ spacing: { after: 120 } }));
+          }
+        } else {
+          const label = block.src.startsWith("data:") ? "embedded image" : block.src;
+          console.warn(`  Warning: could not load image: ${label.slice(0, 80)}`);
+          children.push(new Paragraph({
+            children: [new TextRun({ text: `[Image not available: ${block.alt || label.slice(0, 60)}]`, italics: true, color: "999999", font: "Arial", size: 18 })],
           }));
         }
         break;
@@ -621,7 +710,7 @@ async function buildDocx(mdText, outputPath, docTitle) {
 // Run
 // ---------------------------------------------------------------------------
 const mdText = fs.readFileSync(inputFile, "utf8");
-buildDocx(mdText, outputFile, title).catch(e => {
+buildDocx(mdText, outputFile, title, path.dirname(path.resolve(inputFile))).catch(e => {
   console.error("Error:", e);
   process.exit(1);
 });

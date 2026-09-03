@@ -18,3 +18,8 @@ smartystreets-python-sdk>=4.11.0
 beautifulsoup4>=4.12.0
 ddgs>=9.0.0
 tzdata>=2024.1
+# The Knox condemnation agendas and the eviction docket are PDFs, and the
+# capture stage parses them in-container. Without this the PDFs still
+# archive but parse to nothing, which is a silent zero on a source that
+# cannot be re-pulled later.
+pdfminer.six>=20221105

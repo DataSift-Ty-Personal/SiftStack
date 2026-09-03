@@ -3,8 +3,8 @@
   "title": "SiftStack AI Agent Org Chart",
   "subtitle": "Every agent, what triggers it, what it touches, where a human still signs off, and the specific trap each one exists to avoid",
   "org": "DataSift / DataFlik",
-  "version": "1.0.47",
-  "generated": "2026-08-20"
+  "version": "1.0.51",
+  "generated": "2026-09-03"
  },
  "phases": {
   "1": {
@@ -1202,6 +1202,123 @@
      "status": "live",
      "source": "skills/buyer-prospector",
      "gotcha": "This is the cold-start answer for a new market. The buyer sweep needs deed history you do not have yet; the prospector gives you a list on day one."
+    },
+    {
+     "id": "dispobuyers",
+     "name": "Dispo Buyer Registry",
+     "role": "Turns a county's investor transactions into a deduped registry of PEOPLE with scored phones, so a deal blast has somebody real to text.",
+     "trigger": "python src/dispo_buyers.py --phase sweep|recent|hydrate|aggregate|unmask|principals|skipinput|phones|crm-phones|profiles|score",
+     "steps": [
+      "Sweeps SiftMap by investor transaction type, collapsed by owner for the hold types",
+      "Hydrates each property for the deed owner, since search rows carry no name",
+      "Dedupes by mailing address with a suite guard, logging every merge AND every refusal",
+      "Unmasks LLC principals free by reverse-address, then pays Enformion only for what that missed",
+      "Harvests phones the CRM already holds, then Trestle-scores and writes dial tiers"
+     ],
+     "human": [
+      "Approves the paid Enformion and SmartSkip passes before they bill",
+      "Reads the agent-titled principals, which are often the company's lawyer"
+     ],
+     "outputs": [
+      "registry.json",
+      "buyer_profiles.json",
+      "phones.json",
+      "phone_scores.json",
+      "5-sheet buyer workbook"
+     ],
+     "tools": [
+      "SiftMap",
+      "Enformion BusinessV2",
+      "SmartSkip",
+      "Tracerfy",
+      "TrestleIQ",
+      "reisift"
+     ],
+     "phase": 1,
+     "status": "live",
+     "source": "src/dispo_buyers.py",
+     "gotcha": "THE RENTAL LABEL LAGS OVER A YEAR. SiftMap cannot call a purchase a rental until it observes the property being rented, so a recent buy-and-hold sits under 'pending'. Requiring txn_types == {'rental'} took 111 landlords to ZERO the moment recency was applied. The rule is 'any rental history AND holds at least as many as it exits'."
+    },
+    {
+     "id": "dispoblast",
+     "name": "Dispo Deal Blast",
+     "role": "Texts one named deal to the buyers whose own deed history says they buy at that price, then hands every reply to a human.",
+     "trigger": "python src/sms_agent/dispo_campaign.py --deal deals/<id>.json --queue, then cli.py release --touch 1",
+     "steps": [
+      "Builds the cohort from verified registry data, not the search's one representative phone",
+      "Matches each buyer's real price band against the ask, asymmetrically",
+      "Renders copy per cohort and AUDITS every message, never a sample",
+      "Stages as HELD and writes the deal onto each thread so the responder can answer",
+      "Release is a separate, deliberate step"
+     ],
+     "human": [
+      "Owns release: staging sends nothing",
+      "Sends the address, photos and lockbox code; the agent only offers them"
+     ],
+     "outputs": [
+      "Held outbox rows",
+      "A Slack launch notice naming what was staged"
+     ],
+     "tools": [
+      "reisift",
+      "smrtPhone",
+      "Slack"
+     ],
+     "phase": 1,
+     "status": "live",
+     "source": "src/sms_agent/dispo_campaign.py",
+     "gotcha": "THE PRICE BAND IS ASYMMETRIC. Above a buyer's band is affordability; below it is only interest. A symmetric 0.35 tolerance kept 68 of 199 buyers at a $75,000 ask and dropped people for being too BIG, which is the wrong reason to skip anyone. The floor is divided by a multiple while the ceiling keeps the tolerance."
+    },
+    {
+     "id": "dispobook",
+     "name": "Dispo Buyer Phonebook",
+     "role": "Converts a finished blast into a durable asset: verified buyers grouped and summarised, and the people who asked out suppressed forever.",
+     "trigger": "python -m sms_agent.dispo_phonebook --commit",
+     "steps": [
+      "Classifies every recipient from what they actually typed, never a hand-kept list",
+      "Suppresses opt-outs, wrong numbers and hard nos, and marks wrong numbers WRONG in the CRM",
+      "Writes a pinned per-buyer summary a caller can read before dialling",
+      "Leaves non-responders alone so the next blast can reach them"
+     ],
+     "human": [
+      "Reads the VERIFY flag where a principal came back with an agent title"
+     ],
+     "outputs": [
+      "Suppression rows",
+      "Pinned CRM notes",
+      "Verified-buyer tags"
+     ],
+     "tools": [
+      "reisift"
+     ],
+     "phase": 1,
+     "status": "live",
+     "source": "src/sms_agent/dispo_phonebook.py",
+     "gotcha": "SCOPE IT TO THE SENDING POOL. Both programs share one database, so an unscoped pass classified 947 recipients including the acquisitions traffic, and committing it would have suppressed SELLER numbers as a side effect of a dispo cleanup. The pools are disjoint, so the sending number is the program."
+    },
+    {
+     "id": "dispoflow",
+     "name": "Dispo Sequential Flow",
+     "role": "The CRM lanes a buyer moves through, mirroring the acquisitions preset system so nobody is texted twice.",
+     "trigger": "python src/dispo_flow.py --phase infra|clean --commit",
+     "steps": [
+      "Creates the buyer list, tags and filter presets",
+      "Gates progression on the dialer's OWN counters, not on flow tags",
+      "Rebuilds the folder from scratch and reads every preset back"
+     ],
+     "human": [
+      "Approves deleting and rebuilding a preset folder"
+     ],
+     "outputs": [
+      "A DataSift list, tags and the sequential presets"
+     ],
+     "tools": [
+      "reisift"
+     ],
+     "phase": 1,
+     "status": "live",
+     "source": "src/dispo_flow.py",
+     "gotcha": "COUNTER-DRIVEN, NOT TAG-DRIVEN. A preset that gates calling behind a 'texted' tag shows zero forever and reads as broken. Progression rides sms_attempts and predictivecall_attempts, which the dialer increments itself."
     }
    ]
   },
@@ -1267,7 +1384,7 @@
      "phase": 2,
      "status": "gated",
      "source": "src/sms_agent/respond.py",
-     "gotcha": "Backfill proved it on 9 real replies before anything was wired, and it was correct on all 9. It also caught that 'I'd like to get the house in auction if it's cheap enough' is a BUYER, not a seller, and correctly refused to escalate at 0.55."
+     "gotcha": "THE REPLY PATH COULD NOT TELL A BUYER THREAD FROM A SELLER THREAD. The buyer profile, the dispo playbook and the deal facts block all existed and were tested, but nothing in the live path passed program, so a buyer asking 'how much?' got the SELLER playbook and a validator that blocks every dollar figure. The signal is the number the reply arrived ON: the pools are disjoint, so sender_pool.program_for() decides it with nothing to keep in sync."
     },
     {
      "id": "responder",
@@ -1292,7 +1409,7 @@
      "phase": 3,
      "status": "planned",
      "source": "src/sms_agent/respond.py",
-     "gotcha": "The model invents an identity. With no name configured it introduced itself as 'Alex'. Unresolved identity now means the agent is explicitly told it has NO name and NO company name rather than being left to fill the gap."
+     "gotcha": "A DISPO AGENT MAY QUOTE EXACTLY ONE FIGURE: the approved asking price on the deal sheet. An invented number is blocked, and the contract price is blocked without the audit ever being told what it is, because every money token must equal the approved price. On an address-forward deal the address is whitelisted the same way; the lockbox code is never in the facts at all, so the agent can offer it but cannot give it."
     },
     {
      "id": "texttouch",
@@ -1403,7 +1520,9 @@
       "18 numbers at 25 a day, 450 a day total",
       "Prefers the assigned caller's own numbers",
       "Sticky number per conversation wins over owner preference",
-      "Quiet hours 8am-9pm recipient-local with up to 30 minutes of wake jitter"
+      "Quiet hours 8am-9pm recipient-local with up to 30 minutes of wake jitter",
+      "Pins a program to ONE pool; a pinned pool that is missing returns nothing rather than falling back",
+      "Applies per-pool daily caps and per-pool send gaps, so one program's pacing never moves another's"
      ],
      "human": [],
      "outputs": [
@@ -1416,7 +1535,7 @@
      "phase": 2,
      "status": "gated",
      "source": "src/sms_agent/sender_pool.py",
-     "gotcha": "This module was originally named numbers.py, which SHADOWED the stdlib numbers module and broke pydantic inside the Anthropic SDK. The exception was swallowed and every classification silently degraded to the weak keyword fallback while still returning a plausible answer."
+     "gotcha": "THE POOL FELL BACK TO THE SELLER NUMBERS. pool() returned every number in the account when the owner had no pool of their own, so a dispo blast spread across all 24 numbers including the 19 acquisitions lines. Three things break at once: the 10DLC cap is counted per database so the other program's budget is spent invisibly, one number carries two programs, and a callback rings the wrong flow. No numbers is a loud failure; the seller pool is a silent one."
     },
     {
      "id": "obitmail",
@@ -1914,23 +2033,30 @@
     {
      "id": "playbookgen",
      "name": "Playbook Creator",
-     "role": "Turns a transcript or a recorded process into an SOP with process maps.",
-     "trigger": "Any repeatable process worth documenting.",
+     "role": "Turns a narrated screen recording or transcript into an SOP, a playbook, or a Scribe-style step guide, with real screenshots and an agent-executable .sop.md twin.",
+     "trigger": "Any repeatable process worth documenting. Best input: a narrated screen recording.",
      "steps": [
-      "Transcript to structured workflow",
-      "Mermaid flowcharts, decision trees, screenshot placeholders",
+      "Video to transcript + actions + judgment (transcribe_video.py, OpenRouter Gemini)",
+      "Frames extracted at action timestamps become the real screenshots",
+      "Mermaid flowcharts, decision trees, Scribe-style step format",
+      "Agent twin: RFC 2119 constraints, validated .sop.md, served from sops/ as a slash prompt",
       "Seven-node chart limit, 5th grade reading level"
      ],
      "human": [
-      "Operator supplies screenshots"
+      "Operator records the walkthrough and narrates the decisions",
+      "Verify frames and blur customer data before sharing"
      ],
      "outputs": [
-      "Word doc SOP",
+      "Word doc SOP with embedded screenshots",
+      "Agent-executable .sop.md",
       "Process maps"
      ],
      "tools": [
+      "ffmpeg",
+      "OpenRouter (optional)",
       "Mermaid",
-      "docx"
+      "docx",
+      "validate_sop.py"
      ],
      "phase": 1,
      "status": "live",

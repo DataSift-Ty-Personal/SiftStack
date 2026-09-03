@@ -222,6 +222,24 @@ def _pool_caps():
 
 
 POOL_CAPS = _pool_caps()
+
+
+# PER-POOL send gap, e.g. {"Dispo": 300}. Same reasoning as POOL_CAPS:
+# pacing is a carrier-risk setting per program, and the dispo blast needs
+# a tighter rest than acquisitions to clear its window without breaking
+# the sticky-number rule. Pools not listed keep MIN_SEND_GAP_SECONDS.
+def _pool_gaps():
+    import json as _json
+    raw = _env("SMS_AGENT_POOL_GAPS", "")
+    if not raw:
+        return {}
+    try:
+        return {str(k): int(v) for k, v in _json.loads(raw).items()}
+    except Exception:
+        return {}
+
+
+POOL_GAPS = _pool_gaps()
 # Minimum seconds between two sends from the SAME number. A real person does
 # not fire three texts off one phone in a minute; carriers notice, and so do
 # recipients. Ten minutes keeps each number's pattern human.

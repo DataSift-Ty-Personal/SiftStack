@@ -371,6 +371,7 @@ def flatten(entry: dict, opt_labels: dict) -> dict:
         "realtor_score": num(rec.get("realtor_score")),
         "skiptraced": bool(own.get("skiptraced") or thin.get("skiptraced")),
         "n_phones": len(phones), "phone_tags": sorted(phone_tags),
+        "phone_numbers": [p.get("number") for p in phones if p.get("number")],
         "n_emails": len(own.get("emails") or []),
         "dnc": bool(own.get("dnc")), "opt_out": bool(own.get("opt_out")),
         "do_not_mail": bool(rec.get("do_not_mail_ever") or own.get("do_not_mail_ever")),

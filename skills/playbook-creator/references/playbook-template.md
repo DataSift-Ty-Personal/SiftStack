@@ -1,6 +1,6 @@
 # Playbook Template
 
-Use this template when creating playbooks. Change sections as needed for the topic. Write at a **5th-grade reading level** using short sentences and simple words. Use **Mermaid flowcharts** for process maps and decision trees. Use **UI screenshots** for software interfaces — no custom graphics or illustrations.
+Use this template when creating playbooks. Change sections as needed for the topic. Write at a **5th-grade reading level** using short sentences and simple words. Use **Mermaid flowcharts** for process maps and decision trees. Use **UI screenshots** for software interfaces - no custom graphics or illustrations.
 
 ---
 
@@ -53,7 +53,7 @@ flowchart TB
 
 ## [Framework/Process Name]
 
-[Say what the framework is directly. Don't announce it—just explain it.]
+[Say what the framework is directly. Don't announce it, just explain it.]
 
 [Example: "Closers work in two modes: Hunt Mode and Kill Mode. Hunt Mode is everything you do to get people on the phone. Kill Mode is everything you do on the phone to close the sale."]
 
@@ -185,7 +185,7 @@ flowchart TB
 
 ## Checklist
 
-- [ ] [First step—specific and actionable]
+- [ ] [First step, specific and actionable]
 - [ ] [Second step]
 - [ ] [Third step]
 - [ ] [Fourth step]
@@ -220,9 +220,9 @@ flowchart TB
 
 ## Next Steps
 
-1. [First next step—do this now]
-2. [Second next step—do this week]
-3. [Third next step—keep doing this]
+1. [First next step, do this now]
+2. [Second next step, do this week]
+3. [Third next step, keep doing this]
 ```
 
 ---
@@ -243,11 +243,11 @@ flowchart TB
 - Mermaid flowchart showing the full workflow at a glance
 - Place right after the concept section, before detailed steps
 - Use color coding: green for success paths, red for dead ends, orange for "needs review"
-- Keep it high-level — details come in the steps section
+- Keep it high-level - details come in the steps section
 - One sentence after the diagram connecting it to the details
 
 ### Framework Section
-- Say what the framework is directly—don't announce it
+- Say what the framework is directly, don't announce it
 - Explain what each part is and why it matters
 - Include a screenshot placeholder (UI only, no custom graphics)
 
@@ -264,7 +264,7 @@ flowchart TB
 - Walk through ONE complete real scenario from start to finish
 - Apply every step to the same record/case/scenario
 - Show the decisions made and why
-- This is often the most valuable section — don't skip it
+- This is often the most valuable section - don't skip it
 
 ### Examples Section
 - Give 2-3 real examples (shorter than the worked example)

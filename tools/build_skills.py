@@ -71,7 +71,12 @@ REQUIRES = {
     "team-hiring": dict(tier="none", fallback=None),
     "first-market-county-data": dict(tier="none", fallback=None,
                                      note="Tells you where to pull county data. The pulling is manual by design."),
-    "playbook-creator": dict(tier="none", fallback=None),
+    "playbook-creator": dict(tier="none", fallback=None,
+                             env=["OPENROUTER_API_KEY"],
+                             cost="Free. Video transcription about $0.002 per audio minute (optional)",
+                             note="The key is OPTIONAL and only powers scripts/transcribe_video.py "
+                                  "(narrated screen recording in, transcript + action frames out). "
+                                  "Without it, paste your recorder's own free transcript instead."),
     "probate-property-finder": dict(tier="none", fallback=None,
                                     note="Uses free county tax portals and people-search sites."),
     "text-touch-builder": dict(tier="none", fallback=None),
@@ -87,6 +92,8 @@ REQUIRES = {
                                      note="Community mining needs your logged-in browser for private groups. The Excel engine is pure openpyxl."),
     "contractor-call-sheet": dict(tier="none", fallback=None,
                                   note="Drafts outreach for a human to send. Never sends anything itself."),
+    "dispo-deal-blast": dict(tier="none", fallback=None,
+                             note="The method, the guards and the copy rules. The bundled cohort calculator is stdlib only. Wiring it to your own CRM and SMS provider is your call, and every send stays behind a human release."),
 
     # --- tier account: your own login for something you already pay for ----
     "sift-market-research": dict(tier="account", env=["DATASIFT_EMAIL", "DATASIFT_PASSWORD"],

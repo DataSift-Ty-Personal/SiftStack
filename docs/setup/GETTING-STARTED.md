@@ -90,6 +90,7 @@ Faster and more thorough, and every one of them has a no-API alternative.
 | `phone-validator` | `TRESTLE_API_KEY` | $0.015 per number | [Phone scoring by hand](no-api-playbook.md#phone-scoring-without-trestle) |
 | `deep-prospecting-v5` | SmartSkip, Trestle | about $0.24 per record | [Heir research by hand](no-api-playbook.md#heir-research-by-hand) |
 | `caller-reputation-monitor` | `TELNYX_API_KEY` | included with Telnyx | [Spam checks by hand](no-api-playbook.md#spam-flag-checks-by-hand) |
+| `playbook-creator` (optional) | `OPENROUTER_API_KEY` | ~$0.002 per audio minute | Paste your recorder's free transcript (Loom, Zoom, Fireflies) |
 
 ## 4. Add credentials
 

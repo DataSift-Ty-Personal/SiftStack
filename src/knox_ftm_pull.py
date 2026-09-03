@@ -488,8 +488,17 @@ def normalize_address(a: str) -> str:
 
 def enrich(records: list[dict], city: str = "Knoxville", state: str = "TN",
            sleep: float = 0.2) -> list[dict]:
-    from clients.siftmap_api import SiftMapClient
-    c = SiftMapClient()
+    # Prefer the Deal Room client when its checkout is on disk (it carries the
+    # multi-account auth and throttling), otherwise the self-contained one.
+    # This import was the single reason the county stage skipped on every
+    # scheduled cloud run: a Fly machine has no Deal Room checkout.
+    try:
+        from clients.siftmap_api import SiftMapClient
+        c = SiftMapClient()
+    except Exception:
+        from siftmap_standalone import SiftMapClient as StandaloneSiftMap
+        c = StandaloneSiftMap()
+        print("SiftMap: using the standalone client (Api-Key auth)")
     resolved = 0
     for i, r in enumerate(records):
         if not r.get("address"):
@@ -760,9 +769,14 @@ def main() -> int:
     a = ap.parse_args()
 
     run_date = date.today().isoformat()
+    # Evictions and trustee deeds retired 2026-08-25 (Ty). Evictions were not
+    # worth the upkeep: the court keeps only the current week, so the sweep had
+    # to run forever to hold a list, and every landlord still needed the
+    # name-to-parcel join before it was a lead. Trustee deeds duplicate the
+    # foreclosure notices the scraper already takes. load_landlords() and
+    # load_rod() are kept intact so re-wiring is a one-line change.
     records = (load_condemnations(a.scratch) + load_probate(a.scratch)
-               + load_tnpn(a.scratch) + load_landlords(a.scratch)
-               + load_rod(a.scratch) + load_liens(a.scratch))
+               + load_tnpn(a.scratch) + load_liens(a.scratch))
     if not records:
         print("no source records found in", a.scratch)
         return 1
@@ -783,9 +797,18 @@ def main() -> int:
         ok, why = in_buybox(r.get("sm"), a.value_min, a.value_max)
         (kept if ok else rejected).append((r, why) if not ok else r)
 
-    os.makedirs(os.path.dirname(a.out) or ".", exist_ok=True)
+    # Create the parent of every output path, not just --out. The rejects and
+    # upside-down files default under output/, which does not exist in the
+    # container, so the run died at the very last step after doing all the work.
+    for _p in (a.out, a.rejects):
+        os.makedirs(os.path.dirname(_p) or ".", exist_ok=True)
     with open(a.out, "w", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=OUT_COLUMNS)
+        # extrasaction="ignore": rows carry internal keys prefixed with "_"
+        # (for example _assumed_free_clear, used by the upside-down test) that
+        # are deliberately not upload columns. Without this the writer raises
+        # "dict contains fields not in fieldnames" at the very end of the run,
+        # after every SiftMap lookup has already been paid for.
+        w = csv.DictWriter(f, fieldnames=OUT_COLUMNS, extrasaction="ignore")
         w.writeheader()
         upside = []
         for r in kept:
@@ -800,7 +823,7 @@ def main() -> int:
     if upside:
         up_path = a.out.replace(".csv", "_upside_down.csv")
         with open(up_path, "w", newline="", encoding="utf-8") as f:
-            w2 = csv.DictWriter(f, fieldnames=OUT_COLUMNS)
+            w2 = csv.DictWriter(f, fieldnames=OUT_COLUMNS, extrasaction="ignore")
             w2.writeheader()
             w2.writerows(upside)
         print("UPSIDE DOWN %d -> %s (excluded from the upload)" % (len(upside), up_path))

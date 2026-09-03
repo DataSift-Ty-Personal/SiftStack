@@ -189,7 +189,7 @@ def flush_escalations() -> int:
     One notification per conversation carrying the WHOLE burst, rather than one
     per inbound text repeating the same transcript.
     """
-    from . import crm, escalate
+    from . import crm, escalate, sender_pool
 
     posted = 0
     for row in store.due_escalations():
@@ -201,6 +201,12 @@ def flush_escalations() -> int:
         if not context and record_uuid:
             context = crm.deal_context(record_uuid)
 
+        # The escalation queue carries no program, but the conversation
+        # knows which of OUR numbers it runs on, and the dispo and seller
+        # pools are disjoint. Without this a hot BUYER lead pages the seller
+        # channel, which is where the handoff quietly dies.
+        conv = store.get_conversation(phone) or {}
+        program = sender_pool.program_for(conv.get("from_number") or "")
         ok = escalate.hot_lead(
             phone,
             "\n".join(inbound[-4:]) or "(no message body)",
@@ -209,6 +215,7 @@ def flush_escalations() -> int:
             thread,
             record_uuid,
             note="",
+            program=program,
         )
         if ok:
             store.mark_escalation_posted(phone)

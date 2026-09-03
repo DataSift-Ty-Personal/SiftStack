@@ -50,8 +50,13 @@ from captcha_solver import NoticeAccessBlocked  # noqa: E402
 
 logger = logging.getLogger("ftm_runner")
 
-ALL_STAGES = ("notices", "county")
-DEFAULT_STAGES = ("notices",)
+ALL_STAGES = ("notices", "capture", "county")
+# "capture" is in the default set even though it uploads nothing. The Knox City
+# condemnation agendas are OVERWRITTEN at the source: a cycle that is not
+# pulled while it is live cannot be recovered later, unlike foreclosure and
+# probate which carry a 12 month archive. Capturing daily is cheap and losing
+# a cycle is permanent.
+DEFAULT_STAGES = ("notices", "capture")
 
 
 # ── result plumbing ───────────────────────────────────────────────────
@@ -279,7 +284,7 @@ def _stage_notices(args) -> StageResult:
 
 
 def _stage_county(args) -> StageResult:
-    """Knox FTM county pull (liens, condemnations, trustee deeds, evictions).
+    """Knox FTM county pull (liens, condemnations).
 
     Degrades with a stated reason rather than failing the whole run: it needs
     the SiftMap client for the buy-box enrichment, and that lives in the Deal
@@ -296,7 +301,12 @@ def _stage_county(args) -> StageResult:
         return res
 
     try:
-        from clients.siftmap_api import SiftMapClient  # noqa: F401
+        # Either client will do: knox_ftm_pull falls back to the standalone one,
+        # which needs nothing but REISIFT_API_KEY.
+        try:
+            from clients.siftmap_api import SiftMapClient  # noqa: F401
+        except Exception:
+            from siftmap_standalone import SiftMapClient  # noqa: F401
     except Exception:
         res.status = "skipped"
         res.detail = (
@@ -307,7 +317,15 @@ def _stage_county(args) -> StageResult:
         return res
 
     out = config.OUTPUT_DIR / f"knox_ftm_pull_{datetime.now():%Y-%m-%d}.csv"
-    rc = os.system(f'{sys.executable} "{Path(__file__).parent / "knox_ftm_pull.py"}" --out "{out}"')
+    # Point the pull at the same scratch the capture stage writes into. Without
+    # this it defaults to the CWD, finds none of the source JSON, and produces
+    # an empty CSV while still looking like it ran.
+    scratch = str(config.STATE_DIR / "knox")
+    rc = os.system(
+        f'{sys.executable} "{Path(__file__).parent / "knox_ftm_pull.py"}" '
+        f'--scratch "{scratch}" --out "{out}" '
+        f'--rejects "{config.OUTPUT_DIR / "knox_ftm_rejected.csv"}"'
+    )
     if rc != 0 or not out.exists():
         res.status = "failed"
         res.detail = f"knox_ftm_pull exited {rc}"
@@ -345,7 +363,67 @@ class _Blocked(Exception):
         self.stage = stage
 
 
-STAGE_FUNCS = {"notices": _stage_notices, "county": _stage_county}
+def _stage_capture(args) -> StageResult:
+    """Snapshot the sources that overwrite themselves: the condemnation agendas.
+
+    This stage does not upload anything. Its whole job is to get the data onto
+    the volume before the county erases it: the agendas live at fixed URLs that
+    are overwritten each cycle. The eviction docket was captured here too until
+    2026-08-25, when evictions were retired.
+
+    Deliberately never fatal to the run. A capture failure is worth an alert,
+    but it must not stop the notices stage from uploading.
+    """
+    res = StageResult(name="capture")
+    t0 = time.time()
+    scratch = str(config.STATE_DIR / "knox")
+    os.makedirs(scratch, exist_ok=True)
+
+    counts, problems = {}, []
+
+    try:
+        import knox_condemnations
+        paths = knox_condemnations.fetch(scratch)
+        fresh = []
+        for kind, p in paths.items():
+            fresh.extend(knox_condemnations.parse_agenda(p, kind))
+            if kind == "poh":
+                fresh.extend(knox_condemnations.parse_boardings(p))
+        allrec = knox_condemnations.merge(scratch, fresh)
+        with open(os.path.join(scratch, "condemnations.json"), "w", encoding="utf-8") as fh:
+            json.dump(allrec, fh, indent=1)
+        counts["condemnations"] = f"{len(fresh)} this cycle, {len(allrec)} cumulative"
+        if not fresh:
+            problems.append("condemnation agendas parsed 0 entries")
+    except Exception as exc:
+        problems.append(f"condemnations: {type(exc).__name__}: {exc}")
+
+    # The eviction sweep was retired 2026-08-25 (Ty). It worked, but it only
+    # ever paid off if it ran forever: the General Sessions docket keeps just
+    # the current week, so the list existed only as our own accumulation, and
+    # each landlord still needed the name-to-parcel join to become a lead.
+    # knox_evictions.py is kept; re-wiring is restoring this block.
+
+    res.records = sum(1 for _ in counts)
+    res.seconds = round(time.time() - t0, 1)
+    res.warnings = problems
+    detail = "; ".join(f"{k}: {v}" for k, v in counts.items()) or "nothing captured"
+
+    # Any problem fails the stage. An earlier version only failed when NOTHING
+    # was captured, so a run that downloaded every PDF but parsed none of them
+    # (pdfminer missing from the image) reported OK. On a source that is
+    # overwritten at origin, a quiet zero is the most expensive possible bug.
+    if problems:
+        res.status = "failed"
+        res.detail = detail + " | " + "; ".join(problems)
+    else:
+        res.status = "ok"
+        res.detail = detail
+    return res
+
+
+STAGE_FUNCS = {"notices": _stage_notices, "capture": _stage_capture,
+               "county": _stage_county}
 
 
 # ── doctor ────────────────────────────────────────────────────────────
@@ -478,6 +556,10 @@ def build_parser() -> argparse.ArgumentParser:
                        "N above 12 buys nothing. Resumable: the seen-ID cache "
                        "skips what earlier runs already captured."
                    ))
+    p.add_argument("--capture-days", type=int, default=30,
+                   help="how far back the eviction sweep looks. Retention is "
+                        "irregular, so a wider sweep sometimes recovers an "
+                        "older court date that is still up.")
     p.add_argument("--backfill-offset", type=int, default=0, metavar="M",
                    help=(
                        "Shift the backfill window back M months. Use with "

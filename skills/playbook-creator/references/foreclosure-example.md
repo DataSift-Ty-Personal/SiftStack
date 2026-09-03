@@ -6,7 +6,7 @@ This reference shows how a real training call transcript was turned into a struc
 
 ## The Source: What We Started With
 
-A 40-minute training call where Ty (team lead) walked Marwan (new team member) through the daily process of pulling foreclosure notices from a public records site, qualifying each record, and adding good ones to Sift. The transcript was messy — full of tangents, troubleshooting, and back-and-forth — but the core process was clear.
+A 40-minute training call where Ty (team lead) walked Marwan (new team member) through the daily process of pulling foreclosure notices from a public records site, qualifying each record, and adding good ones to Sift. The transcript was messy - full of tangents, troubleshooting, and back-and-forth - but the core process was clear.
 
 ---
 
@@ -111,7 +111,7 @@ flowchart TB
 | Tool | What It's For | How to Get It |
 |------|---------------|---------------|
 | Public Notice Site (e.g., TM Public Notice) | Pulling foreclosure notices daily | Sign up at the site. Use Smart Search. |
-| Zillow | Quick property lookup to check type and value | Free — just go to zillow.com |
+| Zillow | Quick property lookup to check type and value | Free - just go to zillow.com |
 | Sift | CRM where you store and manage leads | Your team admin gives you access |
 
 ### Setup
@@ -151,7 +151,7 @@ Go to the public notice site and sign in. Hit **Smart Search** at the top. Go to
 
 **Goal:** Filter out non-foreclosure notices that get mixed into the results.
 
-Click on the first notice in the list. It'll open a detail view. Read through it quickly. A lot of the time, what looks like a foreclosure is actually something else — a property tax notice, a non-resident notice, or a government filing.
+Click on the first notice in the list. It'll open a detail view. Read through it quickly. A lot of the time, what looks like a foreclosure is actually something else - a property tax notice, a non-resident notice, or a government filing.
 
 **Actions:**
 1. Click on the first notice
@@ -196,7 +196,7 @@ Take the property address from the notice and search it on Zillow. Hit the light
 - IF it's a **single-family home under $600K** → **Keep it. Go to Step 4.**
 - IF it's a **mobile home** → **Dead lead. Mark and skip.**
 - IF it's **commercial** (car lot, strip mall, etc.) → **Dead lead. Mark and skip.**
-- IF it's **vacant land with no street number** → **Skip — not worth it.**
+- IF it's **vacant land with no street number** → **Skip - not worth it.**
 - IF Zillow **can't find the address** → **The address might be slightly off. Try adjusting it. If still nothing, keep it and manually verify later.**
 
 > **SCREENSHOT: Zillow Property Lookup**
@@ -239,8 +239,8 @@ Once the property is added, fill in the key fields. The system will auto-enrich 
 **Actions:**
 1. Set the city and zip code (Sift auto-fills most of this)
 2. Add the **Date Added** (today's date, format: MM/DD/YY)
-3. Leave other fields blank — Sift will enrich them automatically
-4. Add a note: "Foreclosure — [County Name] — pulled [date]"
+3. Leave other fields blank - Sift will enrich them automatically
+4. Add a note: "Foreclosure - [County Name] - pulled [date]"
 
 ---
 
@@ -272,7 +272,7 @@ Go back to the search results and click the next notice. Follow the same process
 
 **Step 4 applied:** Went to Sift → Records → Add New Property. Typed the address. Sift found a match and auto-populated the property details.
 
-**Step 5 applied:** Added the date (10/13/25). Added a note: "Foreclosure — Knox County — pulled 10/13/25."
+**Step 5 applied:** Added the date (10/13/25). Added a note: "Foreclosure - Knox County - pulled 10/13/25."
 
 **End result:** The property is now in Sift as a foreclosure lead, tagged with the county and date. Ready for the team to skip trace and start marketing.
 
@@ -295,7 +295,7 @@ Go back to the search results and click the next notice. Follow the same process
 |---------|-------|-----|
 | Notice isn't a foreclosure | Public records mix in other notice types | Read for the word "foreclosure" or "property address" |
 | Zillow can't find the address | Address in the notice is slightly different | Try variations (street name without direction, nearby city names) |
-| Sift says property already exists | Someone else already added it | Skip it — no need to duplicate |
+| Sift says property already exists | Someone else already added it | Skip it - no need to duplicate |
 | Captcha keeps popping up | The site throttles automated-looking behavior | Solve it and slow down a bit |
 
 ---
@@ -311,16 +311,16 @@ Go back to the search results and click the next notice. Follow the same process
 | 3 | Look up property on Zillow | Property type and value displayed |
 | 4 | Add qualifying properties to Sift | Property appears in your records |
 | 5 | Fill in date and source | Record has complete info |
-| 6 | Repeat for all new notices | Empty inbox — all processed |
+| 6 | Repeat for all new notices | Empty inbox - all processed |
 
 ### Keep vs. Skip Quick Guide
 
 | Property Type | Value | Action |
 |--------------|-------|--------|
 | Single-family home | Under $600K | **Keep** |
-| Single-family home | Over $600K | **Review** — may not have wholesale buyers |
-| Mobile home | Any | **Skip** — dead lead |
-| Commercial | Any | **Skip** — dead lead |
-| Vacant land | Has street number | **Review** — keep if value is over $50K |
+| Single-family home | Over $600K | **Review** - may not have wholesale buyers |
+| Mobile home | Any | **Skip** - dead lead |
+| Commercial | Any | **Skip** - dead lead |
+| Vacant land | Has street number | **Review** - keep if value is over $50K |
 | Vacant land | No street number | **Skip** |
-| Any | Assessed at ~$2,800 | **Skip** — almost always vacant land |
+| Any | Assessed at ~$2,800 | **Skip** - almost always vacant land |

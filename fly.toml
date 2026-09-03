@@ -21,6 +21,17 @@ primary_region = "iad"          # matches the app that already exists
   SMS_AGENT_DB = "/data/sms_agent.db"
   SMS_AGENT_SENDERS_FILE = "/data/sms_senders.json"
   SMS_AGENT_NUMBERS_FILE = "/data/sms_numbers.json"
+  # The dispo buyer registry. A relative path only works from the repo
+  # root, and the registry is data, not code, so it lives on the volume.
+  SMS_AGENT_DISPO_DIR = "/data/dispo_buyers"
+  # Per-pool daily caps. Ty, 2026-08-31: dispo can run to 60 per number
+  # because these go to BUYERS, not sellers, and the whole blast has to
+  # land in one day. The acquisitions numbers stay at 25.
+  SMS_AGENT_POOL_CAPS = '{"Dispo": 60}'
+  # Per-pool send gap. Stickiness concentrates a blast on whichever
+  # numbers carried the last one, so the dispo pool rests 5 minutes to
+  # clear its window. Acquisitions stays on the global 10.
+  SMS_AGENT_POOL_GAPS = '{"Dispo": 300}'
 
 # The event log is the system of record: smrtPhone purges its own webhook logs
 # after 30 days and has no replay, so this volume must survive a redeploy.

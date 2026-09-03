@@ -5,9 +5,9 @@
   "raw_base": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main",
   "install_target": "~/.claude/skills",
   "counts": {
-    "total": 26,
-    "current": 24,
-    "skills": 24,
+    "total": 27,
+    "current": 25,
+    "skills": 25,
     "plugins": 2
   },
   "categories": [
@@ -15,7 +15,8 @@
     "Coaching & Performance",
     "Deal Analysis",
     "Market Intelligence",
-    "Operations"
+    "Operations",
+    "Uncategorized"
   ],
   "tiers": {
     "none": "Works the moment it is installed. No key, no login.",
@@ -23,7 +24,7 @@
     "api": "Needs a third-party API key, usually metered."
   },
   "tier_counts": {
-    "none": 12,
+    "none": 13,
     "account": 7,
     "api": 5
   },
@@ -729,31 +730,38 @@
       "kind": "skill",
       "category": "Operations",
       "version": null,
-      "description": "Create professional playbooks and SOPs with process maps, visual aids, and structured workflows. Accepts raw transcripts, meeting recordings, or written descriptions as input and transforms them into polished documentation with Mermaid flowcharts, decision trees, and screenshot placeholders. Use when user requests a playbook, SOP, standard operating procedure, process documentation, training manual, workflow guide, or says things like \"turn this into a playbook\", \"create an SOP from this call\", \"document this process\", \"make a training doc\", or \"write up how to do X\". Also triggers for \"process map\", \"flowchart\", \"workflow diagram\", or any request to visualize a process. Even if the user just gives you a transcript and says \"make this into something useful\" \u2014 if it describes a repeatable process, use this skill.",
+      "description": "Create professional playbooks, SOPs, and Scribe-style step guides with process maps, structured workflows, and agent-executable SOP files. Accepts raw transcripts, meeting recordings, screen-share walkthroughs, or written descriptions and transforms them into polished documentation with Mermaid flowcharts, decision trees, and screenshot capture specs. SOPs ship as a pair, a human Word doc plus a machine-readable .sop.md twin (Agent SOPs standard, RFC 2119 constraints) that an AI agent can execute directly. Use when the user requests a playbook, SOP, standard operating procedure, process documentation, training manual, workflow guide, how-to guide, click-path guide, or says things like \"turn this into a playbook\", \"create an SOP from this call\", \"document this process\", \"make a training doc\", \"make a guide like Scribe\", \"write up how to do X\", or \"make this runnable by an agent\". Also triggers for \"process map\", \"flowchart\", \"workflow diagram\", or any request to visualize or systematize a process. Even if the user just gives you a transcript and says \"make this into something useful\", if it describes a repeatable process, use this skill.",
       "status": "current",
       "source_dir": "skills/playbook-creator",
       "files": [
         "SKILL.md",
         "evals/evals.json",
+        "references/agent-sop-format.md",
         "references/foreclosure-example.md",
         "references/playbook-template.md",
         "references/process-mapping-guide.md",
         "references/screenshot-guide.md",
         "references/sop-template.md",
+        "references/step-guide-template.md",
         "references/voice-guide.md",
         "scripts/build_docx.js",
-        "scripts/build_pdf.py"
+        "scripts/build_pdf.py",
+        "scripts/transcribe_video.py",
+        "scripts/validate_sop.py"
       ],
-      "file_count": 10,
-      "bytes": 113610,
+      "file_count": 14,
+      "bytes": 149217,
       "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/playbook-creator.skill",
-      "sha256": "9c24cd232114f77c115181b74f53a2a515f49c579b682b90d72f7fe297f95bc7",
+      "sha256": "380cb173f21109924ee23cda4322bc4baf5001550b148f82fb5e283c9b327c96",
       "requires": {
         "tier": "none",
         "fallback": null,
-        "env": [],
-        "accounts": [],
-        "cost": "Free"
+        "env": [
+          "OPENROUTER_API_KEY"
+        ],
+        "cost": "Free. Video transcription about $0.002 per audio minute (optional)",
+        "note": "The key is OPTIONAL and only powers scripts/transcribe_video.py (narrated screen recording in, transcript + action frames out). Without it, paste your recorder's own free transcript instead.",
+        "accounts": []
       }
     },
     {
@@ -867,6 +875,34 @@
         "tier": "none",
         "fallback": null,
         "note": "Community mining needs your logged-in browser for private groups. The Excel engine is pure openpyxl.",
+        "env": [],
+        "accounts": [],
+        "cost": "Free"
+      }
+    },
+    {
+      "name": "dispo-deal-blast",
+      "kind": "skill",
+      "category": "Uncategorized",
+      "version": null,
+      "description": "Text one named wholesale deal to the cash buyers whose own deed history says they buy at that price, and hand every reply to a human. Builds a buyer registry from investor transactions, gates it on recency, matches an asymmetric price band, renders copy that cannot leak the contract price or the address, stages the batch as HELD behind a deliberate release, and turns the responses into a permanent buyer phonebook. Trigger for: blast a deal to my buyers, dispo this property, text my cash buyer list, who should I send this deal to, build a cash buyer list, or set up dispo SMS.",
+      "status": "current",
+      "source_dir": "skills/dispo-deal-blast",
+      "files": [
+        "SKILL.md",
+        "references/buyer-registry.md",
+        "references/copy-rules.md",
+        "references/sms-guards.md",
+        "scripts/cohort.py"
+      ],
+      "file_count": 5,
+      "bytes": 21817,
+      "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/dispo-deal-blast.skill",
+      "sha256": "48b17ea3ab9ad7ecb7eda5d85ed92723a2a7d7b185eca751683482eeecc9de0a",
+      "requires": {
+        "tier": "none",
+        "fallback": null,
+        "note": "The method, the guards and the copy rules. The bundled cohort calculator is stdlib only. Wiring it to your own CRM and SMS provider is your call, and every send stays behind a human release.",
         "env": [],
         "accounts": [],
         "cost": "Free"
