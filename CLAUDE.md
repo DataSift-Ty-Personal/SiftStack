@@ -331,6 +331,34 @@ Four traps, each of which fails silently or cryptically:
 
 **Always upload one record and read it back before releasing the file.** That single habit caught the tag format, the entity-owner rejection, the option-UUID requirement and a list-name mismatch that would have silently attached nothing for 2,512 of 2,573 records.
 
+**THE OPEN API CREATE ROUTE DIED ON 2026-09-01 (fixed 2026-09-05).** `POST /property/` began
+returning HTTP 403 "You do not have permission to perform this action" for EVERY method (GET,
+POST, OPTIONS) under BOTH auth types (minted ty+2 JWT and the Api-Key), with the account itself
+unchanged: super-admin, active business plan, 89 of 100,000 records used. Five scheduled runs
+scraped cleanly and uploaded nothing; the ledger reverted seen-IDs each time so nothing was lost,
+and the watchdog is what finally said so. Records are now created through
+`POST /api/internal/property/` (`datasift_api_upload.create_property`), the same surface every
+other write already used. That route's contract differs from the old one in three measured ways:
+- **It does NOT upsert.** A duplicate address returns 400
+  `{"non_field_errors":["Property address already exists!"],"property":["<uuid>"]}`, which hands
+  the uuid back. `create_property` then ATTACHES the payload to that record: lists via
+  `/add-lists/` (a STRING title, one call per list), tags as a read-modify-write PATCH of the full
+  set, and the owner PATCHed only when the payload's owner differs. Lists and tags accumulate
+  exactly as before; the county stage's daily re-send of the same 10 rows reports
+  `created=10 (of which 10 already existed)`.
+- **`owner` is validated BEFORE the duplicate check**, so an address-only body 400s whether or
+  not the record exists. Callers that used the upsert as a lookup (dispo_flip_buyers' tag-by-
+  address, the probate one-offs) now go through `find_property` (POST-as-GET
+  `search: address_prefix:<street>`, matched on normalized street + zip5) and `attach_to_record`.
+- Lists by title and tags as an array are accepted as before; DataSift standardizes the street on
+  ingest ("6520 FLINT GAP RD" reads back as "6520 Flint Gap Rd"), which is why the lookup match is
+  case- and punctuation-insensitive.
+`create_property` falls back to the legacy route only on a 403 or 404, so a reversal at DataSift
+cannot break the uploader the other way. `tests/test_datasift_api_upload.py` pins all of it with
+a stubbed client. Whether `/property/` was retired on purpose is a question for DataSift
+engineering; the Open API key gets the same 403, so any community user on that documented route
+is broken too.
+
 ## Obituary Opportunity Ranking (build 1.0.37, 2026-08)
 
 `src/obituary_opportunity.py` turns a reisift account's **Obituary list** into a lean-budget call order. The premise: a notice-of-default owner is on every wholesaler's mail drop because the filing is public and machine readable, but a decedent home is only reachable after somebody researches who died, who inherited and who signs. That research is the moat. Chain: pull (detail + custom fields) -> gate -> six weighted components -> branded 6-sheet Excel. Read-only, runs on the no-expiry Api-Key account (`datasift-apikey` = ty+2).

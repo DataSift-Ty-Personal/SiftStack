@@ -31,7 +31,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from datasift_api_upload import Api  # noqa: E402
+from datasift_api_upload import Api, create_property  # noqa: E402
 
 # Marker used to detect a note this script already posted.
 MARKER = "[FTM probate contact]"
@@ -149,7 +149,7 @@ def main() -> int:
             skipped += 1
             continue
         try:
-            prop = api.call("/property/", "POST", {"address": {
+            prop = create_property(api, {"address": {
                 "street": r["Property Street Address"], "city": r["Property City"],
                 "state": r["Property State"], "postal_code": r["Property ZIP Code"]}})
             uuid = prop.get("uuid")

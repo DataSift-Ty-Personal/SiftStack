@@ -64,7 +64,7 @@ os.environ.setdefault("REISIFT_ACCOUNT", "datasift-apikey")
 _API_CLIENTS = Path(r"C:\Users\Tyrus\OneDrive\Desktop\Deal Room Coaching Call\_api\clients")
 sys.path.insert(0, str(_API_CLIENTS))
 
-from datasift_api_upload import Api  # noqa: E402
+from datasift_api_upload import Api, attach_to_record  # noqa: E402
 
 MAP = "https://map.reisift.io"
 K_TXN = "extra_last_sale_investor_transaction_type"
@@ -555,14 +555,11 @@ def phase_trace(c: Client, commit: bool, limit: int, entities_only: bool):
                        how or "deed"))
             c.internal("/api/internal/property/%s/add-notes/" % uuid,
                        "POST", {"notes": note[:2000]})
-            # Tag via address-upsert: POST /property/ upserts by address, tags
-            # ACCUMULATE, and omitting the owner key leaves the owner alone.
+            # Tags ACCUMULATE onto the record and the owner is left alone.
+            # (Was an address-upsert on POST /property/; that Open API route
+            # 403s for everyone since 2026-09-01, and we hold the uuid anyway.)
             try:
-                c.internal("/property/", "POST",
-                           {"address": {"street": street, "city": city,
-                                        "state": st,
-                                        "postal_code": addr.get("postal_code") or ""},
-                            "tags": ["Dispo Traced"]})
+                attach_to_record(_Creator(c), uuid, {"tags": ["Dispo Traced"]})
             except Exception as e:
                 print("    tag write failed (non-fatal): %s" % str(e)[:100])
             state["done"][uuid] = {"owner": owner, "principal": principal,
@@ -775,11 +772,8 @@ def phase_vip(c: Client, commit: bool):
         if u in added:
             continue
         v = verdicts[u]
-        # address-upsert: lists accumulate, owner key omitted = untouched
-        c.internal("/property/", "POST",
-                   {"address": {"street": v["street"], "city": v["city"],
-                                "state": "TN", "postal_code": v["zip"] or ""},
-                    "lists": [VIP_LIST_TITLE]})
+        # lists accumulate, owner untouched (see the Dispo Traced note above)
+        attach_to_record(_Creator(c), u, {"lists": [VIP_LIST_TITLE]})
         added.append(u)
         if len(added) % 100 == 0:
             VIP_STATE.write_text(json.dumps(state))
@@ -876,6 +870,21 @@ def phase_flippers(c: Client, limit: int, months: int = 24):
                                   for s in v["sales"][:3])])
     print("swept %d flip exits -> %d distinct flippers -> %s"
           % (pulled, len(ranked), path))
+
+
+class _Creator:
+    """Gives datasift_api_upload.attach_to_record the .call() it expects
+    while keeping this module's 429 backoff (Client.internal delegates the
+    plain calls to Api.call, so ApiError passes through intact)."""
+
+    def __init__(self, c):
+        self._c = c
+
+    def call(self, path, method="GET", body=None, headers=None):
+        if headers:
+            return self._c.internal(path, method, body,
+                                    override=headers.get("x-http-method-override"))
+        return self._c.internal(path, method, body)
 
 
 def main() -> int:

@@ -32,7 +32,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from datasift_api_upload import Api  # noqa: E402
+from datasift_api_upload import Api, create_property  # noqa: E402
 
 # Buy box (Ty): single family only, AVM $1 to $700,000. The $1 floor is
 # deliberate: condemned and tax-distressed stock routinely falls under $100K.
@@ -52,7 +52,7 @@ def norm(s: str) -> str:
 
 
 def audit_one(api: Api, rec: dict) -> dict:
-    p = api.call("/property/", "POST", {"address": {
+    p = create_property(api, {"address": {
         "street": rec["Property Street Address"], "city": rec["Property City"],
         "state": rec["Property State"], "postal_code": rec["Property ZIP Code"]}})
     uuid = p.get("uuid")
@@ -102,7 +102,7 @@ def restore_pr(api: Api, rec: dict) -> bool:
     last = (rec.get("Owner Last Name") or "").strip().rstrip(",")
     if not first and not last:
         return False
-    api.call("/property/", "POST", {
+    create_property(api, {
         "address": {"street": rec["Property Street Address"], "city": rec["Property City"],
                     "state": rec["Property State"], "postal_code": rec["Property ZIP Code"]},
         "owner": {"first_name": first.title(), "last_name": last.title()},

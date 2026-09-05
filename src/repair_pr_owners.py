@@ -31,7 +31,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from datasift_api_upload import Api  # noqa: E402
+from datasift_api_upload import Api, create_property  # noqa: E402
 
 
 def norm(s: str) -> str:
@@ -102,7 +102,7 @@ def main() -> int:
         elif not a.commit:
             bad.append((row["address"], now, want))
         else:
-            api.call("/property/", "POST", owner_body(rec))
+            create_property(api, owner_body(rec))
             time.sleep(0.8)
             back = api.call(f"/api/internal/property/{row['uuid']}/")
             bo = back.get("owner") or {}
