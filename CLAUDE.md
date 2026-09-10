@@ -458,8 +458,9 @@ python src/clone_account.py --phase plan  --blueprint <bp> --target you@x.com --
 python src/clone_account.py --phase apply --blueprint <bp> --target you@x.com --email you@x.com --password ... --commit
 python src/clone_account.py --phase apply --blueprint <bp> --target client@x.com --impersonate --commit   # staff, non-staff client
 python src/clone_account.py --phase apply ... --probe-only --commit          # one create + read-back per unverified route
+python src/clone_account.py --phase apply ... --move-presets --commit        # re-folder presets a source folder rename left behind
 python src/clone_account.py --phase verify --blueprint <bp> --target you@x.com --jwt <paste>   # read-only parity + counts
-python tests/test_account_blueprint.py                                       # 30 checks, zero network
+python tests/test_account_blueprint.py                                       # 35 checks, zero network
 ```
 
 **What the live export holds (2026-09-10, 250 calls, 149s, every family under the Open API
@@ -547,11 +548,44 @@ and any count without them is labelled "date window ignored". 26 of 98 presets a
   continues so the report is complete), 3 refused. Report `.md` + `.json` per run, state file
   keyed by title with the target account pinned, resume adopts whatever already landed.
 
-**Not yet done: a live commit against a second account.** ty+1's stored JWT expired 2026-08-21
-and staff-to-staff impersonation is refused, so the first real `apply --commit` needs a fresh
-ty+1 paste (`REISIFT_TARGET_JWT`) or a non-staff client to impersonate. Run `plan`, then
-`--probe-only --commit` (the four unverified routes), then the full commit, then `verify`, and
-stamp the probe results here.
+**LIVE ON ty+1 (2026-09-10, fresh ty+1 paste, `--allow-staff-target --move-presets
+--skip siftmap`).** `plan` -> `--probe-only --commit` -> `--commit` (three passes, each resuming
+what the previous one landed) -> `verify`, final exit 0. ty+1 now reads back at parity with the
+blueprint on every applied family: 56 lists, 21 tags, 37 custom fields (33 created), 13 task
+presets (all created), 7 boards (Deep Prospecting created plus 12 columns), 98 presets (14
+created, 12 MOVED out of the August "05/06. TIER 1 - FTM" folders into "05/06. FTM"), 26 of 27
+sequences (24 created; the missing one is "Send to Deep Prospecting", inactive at the source
+and pointing at a deleted column). SiftMap was skipped on purpose: ty+1 is a Franklin OH
+account and 37 Knox feeders there would be clutter. **Every unverified create route answered:**
+`POST /custom-fields/group/`, `/task-group/`, `/task-group/{g}/task-preset/`,
+`/sequence-folder/`, `/siftline/board/`, `/siftline/board/{b}/column/` all create and read back.
+
+**Four server rules the live run taught, each now in code and in a test:**
+- **A task preset takes EXACTLY ONE assignee key.** `assigned_to_user`, `assigned_to_users`,
+  `assigned_to_role`: the other two must be ABSENT. An empty list 400s ("This list may not be
+  empty"), two non-null keys 400 ("can't be not null together"). The GET shape shows all three,
+  which is what misled the first payload.
+- **`create-task-by-preset` REQUIRES `end_of_day` on create** even though the source GET carries
+  it on only one sequence. It is the UI's 23:59:59.999 of today in the action's timezone, in
+  UTC; `translate.end_of_day_iso()` reproduces ty+2's stored value to the millisecond, and
+  apply always computes a fresh one rather than copying a stale timestamp.
+- **List titles are unique per account ignoring case and surrounding whitespace.** ty+2 holds
+  "Arrests " with a trailing space; the create 400'd against ty+1's "Arrests". Export strips
+  titles and apply adopts the target's form (`Registry._same`). Tags keep case significant
+  because ty+2 legitimately holds both "Foreclosure" and "foreclosure".
+- **Board column titles are unique the same way.** "Send Back to Lead Management" collided with
+  ty+1's "Send Back To Lead Management"; `Registry.column_uuid()` matches case-insensitively.
+
+**Dry-run honesty needed its own fix.** Containers created in the dry pass (task groups,
+sequence folders, custom-field groups, boards, columns, task presets) were not registered, so
+the first plan reported 13 task presets and 20 sequences as gaps the real run would create. A
+dry create now registers a `DRY-RUN-*` uuid so the plan is the plan.
+
+**What the verify count probe says about ty+1, and why it is right:** 12 presets match records,
+86 match zero, and 56 of those 86 are "gated on empty tag Priority 1 / Priority 2 / FTM".
+ty+1 never ran `priority_tags.py` and its SiftMap feeders tag nothing, so the whole call/mail
+system sits on tags no record carries. The structure is cloned; the tagging that feeds it is a
+separate job, which is exactly what the probe was built to say out loud.
 
 ## Dispo Buyer Engine - Pending Flips (build 1.0.46, 2026-08-20)
 

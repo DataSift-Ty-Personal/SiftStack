@@ -496,7 +496,7 @@ def commit_script(created):
     s[("GET", "/api/internal/tag/?offset=0&limit=10000&ordering=title")] = lambda b: rows(*tags)
     s[("POST", "/api/internal/task-group/")] = lambda b: (groups.append({"uuid": "g-1", **b}) or mk("task_group", b))
     s[("GET", "/api/internal/task-group/?offset=0&limit=999")] = lambda b: rows(*groups)
-    s[("POST", "/api/internal/task-group/g-1/task-preset/")] = lambda b: (tps.append({"uuid": "tp-1", **b}) or mk("task_preset", b))
+    s[("POST", "/api/internal/task-group/g-1/task-preset/")] = lambda b: (tps.append({"uuid": "tp-%d" % len(tps), **b}) or mk("task_preset", b))
     s[("GET", "/api/internal/task-group/g-1/task-preset/?offset=0&limit=999")] = lambda b: rows(*tps)
     s[("POST", "/api/internal/filter-preset-folder/")] = lambda b: (folders.append({"uuid": "fo-1", **b}) or mk("folder", b))
     s[("GET", "/api/internal/filter-preset-folder/?type=properties&limit=999")] = lambda b: rows(*folders)
@@ -505,9 +505,10 @@ def commit_script(created):
     s[("GET", "/api/internal/filter-preset/pr-1/")] = lambda b: dict(presets[0])
     s[("POST", "/api/internal/sequence-folder/")] = lambda b: (seqf.append({"uuid": "sf-1", **b}) or mk("seq_folder", b))
     s[("GET", "/api/internal/sequence-folder/?limit=999")] = lambda b: rows(*seqf)
-    s[("POST", "/api/internal/sequence/")] = lambda b: (seqs.append({"uuid": "sq-1", **b}) or mk("sequence", b))
+    s[("POST", "/api/internal/sequence/")] = lambda b: (seqs.append({"uuid": "sq-%d" % len(seqs), **b}) or mk("sequence", b))
     s[("GET", "/api/internal/sequence/?limit=999")] = lambda b: rows(*seqs)
-    s[("GET", "/api/internal/sequence/sq-1/")] = lambda b: dict(seqs[0], created="x", runs=0)
+    for i in range(6):
+        s[("GET", "/api/internal/sequence/sq-%d/" % i)] = lambda b, i=i: dict(seqs[i], created="x", runs=0)
     s[("POST", "/filters/")] = lambda b: (maps.append({"id": 77, "is_active": True, **b}) or mk("siftmap", b))
     s[("GET", "/filters/?scope=account&page_size=100&page=1")] = lambda b: rows(*maps)
     s[("GET", "/filters/77/")] = lambda b: dict(maps[0])
@@ -563,6 +564,113 @@ def test_only_leaves_other_families_as_resolve_only_gaps():
     code = run(min_blueprint(), c, commit=True, only={"presets"})
     assert code == 0
     assert [k for k, _ in created] == ["folder"], "a missing tag is a gap, not a create, when tags are not selected"
+
+
+def test_dry_run_registers_containers_so_dependents_are_not_false_gaps():
+    """Task groups, sequence folders and custom-field groups created in the dry
+    pass must count for the objects below them, or a plan reports 13 task
+    presets and 20 sequences as gaps the real run would create."""
+    c = Stub(target_script(), claims=good_claims())
+    code = run(min_blueprint(), c)
+    assert code == 0 and c.writes() == []
+    log = A.Log  # noqa: F841 (type only)
+    # re-run capturing the log through run_apply's report path
+    import tempfile
+    d = tempfile.mkdtemp()
+    rp = os.path.join(d, "plan")
+    A.run_apply(Stub(target_script(), claims=good_claims()), min_blueprint(), "target@x.com", opts(report_path=rp))
+    r = json.load(open(rp + ".json", encoding="utf-8"))
+    gaps = [(e["family"], e["object"]) for e in r["log"] if e["action"] == "gap"]
+    assert ("task_presets", "Call New Lead") not in gaps, gaps
+    assert ("sequences", "Sold Tag") not in gaps, gaps
+    fam = {s["family"]: s for s in r["summary"]}
+    assert fam["task_presets"]["created"] == 1 and fam["sequences"]["created"] == 1
+
+
+def test_move_presets_refolders_existing_with_readback():
+    created = []
+    s = commit_script(created)
+    # the preset already exists, in a folder with the OLD name
+    s[("GET", "/api/internal/filter-preset-folder/?type=properties&limit=999")] = lambda b: rows(
+        {"uuid": "old-f", "title": "05. TIER 1 - FTM - CALL"},
+        *[f for f in [] ])
+    s[("GET", "/api/internal/filter-preset-folder/old-f/filter-preset/?limit=999")] = rows(
+        {"uuid": "pr-9", "title": "Hottest - 02 Ready to Call"})
+    patched = {}
+
+    def patch(b):
+        patched.update(b)
+        return {}
+    s[("PATCH", "/api/internal/filter-preset/pr-9/")] = patch
+    s[("GET", "/api/internal/filter-preset/pr-9/")] = lambda b: {"uuid": "pr-9", "folder": patched.get("folder")}
+    # folder create for the NEW name must still happen; its read-back lists both folders
+    folders = [{"uuid": "old-f", "title": "05. TIER 1 - FTM - CALL"}]
+    s[("POST", "/api/internal/filter-preset-folder/")] = lambda b: (folders.append({"uuid": "new-f", **b}) or {"uuid": "new-f"})
+    s[("GET", "/api/internal/filter-preset-folder/?type=properties&limit=999")] = lambda b: rows(*folders)
+    s[("GET", "/api/internal/filter-preset-folder/new-f/filter-preset/?limit=999")] = rows()
+    c = Stub(s, claims=good_claims())
+    code = run(min_blueprint(), c, commit=True, only={"presets"}, move_presets=True)
+    assert code == 0
+    assert patched == {"folder": "new-f"}, "only the folder is PATCHed, never the filters"
+    # without the flag it is a gap and nothing is PATCHed
+    patched.clear()
+    folders[:] = [{"uuid": "old-f", "title": "05. TIER 1 - FTM - CALL"}]
+    c2 = Stub(s, claims=good_claims())
+    run(min_blueprint(), c2, commit=True, only={"presets"})
+    assert not patched and not [x for x in c2.calls if x[0] == "PATCH"]
+
+
+def test_boards_and_columns_created_through_probe_and_property_assign_falls_back():
+    created = []
+    s = commit_script(created)
+    bp = min_blueprint()
+    bp["boards"].append({"title": "Deep Prospecting", "columns": ["Research", "Signer Found"]})
+    bp["boards"][0]["columns"].append("Send to Acquisitions")
+    bp["sequences"].append({
+        "title": "Call New Lead", "folder": "Lead Management", "is_active": True,
+        "trigger": "property.status.updated",
+        "conditions": [{"condition": "from_to", "payload": {"field": "status", "updated_to": "new_lead"}}],
+        "actions": [{"action": "property-assign", "payload": {"field": "assigned_to", "value": B.ref("user", "Rami")}},
+                    {"action": "create-siftline-card", "payload": {"values": {
+                        "board": B.ref("board", "Deep Prospecting"),
+                        "column": B.ref("column", "Research", board="Deep Prospecting")}}},
+                    {"action": "create-task-by-preset", "payload": {
+                        "task_preset": B.ref("task_preset", "Call New Lead", group="Lead Management")}}]})
+    boards = [{"uuid": "tb1", "title": "Lead Management"}]
+    cols = {"tb1": [{"uuid": "tc1", "title": "New Lead (Unqualified)"}], "tb2": []}
+    s[("GET", "/api/internal/siftline/board/?offset=0&limit=999")] = lambda b: rows(*boards)
+    s[("POST", "/api/internal/siftline/board/")] = lambda b: (boards.append({"uuid": "tb2", **b}) or created.append(("board", b)) or {"uuid": "tb2"})
+    for buid in ("tb1", "tb2"):
+        s[("GET", "/api/internal/siftline/board/%s/column/?offset=0&limit=999" % buid)] = (
+            lambda b, buid=buid: rows(*cols[buid]))
+        s[("POST", "/api/internal/siftline/board/%s/column/" % buid)] = (
+            lambda b, buid=buid: (cols[buid].append({"uuid": "c-%s-%s" % (buid, b["title"]), **b})
+                                   or created.append(("column", b)) or {}))
+    c = Stub(s, claims=good_claims())
+    code = run(bp, c, commit=True, only={"tags", "boards", "task_presets", "sequences"})
+    assert code == 0
+    kinds = [k for k, _ in created]
+    assert kinds.count("board") == 1 and kinds.count("column") == 3, kinds
+    seqs = [b for k, b in created if k == "sequence"]
+    call = next(q for q in seqs if q["title"] == "Call New Lead")
+    assert call["actions"][0]["payload"]["value"] == "user-self-uuid", "property-assign falls back to the applying user"
+    assert call["actions"][1]["payload"]["values"] == {"board": "tb2", "column": "c-tb2-Research"}
+    task = call["actions"][2]["payload"]
+    assert task["task_preset"] == "tp-0" and task["timezone"] == "America/New_York"
+    import re as _re
+    assert _re.match(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.999Z$", task["end_of_day"]), \
+        "create-task-by-preset REQUIRES end_of_day on create; computed fresh, never copied stale"
+    # dry run registers the created board so the plan for the sequence is honest
+    c2 = Stub(s, claims=good_claims())
+    import tempfile
+    rp = os.path.join(tempfile.mkdtemp(), "plan")
+    boards[:] = [{"uuid": "tb1", "title": "Lead Management"}]
+    cols["tb1"] = [{"uuid": "tc1", "title": "New Lead (Unqualified)"}]
+    cols["tb2"] = []
+    A.run_apply(c2, bp, "target@x.com", opts(report_path=rp, only={"tags", "boards", "task_presets", "sequences"}))
+    r = json.load(open(rp + ".json", encoding="utf-8"))
+    assert not [e for e in r["log"] if e["action"] == "gap" and e["family"] == "sequences" and e["object"] == "Call New Lead"]
+    assert c2.writes() == []
 
 
 def test_probe_405_marks_family_manual_and_continues():
@@ -625,6 +733,66 @@ def test_network_error_after_post_relists_before_counting():
     code = run(min_blueprint(), c, commit=True, only={"lists"})
     assert code == 0
     assert [k for k, _ in created].count("list") == 1, "no blind retry after a network error"
+
+
+def test_list_title_whitespace_and_case_adopt_target_form():
+    """ty+2 holds "Arrests " (trailing space); the server refuses a create that
+    differs from an existing list only by case or whitespace. Export strips,
+    apply adopts the target's form, and a 400 unique still resolves."""
+    created = []
+    s = commit_script(created)
+    s[("GET", "/api/internal/list/?limit=999")] = lambda b: rows({"uuid": "l-arr", "title": "arrests"},
+                                                                {"uuid": "l-auc", "title": "Auction"})
+    bp = min_blueprint()
+    bp["lists"].append({"title": "Arrests"})
+    c = Stub(s, claims=good_claims())
+    code = run(bp, c, commit=True, only={"lists"})
+    assert code == 0 and not [k for k, _ in created if k == "list"], "no create for a case/space variant"
+    # server-side unique rule the listing did not reveal: adopt after the 400
+    s2 = commit_script(created)
+    s2[("POST", "/api/internal/list/")] = C.ApiError(400, "POST", "/api/internal/list/",
+                                                      '{"non_field_errors":["The fields title must make a unique set."]}')
+    s2[("GET", "/api/internal/list/?limit=999")] = lambda b: rows({"uuid": "l-auc", "title": "AUCTION "})
+    c2 = Stub(s2, claims=good_claims())
+    code = run(min_blueprint(), c2, commit=True, only={"lists", "tags", "presets"})
+    assert code == 0
+    pr = [b for k, b in created if k == "preset"][-1]
+    assert pr["filters"]["must"]["must_not"]["any_lists"] == ["l-auc"], "preset resolves to the adopted list"
+    # export strips
+    ec = fake_export_client()
+    ec.script[("GET", "/api/internal/list/?limit=999")] = rows({"uuid": U["list_auction"], "title": "Auction  "})
+    ebp = E.Exporter(ec, with_counts=False).run()
+    assert [x["title"] for x in ebp["lists"]] == ["Auction"]
+
+
+def test_task_preset_assigned_to_users_never_empty_and_failed_route_not_sticky():
+    created = []
+    s = commit_script(created)
+    bp = min_blueprint()
+    bp["task_presets"].append({"group": "Lead Management", "title": "Make Offer", "notes": None,
+                               "round_robin": True, "expires_in": {"times": "0", "period": "day"},
+                               "all_day": False, "due_time": "20:00:00", "assigned_to_user": None,
+                               "assigned_to_users": [], "assigned_to_role": "sensei", "order": 1,
+                               "skip_weekends": False})
+    c = Stub(s, claims=good_claims())
+    assert run(bp, c, commit=True, only={"task_presets"}) == 0
+    tps = [b for k, b in created if k == "task_preset"]
+    assert len(tps) == 2
+    keys = ("assigned_to_user", "assigned_to_users", "assigned_to_role")
+    for b in tps:
+        assert sum(1 for k in keys if k in b) == 1, "exactly ONE assignee key, the other two absent: %s" % b
+    assert tps[0]["assigned_to_user"] == "user-self-uuid", "Adriana unmapped -> the applying user"
+    assert tps[1] == {**tps[1], "assigned_to_role": "sensei"} and "assigned_to_users" not in tps[1]
+    # a state file remembering a payload rejection must not block the retry
+    import tempfile
+    sp = os.path.join(tempfile.mkdtemp(), "state.json")
+    with open(sp, "w") as f:
+        json.dump({"target": {"account": TGT_ACCT}, "routes": {"task_preset": "failed", "task_group": "verified"},
+                   "families": {}}, f)
+    created.clear()
+    c2 = Stub(commit_script(created), claims=good_claims())
+    A.run_apply(c2, min_blueprint(), "target@x.com", opts(commit=True, only={"task_presets"}, state_path=sp))
+    assert [k for k, _ in created] == ["task_group", "task_preset"]
 
 
 def test_state_refuses_another_account(tmp_path=None):

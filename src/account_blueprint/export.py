@@ -99,7 +99,12 @@ class Exporter:
         self.idx.statuses = {x["uuid"].lower(): x["title"] for x in rows}
 
     def read_lists(self, c):
+        # Titles are stripped: ty+2 carries "Arrests " and the server treats it
+        # as the same list as "Arrests" (400 on create), so the whitespace is a
+        # data defect that must not enter the file.
         rows = c.get_all("/api/internal/list/?limit=999")
+        for x in rows:
+            x["title"] = (x.get("title") or "").strip()
         self.raw_lists = {x["uuid"].lower(): x["title"] for x in rows}
         self.idx.lists = dict(self.raw_lists)
         self.bp["lists"] = [{"title": x["title"]} for x in rows if not UUID_RE.match(x["title"])]
@@ -109,6 +114,8 @@ class Exporter:
 
     def read_tags(self, c):
         rows = c.get_all("/api/internal/tag/?offset=0&limit=10000&ordering=title")
+        for x in rows:
+            x["title"] = (x.get("title") or "").strip()
         self.raw_tags = {x["uuid"].lower(): x["title"] for x in rows}
         self.idx.tags = dict(self.raw_tags)
 

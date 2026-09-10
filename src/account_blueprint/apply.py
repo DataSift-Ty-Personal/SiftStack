@@ -33,6 +33,7 @@ class Options:
     only: set = field(default_factory=set)
     skip: set = field(default_factory=set)
     folders: str = "numbered"
+    move_presets: bool = False
     user_map: dict = field(default_factory=dict)
     assign_fallback: str = "self"
     strip_neighborhoods: bool = True
@@ -209,8 +210,11 @@ def apply_lists(ctx: Ctx) -> None:
     _want(ctx, "lists", len(ctx.bp["lists"]))
     for x in ctx.bp["lists"]:
         t = x["title"]
-        if t in ctx.reg.lists:
-            ctx.log.add("lists", "exists", t)
+        same = ctx.reg._same("list", t)
+        if same is not None:
+            ctx.log.add("lists", "exists", t, "" if same == t else "as %r" % same)
+            if same != t:
+                ctx.log.add("lists", "translated", t, "list %r -> target's %r" % (t, same))
             continue
         if ctx.opts.verify_only:
             ctx.log.add("lists", "gap", t, "missing in target")
@@ -269,8 +273,12 @@ def apply_custom_fields(ctx: Ctx) -> None:
             reg.load_custom_fields()
             gid = reg.custom_groups.get(t)
             return {"id": gid} if gid else None
-        create(ctx, "custom_fields", "custom_field_group", "/api/internal/custom-fields/group/",
-               {"label": t, "entity_type": g.get("entity_type") or "property"}, "group " + t, readback)
+        got = create(ctx, "custom_fields", "custom_field_group", "/api/internal/custom-fields/group/",
+                     {"label": t, "entity_type": g.get("entity_type") or "property"}, "group " + t, readback)
+        if got and got.get("_dry"):
+            # Register the dry create so the plan for the fields below is the
+            # plan the real run will execute, not a cascade of false gaps.
+            reg.custom_groups[t] = "DRY-RUN-group"
     for f in bp["custom_fields"]:
         lab = f["label"]
         have = reg.custom_fields.get(lab)
@@ -346,7 +354,7 @@ def apply_custom_fields(ctx: Ctx) -> None:
 def _user_uuid(ctx: Ctx, r, where: str, family: str):
     if not is_ref(r):
         return None
-    u = ctx.reg.resolve(r, where, family)
+    u = ctx.reg.resolve(r, where, family, quiet=(ctx.opts.assign_fallback == "self"))
     if u:
         return u
     if ctx.opts.assign_fallback == "self" and ctx.reg.self_user:
@@ -374,8 +382,10 @@ def apply_task_presets(ctx: Ctx) -> None:
             reg.load_task_presets()
             u = reg.task_groups.get(t)
             return {"uuid": u} if u else None
-        create(ctx, "task_presets", "task_group", "/api/internal/task-group/", {"title": t},
-               "group " + t, readback)
+        got = create(ctx, "task_presets", "task_group", "/api/internal/task-group/", {"title": t},
+                     "group " + t, readback)
+        if got and got.get("_dry"):
+            reg.task_groups[t] = "DRY-RUN-group"
     for p in bp["task_presets"]:
         key = (p["group"], p["title"])
         if key in reg.task_presets:
@@ -387,14 +397,28 @@ def apply_task_presets(ctx: Ctx) -> None:
             continue
         body = {"title": p["title"], "notes": p.get("notes"), "round_robin": bool(p.get("round_robin")),
                 "expires_in": p.get("expires_in"), "all_day": bool(p.get("all_day")),
-                "due_time": p.get("due_time"), "assigned_to_role": p.get("assigned_to_role"),
-                "skip_weekends": bool(p.get("skip_weekends"))}
+                "due_time": p.get("due_time"), "skip_weekends": bool(p.get("skip_weekends"))}
         if p.get("order") is not None:
             body["order"] = p["order"]
-        atu = _user_uuid(ctx, p.get("assigned_to_user"), p["title"], "task_presets")
-        body["assigned_to_user"] = atu
-        body["assigned_to_users"] = [u for u in (_user_uuid(ctx, r, p["title"], "task_presets")
-                                                 for r in p.get("assigned_to_users") or []) if u]
+        # Verified live 2026-09-10, two rejections in a row: the create route
+        # wants EXACTLY ONE of assigned_to_role / assigned_to_users /
+        # assigned_to_user, and the other two must be ABSENT. An empty list
+        # 400s ("This list may not be empty.") and two non-null keys 400 with
+        # "can't be not null together". The GET shape shows all three, which
+        # is what misled the first payload.
+        users = [u for u in (_user_uuid(ctx, r, p["title"], "task_presets")
+                             for r in p.get("assigned_to_users") or []) if u]
+        if p.get("assigned_to_role"):
+            body["assigned_to_role"] = p["assigned_to_role"]
+        elif users:
+            body["assigned_to_users"] = users
+        else:
+            atu = _user_uuid(ctx, p.get("assigned_to_user"), p["title"], "task_presets")
+            if not atu:
+                atu = reg.self_user
+                log.add("task_presets", "placeholder", p["title"],
+                        "no assignee in the source; assigned to the applying user")
+            body["assigned_to_user"] = atu
         path = "/api/internal/task-group/%s/task-preset/" % gid
 
         def readback(key=key):
@@ -407,6 +431,8 @@ def apply_task_presets(ctx: Ctx) -> None:
                     return row
             return {"uuid": u}
         got = create(ctx, "task_presets", "task_preset", path, body, p["title"], readback)
+        if got and got.get("_dry"):
+            reg.task_presets[key] = "DRY-RUN-task-preset"
         if got and not got.get("_dry"):
             checks = {k: body[k] for k in ("expires_in", "all_day", "skip_weekends", "round_robin")}
             if subset_equal(checks, got):
@@ -418,17 +444,79 @@ def apply_task_presets(ctx: Ctx) -> None:
                 ctx.failed = True
 
 
-def resolve_boards(ctx: Ctx) -> None:
+def apply_boards(ctx: Ctx) -> None:
+    """Boards and columns are the skeleton every card.moved sequence hangs
+    on. Both create routes are unverified, so they go through the probe:
+    the first board (or column) is POSTed and read back before the rest."""
     reg, log, bp = ctx.reg, ctx.log, ctx.bp
     _want(ctx, "boards", len(bp["boards"]))
+    if not ctx.selected_family("boards") and not ctx.opts.verify_only:
+        for b in bp["boards"]:
+            if b["title"] not in reg.boards:
+                log.add("boards", "gap", b["title"], "family not selected")
+        return
     for b in bp["boards"]:
-        if b["title"] not in reg.boards:
-            log.add("boards", "gap", b["title"], "board missing in target (boards are never created)")
-            continue
-        log.add("boards", "exists", b["title"])
-        missing = [c for c in b.get("columns", []) if (b["title"], c) not in reg.columns]
-        if missing:
-            log.add("boards", "gap", b["title"], "columns missing: %s" % missing)
+        bt = b["title"]
+        if bt in reg.boards:
+            log.add("boards", "exists", bt)
+        else:
+            def readback(bt=bt):
+                reg.load_boards()
+                u = reg.boards.get(bt)
+                return {"uuid": u} if u else None
+            got = create(ctx, "boards", "siftline_board", "/api/internal/siftline/board/",
+                         {"title": bt}, bt, readback)
+            if not got:
+                for col in b.get("columns", []):
+                    log.add("boards", "gap", "%s/%s" % (bt, col), "board could not be created")
+                continue
+            if got.get("_dry"):
+                reg.boards[bt] = "DRY-RUN-board"
+            else:
+                log.add("boards", "verified", bt)
+                ctx.remember("boards", bt, "created", got.get("uuid"))
+        buid = reg.boards[bt]
+        for order, col in enumerate(b.get("columns", [])):
+            have = reg.column_uuid(bt, col)
+            if have:
+                if (bt, col) not in reg.columns:
+                    log.add("boards", "translated", "%s/%s" % (bt, col),
+                            "column exists under a case/whitespace variant; using it")
+                continue
+            path = "/api/internal/siftline/board/%s/column/" % buid
+
+            def readback(bt=bt, col=col):
+                reg.load_boards()
+                u = reg.column_uuid(bt, col)
+                return {"uuid": u} if u else None
+            got = create(ctx, "boards", "siftline_column", path, {"title": col, "order": order},
+                         "%s/%s" % (bt, col), readback, unique_title=True)
+            if got and got.get("_dry"):
+                reg.columns[(bt, col)] = "DRY-RUN-column"
+            elif got:
+                log.add("boards", "verified", "%s/%s" % (bt, col))
+                ctx.remember("boards", "%s/%s" % (bt, col), "created", got.get("uuid"))
+
+
+def _move_preset(ctx: Ctx, title: str, uuid: str, old_folder: str, dst: dict, new_folder: str) -> None:
+    """Re-folder an existing preset (a folder renamed at the source is normal
+    drift). PATCH the folder only, read back, and the preset's own filters
+    are never touched."""
+    log, c = ctx.log, ctx.client
+    if not ctx.opts.commit or dst.get("_dry"):
+        log.add("presets", "translated", title, "(dry run) would move from %r to %r" % (old_folder, new_folder))
+        return
+    c.call("/api/internal/filter-preset/%s/" % uuid, "PATCH", {"folder": dst["uuid"]})
+    got = c.call("/api/internal/filter-preset/%s/" % uuid)
+    gf = got.get("folder")
+    gf = gf.get("uuid") if isinstance(gf, dict) else gf
+    if gf == dst["uuid"]:
+        log.add("presets", "translated", title, "moved from %r to %r" % (old_folder, new_folder))
+        log.add("presets", "verified", title, "moved")
+        ctx.remember("presets", title, "moved", uuid)
+    else:
+        log.add("presets", "mismatch", title, "PATCH folder accepted but read-back shows %r" % gf)
+        ctx.failed = True
 
 
 def apply_presets(ctx: Ctx) -> None:
@@ -445,9 +533,11 @@ def apply_presets(ctx: Ctx) -> None:
     dst = {x["title"]: x for x in c.get_all("/api/internal/filter-preset-folder/?type=properties&limit=999")}
     # Global title index: preset titles are unique per ACCOUNT, not per folder.
     where_is: dict[str, str] = {}
+    preset_uuid: dict[str, str] = {}
     for ft, fol in dst.items():
         for p in c.get_all("/api/internal/filter-preset-folder/%s/filter-preset/?limit=999" % fol["uuid"]):
             where_is[p["title"]] = ft
+            preset_uuid[p["title"]] = p["uuid"]
     for fol in folders:
         ft = fol["title"]
         d = dst.get(ft)
@@ -474,10 +564,21 @@ def apply_presets(ctx: Ctx) -> None:
                 if where_is[t] == ft:
                     log.add("presets", "exists", t)
                     if not d.get("_dry"):
+                        must = None
+                        if ctx.opts.verify_only and ctx.opts.count_probe:
+                            # verify counts EXISTING presets too, off the
+                            # filter the target actually stores
+                            got = c.call("/api/internal/filter-preset/%s/" % preset_uuid[t])
+                            must = (got.get("filters") or {}).get("must")
+                        ctx.preset_bodies[t] = (ft, must, p.get("source_count"))
+                elif ctx.opts.move_presets and not ctx.opts.verify_only:
+                    _move_preset(ctx, t, preset_uuid[t], where_is[t], d, ft)
+                    if not d.get("_dry"):
                         ctx.preset_bodies[t] = (ft, None, p.get("source_count"))
+                    where_is[t] = ft
                 else:
-                    log.add("presets", "gap", t, "exists in folder %r, wanted %r (titles are account-unique)"
-                            % (where_is[t], ft))
+                    log.add("presets", "gap", t, "exists in folder %r, wanted %r (titles are account-unique;"
+                            " --move-presets re-folders it)" % (where_is[t], ft))
                 continue
             filt, dropped = refs_to_uuids(copy.deepcopy(p["filters"]), reg, log, t, "presets",
                                           assign_fallback=ctx.opts.assign_fallback,
@@ -541,8 +642,10 @@ def apply_sequences(ctx: Ctx) -> None:
                                     c.get_all("/api/internal/sequence-folder/?limit=999")}
             u = reg.sequence_folders.get(t)
             return {"uuid": u} if u else None
-        create(ctx, "sequences", "sequence_folder", "/api/internal/sequence-folder/", {"title": t},
-               "folder " + t, readback)
+        got = create(ctx, "sequences", "sequence_folder", "/api/internal/sequence-folder/", {"title": t},
+                     "folder " + t, readback)
+        if got and got.get("_dry"):
+            reg.sequence_folders[t] = "DRY-RUN-folder"
     have = {q["title"]: q for q in c.get_all("/api/internal/sequence/?limit=999")}
     for q in bp["sequences"]:
         t = q["title"]
@@ -696,7 +799,10 @@ def run_apply(client, bp: dict, target: str, opts: Options) -> int:
                 prev = json.load(f)
             if (prev.get("target") or {}).get("account") not in (None, ctx.ident["account"]):
                 raise Refused("state file %s belongs to another target account" % opts.state_path)
-            ctx.state["routes"].update(prev.get("routes") or {})
+            # "failed" is a payload rejection, which a code fix resolves; only
+            # a verified route or a route the server does not serve persists.
+            ctx.state["routes"].update({k: v for k, v in (prev.get("routes") or {}).items()
+                                        if v in ("verified", "manual")})
             ctx.routes = ctx.state["routes"]
         except (OSError, ValueError):
             pass
@@ -715,7 +821,7 @@ def run_apply(client, bp: dict, target: str, opts: Options) -> int:
 
     steps = [("statuses", apply_statuses), ("lists", apply_lists), ("tags", apply_tags),
              ("custom_fields", apply_custom_fields), ("task_presets", apply_task_presets),
-             ("boards", resolve_boards), ("presets", apply_presets), ("sequences", apply_sequences),
+             ("boards", apply_boards), ("presets", apply_presets), ("sequences", apply_sequences),
              ("siftmap", apply_siftmap)]
     for fam, fn in steps:
         if fam == "siftmap" and opts.commit and not opts.verify_only:

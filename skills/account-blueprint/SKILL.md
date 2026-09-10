@@ -94,6 +94,7 @@ The report lands next to the blueprint as `apply_<you>_<time>.md`. Read the
 | `--skip siftmap` | leave a family alone |
 | `--user-map "Adriana=Jane,Tinaa=Sam"` | map the source callers to yours for the per-caller queue presets; unmapped ones point at you with a note |
 | `--folders all` | include non-numbered preset folders (default: only `01.` style folders) |
+| `--move-presets` | a preset that already exists in a differently named folder is moved to the blueprint's folder (a folder rename at the source is normal drift) |
 | `--stub-inactive` | create a sequence inactive when one of its actions cannot be re-linked |
 | `--probe-only --commit` | create one object on each never-before-used route, read it back, stop |
 | `--strict-counts` | treat a preset that matches zero records as a failure |

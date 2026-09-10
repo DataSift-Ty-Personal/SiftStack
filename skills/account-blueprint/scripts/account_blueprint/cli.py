@@ -78,6 +78,8 @@ def main(argv=None) -> int:
     ap.add_argument("--only", default="", help="comma list of families to create")
     ap.add_argument("--skip", default="", help="comma list of families to leave alone")
     ap.add_argument("--folders", choices=["numbered", "all"], default="numbered")
+    ap.add_argument("--move-presets", action="store_true",
+                    help="a preset that exists in another folder is moved to the blueprint's folder")
     ap.add_argument("--user-map", default="", help='"Adriana=Jane,Tinaa=Sam" source first name -> target first name')
     ap.add_argument("--assign-fallback", choices=["self", "drop"], default="self")
     ap.add_argument("--keep-neighborhoods", action="store_true")
@@ -86,7 +88,8 @@ def main(argv=None) -> int:
     ap.add_argument("--siftmap-auto-add", action="store_true",
                     help="keep auto-add ON for SiftMap presets (spends the target's allowance)")
     ap.add_argument("--probe-only", action="store_true",
-                    help="create one object per unverified route, read it back, stop")
+                    help="create one object per unverified route (task-group, task-preset, "
+                         "sequence-folder, custom-field group, board, column), read it back, stop")
     ap.add_argument("--allow-staff-target", action="store_true")
     ap.add_argument("--allow-same-account", default="", metavar="REASON")
     ap.add_argument("--strict-counts", action="store_true")
@@ -157,6 +160,7 @@ def main(argv=None) -> int:
     slug = _slug(a.target)
     opts = Options(
         commit=(a.commit and a.phase == "apply"), only=only, skip=skip, folders=a.folders,
+        move_presets=a.move_presets,
         user_map=user_map, assign_fallback=a.assign_fallback,
         strip_neighborhoods=not a.keep_neighborhoods, stub_inactive=a.stub_inactive,
         siftmap_auto_add=a.siftmap_auto_add, probe_only=a.probe_only,

@@ -19,7 +19,7 @@ import copy
 import re
 
 from .blueprint import UUID_RE, is_ref, is_unresolved, ref
-from .client import NetworkError
+from .client import ApiError, NetworkError
 
 LIST_KEYS = ("any_lists", "all_lists")
 TAG_KEYS = ("any_tags", "all_tags")
@@ -236,6 +236,27 @@ def sequence_to_refs(seq: dict, idx: SourceIndex, log, keep_titles: dict | None 
 
 # -------------------------------------------------------------- apply side
 
+DEFAULT_TZ = "America/New_York"
+
+
+def end_of_day_iso(tz_name: str = DEFAULT_TZ, now=None) -> str:
+    """The UI's value for create-task-by-preset.end_of_day: 23:59:59.999 of
+    today in the action's timezone, expressed in UTC. The create route
+    requires the field (verified live 2026-09-10, 400 "This field is
+    required"), while the source GET carries it only on sequences saved
+    recently, so apply always computes a fresh one."""
+    import datetime as _dt
+    try:
+        from zoneinfo import ZoneInfo
+        tz = ZoneInfo(tz_name or DEFAULT_TZ)
+    except Exception:
+        tz = _dt.timezone.utc
+    now = now or _dt.datetime.now(tz)
+    local = now.astimezone(tz)
+    eod = local.replace(hour=23, minute=59, second=59, microsecond=999000)
+    return eod.astimezone(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.") + "999Z"
+
+
 class Registry:
     """title -> target uuid for every family, loaded from the TARGET account.
 
@@ -271,11 +292,7 @@ class Registry:
         self.tags = {x["title"]: x["uuid"] for x in
                      c.get_all("/api/internal/tag/?offset=0&limit=10000&ordering=title")}
         self.load_statuses()
-        for b in c.get_all("/api/internal/siftline/board/?offset=0&limit=999"):
-            bt = b.get("title") or b.get("name")
-            self.boards[bt] = b["uuid"]
-            for col in c.get_all("/api/internal/siftline/board/%s/column/?offset=0&limit=999" % b["uuid"]):
-                self.columns[(bt, col.get("title") or col.get("name"))] = col["uuid"]
+        self.load_boards()
         for u in c.get_all("/api/internal/account/user/?offset=0&limit=999"):
             fn = (u.get("first_name") or "").strip()
             if fn and (fn.lower() not in self.users or u.get("is_active")):
@@ -285,6 +302,27 @@ class Registry:
         self.sequence_folders = {x["title"]: x["uuid"] for x in
                                  c.get_all("/api/internal/sequence-folder/?limit=999")}
         self.load_custom_fields()
+
+    def load_boards(self) -> None:
+        self.boards, self.columns = {}, {}
+        for b in self.c.get_all("/api/internal/siftline/board/?offset=0&limit=999"):
+            bt = b.get("title") or b.get("name")
+            self.boards[bt] = b["uuid"]
+            for col in self.c.get_all("/api/internal/siftline/board/%s/column/?offset=0&limit=999" % b["uuid"]):
+                self.columns[(bt, col.get("title") or col.get("name"))] = col["uuid"]
+
+    def column_uuid(self, board: str, title: str) -> str | None:
+        """Exact first, then case/whitespace-insensitive: the column create
+        route enforces uniqueness that way (verified live: "Send Back to Lead
+        Management" collided with ty+1's own spelling of it)."""
+        u = self.columns.get((board, title))
+        if u:
+            return u
+        key = (board, (title or "").strip().casefold())
+        for (b, t), cu in self.columns.items():
+            if (b, (t or "").strip().casefold()) == key:
+                return cu
+        return None
 
     def load_statuses(self) -> None:
         rows = self.c.get_all("/api/internal/status/?limit=1000")
@@ -310,10 +348,31 @@ class Registry:
         self.dry_counter += 1
         return "DRY-RUN-%s-%d" % (kind, self.dry_counter)
 
-    def ensure(self, kind: str, title: str, where: str = "") -> str | None:
+    def _same(self, kind: str, title: str) -> str | None:
+        """The target's own form of `title`, if it already holds one.
+
+        Lists: the server rejects a create whose title differs only by case
+        or surrounding whitespace ("Arrests " vs "Arrests"), so those match.
+        Tags: ty+2 legitimately holds both "Foreclosure" and "foreclosure",
+        so only whitespace is forgiven and case stays significant.
+        """
         pool = self.lists if kind == "list" else self.tags
         if title in pool:
-            return pool[title]
+            return title
+        key = title.strip().casefold() if kind == "list" else title.strip()
+        for t in pool:
+            k = t.strip().casefold() if kind == "list" else t.strip()
+            if k == key:
+                return t
+        return None
+
+    def ensure(self, kind: str, title: str, where: str = "") -> str | None:
+        pool = self.lists if kind == "list" else self.tags
+        same = self._same(kind, title)
+        if same is not None:
+            if same != title:
+                self.log.add(kind + "s", "translated", where or title, "%s %r -> target's %r" % (kind, title, same))
+            return pool[same]
         family = kind + "s"
         if family not in self.allowed:
             self.log.add(family, "gap", where, "%s %r missing in target and family not selected"
@@ -327,6 +386,19 @@ class Registry:
                    else "/api/internal/tag/?offset=0&limit=10000&ordering=title")
         try:
             self.c.call("/api/internal/%s/" % kind, "POST", {"title": title})
+        except ApiError as e:
+            if e.code == 400 and "unique" in e.body.lower():
+                # The server knows a form of this title the listing did not
+                # show us the same way. Re-list and adopt it rather than fail.
+                rows = self.c.get_all(listing)
+                pool.clear()
+                pool.update({x["title"]: x["uuid"] for x in rows})
+                same = self._same(kind, title)
+                if same is not None:
+                    self.log.add(family, "translated", where or title,
+                                 "%s %r exists as %r (server unique rule)" % (kind, title, same))
+                    return pool[same]
+            raise
         except NetworkError as e:
             # Lists and tags have no unique-title constraint, so a blind retry
             # after a dropped connection creates two. Look before retrying.
@@ -350,7 +422,9 @@ class Registry:
             return s
         return self.status_titles.get((s or "").casefold())
 
-    def resolve(self, r: dict, where: str, family: str) -> str | None:
+    def resolve(self, r: dict, where: str, family: str, *, quiet: bool = False) -> str | None:
+        """quiet: the caller has its own fallback (an assignee placeholder), so
+        a miss is not a gap and must not be logged as one."""
         kind, title = r.get("$ref"), r.get("title")
         if kind == "self":
             return self.self_user
@@ -359,7 +433,7 @@ class Registry:
         if kind == "board":
             u = self.boards.get(title)
         elif kind == "column":
-            u = self.columns.get((r.get("board"), title))
+            u = self.column_uuid(r.get("board"), title)
         elif kind == "user":
             u = self.user_map.get((title or "").lower()) or self.users.get((title or "").lower())
             if u and u not in self.user_names and not UUID_RE.match(u):
@@ -379,7 +453,7 @@ class Registry:
             u = (f.get("uuid") or f.get("id")) if f else None
         else:
             u = None
-        if not u:
+        if not u and not quiet:
             self.log.add(family, "gap", where, "%s %r not found in target" % (kind, r.get("board", "") + "/" + title if kind == "column" else title))
         return u
 
@@ -404,14 +478,20 @@ def refs_to_uuids(node, reg: Registry, log, where: str, family: str, *,
         return (u, 0) if u else (None, 1)
     if isinstance(node, dict):
         out = {}
+        # A sequence's property-assign action carries the user under `value`
+        # with `field: "assigned_to"` beside it; same fallback as a preset's
+        # assigned_to key.
+        assignee_keys = {"assigned_to"}
+        if node.get("field") == "assigned_to" and is_ref(node.get("value")):
+            assignee_keys.add("value")
         for k, v in node.items():
             p = "%s.%s" % (path, k) if path else k
             if k in MARKET_KEYS and strip_neighborhoods:
                 log.add(family, "translated", where, "%s: stripped %d market-specific values"
                         % (p, len(v) if isinstance(v, list) else 1))
                 continue
-            if k == "assigned_to" and (is_ref(v) or is_unresolved(v)):
-                u = reg.resolve(v, where, family) if is_ref(v) else None
+            if k in assignee_keys and (is_ref(v) or is_unresolved(v)):
+                u = reg.resolve(v, where, family, quiet=(assign_fallback == "self")) if is_ref(v) else None
                 if not u:
                     if assign_fallback == "self" and reg.self_user:
                         u = reg.self_user
@@ -513,6 +593,11 @@ def sequence_to_uuids(seq: dict, reg: Registry, log, *, assign_fallback="self",
     # set-field-value status values are stored lowercase in sequences
     for a in acts:
         pl = a.get("payload") or {}
+        if a.get("action") == "create-task-by-preset":
+            pl.setdefault("timezone", DEFAULT_TZ)
+            if not pl.get("end_of_day"):
+                pl["end_of_day"] = end_of_day_iso(pl["timezone"])
+            a["payload"] = pl
         if a.get("action") == "set-field-value" and str(pl.get("field", "")).endswith("status"):
             t = reg.status_title(str(pl.get("value")))
             if t is None:
