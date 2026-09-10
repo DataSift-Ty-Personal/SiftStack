@@ -72,7 +72,7 @@ def dump(bp: dict, path: str) -> None:
     d = os.path.dirname(os.path.abspath(path))
     os.makedirs(d, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=d, prefix=".bp_", suffix=".json")
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
+    with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
         json.dump(bp, f, indent=1, ensure_ascii=False)
     os.replace(tmp, path)
 

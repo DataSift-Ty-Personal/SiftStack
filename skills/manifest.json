@@ -54,9 +54,9 @@
         "scripts/clone_account.py"
       ],
       "file_count": 14,
-      "bytes": 406141,
+      "bytes": 394228,
       "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/account-blueprint.skill",
-      "sha256": "7d61fca889c4780919855f107f22dfbe1220fda0149964656dcf4b38b9362fa7",
+      "sha256": "41bde23b46a6b6dfe7c97061a9f67d277da25ccf003dc240a479712e2da2f39c",
       "requires": {
         "tier": "account",
         "accounts": [

@@ -49,7 +49,7 @@ def atomic_json(obj, path: str) -> None:
     d = os.path.dirname(os.path.abspath(path))
     os.makedirs(d, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=d, prefix=".tmp_", suffix=".json")
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
+    with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
         json.dump(obj, f, indent=1, ensure_ascii=False, default=str)
     os.replace(tmp, path)
 
