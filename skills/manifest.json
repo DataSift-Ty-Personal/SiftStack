@@ -5,9 +5,9 @@
   "raw_base": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main",
   "install_target": "~/.claude/skills",
   "counts": {
-    "total": 27,
-    "current": 25,
-    "skills": 25,
+    "total": 28,
+    "current": 26,
+    "skills": 26,
     "plugins": 2
   },
   "categories": [
@@ -25,10 +25,51 @@
   },
   "tier_counts": {
     "none": 13,
-    "account": 7,
+    "account": 8,
     "api": 5
   },
   "skills": [
+    {
+      "name": "account-blueprint",
+      "kind": "skill",
+      "category": "CRM",
+      "version": null,
+      "description": "Build a DataSift account in the same structure as the DataSift reference account, over the API, with a read-back on every object: preset folders and presets, lead statuses, lists, tags, custom fields, task presets, sequences, and SiftMap auto-add presets. Ships the current reference blueprint. Also exports any account you hold an Open API key for into the same portable format. Trigger for: set up my DataSift account like the challenge account, clone the preset system, install the sequential marketing presets, copy the sequences into a new account, or export my account structure.",
+      "status": "current",
+      "source_dir": "skills/account-blueprint",
+      "files": [
+        "SKILL.md",
+        "blueprints/ty2_2026-09-10.json",
+        "references/blueprint-format.md",
+        "scripts/account_blueprint/__init__.py",
+        "scripts/account_blueprint/apply.py",
+        "scripts/account_blueprint/blueprint.py",
+        "scripts/account_blueprint/cli.py",
+        "scripts/account_blueprint/client.py",
+        "scripts/account_blueprint/export.py",
+        "scripts/account_blueprint/probe.py",
+        "scripts/account_blueprint/report.py",
+        "scripts/account_blueprint/staff_creds.py",
+        "scripts/account_blueprint/translate.py",
+        "scripts/clone_account.py"
+      ],
+      "file_count": 14,
+      "bytes": 406141,
+      "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/account-blueprint.skill",
+      "sha256": "7d61fca889c4780919855f107f22dfbe1220fda0149964656dcf4b38b9362fa7",
+      "requires": {
+        "tier": "account",
+        "accounts": [
+          "DataSift"
+        ],
+        "env": [
+          "REISIFT_TARGET_JWT"
+        ],
+        "cost": "Free. Creates structure only; SiftMap auto-add is left OFF so no records are pulled",
+        "fallback": "no-api-playbook#presets-by-hand",
+        "note": "Apply needs your own DataSift JWT (or email + password). Export of your own account needs your Open API key."
+      }
+    },
     {
       "name": "sift-operations",
       "kind": "plugin",

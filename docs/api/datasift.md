@@ -120,10 +120,18 @@ never from Total Delinquency.
 like a complete answer. The count index lags behind writes, so do not verify a
 write by checking a count.
 
-## No REST API for the UI work
+## Presets, sequences and SiftMap presets DO have an API
 
-Presets, sequences and SiftMap have no API. Those skills drive the web app with
-Playwright, which is why they need your login rather than a key.
+Earlier versions of this page said they did not. They live under `/api/internal/`
+(`filter-preset-folder`, `filter-preset`, `sequence`, `sequence-folder`, `task-group`,
+`custom-fields`, `siftline/board`) and `map.reisift.io/filters/`, and they answer to your
+Open API key for reads and your user JWT for writes. The `account-blueprint` skill
+(`python src/clone_account.py`) exports a whole account to a title-keyed JSON and applies
+it to another account with read-back verification on every object. Contracts that bite:
+the folder preset listing defaults to 10 rows (always `?limit=999`), preset titles are
+unique per account, `POST /api/internal/status/` requires `color`, a saved preset's
+relative date windows are rejected by the records search, and `/api/internal/account/user/`
+returns a flat array rather than `{results}`.
 
 If you would rather not automate, [build them by
 hand](../setup/no-api-playbook.md#presets-by-hand): the skills carry all 21

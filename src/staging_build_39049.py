@@ -1,5 +1,11 @@
 """One-shot build-out of the ty+1 staging account for Franklin County OH.
 
+SUPERSEDED for the CRM structure: src/clone_account.py (package
+src/account_blueprint/) clones ty+2 into ANY account, covers sequences,
+task presets, custom fields and SiftMap presets, and reads users correctly
+(the _probe_map here swallows the flat-array user listing, so every
+assigned_to fell back to self). Kept for the Franklin segment pull phases.
+
 Phases (every write phase is DRY by default; add --commit):
 
     python src/staging_build_39049.py --phase preflight

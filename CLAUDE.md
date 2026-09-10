@@ -440,6 +440,119 @@ One-shot build of the ty+1@dataflik.com staging account from the 5-day challenge
 
 **Open items:** the P1 record landing (server queue; re-check with `python src/staging_build_39049.py --phase qa`); ty+1 has no AI addons so HOTTEST/STRONG `investor_score` presets read 0 until enabled; the 6 CALLER QUEUES presets point at ty+1's own user until staging callers exist; 4 named SiftMap presets left untouched (Okaloosa SFH, Karan Desai, Tyson Morrison, Nate Hirschberg); out-of-range-year records from the pre-filter pulls can be stripped from lists once landing completes.
 
+## Account Blueprint: clone ty+2's structure into any account (build 1.0.52, 2026-09-10)
+
+`src/clone_account.py` builds a DataSift account in the same structure as ty+2 over the API,
+for a community member on their own account or for staff setting up a client. Two steps, one
+portable file: `export` reads ty+2 LIVE into a title-keyed, uuid-free blueprint JSON; `apply`
+takes that file plus the TARGET's own credential and creates every family in dependency order,
+reads each object back, and writes a report. Package `src/account_blueprint/`; the apply side is
+stdlib-only and imports nothing from the Deal Room checkout. Ships as the `account-blueprint`
+skill with the current blueprint inside (`tools/sync_account_blueprint_skill.py` copies both;
+a test pins the copy to the source).
+
+```bash
+python src/clone_account.py --phase export                                   # ty+2 -> output/blueprints/ty2_<date>.json
+python src/clone_account.py --phase validate --blueprint <bp>
+python src/clone_account.py --phase plan  --blueprint <bp> --target you@x.com --jwt <paste>   # dry diff + TODOs
+python src/clone_account.py --phase apply --blueprint <bp> --target you@x.com --email you@x.com --password ... --commit
+python src/clone_account.py --phase apply --blueprint <bp> --target client@x.com --impersonate --commit   # staff, non-staff client
+python src/clone_account.py --phase apply ... --probe-only --commit          # one create + read-back per unverified route
+python src/clone_account.py --phase verify --blueprint <bp> --target you@x.com --jwt <paste>   # read-only parity + counts
+python tests/test_account_blueprint.py                                       # 30 checks, zero network
+```
+
+**What the live export holds (2026-09-10, 250 calls, 149s, every family under the Open API
+key):** 20 preset folders / 98 presets (folders 01-06, 09-21 plus `default`, which is empty;
+07/08 Tier 2 are gone), 27 sequences in 5 folders, 13 task presets in 3 groups, 37 custom
+fields in 3 groups, 7 boards with their columns, 37 SiftMap auto-add presets, 56 lists, 30
+statuses (4 custom), and 21 of 236 tags. Exit 0, one `$unresolved` reference (a deleted column
+inside the already-inactive "Send to Deep Prospecting" sequence).
+
+**The Api-Key reads EVERYTHING.** Verified against ty+2 for statuses, lists, tags, users,
+custom fields and groups, task groups and presets, boards and columns, sequences and folders,
+preset folders and presets, and `map.reisift.io/filters/`. The staff-JWT fallback in
+`export._family` fired exactly once across two exports: `map.reisift.io/filters/` answered 401
+to the Api-Key on the second run and 200 on the first, so keep the fallback. Shapes that differ from the docs:
+`/api/internal/account/user/` returns a FLAT ARRAY (the old mirror's `_probe_map` did
+`r.get("results")` on it, swallowed the AttributeError, and shipped an EMPTY user index, which
+is why every ty+1 caller queue pointed at the wrong human); custom-field rows DO carry
+`group {id,label}`; task presets carry `assigned_to_user` as an object; columns are
+`{uuid,title,order}`; SiftMap rows carry `is_active:false` for soft-deleted filters.
+
+**A saved preset and a records search speak different shapes.** The saved `must` stores relative
+windows (`last_direct_mailed: ["36-months","month"]`, `last_updated_date`) that
+`POST /api/internal/property/` refuses with "Use YYYY-MM-DD"; the UI resolves them at query
+time. `count_shape()` drops those keys and flattens `ownerPropertiesOwned.show_properties`,
+and any count without them is labelled "date window ignored". 26 of 98 presets are affected.
+
+**Blueprint rules, each one a bug the old mirror had or would have had:**
+- Every cross-reference is `{"$ref": kind, "title": ...}` (column refs carry `board`, task-preset
+  refs carry `group`). The ONLY uuid in the file is `source.account_uuid`, kept so apply can
+  refuse to clone an account onto itself. `validate()` regex-scans the dump for uuids, phone
+  numbers and emails and REFUSES the file on any hit: ty+2's "Call New Lead" sequence carries a
+  real phone, a real email and an integration uuid.
+- Export is key-driven THEN sniffed: known keys (`any_lists`, `any_tags`, `any_boards`,
+  `assigned_to`, `has_all tags_uuid`, `from_to column`, `task_preset`, `property-assign`) are
+  translated by meaning, then every remaining uuid-shaped string becomes a `$ref` or an
+  `$unresolved` marker. A field the hint table has never seen cannot smuggle a ty+2 uuid out.
+  The `create-task` payload key literally named `uuid` holds a timestamp, so matching is by
+  `UUID_RE`, never by key name.
+- `send-sms` / `send-email` actions are replaced by a `$manual` marker; apply drops them and
+  creates the sequence INACTIVE with a TODO. Absolute `end_of_day` timestamps are dropped
+  (the one on ty+2 was six months stale). `remove` actions name lists/tags by TITLE, and 91 of
+  the 114 tags in "Sold Property Cleanup V2" are cohort junk, so they are filtered to what the
+  blueprint carries.
+- Tags are pruned to those referenced by presets, sequences and SiftMap presets plus an anchor
+  allowlist; 134 of ty+2's tags are cohort/import junk (`2026-W27`, `pulled_*`, `DataFlik_*`,
+  the comma-string tag). A junk-shaped tag in a blueprint fails validation.
+- Duplicated uuids in `must_not.any_lists` are deduped; the uuid-titled junk list is DROPPED,
+  not remapped to "Auction" as the ty+1 build guessed. Users ship as first name + role only.
+
+**Apply rules:**
+- `verify_target` (exit 3, a `SystemExit` subclass no per-item except can swallow): token email
+  == `--target`, account != blueprint source (ty+2 has 11 users, so a different email is NOT a
+  different account), 30 min left, no `staff` flag unless `--allow-staff-target`, impersonated
+  tokens must carry the flag and differ from the staff account, a live sequence read must
+  return the claims account, Api-Key tokens refused (no claims). Verified live: the gate
+  refused ty+2 as its own target; with `--allow-same-account` a dry run indexed all nine
+  families of the live account with zero writes.
+- Order: statuses, lists, tags, custom fields, task presets, boards (RESOLVE ONLY, never
+  created), presets, sequences, SiftMap. Every listing passes `?limit=999`/`10000`; a 429 on a
+  listing RAISES instead of reading as "nothing here" (which is what re-creates lists, tags and
+  sequences, none of which have a unique-title constraint). A network error after a POST
+  re-lists by title before any retry.
+- Presets: exact `filters.must` equality on read-back (`_mk_preset` rule), `filters.account`
+  rewritten to the target, `must_not.any_neighborhood` stripped by default (69 presets carry
+  15 Knox strings; `--keep-neighborhoods`), a global title index across ALL folders because
+  titles are account-unique, and **a preset with ANY dropped reference is not created**: Ready to
+  Call minus its Priority 1 gate is every record with a phone, a different population wearing
+  the same name. Unresolvable `assigned_to` (the 6 CALLER QUEUES presets) maps via
+  `--user-map "Adriana=Jane"` or falls back to the applying user as a logged placeholder + TODO.
+- Sequences: a missing TRIGGER reference (board/column) skips the sequence; a missing ACTION
+  reference skips it too unless `--stub-inactive`, which creates it inactive minus that action.
+  Read-back is sent-subset-of-got on trigger/conditions/actions/is_active.
+- SiftMap presets are created with `auto_add_enabled` FORCED OFF unless `--siftmap-auto-add`,
+  because auto-add spends the target's record allowance the moment it exists, and the 37 carry
+  Knox/Blount addresses.
+- Statuses: custom only, full object with `color`; system statuses missing in the target are a
+  gap. Casefold matches (`Cold Lead` vs `cold lead`) map instead of creating and rewrite the
+  preset strings.
+- Unverified create routes (`task-group`, `task-preset`, `sequence-folder`, `custom-fields/group`)
+  go through `probe.create`: the FIRST real object is POSTed and read back before the batch
+  continues; 404/405 marks the family manual (every payload lands in the report), 400 stops it
+  with the body verbatim. No sentinel objects, since the DELETE routes are equally unverified.
+  `--probe-only --commit` does one create per route and stops.
+- Exit codes: 0 verified (gaps reported), 1 invalid blueprint, 2 any read-back mismatch (the run
+  continues so the report is complete), 3 refused. Report `.md` + `.json` per run, state file
+  keyed by title with the target account pinned, resume adopts whatever already landed.
+
+**Not yet done: a live commit against a second account.** ty+1's stored JWT expired 2026-08-21
+and staff-to-staff impersonation is refused, so the first real `apply --commit` needs a fresh
+ty+1 paste (`REISIFT_TARGET_JWT`) or a non-staff client to impersonate. Run `plan`, then
+`--probe-only --commit` (the four unverified routes), then the full commit, then `verify`, and
+stamp the probe results here.
+
 ## Dispo Buyer Engine - Pending Flips (build 1.0.46, 2026-08-20)
 
 `src/dispo_flip_buyers.py` turns SiftMap's investor-transaction data into a live dispo buyer machine on ty+2: properties whose last sale is an ACTIVE investor purchase are owned right now by a buyer, so pulling them into the CRM makes the sequential call/text flows dial people who provably buy in this market. Phases `infra/pull/trace/flippers`, DRY by default + `--commit`, resumable state `output/dispo_trace_state.json`.

@@ -92,6 +92,12 @@ REQUIRES = {
                                      note="Community mining needs your logged-in browser for private groups. The Excel engine is pure openpyxl."),
     "contractor-call-sheet": dict(tier="none", fallback=None,
                                   note="Drafts outreach for a human to send. Never sends anything itself."),
+    "account-blueprint": dict(tier="account", accounts=["DataSift"],
+                              env=["REISIFT_TARGET_JWT"],
+                              cost="Free. Creates structure only; SiftMap auto-add is left OFF so no records are pulled",
+                              fallback="no-api-playbook#presets-by-hand",
+                              note="Apply needs your own DataSift JWT (or email + password). "
+                                   "Export of your own account needs your Open API key."),
     "dispo-deal-blast": dict(tier="none", fallback=None,
                              note="The method, the guards and the copy rules. The bundled cohort calculator is stdlib only. Wiring it to your own CRM and SMS provider is your call, and every send stays behind a human release."),
 
@@ -173,6 +179,7 @@ CATEGORY = {
     "lead-manager-coach": "Coaching & Performance",
     "closer-coach": "Coaching & Performance",
     "sift-sequences": "CRM",
+    "account-blueprint": "CRM",
     "sift-operations": "CRM",
     "deal-analyzer": "Deal Analysis",
 }
