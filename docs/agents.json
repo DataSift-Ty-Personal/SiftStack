@@ -3,8 +3,8 @@
   "title": "SiftStack AI Agent Org Chart",
   "subtitle": "Every agent, what triggers it, what it touches, where a human still signs off, and the specific trap each one exists to avoid",
   "org": "DataSift / DataFlik",
-  "version": "1.0.51",
-  "generated": "2026-09-03"
+  "version": "1.0.52",
+  "generated": "2026-09-10"
  },
  "phases": {
   "1": {
@@ -1670,7 +1670,7 @@
     {
      "id": "presets",
      "name": "Preset Manager",
-     "role": "Discovers and updates the 21 filter presets that drive sequential marketing.",
+     "role": "Discovers and updates the filter presets that drive sequential marketing through the web app. For building the whole preset system in a new account, Account Blueprint Apply does it over the API with a read-back per preset.",
      "trigger": "manage-presets --all",
      "steps": [
       "Opens the filter panel, scrolls to the bottom, expands Filter Presets",
@@ -1693,7 +1693,7 @@
     {
      "id": "sequences",
      "name": "Sequence Builder",
-     "role": "Builds the 26 TCA sequence templates via drag and drop.",
+     "role": "Builds the 26 TCA sequence templates via drag and drop. For cloning the live sequences into a new account, Account Blueprint Apply creates them over the API with board columns and task presets re-linked.",
      "trigger": "create-sold-sequence, or sequence template deployment.",
      "steps": [
       "Trigger, condition, then actions",
@@ -1735,6 +1735,64 @@
      "status": "live",
      "source": "src/datasift_uploader.py",
      "gotcha": "Known limitation, stated out loud: SiftMap filters set values visually but do not trigger a React re-query, so only the 3 to 5 sidebar-visible properties get added per run."
+    },
+    {
+     "id": "bpexport",
+     "name": "Account Blueprint Export",
+     "role": "Reads the reference account live and writes its whole operating structure to one portable, uuid-free JSON: preset folders and presets, statuses, lists, tags, custom fields, task presets, boards, sequences, SiftMap presets.",
+     "trigger": "python src/clone_account.py --phase export",
+     "steps": [
+      "Reads every family through the Open API key, falling back per family to a staff JWT",
+      "Translates every uuid to a title reference by meaning first, then sniffs whatever is left so no unknown field can smuggle a uuid out",
+      "Replaces send-sms and send-email actions with a manual marker, drops stale timestamps, prunes 236 tags to the 21 the system uses",
+      "Refuses its own output on any uuid, phone number or email left in the file"
+     ],
+     "human": [],
+     "outputs": [
+      "output/blueprints/<label>_<date>.json",
+      "the blueprint shipped inside the account-blueprint skill"
+     ],
+     "tools": [
+      "DataSift internal API",
+      "Open API key",
+      "map.reisift.io"
+     ],
+     "phase": 1,
+     "status": "live",
+     "source": "src/account_blueprint/export.py",
+     "gotcha": "The user listing returns a FLAT ARRAY, not {results}. The previous mirror did r.get('results') on it, swallowed the AttributeError, and shipped an empty user index, so every caller-queue preset in the staging account pointed at the wrong human for a month and nobody saw it. Also: a saved preset stores relative date windows the records search rejects, so a count off the saved filter is an upper bound and is labelled that way."
+    },
+    {
+     "id": "bpapply",
+     "name": "Account Blueprint Apply",
+     "role": "Builds any DataSift account in the reference account's structure from the blueprint, in dependency order, with a read-back on every object and a report naming every gap. Stdlib only, so a community member runs it on their own account with their own login.",
+     "trigger": "python src/clone_account.py --phase plan | apply --commit | verify",
+     "steps": [
+      "Gate: token email must match the target, its account must differ from the blueprint's source, a live read must agree, or exit 3 before the first write",
+      "Statuses, lists, tags, custom fields, task presets, boards, presets, sequences, SiftMap, each read back and compared before the next family resolves against it",
+      "A preset with any unresolvable reference is refused, never narrowed; a sequence whose trigger points at a missing column is skipped",
+      "First object on a never-used create route is probed and read back before the batch; SiftMap presets land with auto-add OFF",
+      "verify re-lists every family and counts records per preset, naming the empty tag when a preset matches nothing"
+     ],
+     "human": [
+      "Runs plan and reads the configure-by-hand list before --commit",
+      "Re-adds SMS and email actions with their own integration",
+      "Sets the assignees the source named by first name"
+     ],
+     "outputs": [
+      "Live account structure",
+      "apply_<target>_<time>.md and .json report",
+      "resumable state file"
+     ],
+     "tools": [
+      "DataSift internal API",
+      "target JWT or email + password",
+      "map.reisift.io"
+     ],
+     "phase": 1,
+     "status": "live",
+     "source": "src/account_blueprint/apply.py",
+     "gotcha": "Ready to Call minus its Priority 1 gate is every record with a phone: a different population wearing the same name. So a dropped reference refuses the preset rather than creating a narrower one. The live ty+1 run then taught four server rules in a row: a task preset takes exactly one assignee key with the other two absent, create-task-by-preset requires a fresh end_of_day, and list and column titles are unique ignoring case and whitespace ('Arrests ' with a trailing space collided with 'Arrests'). Every one failed loudly only because each create is read back."
     }
    ]
   },

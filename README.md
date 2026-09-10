@@ -116,6 +116,7 @@ The manifest is the machine-readable index of the whole library: every package, 
 | Package | What it does |
 |---|---|
 | `sift-sequences` | 26 sequence templates and how to build them. |
+| `account-blueprint` | Build a DataSift account in the reference account's structure over the API: presets, statuses, lists, tags, custom fields, task presets, sequences, SiftMap presets, every object read back. Ships the current blueprint. |
 | `sift-operations` (plugin) | The CRM operations encyclopedia: SiftLine boards, drip campaigns, tasks, filters, tags, skip trace workflows. |
 
 Two superseded packages (`deep-prospecting`, `deep-prospecting-v4`) stay in the repo so old runs still resolve. The installer skips them unless you ask for one by name. Use `deep-prospecting-v5`, which is about 5x cheaper and returns relatives on records where v4 returned nothing.
@@ -151,9 +152,9 @@ Skills degrade rather than fail: a missing key means that step is skipped and th
 
 ## The agent system
 
-The platform is 76 agents across 9 divisions.
+The platform is 82 agents across 9 divisions.
 
-- [**The interactive map**](https://claude.ai/code/artifact/254afeb5-1fe5-4c8e-8179-0a7fa79d9039), searchable and filterable by division, status, and whether a human still signs off.
+- [**The interactive map**](https://learn.datasift.ai/agent-org-chart), searchable and filterable by division, status, and whether a human still signs off.
 - [**docs/AGENT-MAP.md**](docs/AGENT-MAP.md), the same thing as a document you can read in the repo or hand to Claude.
 
 Both render from [`docs/agents.json`](docs/agents.json), so they cannot disagree about what the system does.

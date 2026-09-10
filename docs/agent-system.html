@@ -249,22 +249,22 @@ footer p { margin:0 0 6px; }
 <div class="mast">
   <div class="wrap mast-in">
     <p class="eyebrow">
-      <span>SiftStack</span><span class="sep">/</span><span>Build 1.0.51</span>
-      <span class="sep">/</span><span>2026-09-03</span>
+      <span>SiftStack</span><span class="sep">/</span><span>Build 1.0.52</span>
+      <span class="sep">/</span><span>2026-09-10</span>
     </p>
     <h1>SiftStack AI Agent Org Chart</h1>
     <p class="lede">Every agent, what triggers it, what it touches, where a human still signs off, and the specific trap each one exists to avoid.</p>
 
     <div class="stats">
-      <div class="stat"><b>80</b><span>agents</span></div>
+      <div class="stat"><b>82</b><span>agents</span></div>
       <div class="stat"><b>9</b><span>divisions</span></div>
-      <div class="stat"><b>73</b><span>live in production</span></div>
-      <div class="stat"><b>54</b><span>with a human gate</span></div>
+      <div class="stat"><b>75</b><span>live in production</span></div>
+      <div class="stat"><b>55</b><span>with a human gate</span></div>
     </div>
 
     <div class="install">
       <h2>Install the skill library</h2>
-      <p>24 Claude skills that drive the agents below. One command, into Claude Code.
+      <p>26 Claude skills that drive the agents below. One command, into Claude Code.
          No clone, no pip, no virtualenv.</p>
       <div class="cmd">
         <code id="cmd">curl -fsSL https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/install.py | python3 -</code>
@@ -1329,7 +1329,7 @@ footer p { margin:0 0 6px; }
   <header class="dept-head">
     <h3>CRM Operations</h3>
     <p class="dept-tag">Get it into DataSift without silently losing half of it</p>
-    <span class="dept-count"><b>7</b> agents</span>
+    <span class="dept-count"><b>9</b> agents</span>
   </header>
   <div class="grid"><article class="agent" data-dept="crm" data-status="live" data-phase="1" data-human="yes" data-search="upload orchestrator owns the path from finished csv to live, tagged, enriched crm records. src/datasift_api_upload.py four traps that each fail silently. tags must be an array or you create one tag literally named the whole comma string. a select field needs the option&#x27;s uuid, not its label. entity owners cannot have a blank first_name, and omitting a key is not the same as sending empty. notes on the property payload returns 200 and is discarded. datasift api playwright">
   <details>
@@ -1399,7 +1399,7 @@ footer p { margin:0 0 6px; }
       <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>Only core address fields reliably auto-map. Tags, Lists, and every enrichment column routinely stay unmapped in step 4, which is exactly how you upload 2,500 records that attach to nothing.</p></div>
     </div>
   </details>
-</article><article class="agent" data-dept="crm" data-status="live" data-phase="1" data-human="no" data-search="preset manager discovers and updates the 21 filter presets that drive sequential marketing. src/datasift_uploader.py, src/niche_sequential.py the filter panel is a scrollable div, not the viewport, so playwright&#x27;s scroll_into_view_if_needed does nothing. you need js scrollintoview. and the beamer nps iframe blocks all pointer events globally until you remove it from the dom. playwright datasift web app">
+</article><article class="agent" data-dept="crm" data-status="live" data-phase="1" data-human="no" data-search="preset manager discovers and updates the filter presets that drive sequential marketing through the web app. for building the whole preset system in a new account, account blueprint apply does it over the api with a read-back per preset. src/datasift_uploader.py, src/niche_sequential.py the filter panel is a scrollable div, not the viewport, so playwright&#x27;s scroll_into_view_if_needed does nothing. you need js scrollintoview. and the beamer nps iframe blocks all pointer events globally until you remove it from the dom. playwright datasift web app">
   <details>
     <summary>
       <span class="dot dot-live" aria-hidden="true"></span>
@@ -1408,7 +1408,7 @@ footer p { margin:0 0 6px; }
         <span class="badge badge-live">Live</span>
         
       </span>
-      <span class="agent-role">Discovers and updates the 21 filter presets that drive sequential marketing.</span>
+      <span class="agent-role">Discovers and updates the filter presets that drive sequential marketing through the web app. For building the whole preset system in a new account, Account Blueprint Apply does it over the API with a read-back per preset.</span>
       <code class="src">src/datasift_uploader.py, src/niche_sequential.py</code>
     </summary>
     <div class="agent-body">
@@ -1416,7 +1416,7 @@ footer p { margin:0 0 6px; }
       <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>The filter panel is a scrollable div, not the viewport, so Playwright&#x27;s scroll_into_view_if_needed does nothing. You need JS scrollIntoView. And the Beamer NPS iframe blocks ALL pointer events globally until you remove it from the DOM.</p></div>
     </div>
   </details>
-</article><article class="agent" data-dept="crm" data-status="live" data-phase="1" data-human="no" data-search="sequence builder builds the 26 tca sequence templates via drag and drop. src/sequence_templates.py cards carry draggable=false so playwright&#x27;s native drag will not work. mouse down, 20 incremental moves at 50ms, mouse up, with 500ms pauses between phases. playwright react dnd">
+</article><article class="agent" data-dept="crm" data-status="live" data-phase="1" data-human="no" data-search="sequence builder builds the 26 tca sequence templates via drag and drop. for cloning the live sequences into a new account, account blueprint apply creates them over the api with board columns and task presets re-linked. src/sequence_templates.py cards carry draggable=false so playwright&#x27;s native drag will not work. mouse down, 20 incremental moves at 50ms, mouse up, with 500ms pauses between phases. playwright react dnd">
   <details>
     <summary>
       <span class="dot dot-live" aria-hidden="true"></span>
@@ -1425,7 +1425,7 @@ footer p { margin:0 0 6px; }
         <span class="badge badge-live">Live</span>
         
       </span>
-      <span class="agent-role">Builds the 26 TCA sequence templates via drag and drop.</span>
+      <span class="agent-role">Builds the 26 TCA sequence templates via drag and drop. For cloning the live sequences into a new account, Account Blueprint Apply creates them over the API with board columns and task presets re-linked.</span>
       <code class="src">src/sequence_templates.py</code>
     </summary>
     <div class="agent-body">
@@ -1448,6 +1448,40 @@ footer p { margin:0 0 6px; }
     <div class="agent-body">
       <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">manage-sold --months-back 12</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Searches by city, not county</li><li>Adds records with tags</li><li>Sold Property Cleanup sequence fires on the tag</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><div class="fact-v muted">Nobody. Runs unattended.</div></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Tagged sold records</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">Playwright</span><span class="chip">SiftMap</span></div></div>
       <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>Known limitation, stated out loud: SiftMap filters set values visually but do not trigger a React re-query, so only the 3 to 5 sidebar-visible properties get added per run.</p></div>
+    </div>
+  </details>
+</article><article class="agent" data-dept="crm" data-status="live" data-phase="1" data-human="no" data-search="account blueprint export reads the reference account live and writes its whole operating structure to one portable, uuid-free json: preset folders and presets, statuses, lists, tags, custom fields, task presets, boards, sequences, siftmap presets. src/account_blueprint/export.py the user listing returns a flat array, not {results}. the previous mirror did r.get(&#x27;results&#x27;) on it, swallowed the attributeerror, and shipped an empty user index, so every caller-queue preset in the staging account pointed at the wrong human for a month and nobody saw it. also: a saved preset stores relative date windows the records search rejects, so a count off the saved filter is an upper bound and is labelled that way. datasift internal api open api key map.reisift.io">
+  <details>
+    <summary>
+      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="agent-name">Account Blueprint Export</span>
+      <span class="agent-meta">
+        <span class="badge badge-live">Live</span>
+        
+      </span>
+      <span class="agent-role">Reads the reference account live and writes its whole operating structure to one portable, uuid-free JSON: preset folders and presets, statuses, lists, tags, custom fields, task presets, boards, sequences, SiftMap presets.</span>
+      <code class="src">src/account_blueprint/export.py</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">python src/clone_account.py --phase export</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Reads every family through the Open API key, falling back per family to a staff JWT</li><li>Translates every uuid to a title reference by meaning first, then sniffs whatever is left so no unknown field can smuggle a uuid out</li><li>Replaces send-sms and send-email actions with a manual marker, drops stale timestamps, prunes 236 tags to the 21 the system uses</li><li>Refuses its own output on any uuid, phone number or email left in the file</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><div class="fact-v muted">Nobody. Runs unattended.</div></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">output/blueprints/&lt;label&gt;_&lt;date&gt;.json, the blueprint shipped inside the account-blueprint skill</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">DataSift internal API</span><span class="chip">Open API key</span><span class="chip">map.reisift.io</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>The user listing returns a FLAT ARRAY, not {results}. The previous mirror did r.get(&#x27;results&#x27;) on it, swallowed the AttributeError, and shipped an empty user index, so every caller-queue preset in the staging account pointed at the wrong human for a month and nobody saw it. Also: a saved preset stores relative date windows the records search rejects, so a count off the saved filter is an upper bound and is labelled that way.</p></div>
+    </div>
+  </details>
+</article><article class="agent" data-dept="crm" data-status="live" data-phase="1" data-human="yes" data-search="account blueprint apply builds any datasift account in the reference account&#x27;s structure from the blueprint, in dependency order, with a read-back on every object and a report naming every gap. stdlib only, so a community member runs it on their own account with their own login. src/account_blueprint/apply.py ready to call minus its priority 1 gate is every record with a phone: a different population wearing the same name. so a dropped reference refuses the preset rather than creating a narrower one. the live ty+1 run then taught four server rules in a row: a task preset takes exactly one assignee key with the other two absent, create-task-by-preset requires a fresh end_of_day, and list and column titles are unique ignoring case and whitespace (&#x27;arrests &#x27; with a trailing space collided with &#x27;arrests&#x27;). every one failed loudly only because each create is read back. datasift internal api target jwt or email + password map.reisift.io">
+  <details>
+    <summary>
+      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="agent-name">Account Blueprint Apply</span>
+      <span class="agent-meta">
+        <span class="badge badge-live">Live</span>
+        <span class="badge badge-gate">Human gate</span>
+      </span>
+      <span class="agent-role">Builds any DataSift account in the reference account&#x27;s structure from the blueprint, in dependency order, with a read-back on every object and a report naming every gap. Stdlib only, so a community member runs it on their own account with their own login.</span>
+      <code class="src">src/account_blueprint/apply.py</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">python src/clone_account.py --phase plan | apply --commit | verify</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Gate: token email must match the target, its account must differ from the blueprint&#x27;s source, a live read must agree, or exit 3 before the first write</li><li>Statuses, lists, tags, custom fields, task presets, boards, presets, sequences, SiftMap, each read back and compared before the next family resolves against it</li><li>A preset with any unresolvable reference is refused, never narrowed; a sequence whose trigger points at a missing column is skipped</li><li>First object on a never-used create route is probed and read back before the batch; SiftMap presets land with auto-add OFF</li><li>verify re-lists every family and counts records per preset, naming the empty tag when a preset matches nothing</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>Runs plan and reads the configure-by-hand list before --commit</li><li>Re-adds SMS and email actions with their own integration</li><li>Sets the assignees the source named by first name</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Live account structure, apply_&lt;target&gt;_&lt;time&gt;.md and .json report, resumable state file</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">DataSift internal API</span><span class="chip">target JWT or email + password</span><span class="chip">map.reisift.io</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>Ready to Call minus its Priority 1 gate is every record with a phone: a different population wearing the same name. So a dropped reference refuses the preset rather than creating a narrower one. The live ty+1 run then taught four server rules in a row: a task preset takes exactly one assignee key with the other two absent, create-task-by-preset requires a fresh end_of_day, and list and column titles are unique ignoring case and whitespace (&#x27;Arrests &#x27; with a trailing space collided with &#x27;Arrests&#x27;). Every one failed loudly only because each create is read back.</p></div>
     </div>
   </details>
 </article></div>
