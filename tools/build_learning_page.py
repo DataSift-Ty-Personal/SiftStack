@@ -29,6 +29,11 @@ DATA = ROOT / "docs" / "agents.json"
 REPO = "DataSift-Ty-Personal/SiftStack"
 RAW = f"https://raw.githubusercontent.com/{REPO}/main"
 INSTALL = f"curl -fsSL {RAW}/install.py | python3 -"
+# The plugin marketplace route: one paste, and it updates itself afterwards.
+# `;` not `&&`, because Windows PowerShell 5.1 has no `&&`. Both commands were
+# run verbatim against GitHub before this shipped.
+INSTALL_PLUGINS = (f"claude plugin marketplace add {REPO}; "
+                   "claude plugin install siftstack-all@siftstack")
 SLUG = "agent-org-chart"
 SITE = "https://learn.datasift.ai"
 
@@ -195,7 +200,7 @@ def build(doc: dict) -> str:
 
     return Template(PAGE).substitute(
         n_skills=_skill_count(),
-        slug=SLUG, site=SITE, install=e(INSTALL), repo=REPO,
+        slug=SLUG, site=SITE, install=e(INSTALL), install_plugins=e(INSTALL_PLUGINS), repo=REPO,
         version=e(doc["meta"].get("version")), generated=e(doc["meta"].get("generated")),
         chart_w=f"{chart_w:.0f}", chart_h=f"{chart_h:.0f}",
         nodes="".join(nodes), lines="".join(lines), chips=chips,
@@ -448,7 +453,20 @@ p { text-wrap: pretty; }
 }
 .ds-install p { margin: 0; font-size: 13px; color: rgba(255,255,255,0.72); }
 .ds-install p b { color: #fff; }
-.ds-cmd { display: flex; align-items: stretch; margin-left: auto; max-width: 100%;
+.ds-how { display: flex; margin-left: auto; border: 1px solid rgba(255,255,255,0.18); border-radius: 6px; overflow: hidden; }
+.ds-how button {
+  font-family: inherit; font-size: 12.5px; font-weight: 600; color: rgba(255,255,255,0.72);
+  background: transparent; border: 0; border-left: 1px solid rgba(255,255,255,0.18);
+  padding: 0 12px; min-height: 34px; cursor: pointer;
+}
+.ds-how button:first-child { border-left: 0; }
+.ds-how button:hover { color: #fff; }
+.ds-how button:active { transform: translateY(1px); }
+.ds-how button[aria-selected="true"] { color: #fff; background: rgba(255,255,255,0.12); }
+.ds-how button:focus-visible, .ds-cmd button:focus-visible { outline: 2px solid #fff; outline-offset: -2px; }
+.ds-break { flex-basis: 100%; height: 0; }
+.ds-install .ds-note { flex: 1 1 260px; min-width: 0; text-align: right; font-size: 12px; color: rgba(255,255,255,0.6); }
+.ds-cmd { display: flex; align-items: stretch; max-width: 100%; min-width: 0;
   border: 1px solid rgba(255,255,255,0.18); border-radius: 6px; overflow: hidden; }
 .ds-cmd code {
   font-family: var(--font-mono); font-size: 12px; padding: 8px 10px; color: rgba(255,255,255,0.9);
@@ -501,7 +519,10 @@ p { text-wrap: pretty; }
   .ds-m-role { grid-column: 2; font-size: 13px; color: rgba(255,255,255,0.66); }
   .ds-drawer { position: fixed; width: 100%; }
   .ds-install { flex-direction: column; align-items: stretch; }
-  .ds-cmd { margin-left: 0; }
+  .ds-cmd, .ds-how { margin-left: 0; }
+  .ds-how button { flex: 1; }
+  .ds-install .ds-note { text-align: left; flex-basis: auto; }
+  .ds-break { display: none; }
 
 }
 
@@ -571,11 +592,18 @@ p { text-wrap: pretty; }
   </div>
 
   <div class="ds-install">
-    <p><b>$n_agents agents, $n_div divisions.</b> The $n_skills Claude skills that drive them install in one command.</p>
+    <p><b>$n_agents agents, $n_div divisions.</b> The $n_skills Claude skills that drive them install in one command and keep themselves up to date.</p>
+    <div class="ds-how" role="tablist" aria-label="Where to install">
+      <button type="button" role="tab" aria-selected="true" data-cmd="$install_plugins" data-note="Paste in a terminal. Then turn on updates once: /plugin, Marketplaces, siftstack, Enable auto-update.">Claude Code</button>
+      <button type="button" role="tab" aria-selected="false" data-cmd="$repo" data-note="Customize, Plugins, Add marketplace, paste this, then install siftstack-all.">Cowork</button>
+      <button type="button" role="tab" aria-selected="false" data-cmd="$install" data-note="Any Claude Code version. Copies the skills into ~/.claude/skills. Run it again to update.">No plugins</button>
+    </div>
+    <span class="ds-break" aria-hidden="true"></span>
     <div class="ds-cmd">
-      <code id="ds-cmd">$install</code>
+      <code id="ds-cmd">$install_plugins</code>
       <button type="button" id="ds-copy">Copy</button>
     </div>
+    <p class="ds-note" id="ds-note">Paste in a terminal. Then turn on updates once: /plugin, Marketplaces, siftstack, Enable auto-update.</p>
   </div>
 
   <aside class="ds-drawer" id="ds-drawer" role="dialog" aria-modal="false" aria-labelledby="ds-d-name" hidden>
@@ -863,6 +891,16 @@ p { text-wrap: pretty; }
       var btn = document.getElementById('ds-copy');
       var cmd = document.getElementById('ds-cmd');
       if (!btn || !cmd) return;
+      var note = document.getElementById('ds-note');
+      var tabs = Array.prototype.slice.call(document.querySelectorAll('.ds-how button'));
+      tabs.forEach(function (tab) {
+        tab.addEventListener('click', function () {
+          tabs.forEach(function (t) { t.setAttribute('aria-selected', t === tab ? 'true' : 'false'); });
+          cmd.textContent = tab.getAttribute('data-cmd');
+          if (note) note.textContent = tab.getAttribute('data-note');
+          cmd.scrollLeft = 0;
+        });
+      });
       btn.addEventListener('click', function () {
         var text = cmd.textContent;
         function done() {

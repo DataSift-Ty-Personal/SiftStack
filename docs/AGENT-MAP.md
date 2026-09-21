@@ -2,7 +2,7 @@
 
 *Every agent, what triggers it, what it touches, where a human still signs off, and the specific trap each one exists to avoid*
 
-82 agents across 9 divisions. Generated from [`docs/agents.json`](agents.json) by `tools/agent_map.py`. Build 1.0.52, 2026-09-10.
+82 agents across 9 divisions. Generated from [`docs/agents.json`](agents.json) by `tools/agent_map.py`. Build 1.0.54, 2026-09-21.
 
 Do not hand-edit this file. Edit `docs/agents.json` and re-run the generator.
 
