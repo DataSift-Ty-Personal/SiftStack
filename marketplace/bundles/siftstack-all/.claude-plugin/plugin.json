@@ -1,0 +1,36 @@
+{
+  "name": "siftstack-all",
+  "description": "The whole SiftStack REI skill library in one install.",
+  "author": {
+    "name": "DataSift"
+  },
+  "dependencies": [
+    "account-blueprint",
+    "buyer-prospector",
+    "caller-reputation-monitor",
+    "candidate-intake",
+    "closer-coach",
+    "cold-call-coach",
+    "comp-package",
+    "contractor-call-sheet",
+    "deal-analyzer",
+    "deep-prospecting-v5",
+    "dispo-deal-blast",
+    "first-market-county-data",
+    "kpi-engine",
+    "lead-manager-coach",
+    "phone-validator",
+    "playbook-creator",
+    "probate-property-finder",
+    "real-estate-comping",
+    "rehab-estimator",
+    "sequential-presets",
+    "sift-market-research",
+    "sift-operations",
+    "sift-sequences",
+    "siftstack-core",
+    "team-hiring",
+    "text-touch-builder",
+    "vendor-directory-builder"
+  ]
+}

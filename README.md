@@ -4,7 +4,7 @@ Full-stack real estate investing operations platform built around [DataSift.ai](
 
 Two things live in this repo:
 
-1. **The REI skill library.** 24 Claude skills that teach Claude to run a specific REI workflow: comp a property, estimate a rehab, find the heirs, score your phone numbers, grade your cold calls. Install them into Claude Code with one command, or upload them to a Claude Co-Work session. **You do not need the platform to use these.**
+1. **The REI skill library.** 27 current packages that teach Claude to run a specific REI workflow: comp a property, estimate a rehab, find the heirs, score your phone numbers, grade your cold calls. Install them into Claude Code or Claude Cowork from the plugin marketplace, and they keep themselves up to date. **You do not need the platform to use these.**
 2. **The platform.** The pipeline that pulls county distress data, enriches it through 10 steps, and pushes it into DataSift ready for sequential marketing. Requires a DataSift.ai account.
 
 Start with the skills. Most people never need anything else.
@@ -13,7 +13,28 @@ Start with the skills. Most people never need anything else.
 
 ## Install the skill library
 
-### Claude Code (one command)
+### Claude Code (two commands, then it updates itself)
+
+```
+/plugin marketplace add DataSift-Ty-Personal/SiftStack
+/plugin install siftstack-all@siftstack
+```
+
+That installs all 27 current packages as plugins. Then turn on updates once: run `/plugin`, open **Marketplaces**, select **siftstack**, choose **Enable auto-update**. From then on every improvement pushed here reaches you on its own. Claude Code leaves auto-update off for any marketplace that is not Anthropic's, which is why this step exists.
+
+Want one division instead of everything? Install a bundle: `siftstack-deal-analysis`, `siftstack-market-intel`, `siftstack-crm`, `siftstack-coaching` or `siftstack-operations`. Or install any single skill by name, such as `/plugin install rehab-estimator@siftstack`.
+
+Then ask Claude to **run the SiftStack doctor**. It tells you what works right now, what needs a key, what each key costs, and the free route without it.
+
+If the install fails with `Unrecognized key: "dependencies"`, your Claude Code predates bundles. Run `claude update` and try again.
+
+### Claude Cowork
+
+Same library, same updates. **Customize**, then **Plugins**, then **Add marketplace**, and enter `DataSift-Ty-Personal/SiftStack`. Install `siftstack-all` or any single plugin from the list. Use **Update** on the marketplace to pull the latest.
+
+Cowork runs skills inside a sandbox with restricted network access. The skills that need no credentials work there as they do anywhere. A skill that calls a paid API may be blocked from reaching it, and in that case run it from Claude Code instead.
+
+### Without plugins (any Claude Code version, one command)
 
 ```bash
 # macOS / Linux
@@ -23,7 +44,7 @@ curl -fsSL https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main
 irm https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/install.py | python -
 ```
 
-That downloads all 22 current skills (24 packages counting the 2 plugins) into `~/.claude/skills/` and the 2 plugins into `~/.claude/plugins/`. Restart Claude Code and they are live. No clone, no `pip install`, no virtualenv. Python 3.9 or newer, standard library only.
+That copies the skills into `~/.claude/skills/`. Restart Claude Code and they are live. No clone, no `pip install`, no virtualenv. Python 3.9 or newer, standard library only. This route does not update itself: re-run it to pull changes. Add `--plugins` and it registers the marketplace and installs every plugin for you instead, which works even on a Claude Code too old for bundles.
 
 Prefer to read the script before running it? That is the right instinct:
 
@@ -45,9 +66,9 @@ python3 install.py --dry-run                               # report, write nothi
 
 Re-running is safe. Anything already current is skipped, and a package is only swapped in after it downloads and unpacks cleanly, so a failed update cannot leave you with a half-written skill.
 
-### Claude Co-Work, Projects, and the claude.ai app
+### Projects and the claude.ai app
 
-Co-Work takes the packaged file rather than a folder. Download the `.skill` you want from [`dist/`](dist/) and upload it to your session or Project:
+Chat and Projects take the packaged file rather than a plugin. Download the `.skill` you want from [`dist/`](dist/) and upload it to your session or Project:
 
 ```
 https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/rehab-estimator.skill
@@ -67,7 +88,7 @@ The manifest is the machine-readable index of the whole library: every package, 
 
 ## The catalog
 
-24 current packages. `python3 install.py --list` prints this with full descriptions.
+27 current packages. `python3 install.py --list` prints this with full descriptions.
 
 ### Deal Analysis
 
@@ -100,6 +121,7 @@ The manifest is the machine-readable index of the whole library: every package, 
 | `candidate-intake` | Aggregate job applicants from Indeed, Gmail, and Facebook into one scored master list. |
 | `team-hiring` | Who to hire next and what they own. The five roles with their daily tasks and one North Star KPI each, hiring geography and pay bands, job post templates, the interview, and the first two weeks. |
 | `vendor-directory-builder` | Build a vetted contractor or vendor directory for any market: mine a local community for names people vouch for, verify every one against public records, sweep for geography and gaps, and ship a filterable Excel with top picks. Also the tool for vetting a found or AI-generated list. |
+| `dispo-deal-blast` | Text a wholesale deal to a vetted buyer list: who to include, what the message may and may not say, the guards that keep a wrong price from going out, and how to turn the replies into a verified buyer phonebook. |
 | `contractor-call-sheet` | Turn a finished directory into action: a printable one-page call sheet of the top picks by trade, personalized first-contact texts and voicemails, and the vetting-call question script. |
 
 ### Coaching and Performance
@@ -119,11 +141,17 @@ The manifest is the machine-readable index of the whole library: every package, 
 | `account-blueprint` | Build a DataSift account in the reference account's structure over the API: presets, statuses, lists, tags, custom fields, task presets, sequences, SiftMap presets, every object read back. Ships the current blueprint. |
 | `sift-operations` (plugin) | The CRM operations encyclopedia: SiftLine boards, drip campaigns, tasks, filters, tags, skip trace workflows. |
 
+### Setup
+
+| Plugin | What it does |
+|---|---|
+| `siftstack-core` (plugin) | The doctor and the guided setup. Every bundle installs it, so you can always ask what works right now and what needs a key. |
+
 Two superseded packages (`deep-prospecting`, `deep-prospecting-v4`) stay in the repo so old runs still resolve. The installer skips them unless you ask for one by name. Use `deep-prospecting-v5`, which is about 5x cheaper and returns relatives on records where v4 returned nothing.
 
 ### What a skill needs from you
 
-**Eleven of the 24 work the moment they are installed.** No key, no login, no card. Ask the library where you stand:
+**14 work on install, out of 27 current packages.** No key, no login, no card. Ask Claude to **run the SiftStack doctor**, or from a terminal:
 
 ```bash
 python3 install.py --doctor
@@ -133,7 +161,7 @@ It reads your environment and a `.env` if you have one, then prints what works n
 
 | Tier | Count | What it means |
 |---|---|---|
-| No credentials | 11 | Works on install |
+| No credentials | 14 | Works on install |
 | A login you already have | 8 | DataSift, SmrtPhone, Google. Browser-driven, no API access needed |
 | A metered API key | 5 | Faster and deeper, and every one has a free route |
 

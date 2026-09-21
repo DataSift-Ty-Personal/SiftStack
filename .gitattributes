@@ -28,3 +28,7 @@ dist/**      binary
 #
 # That is what actually made the working tree match, in 2026-09.
 
+
+# The plugin marketplace is generated and byte-compared in CI, same as skills/.
+.claude-plugin/** text=auto eol=lf
+marketplace/**    text=auto eol=lf

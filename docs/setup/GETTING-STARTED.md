@@ -3,10 +3,30 @@
 Install the library, find out what you can already run, then add credentials
 only for the things you actually want.
 
-Nine skills work the moment they are installed. You do not need an API key,
+14 work on install, out of 27 current packages. You do not need an API key,
 a developer account, or a credit card to get value out of this on day one.
 
 ## 1. Install
+
+In Claude Code:
+
+```
+/plugin marketplace add DataSift-Ty-Personal/SiftStack
+/plugin install siftstack-all@siftstack
+```
+
+Then turn on updates once: `/plugin`, **Marketplaces**, **siftstack**, **Enable
+auto-update**. Claude Code leaves that off for any marketplace that is not
+Anthropic's, so without it you stay on the version you installed.
+
+In Claude Cowork: **Customize**, **Plugins**, **Add marketplace**, enter
+`DataSift-Ty-Personal/SiftStack`, and install `siftstack-all`.
+
+You do not invoke skills by name: describe the task and the right one triggers.
+
+If the install fails with `Unrecognized key: "dependencies"`, run `claude update`
+first. No plugins at all? The one-line installer still works and needs only
+Python 3.9 or newer:
 
 ```bash
 # macOS / Linux
@@ -16,16 +36,12 @@ curl -fsSL https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main
 irm https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/install.py | python -
 ```
 
-Python 3.9 or newer, standard library only. No clone, no `pip install`, no
-virtualenv. Skills land in `~/.claude/skills/`, plugins in `~/.claude/plugins/`.
-
-Restart Claude Code afterwards. You do not invoke skills by name: describe the
-task and the right one triggers.
-
-On Claude Co-Work or claude.ai, download the package you want from
-[`dist/`](../../dist/) and upload it to your session or Project instead.
+For a claude.ai chat or Project, download the package you want from
+[`dist/`](../../dist/) and upload it.
 
 ## 2. Find out where you stand
+
+Ask Claude to **run the SiftStack doctor**. From a terminal the same check is:
 
 ```bash
 python3 install.py --doctor
@@ -45,7 +61,7 @@ There are three tiers, and most people should stop after tier 1 for a while.
 
 ### Tier 1: no credentials
 
-Works on install. Nine packages.
+14 work on install.
 
 | Skill | What you get |
 |---|---|
@@ -58,6 +74,11 @@ Works on install. Nine packages.
 | `playbook-creator` | Turn a recording or transcript into a real SOP |
 | `text-touch-builder` | Four-touch pre-call SMS sequence per record |
 | `sift-operations` | The CRM operations encyclopedia |
+| `candidate-intake` | One scored master list of every job applicant, from any channel |
+| `vendor-directory-builder` | A vetted contractor directory for any market |
+| `contractor-call-sheet` | A printable call sheet and first-contact drafts from that directory |
+| `dispo-deal-blast` | The method and guards for texting a deal to a vetted buyer list |
+| `siftstack-core` | The doctor and the guided setup |
 
 ### Tier 2: a login you already have
 

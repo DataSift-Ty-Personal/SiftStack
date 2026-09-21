@@ -1,0 +1,570 @@
+{
+  "name": "siftstack",
+  "owner": {
+    "name": "DataSift",
+    "url": "https://datasift.ai"
+  },
+  "metadata": {
+    "description": "The SiftStack real estate investing skill library for DataSift: market research, comps, rehab, deep prospecting, CRM setup, call coaching and dispo. Install siftstack-all for everything."
+  },
+  "plugins": [
+    {
+      "name": "siftstack-all",
+      "source": "./marketplace/bundles/siftstack-all",
+      "description": "The whole SiftStack REI skill library in one install. Installs 27 plugins.",
+      "category": "Bundles",
+      "keywords": [
+        "bundle",
+        "datasift",
+        "real-estate"
+      ],
+      "author": {
+        "name": "DataSift"
+      }
+    },
+    {
+      "name": "siftstack-coaching",
+      "source": "./marketplace/bundles/siftstack-coaching",
+      "description": "Every SiftStack Coaching & Performance skill in one install. Installs 5 plugins.",
+      "category": "Bundles",
+      "keywords": [
+        "bundle",
+        "datasift",
+        "real-estate"
+      ],
+      "author": {
+        "name": "DataSift"
+      }
+    },
+    {
+      "name": "siftstack-crm",
+      "source": "./marketplace/bundles/siftstack-crm",
+      "description": "Every SiftStack CRM skill in one install. Installs 4 plugins.",
+      "category": "Bundles",
+      "keywords": [
+        "bundle",
+        "datasift",
+        "real-estate"
+      ],
+      "author": {
+        "name": "DataSift"
+      }
+    },
+    {
+      "name": "siftstack-deal-analysis",
+      "source": "./marketplace/bundles/siftstack-deal-analysis",
+      "description": "Every SiftStack Deal Analysis skill in one install. Installs 7 plugins.",
+      "category": "Bundles",
+      "keywords": [
+        "bundle",
+        "datasift",
+        "real-estate"
+      ],
+      "author": {
+        "name": "DataSift"
+      }
+    },
+    {
+      "name": "siftstack-market-intel",
+      "source": "./marketplace/bundles/siftstack-market-intel",
+      "description": "Every SiftStack Market Intelligence skill in one install. Installs 4 plugins.",
+      "category": "Bundles",
+      "keywords": [
+        "bundle",
+        "datasift",
+        "real-estate"
+      ],
+      "author": {
+        "name": "DataSift"
+      }
+    },
+    {
+      "name": "siftstack-operations",
+      "source": "./marketplace/bundles/siftstack-operations",
+      "description": "Every SiftStack Operations skill in one install. Installs 11 plugins.",
+      "category": "Bundles",
+      "keywords": [
+        "bundle",
+        "datasift",
+        "real-estate"
+      ],
+      "author": {
+        "name": "DataSift"
+      }
+    },
+    {
+      "name": "account-blueprint",
+      "source": "./skills/account-blueprint",
+      "description": "Build a DataSift account in the same structure as the DataSift reference account, over the API, with a read-back on every object: preset folders and presets, lead statuses, lists, tags, custom fields, task presets, se...",
+      "category": "CRM",
+      "keywords": [
+        "datasift",
+        "real-estate",
+        "tier-account"
+      ],
+      "author": {
+        "name": "DataSift"
+      },
+      "strict": false,
+      "skills": [
+        "./"
+      ]
+    },
+    {
+      "name": "sift-operations",
+      "source": "./plugins/sift-operations",
+      "description": "Comprehensive REI Sift operations encyclopedia covering sequences, sequential presets, SiftLine boards, drip campaigns, events, tasks, filters, tags, skip tracing workflows, and step-by-step operational walkthroughs",
+      "category": "CRM",
+      "keywords": [
+        "datasift",
+        "real-estate",
+        "tier-none"
+      ],
+      "author": {
+        "name": "DataSift"
+      }
+    },
+    {
+      "name": "sift-sequences",
+      "source": "./skills/sift-sequences",
+      "description": "Complete guide for creating, managing, and ideating Sift sequences (automations).",
+      "category": "CRM",
+      "keywords": [
+        "datasift",
+        "real-estate",
+        "tier-account"
+      ],
+      "author": {
+        "name": "DataSift"
+      },
+      "strict": false,
+      "skills": [
+        "./"
+      ]
+    },
+    {
+      "name": "closer-coach",
+      "source": "./skills/closer-coach",
+      "description": "Pull acquisitions/closing calls from your SmrtPhone account, transcribe with real tonality notes, and grade them against the DataSift closer rubric - discovery deepening, the money conversation, multi-option offer pre...",
+      "category": "Coaching & Performance",
+      "keywords": [
+        "datasift",
+        "real-estate",
+        "tier-account"
+      ],
+      "author": {
+        "name": "DataSift"
+      },
+      "strict": false,
+      "skills": [
+        "./"
+      ]
+    },
+    {
+      "name": "cold-call-coach",
+      "source": "./skills/cold-call-coach",
+      "description": "Pull real cold-call recordings from your SmrtPhone account, transcribe them with real tonality notes (an audio model hears the calls), and grade every conversation against the DataSift cold-calling rubric - opener, mo...",
+      "category": "Coaching & Performance",
+      "keywords": [
+        "datasift",
+        "real-estate",
+        "tier-account"
+      ],
+      "author": {
+        "name": "DataSift"
+      },
+      "strict": false,
+      "skills": [
+        "./"
+      ]
+    },
+    {
+      "name": "kpi-engine",
+      "source": "./skills/kpi-engine",
+      "description": "Pull and grade your cold-calling and lead-generation KPIs straight from your DataSift (REISift) account - dials, answer/conversation/contact rates, correct numbers, dispositions, leads (including new_lead statuses mos...",
+      "category": "Coaching & Performance",
+      "keywords": [
+        "datasift",
+        "real-estate",
+        "tier-account"
+      ],
+      "author": {
+        "name": "DataSift"
+      },
+      "strict": false,
+      "skills": [
+        "./"
+      ]
+    },
+    {
+      "name": "lead-manager-coach",
+      "source": "./skills/lead-manager-coach",
+      "description": "Pull lead-management follow-up and qualification calls from your SmrtPhone account, transcribe with real tonality notes, and grade them against the DataSift lead manager rubric - qualifying questions (condition, timel...",
+      "category": "Coaching & Performance",
+      "keywords": [
+        "datasift",
+        "real-estate",
+        "tier-account"
+      ],
+      "author": {
+        "name": "DataSift"
+      },
+      "strict": false,
+      "skills": [
+        "./"
+      ]
+    },
+    {
+      "name": "comp-package",
+      "source": "./skills/comp-package",
+      "description": "Build a boundary-filtered comparable sales package for one subject property and deliver it as an Excel workbook.",
+      "category": "Deal Analysis",
+      "keywords": [
+        "datasift",
+        "real-estate",
+        "tier-api"
+      ],
+      "author": {
+        "name": "DataSift"
+      },
+      "strict": false,
+      "skills": [
+        "./"
+      ]
+    },
+    {
+      "name": "deal-analyzer",
+      "source": "./plugins/deal-analyzer",
+      "description": "End-to-end investment property deal analysis: photos \u2192 comps \u2192 rehab estimate \u2192 offer strategy.",
+      "category": "Deal Analysis",
+      "keywords": [
+        "datasift",
+        "real-estate",
+        "tier-api"
+      ],
+      "author": {
+        "name": "DataSift"
+      }
+    },
+    {
+      "name": "deep-prospecting-v5",
+      "source": "./skills/deep-prospecting-v5",
+      "description": "Deep prospect real estate leads to identify the heirs/decision-makers and exactly who must sign to sell when an owner is deceased or skip tracing fails.",
+      "category": "Deal Analysis",
+      "keywords": [
+        "datasift",
+        "real-estate",
+        "tier-api"
+      ],
+      "author": {
+        "name": "DataSift"
+      },
+      "strict": false,
+      "skills": [
+        "./"
+      ]
+    },
+    {
+      "name": "probate-property-finder",
+      "source": "./skills/probate-property-finder",
+      "description": "Find real property owned by probate decedents when you only have the case filing (PR number, decedent name, executor details) but no property address.",
+      "category": "Deal Analysis",
+      "keywords": [
+        "datasift",
+        "real-estate",
+        "tier-none"
+      ],
+      "author": {
+        "name": "DataSift"
+      },
+      "strict": false,
+      "skills": [
+        "./"
+      ]
+    },
+    {
+      "name": "real-estate-comping",
+      "source": "./skills/real-estate-comping",
+      "description": "Perform AI-powered property valuation and comparable sales analysis for real estate wholesaling.",
+      "category": "Deal Analysis",
+      "keywords": [
+        "datasift",
+        "real-estate",
+        "tier-none"
+      ],
+      "author": {
+        "name": "DataSift"
+      },
+      "strict": false,
+      "skills": [
+        "./"
+      ]
+    },
+    {
+      "name": "rehab-estimator",
+      "source": "./skills/rehab-estimator",
+      "description": "Estimate rehab costs for investment properties.",
+      "category": "Deal Analysis",
+      "keywords": [
+        "datasift",
+        "real-estate",
+        "tier-none"
+      ],
+      "author": {
+        "name": "DataSift"
+      },
+      "strict": false,
+      "skills": [
+        "./"
+      ]
+    },
+    {
+      "name": "buyer-prospector",
+      "source": "./skills/buyer-prospector",
+      "description": "Build a real estate buyers list for any US county by pulling from a nationwide database of active buyers, categorizing entities (LLCs, Trusts, Corporations), and researching decision-makers for skip tracing.",
+      "category": "Market Intelligence",
+      "keywords": [
+        "datasift",
+        "real-estate",
+        "tier-none"
+      ],
+      "author": {
+        "name": "DataSift"
+      },
+      "strict": false,
+      "skills": [
+        "./"
+      ]
+    },
+    {
+      "name": "first-market-county-data",
+      "source": "./skills/first-market-county-data",
+      "description": "Find WHERE to pull county distress lists (probate, foreclosure, tax sale, tax delinquent, eviction, code violation, divorce) for any U.S.",
+      "category": "Market Intelligence",
+      "keywords": [
+        "datasift",
+        "real-estate",
+        "tier-none"
+      ],
+      "author": {
+        "name": "DataSift"
+      },
+      "strict": false,
+      "skills": [
+        "./"
+      ]
+    },
+    {
+      "name": "sift-market-research",
+      "source": "./skills/sift-market-research",
+      "description": "Sift Market Finder research for real estate wholesaling with comprehensive market analysis.",
+      "category": "Market Intelligence",
+      "keywords": [
+        "datasift",
+        "real-estate",
+        "tier-account"
+      ],
+      "author": {
+        "name": "DataSift"
+      },
+      "strict": false,
+      "skills": [
+        "./"
+      ]
+    },
+    {
+      "name": "caller-reputation-monitor",
+      "source": "./skills/caller-reputation-monitor",
+      "description": "Keep outbound cold-calling numbers out of carrier \"Spam Likely / Scam Likely\" labels.",
+      "category": "Operations",
+      "keywords": [
+        "datasift",
+        "real-estate",
+        "tier-api"
+      ],
+      "author": {
+        "name": "DataSift"
+      },
+      "strict": false,
+      "skills": [
+        "./"
+      ]
+    },
+    {
+      "name": "candidate-intake",
+      "source": "./skills/candidate-intake",
+      "description": "Aggregate job applicants from many channels (Indeed, Gmail, Facebook group posts, Facebook Messenger, or pasted text) into one running, scored master Google Sheet, then review the ranked list and send screening outrea...",
+      "category": "Operations",
+      "keywords": [
+        "datasift",
+        "real-estate",
+        "tier-none"
+      ],
+      "author": {
+        "name": "DataSift"
+      },
+      "strict": false,
+      "skills": [
+        "./"
+      ]
+    },
+    {
+      "name": "contractor-call-sheet",
+      "source": "./skills/contractor-call-sheet",
+      "description": "Turn a finished contractor/vendor directory (the Excel from vendor-directory-builder, or any list of vetted providers with phones) into an action layer: a one-page printable CALL SHEET of the top picks by trade, plus...",
+      "category": "Operations",
+      "keywords": [
+        "datasift",
+        "real-estate",
+        "tier-none"
+      ],
+      "author": {
+        "name": "DataSift"
+      },
+      "strict": false,
+      "skills": [
+        "./"
+      ]
+    },
+    {
+      "name": "dispo-deal-blast",
+      "source": "./skills/dispo-deal-blast",
+      "description": "Text one named wholesale deal to the cash buyers whose own deed history says they buy at that price, and hand every reply to a human.",
+      "category": "Operations",
+      "keywords": [
+        "datasift",
+        "real-estate",
+        "tier-none"
+      ],
+      "author": {
+        "name": "DataSift"
+      },
+      "strict": false,
+      "skills": [
+        "./"
+      ]
+    },
+    {
+      "name": "phone-validator",
+      "source": "./skills/phone-validator",
+      "description": "Score and validate phone numbers via Trestle's phone_intel API, then generate DataSift/REISift-ready CSVs with phone tags for upload.",
+      "category": "Operations",
+      "keywords": [
+        "datasift",
+        "real-estate",
+        "tier-api"
+      ],
+      "author": {
+        "name": "DataSift"
+      },
+      "strict": false,
+      "skills": [
+        "./"
+      ]
+    },
+    {
+      "name": "playbook-creator",
+      "source": "./skills/playbook-creator",
+      "description": "Create professional playbooks, SOPs, and Scribe-style step guides with process maps and agent-executable SOP files.",
+      "category": "Operations",
+      "keywords": [
+        "datasift",
+        "real-estate",
+        "tier-none"
+      ],
+      "author": {
+        "name": "DataSift"
+      },
+      "strict": false,
+      "skills": [
+        "./"
+      ]
+    },
+    {
+      "name": "sequential-presets",
+      "source": "./skills/sequential-presets",
+      "description": "Design, build, and manage sequential marketing filter presets in DataSift (REI Sift).",
+      "category": "Operations",
+      "keywords": [
+        "datasift",
+        "real-estate",
+        "tier-account"
+      ],
+      "author": {
+        "name": "DataSift"
+      },
+      "strict": false,
+      "skills": [
+        "./"
+      ]
+    },
+    {
+      "name": "team-hiring",
+      "source": "./skills/team-hiring",
+      "description": "Plan, post for, interview, and onboard a remote REI team: data manager, prospector, lead manager, acquisitions manager, dispo.",
+      "category": "Operations",
+      "keywords": [
+        "datasift",
+        "real-estate",
+        "tier-none"
+      ],
+      "author": {
+        "name": "DataSift"
+      },
+      "strict": false,
+      "skills": [
+        "./"
+      ]
+    },
+    {
+      "name": "text-touch-builder",
+      "source": "./skills/text-touch-builder",
+      "description": "Generate a four-text-touch SMS sequence for your hottest DataSift records, personalized per record and varied like cold email so messages never look mass-blasted.",
+      "category": "Operations",
+      "keywords": [
+        "datasift",
+        "real-estate",
+        "tier-none"
+      ],
+      "author": {
+        "name": "DataSift"
+      },
+      "strict": false,
+      "skills": [
+        "./"
+      ]
+    },
+    {
+      "name": "vendor-directory-builder",
+      "source": "./skills/vendor-directory-builder",
+      "description": "Build a vetted, filterable directory of local service providers (general contractors, subcontractors, trade crews, or any vendors) for a target market by mining a community source (a Facebook group, forum, subreddit,...",
+      "category": "Operations",
+      "keywords": [
+        "datasift",
+        "real-estate",
+        "tier-none"
+      ],
+      "author": {
+        "name": "DataSift"
+      },
+      "strict": false,
+      "skills": [
+        "./"
+      ]
+    },
+    {
+      "name": "siftstack-core",
+      "source": "./plugins/siftstack-core",
+      "description": "SiftStack doctor and setup: what works right now, what needs a key, what it costs, and what to do instead.",
+      "category": "Setup",
+      "keywords": [
+        "datasift",
+        "real-estate",
+        "tier-none"
+      ],
+      "author": {
+        "name": "DataSift"
+      }
+    }
+  ]
+}

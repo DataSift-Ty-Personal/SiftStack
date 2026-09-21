@@ -5,10 +5,10 @@
   "raw_base": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main",
   "install_target": "~/.claude/skills",
   "counts": {
-    "total": 28,
-    "current": 26,
+    "total": 29,
+    "current": 27,
     "skills": 26,
-    "plugins": 2
+    "plugins": 3
   },
   "categories": [
     "CRM",
@@ -16,7 +16,7 @@
     "Deal Analysis",
     "Market Intelligence",
     "Operations",
-    "Uncategorized"
+    "Setup"
   ],
   "tiers": {
     "none": "Works the moment it is installed. No key, no login.",
@@ -24,7 +24,7 @@
     "api": "Needs a third-party API key, usually metered."
   },
   "tier_counts": {
-    "none": 13,
+    "none": 14,
     "account": 8,
     "api": 5
   },
@@ -74,7 +74,7 @@
       "name": "sift-operations",
       "kind": "plugin",
       "category": "CRM",
-      "version": "1.0.0",
+      "version": null,
       "description": "Comprehensive REI Sift operations encyclopedia covering sequences, sequential presets, SiftLine boards, drip campaigns, events, tasks, filters, tags, skip tracing workflows, and step-by-step operational walkthroughs",
       "status": "current",
       "source_dir": "plugins/sift-operations",
@@ -99,9 +99,9 @@
         "skills/sift-operations/scripts/datasift_core.py"
       ],
       "file_count": 18,
-      "bytes": 115112,
+      "bytes": 115090,
       "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/sift-operations.plugin",
-      "sha256": "efb2758d13f1a877eb707a3cccd9dff7decf76942a831d55da046ac86959c2c6",
+      "sha256": "c5b427294e6b4c5fdadfc480c38160d754cc37a92e35d573da2012a4cc60ff97",
       "requires": {
         "tier": "none",
         "fallback": null,
@@ -314,7 +314,7 @@
       "name": "deal-analyzer",
       "kind": "plugin",
       "category": "Deal Analysis",
-      "version": "0.1.0",
+      "version": null,
       "description": "End-to-end investment property deal analysis: photos \u2192 comps \u2192 rehab estimate \u2192 offer strategy. Combines comping and rehab estimation into one streamlined workflow.",
       "status": "current",
       "source_dir": "plugins/deal-analyzer",
@@ -339,9 +339,9 @@
         "skills/rehab-estimator/scripts/generate_rehab_excel.py"
       ],
       "file_count": 18,
-      "bytes": 313732,
+      "bytes": 313710,
       "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/deal-analyzer.plugin",
-      "sha256": "90de537f12dc3cb54df90fd957f985e7c17dac2881a80d277a77229e4b0f1534",
+      "sha256": "7c70e6b6e2cf6b35d94b78ccbfdacb073f09f2c9d8c001b26bc5e6f7c90b21e2",
       "requires": {
         "tier": "api",
         "env": [
@@ -737,6 +737,34 @@
       }
     },
     {
+      "name": "dispo-deal-blast",
+      "kind": "skill",
+      "category": "Operations",
+      "version": null,
+      "description": "Text one named wholesale deal to the cash buyers whose own deed history says they buy at that price, and hand every reply to a human. Builds a buyer registry from investor transactions, gates it on recency, matches an asymmetric price band, renders copy that cannot leak the contract price or the address, stages the batch as HELD behind a deliberate release, and turns the responses into a permanent buyer phonebook. Trigger for: blast a deal to my buyers, dispo this property, text my cash buyer list, who should I send this deal to, build a cash buyer list, or set up dispo SMS.",
+      "status": "current",
+      "source_dir": "skills/dispo-deal-blast",
+      "files": [
+        "SKILL.md",
+        "references/buyer-registry.md",
+        "references/copy-rules.md",
+        "references/sms-guards.md",
+        "scripts/cohort.py"
+      ],
+      "file_count": 5,
+      "bytes": 21817,
+      "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/dispo-deal-blast.skill",
+      "sha256": "48b17ea3ab9ad7ecb7eda5d85ed92723a2a7d7b185eca751683482eeecc9de0a",
+      "requires": {
+        "tier": "none",
+        "fallback": null,
+        "note": "The method, the guards and the copy rules. The bundled cohort calculator is stdlib only. Wiring it to your own CRM and SMS provider is your call, and every send stays behind a human release.",
+        "env": [],
+        "accounts": [],
+        "cost": "Free"
+      }
+    },
+    {
       "name": "phone-validator",
       "kind": "skill",
       "category": "Operations",
@@ -922,28 +950,29 @@
       }
     },
     {
-      "name": "dispo-deal-blast",
-      "kind": "skill",
-      "category": "Uncategorized",
+      "name": "siftstack-core",
+      "kind": "plugin",
+      "category": "Setup",
       "version": null,
-      "description": "Text one named wholesale deal to the cash buyers whose own deed history says they buy at that price, and hand every reply to a human. Builds a buyer registry from investor transactions, gates it on recency, matches an asymmetric price band, renders copy that cannot leak the contract price or the address, stages the batch as HELD behind a deliberate release, and turns the responses into a permanent buyer phonebook. Trigger for: blast a deal to my buyers, dispo this property, text my cash buyer list, who should I send this deal to, build a cash buyer list, or set up dispo SMS.",
+      "description": "SiftStack doctor and setup: what works right now, what needs a key, what it costs, and what to do instead. Every SiftStack bundle depends on this.",
       "status": "current",
-      "source_dir": "skills/dispo-deal-blast",
+      "source_dir": "plugins/siftstack-core",
       "files": [
-        "SKILL.md",
-        "references/buyer-registry.md",
-        "references/copy-rules.md",
-        "references/sms-guards.md",
-        "scripts/cohort.py"
+        ".claude-plugin/plugin.json",
+        "data/env.skills.example",
+        "data/requires.json",
+        "scripts/doctor.py",
+        "skills/doctor/SKILL.md",
+        "skills/setup/SKILL.md"
       ],
-      "file_count": 5,
-      "bytes": 21817,
-      "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/dispo-deal-blast.skill",
-      "sha256": "48b17ea3ab9ad7ecb7eda5d85ed92723a2a7d7b185eca751683482eeecc9de0a",
+      "file_count": 6,
+      "bytes": 27212,
+      "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/siftstack-core.plugin",
+      "sha256": "e17eb16ba1018d672b4e74ae22faa0be8260244a5979cdd9dd96ec5d2f27c514",
       "requires": {
         "tier": "none",
         "fallback": null,
-        "note": "The method, the guards and the copy rules. The bundled cohort calculator is stdlib only. Wiring it to your own CRM and SMS provider is your call, and every send stays behind a human release.",
+        "note": "The doctor and the setup walkthrough. Every bundle depends on it, so whatever someone installs, they can ask what works right now and what needs a key.",
         "env": [],
         "accounts": [],
         "cost": "Free"

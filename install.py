@@ -325,6 +325,52 @@ def doctor(doc: dict) -> int:
     return 0
 
 
+def install_plugins(entries: list[dict], local: bool, dry_run: bool) -> int:
+    """Register the plugin marketplace and install every package through it.
+
+    This is the route that keeps itself up to date. It installs plugin by
+    plugin instead of asking for the siftstack-all bundle, because a bundle is
+    a `dependencies` manifest and a Claude Code old enough to predate that
+    rejects the whole thing with "Unrecognized key". One at a time works on
+    every version that has plugins at all.
+    """
+    import subprocess
+
+    claude = shutil.which("claude")
+    if not claude:
+        raise SystemExit(f"{RED}`claude` is not on your PATH.{OFF} Install Claude Code first, "
+                         f"or run without --plugins to copy the skills into ~/.claude/skills.")
+    source = "./" if local else REPO
+    steps = [["plugin", "marketplace", "add", source]]
+    steps += [["plugin", "install", f"{e['name']}@siftstack"] for e in entries]
+
+    say()
+    say(f"{BOLD}SiftStack plugin install{OFF}  {DIM}marketplace: {source}{OFF}")
+    say()
+    failed = 0
+    for args in steps:
+        label = " ".join(args[1:])
+        if dry_run:
+            say(f"  {YELLOW}would run{OFF}  claude {' '.join(args)}")
+            continue
+        run = subprocess.run([claude, *args], capture_output=True, text=True,
+                             cwd=str(HERE) if local else None)
+        text = (run.stdout + run.stderr).strip()
+        # Re-adding a marketplace or reinstalling a plugin is not a failure.
+        benign = "already" in text.lower()
+        if run.returncode == 0 or benign:
+            say(f"  {GREEN}ok{OFF}         {label}")
+        else:
+            failed += 1
+            say(f"  {RED}failed{OFF}     {label}  {DIM}{text.splitlines()[-1] if text else ''}{OFF}")
+    if not dry_run and not failed:
+        say()
+        say(f"{GREEN}Done.{OFF} Restart Claude Code. Then turn on updates once: run {BOLD}/plugin{OFF}, "
+            f"open Marketplaces, select siftstack, Enable auto-update.")
+        say()
+    return 1 if failed else 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -337,6 +383,9 @@ def main() -> int:
     ap.add_argument("--dry-run", action="store_true", help="report what would change, write nothing")
     ap.add_argument("--force", action="store_true", help="reinstall even if already current")
     ap.add_argument("--remote", action="store_true", help="ignore a local checkout, always fetch")
+    ap.add_argument("--plugins", action="store_true",
+                    help="install through the Claude Code plugin marketplace (self-updating) "
+                         "instead of copying into ~/.claude/skills")
     ap.add_argument("--doctor", action="store_true",
                     help="what works right now, what needs a key, and what to do instead")
     args = ap.parse_args()
@@ -377,6 +426,9 @@ def main() -> int:
             raise SystemExit(f"{RED}Unknown package(s):{OFF} {', '.join(unknown)}\n"
                              f"Run `python install.py --list` to see the catalog.")
         wanted = [by_name[n] for n in args.only]
+
+    if args.plugins:
+        return install_plugins(wanted, bool(local), args.dry_run)
 
     src_label = "local checkout" if local else f"github.com/{REPO}@{BRANCH}"
     say(f"\n{BOLD}SiftStack skill install{OFF}  {DIM}source: {src_label}{OFF}")
