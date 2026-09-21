@@ -3,8 +3,8 @@
   "title": "SiftStack AI Agent Org Chart",
   "subtitle": "Every agent, what triggers it, what it touches, where a human still signs off, and the specific trap each one exists to avoid",
   "org": "DataSift / DataFlik",
-  "version": "1.0.52",
-  "generated": "2026-09-10"
+  "version": "1.0.54",
+  "generated": "2026-09-21"
  },
  "phases": {
   "1": {
