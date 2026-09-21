@@ -12,6 +12,7 @@ invisible in this repo's history for exactly that reason.
     python tools/build_skills.py --build      # source trees -> dist/*.skill
     python tools/build_skills.py --manifest   # regenerate skills/manifest.json
     python tools/build_skills.py --verify     # dist matches source? (CI gate)
+    python tools/build_skills.py --marketplace  # regenerate the plugin marketplace
 
 --unpack is a ONE-TIME migration and is destructive to the source trees it
 writes. Everything else is safe to re-run.
@@ -37,6 +38,9 @@ PLUGINS = ROOT / "plugins"
 DIST = ROOT / "dist"
 LEGACY = ROOT / "Skills for REI" / "improved"
 MANIFEST = SKILLS / "manifest.json"
+MARKETPLACE = ROOT / ".claude-plugin" / "marketplace.json"
+BUNDLES = ROOT / "marketplace" / "bundles"
+CORE = PLUGINS / "siftstack-core"
 
 REPO = "DataSift-Ty-Personal/SiftStack"
 BRANCH = "main"
@@ -98,6 +102,9 @@ REQUIRES = {
                               fallback="no-api-playbook#presets-by-hand",
                               note="Apply needs your own DataSift JWT (or email + password). "
                                    "Export of your own account needs your Open API key."),
+    "siftstack-core": dict(tier="none", fallback=None,
+                           note="The doctor and the setup walkthrough. Every bundle depends on it, so whatever "
+                                "someone installs, they can ask what works right now and what needs a key."),
     "dispo-deal-blast": dict(tier="none", fallback=None,
                              note="The method, the guards and the copy rules. The bundled cohort calculator is stdlib only. Wiring it to your own CRM and SMS provider is your call, and every send stays behind a human release."),
 
@@ -182,6 +189,8 @@ CATEGORY = {
     "account-blueprint": "CRM",
     "sift-operations": "CRM",
     "deal-analyzer": "Deal Analysis",
+    "dispo-deal-blast": "Operations",
+    "siftstack-core": "Setup",
 }
 
 
@@ -416,7 +425,7 @@ def verify() -> int:
 # --------------------------------------------------------------------------
 # manifest
 # --------------------------------------------------------------------------
-def manifest() -> dict:
+def manifest_entries() -> list[dict]:
     entries = []
     for base, suffix, kind in ((SKILLS, ".skill", "skill"), (PLUGINS, ".plugin", "plugin")):
         if not base.is_dir():
@@ -474,6 +483,11 @@ def manifest() -> dict:
             + ", ".join(unknown))
 
     entries.sort(key=lambda e: (e["category"], e["name"]))
+    return entries
+
+
+def manifest() -> dict:
+    entries = manifest_entries()
     doc = {
         "$schema": "https://siftstack.dev/schema/skills-manifest-v1.json",
         "repo": REPO,
@@ -507,6 +521,147 @@ def manifest() -> dict:
     return doc
 
 
+# --------------------------------------------------------------------------
+# plugin marketplace
+# --------------------------------------------------------------------------
+# One bundle per category, plus siftstack-all. A bundle is a plugin whose
+# manifest is nothing but a dependencies array, so one install pulls the set.
+BUNDLE_SLUG = {
+    "Market Intelligence": "siftstack-market-intel",
+    "Deal Analysis": "siftstack-deal-analysis",
+    "CRM": "siftstack-crm",
+    "Coaching & Performance": "siftstack-coaching",
+    "Operations": "siftstack-operations",
+}
+ALL_BUNDLE = "siftstack-all"
+OWNER = {"name": "DataSift", "url": "https://datasift.ai"}
+
+
+def _short(desc: str, limit: int = 220) -> str:
+    """First sentence of a skill description, for the /plugin browse list.
+
+    SKILL.md descriptions are trigger text written for the model and run to
+    900+ characters. The marketplace listing is read by a person choosing
+    what to install.
+    """
+    desc = " ".join((desc or "").split())
+    m = re.match(r"(.+?[.!?])(\s|$)", desc)
+    first = m.group(1) if m else desc
+    return first if len(first) <= limit else first[: limit - 3].rstrip() + "..."
+
+
+def _write_json(path: Path, doc) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8", newline="\n")
+
+
+def marketplace() -> dict:
+    """Generate .claude-plugin/marketplace.json, the bundles, and core's data.
+
+    skills/<name>/ is published AS a plugin with no restructuring: strict=false
+    makes the marketplace entry the whole definition, and a SKILL.md at the
+    plugin root is a valid single-skill plugin. Verified by installing one
+    from a scratch marketplace, on both an old and the current CLI.
+
+    NO `version` anywhere, deliberately. A declared version pins the plugin
+    and becomes the only update signal, so one forgotten bump strands every
+    user on the old copy. Without it the commit SHA is the signal and every
+    push to main is an update.
+
+    Run BEFORE --build: this writes plugins/siftstack-core/data/, and the
+    dist archive for siftstack-core is zipped from that tree.
+    """
+    doc = manifest_entries()
+    current = [e for e in doc if e["status"] == "current"]
+
+    uncategorized = [e["name"] for e in current
+                     if e["category"] not in BUNDLE_SLUG and e["name"] != CORE.name]
+    if uncategorized:
+        raise SystemExit("These packages are in no bundle, so siftstack-all would "
+                         "silently skip them. Give each a CATEGORY: " + ", ".join(uncategorized))
+
+    for e in current:
+        pj = ROOT / e["source_dir"] / ".claude-plugin" / "plugin.json"
+        if pj.is_file() and "version" in json.loads(pj.read_text(encoding="utf-8")):
+            raise SystemExit(f"{pj.relative_to(ROOT).as_posix()} declares a version. That pins the "
+                             "plugin and blocks updates until someone remembers to bump it. Remove it.")
+
+    plugins = []
+    for e in current:
+        entry = {
+            "name": e["name"],
+            "source": "./" + e["source_dir"],
+            "description": _short(e["description"]),
+            "category": e["category"],
+            "keywords": sorted({"real-estate", "datasift", f"tier-{e['requires']['tier']}"}),
+            "author": {"name": OWNER["name"]},
+        }
+        if e["kind"] == "skill":
+            entry["strict"] = False
+            entry["skills"] = ["./"]
+        plugins.append(entry)
+
+    bundles = {}
+    for cat, slug in BUNDLE_SLUG.items():
+        members = sorted(e["name"] for e in current if e["category"] == cat)
+        bundles[slug] = (f"Every SiftStack {cat} skill in one install.",
+                         sorted(members + [CORE.name]))
+    bundles[ALL_BUNDLE] = ("The whole SiftStack REI skill library in one install.",
+                           sorted(e["name"] for e in current))
+
+    # Overwrite in place and prune only what is stale. Deleting the whole tree
+    # first dies with WinError 5 inside a OneDrive-synced checkout (the sync
+    # client holds the directory), and leaves the repo with no bundles at all.
+    if BUNDLES.is_dir():
+        for stale in (p for p in BUNDLES.iterdir() if p.is_dir() and p.name not in bundles):
+            shutil.rmtree(stale, ignore_errors=True)
+            if stale.exists():
+                raise SystemExit(f"could not remove stale bundle {stale.name}; delete it by hand")
+    for slug, (desc, deps) in bundles.items():
+        _write_json(BUNDLES / slug / ".claude-plugin" / "plugin.json", {
+            "name": slug, "description": desc,
+            "author": {"name": OWNER["name"]}, "dependencies": deps,
+        })
+        plugins.append({
+            "name": slug,
+            "source": f"./{BUNDLES.relative_to(ROOT).as_posix()}/{slug}",
+            "description": f"{desc} Installs {len(deps)} plugins.",
+            "category": "Bundles",
+            "keywords": ["bundle", "datasift", "real-estate"],
+            "author": {"name": OWNER["name"]},
+        })
+
+    plugins.sort(key=lambda p: (p["category"] != "Bundles", p["category"], p["name"]))
+    market = {
+        "name": "siftstack",
+        "owner": OWNER,
+        "metadata": {
+            "description": "The SiftStack real estate investing skill library for DataSift: "
+                           "market research, comps, rehab, deep prospecting, CRM setup, "
+                           "call coaching and dispo. Install siftstack-all for everything.",
+        },
+        "plugins": plugins,
+    }
+    _write_json(MARKETPLACE, market)
+
+    # siftstack-core's doctor cannot reach ../skills/manifest.json once the
+    # plugin is copied into the cache, and the manifest carries the sha of the
+    # very archive that would contain it. So core gets its own slim table.
+    _write_json(CORE / "data" / "requires.json", {
+        "generated_by": "tools/build_skills.py --marketplace",
+        "repo": REPO,
+        "bundles": {slug: deps for slug, (_, deps) in bundles.items()},
+        "packages": [{"name": e["name"], "category": e["category"], "requires": e["requires"]}
+                     for e in current],
+    })
+    env_src = (ROOT / ".env.skills.example").read_text(encoding="utf-8")
+    (CORE / "data" / "env.skills.example").write_text(env_src, encoding="utf-8", newline="\n")
+
+    print(f"marketplace: {len(current)} plugins + {len(bundles)} bundles "
+          f"-> {MARKETPLACE.relative_to(ROOT).as_posix()}")
+    return market
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -514,11 +669,15 @@ def main() -> int:
     ap.add_argument("--build", action="store_true", help="source trees -> dist/*.skill")
     ap.add_argument("--manifest", action="store_true", help="regenerate skills/manifest.json")
     ap.add_argument("--verify", action="store_true", help="fail if dist drifts from source")
+    ap.add_argument("--marketplace", action="store_true",
+                    help="regenerate .claude-plugin/marketplace.json, bundles and core data")
     args = ap.parse_args()
-    if not any((args.unpack, args.build, args.manifest, args.verify)):
-        ap.error("pick at least one of --unpack / --build / --manifest / --verify")
+    if not any((args.unpack, args.build, args.manifest, args.verify, args.marketplace)):
+        ap.error("pick at least one of --unpack / --build / --manifest / --verify / --marketplace")
     if args.unpack:
         unpack()
+    if args.marketplace:  # before --build: it writes into a tree that gets zipped
+        marketplace()
     if args.build:
         build()
     if args.manifest:

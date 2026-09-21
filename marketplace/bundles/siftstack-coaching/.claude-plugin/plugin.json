@@ -1,0 +1,14 @@
+{
+  "name": "siftstack-coaching",
+  "description": "Every SiftStack Coaching & Performance skill in one install.",
+  "author": {
+    "name": "DataSift"
+  },
+  "dependencies": [
+    "closer-coach",
+    "cold-call-coach",
+    "kpi-engine",
+    "lead-manager-coach",
+    "siftstack-core"
+  ]
+}

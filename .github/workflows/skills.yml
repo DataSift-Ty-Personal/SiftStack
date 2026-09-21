@@ -14,7 +14,13 @@ on:
       - "plugins/**"
       - "dist/**"
       - "tools/build_skills.py"
+      - "tools/check_docs.py"
       - "install.py"
+      - ".claude-plugin/**"
+      - "marketplace/**"
+      - ".env.skills.example"
+      - "README.md"
+      - "docs/setup/**"
       - ".github/workflows/skills.yml"
   pull_request:
     paths:
@@ -22,7 +28,13 @@ on:
       - "plugins/**"
       - "dist/**"
       - "tools/build_skills.py"
+      - "tools/check_docs.py"
       - "install.py"
+      - ".claude-plugin/**"
+      - "marketplace/**"
+      - ".env.skills.example"
+      - "README.md"
+      - "docs/setup/**"
   workflow_dispatch: {}
 
 permissions:
@@ -31,7 +43,7 @@ permissions:
 jobs:
   verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
@@ -80,6 +92,48 @@ jobs:
             exit 1
           fi
           echo "manifest is current"
+
+      - name: Plugin marketplace is current
+        # .claude-plugin/marketplace.json, the bundles and siftstack-core's data
+        # are generated from the same tables as the manifest. A package added
+        # without regenerating them exists in the repo and in nobody's install.
+        run: |
+          python tools/build_skills.py --marketplace
+          if ! git diff --quiet -- .claude-plugin marketplace plugins/siftstack-core/data; then
+            echo "::error::plugin marketplace is stale. Run: python tools/build_skills.py --marketplace --build --manifest"
+            git --no-pager diff --stat -- .claude-plugin marketplace plugins/siftstack-core/data
+            exit 1
+          fi
+          test -z "$(git status --porcelain -- .claude-plugin marketplace plugins/siftstack-core/data)" || {
+            echo "::error::generated marketplace files are not committed"; git status --short; exit 1; }
+          echo "marketplace is current"
+
+      - name: One install really installs everything
+        # The path a community member takes, on the CURRENT Claude Code, into a
+        # throwaway config dir. Validation alone is not enough: the first
+        # prototype validated clean and then refused to install.
+        env:
+          CLAUDE_CONFIG_DIR: /tmp/claude-ci
+        run: |
+          mkdir -p "$CLAUDE_CONFIG_DIR"
+          CLAUDE="npx -y @anthropic-ai/claude-code@latest"
+          $CLAUDE plugin validate .
+          $CLAUDE plugin marketplace add ./
+          $CLAUDE plugin install siftstack-all@siftstack
+          $CLAUDE plugin list --json > /tmp/plugins.json
+          python - <<'PY'
+          import json
+          want = {e["name"] for e in json.load(open("skills/manifest.json"))["skills"] if e["status"] == "current"}
+          got = {(p.get("id") or p.get("name") or "").split("@")[0] for p in json.load(open("/tmp/plugins.json"))}
+          missing = sorted(want - got)
+          print(f"{len(want & got)} of {len(want)} current packages installed by siftstack-all")
+          raise SystemExit(f"::error::not installed: {', '.join(missing)}" if missing else 0)
+          PY
+          DOCTOR=$(find "$CLAUDE_CONFIG_DIR/plugins/cache/siftstack/siftstack-core" -name doctor.py | head -1)
+          env -i PATH="$PATH" python "$DOCTOR" > /tmp/plugin-doc.txt
+          grep -q "Works right now" /tmp/plugin-doc.txt
+          grep -q "Needs a credential" /tmp/plugin-doc.txt
+          echo "installed doctor OK"
 
       - name: Installer resolves the catalog and installs cleanly
         # Exercises the real path a community member takes, against the local

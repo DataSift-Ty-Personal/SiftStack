@@ -149,6 +149,95 @@ def check_routes() -> list[str]:
     return problems
 
 
+def check_marketplace(current: list[dict]) -> list[str]:
+    """The plugin marketplace must offer exactly what the manifest says exists.
+
+    Freshness (is the file regenerated?) is a git-diff gate in CI. This checks
+    the things a stale-but-committed file cannot tell you: that every package
+    is reachable by ONE install, and that nothing will be refused downstream.
+    """
+    out: list[str] = []
+    mp = ROOT / ".claude-plugin" / "marketplace.json"
+    if not mp.is_file():
+        return ["no .claude-plugin/marketplace.json. Run: python tools/build_skills.py --marketplace"]
+    market = json.loads(mp.read_text(encoding="utf-8"))
+    entries = {p["name"]: p for p in market["plugins"]}
+    names = {e["name"] for e in current}
+
+    for n in sorted(names - set(entries)):
+        out.append(f"marketplace: {n} is a current package but is not installable as a plugin")
+
+    deps: dict[str, list[str]] = {}
+    for name, p in entries.items():
+        src = ROOT / p["source"]
+        if not src.is_dir():
+            out.append(f"marketplace: {name} source {p['source']} does not exist")
+            continue
+        # Claude Code treats a declared version as the ONLY update signal.
+        pj = src / ".claude-plugin" / "plugin.json"
+        manifest = json.loads(pj.read_text(encoding="utf-8")) if pj.is_file() else {}
+        if "version" in p or "version" in manifest:
+            out.append(f"marketplace: {name} declares a version, which pins it and blocks updates")
+        # Cowork's organization sync rejects the whole plugin for this.
+        if (src / "bin").is_dir():
+            out.append(f"marketplace: {name} has a top-level bin/, which Cowork refuses. Use scripts/")
+        if "dependencies" in manifest:
+            deps[name] = manifest["dependencies"]
+            for d in manifest["dependencies"]:
+                if d not in entries:
+                    out.append(f"marketplace: bundle {name} depends on unknown plugin {d}")
+
+    if "siftstack-all" not in deps:
+        out.append("marketplace: no siftstack-all bundle, so there is no one-install route")
+    else:
+        for n in sorted(names - set(deps["siftstack-all"])):
+            out.append(f"marketplace: siftstack-all does not install {n}")
+    division = [d for b, ds in deps.items() if b != "siftstack-all" for d in ds
+                if d != "siftstack-core"]
+    for n in sorted(names - {"siftstack-core"}):
+        if division.count(n) != 1:
+            out.append(f"marketplace: {n} is in {division.count(n)} division bundles, expected 1")
+    return out
+
+
+# Nine and up only. "Two superseded packages" and "three DataSift skills" are
+# small named subsets, not library totals, and flagging them is noise. Every
+# count that actually went stale was library-scale ("Nine skills", "Eleven of").
+_WORD_NUMBERS = ("nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen "
+                 "eighteen nineteen twenty thirty").split()
+
+
+def check_counts(doc: dict) -> list[str]:
+    """Hand-written package counts must match the manifest.
+
+    Four documents carried four different wrong totals at once (24, 22, nine,
+    21) because nothing checked them. Counts are written in a few fixed
+    phrasings so they can be checked, and spelled-out numbers are refused
+    because a regex cannot verify "Eleven".
+    """
+    out: list[str] = []
+    cur, tiers = doc["counts"]["current"], doc["tier_counts"]
+    rules = [
+        (r"\b(\d+) current packages\b", cur, "current packages"),
+        (r"\b(\d+) work on install\b", tiers["none"], "tier none"),
+        (r"\| No credentials \| (\d+) \|", tiers["none"], "tier none"),
+        (r"\| A login you already have \| (\d+) \|", tiers["account"], "tier account"),
+        (r"\| A metered API key \| (\d+) \|", tiers["api"], "tier api"),
+    ]
+    words = re.compile(r"\b(" + "|".join(_WORD_NUMBERS) + r")\b[\w -]{0,20}?\b(skills|packages)\b", re.I)
+    for path in (ROOT / "README.md", ROOT / "docs" / "setup" / "GETTING-STARTED.md", ENV_EXAMPLE):
+        text = path.read_text(encoding="utf-8")
+        rel = path.relative_to(ROOT).as_posix()
+        for pattern, expect, label in rules:
+            for m in re.finditer(pattern, text):
+                if int(m.group(1)) != expect:
+                    out.append(f"{rel}: says {m.group(0)!r} but the manifest has {expect} ({label})")
+        for m in words.finditer(text):
+            out.append(f"{rel}: {m.group(0)!r} is a spelled-out count nothing can verify. "
+                       "Write it as digits, e.g. '27 current packages'")
+    return out
+
+
 def main() -> int:
     problems: list[str] = []
     doc = json.loads(MANIFEST.read_text(encoding="utf-8"))
@@ -213,6 +302,9 @@ def main() -> int:
     for line in env_text.splitlines():
         if re.match(r"^[A-Z0-9_]+=.+", line.strip()):
             problems.append(f".env.skills.example has a value set: {line.split('=')[0]}")
+
+    problems.extend(check_marketplace(current))
+    problems.extend(check_counts(doc))
 
     for p in problems:
         print(f"::error::{p}" if "--ci" in sys.argv else f"PROBLEM {p}")
