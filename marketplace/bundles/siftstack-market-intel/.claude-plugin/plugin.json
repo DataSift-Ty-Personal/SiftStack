@@ -6,6 +6,7 @@
   },
   "dependencies": [
     "buyer-prospector",
+    "commercial-classifier",
     "first-market-county-data",
     "sift-market-research",
     "siftstack-core"

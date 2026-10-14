@@ -5,9 +5,9 @@
   "raw_base": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main",
   "install_target": "~/.claude/skills",
   "counts": {
-    "total": 29,
-    "current": 27,
-    "skills": 26,
+    "total": 30,
+    "current": 28,
+    "skills": 27,
     "plugins": 3
   },
   "categories": [
@@ -24,7 +24,7 @@
     "api": "Needs a third-party API key, usually metered."
   },
   "tier_counts": {
-    "none": 14,
+    "none": 15,
     "account": 8,
     "api": 5
   },
@@ -564,6 +564,66 @@
       }
     },
     {
+      "name": "commercial-classifier",
+      "kind": "skill",
+      "category": "Market Intelligence",
+      "version": null,
+      "description": "Classify commercial real estate in any parcel or property file into 13 asset classes and 76 sub-types (Office, Industrial, Retail, Restaurant, Shopping Center, Multifamily, Specialty, Health Care, Hospitality, Sports & Entertainment, Lab, Land, Residential Income), with confidence, provenance, business-point evidence, value bands, true-owner grouping and a review queue. Works on any data: a county assessor export, a DataSift export, Regrid, PropStream, ATTOM, LoopNet or Crexi, First American, or a county's free ArcGIS parcel layer it downloads for you. Use for \"classify these commercial properties\", \"what type of property is this\", \"asset class\", \"sub-type\", \"find the self-storage / gas stations / medical offices in this county\", \"who owns the most commercial property here\", \"build a commercial list\", or any spreadsheet tagged only \"Commercial\".",
+      "status": "current",
+      "source_dir": "skills/commercial-classifier",
+      "files": [
+        "SKILL.md",
+        "references/data-sources.md",
+        "references/profiles.md",
+        "references/qa.md",
+        "references/signals.md",
+        "references/taxonomy.md",
+        "scripts/cc.py",
+        "scripts/commercial_classifier/__init__.py",
+        "scripts/commercial_classifier/arcgis.py",
+        "scripts/commercial_classifier/classify.py",
+        "scripts/commercial_classifier/cli.py",
+        "scripts/commercial_classifier/crosswalk.py",
+        "scripts/commercial_classifier/data/crosswalks/fa_county_47093.csv",
+        "scripts/commercial_classifier/data/fa_desc_index.csv",
+        "scripts/commercial_classifier/data/fuel_brands.txt",
+        "scripts/commercial_classifier/data/gov_patterns.txt",
+        "scripts/commercial_classifier/data/lbcs.csv",
+        "scripts/commercial_classifier/data/poi_osm.csv",
+        "scripts/commercial_classifier/data/poi_overture.csv",
+        "scripts/commercial_classifier/data/xw_fa.csv",
+        "scripts/commercial_classifier/export.py",
+        "scripts/commercial_classifier/geo.py",
+        "scripts/commercial_classifier/ingest.py",
+        "scripts/commercial_classifier/io_tables.py",
+        "scripts/commercial_classifier/keywords.py",
+        "scripts/commercial_classifier/learn.py",
+        "scripts/commercial_classifier/owners.py",
+        "scripts/commercial_classifier/places.py",
+        "scripts/commercial_classifier/poi.py",
+        "scripts/commercial_classifier/profiles.py",
+        "scripts/commercial_classifier/review.py",
+        "scripts/commercial_classifier/rulepacks/__init__.py",
+        "scripts/commercial_classifier/rulepacks/fa.py",
+        "scripts/commercial_classifier/schema.py",
+        "scripts/commercial_classifier/store.py",
+        "scripts/commercial_classifier/taxonomy.py",
+        "scripts/commercial_classifier/value.py"
+      ],
+      "file_count": 37,
+      "bytes": 263759,
+      "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/commercial-classifier.skill",
+      "sha256": "6c2ac9fc398f38289ff750d16bc98e7a6b801a2633179c10ee07dfcf9d88f972",
+      "requires": {
+        "tier": "none",
+        "fallback": null,
+        "cost": "Free. Public county parcel layers and Overture business points; no keys",
+        "note": "Standard library engine. Optional pip installs: openpyxl (Excel), duckdb (Overture business points), shapely (faster polygons), pyarrow (parquet).",
+        "env": [],
+        "accounts": []
+      }
+    },
+    {
       "name": "first-market-county-data",
       "kind": "skill",
       "category": "Market Intelligence",
@@ -966,9 +1026,9 @@
         "skills/setup/SKILL.md"
       ],
       "file_count": 6,
-      "bytes": 27212,
+      "bytes": 27744,
       "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/siftstack-core.plugin",
-      "sha256": "e17eb16ba1018d672b4e74ae22faa0be8260244a5979cdd9dd96ec5d2f27c514",
+      "sha256": "98bff93e262185ccb6c99717fd9e8ba59844216d677f741fa777bc0a7e1b2615",
       "requires": {
         "tier": "none",
         "fallback": null,

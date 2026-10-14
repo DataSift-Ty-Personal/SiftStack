@@ -1,0 +1,4 @@
+prefix,asset_class,sub_type,confidence,meaning
+1,Residential,,0.4,residence or accommodation
+2,Retail,,0.35,general sales or services
+3,Industrial,,0.4,manufacturing and wholesale trade

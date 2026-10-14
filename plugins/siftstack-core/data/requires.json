@@ -4,6 +4,7 @@
   "bundles": {
     "siftstack-market-intel": [
       "buyer-prospector",
+      "commercial-classifier",
       "first-market-county-data",
       "sift-market-research",
       "siftstack-core"
@@ -50,6 +51,7 @@
       "candidate-intake",
       "closer-coach",
       "cold-call-coach",
+      "commercial-classifier",
       "comp-package",
       "contractor-call-sheet",
       "deal-analyzer",
@@ -265,6 +267,18 @@
         "env": [],
         "accounts": [],
         "cost": "Free"
+      }
+    },
+    {
+      "name": "commercial-classifier",
+      "category": "Market Intelligence",
+      "requires": {
+        "tier": "none",
+        "fallback": null,
+        "cost": "Free. Public county parcel layers and Overture business points; no keys",
+        "note": "Standard library engine. Optional pip installs: openpyxl (Excel), duckdb (Overture business points), shapely (faster polygons), pyarrow (parquet).",
+        "env": [],
+        "accounts": []
       }
     },
     {

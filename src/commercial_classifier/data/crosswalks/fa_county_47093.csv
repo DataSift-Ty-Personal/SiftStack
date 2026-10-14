@@ -1,0 +1,4 @@
+system,county_key,code,desc,asset_class,sub_type,confidence,source,notes
+county_use,47093,1191,,Land,Residential/Multifamily,0.75,builtin,"Knox x91 unused land, residential band (verified on the county assessor)"
+county_use,47093,391,,Land,Commercial,0.75,builtin,"Knox x91 unused land, commercial band"
+county_use,47093,491,,Land,Industrial,0.75,builtin,"Knox x91 unused land, industrial band"

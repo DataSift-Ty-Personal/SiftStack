@@ -13,6 +13,10 @@ skills/**    text=auto eol=lf
 plugins/**   text=auto eol=lf
 tools/**     text=auto eol=lf
 install.py   text=auto eol=lf
+# copied byte for byte into skills/commercial-classifier/scripts/, so the
+# source has to have the same line endings the copy is pinned to
+src/commercial_classifier/** text=auto eol=lf
+src/commercial_classify.py   text=auto eol=lf
 
 # Built archives. Never diffed, never line-ending converted.
 dist/**      binary

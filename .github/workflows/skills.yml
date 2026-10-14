@@ -15,6 +15,9 @@ on:
       - "dist/**"
       - "tools/build_skills.py"
       - "tools/check_docs.py"
+      - "src/commercial_classifier/**"
+      - "src/commercial_classify.py"
+      - "tests/test_commercial_classifier.py"
       - "install.py"
       - ".claude-plugin/**"
       - "marketplace/**"
@@ -29,6 +32,9 @@ on:
       - "dist/**"
       - "tools/build_skills.py"
       - "tools/check_docs.py"
+      - "src/commercial_classifier/**"
+      - "src/commercial_classify.py"
+      - "tests/test_commercial_classifier.py"
       - "install.py"
       - ".claude-plugin/**"
       - "marketplace/**"
@@ -82,6 +88,12 @@ jobs:
 
       - name: Distributed archives match their source trees
         run: python tools/build_skills.py --verify
+
+      - name: Commercial classifier engine and its skill copy
+        # The skill ships a byte-for-byte copy of src/commercial_classifier.
+        # These tests run the whole pipeline on fictional files with no
+        # network, and fail if the copy drifted from the source.
+        run: python tests/test_commercial_classifier.py
 
       - name: Manifest is current
         run: |

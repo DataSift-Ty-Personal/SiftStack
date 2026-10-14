@@ -866,6 +866,37 @@ The playbook-creator skill was overhauled into a three-format documentation engi
 
 **First production run:** `output/sops/sold-property-removal/` (13-step Word doc, 13 real frames + process map) and `sops/remove-sold-properties-from-marketing.sop.md` (validated twin, parameterized county/price_floor/years_back). The process itself: sequence `recently sold` tag -> status Sold (Transactions folder), SiftMap county filter at $1,000+ / 3-year window, backlog pulled 10K at a time WITH the tag and auto-add OFF, auto-add ON only after the backlog lands, verify next-day auto-upload arrives at status Sold. Frames carry real seller data + Ty's webcam bubble: fine internally, blur before community distribution.
 
+## Commercial Classifier: any parcel file in, asset class out (build 1.0.57, 2026-10-14)
+
+`src/commercial_classifier/` generalizes the Tennessee-only Desktop build (`C:\Users\Tyrus\OneDrive\Desktop\Commerical Classification\`, kept untouched as the reference) into one engine that runs on ANY parcel or property file, not just the First American extracts the data science team delivers. It ships to the community as the `commercial-classifier` skill (Market Intelligence, tier none), which carries a byte-for-byte copy of the package: `python tools/sync_commercial_classifier_skill.py` after every engine edit, and `tests/test_commercial_classifier.py` fails on drift. The old prompt-only `commercial-classifier` synced into claude.ai is superseded.
+
+```bash
+python src/commercial_classify.py probe-layer "<county ArcGIS layer url>"        # no data in hand: what the layer holds
+python src/commercial_classify.py fetch-parcels "<url>" --out parcels.csv       # whole layer, polygons, resumable
+python src/commercial_classify.py inspect <file>                                # profile + mapping, writes nothing
+python src/commercial_classify.py run <file> --state OH                         # exits 3 when county codes need labels
+python src/commercial_classify.py label <work>/distinct_codes.csv --work <work> # Claude's labels -> learned crosswalk
+python src/commercial_classify.py apply-review reviewed.csv --work <work>       # review verdicts -> verified overrides
+python tests/test_commercial_classifier.py                                      # 25 tests, zero network
+python tools/regress_commercial_knox.py                                         # local only, needs CC_KNOX_DIR
+```
+
+**The design that makes "any data" work: label a county's CODES, never its parcels.** `distinct` writes one row per distinct use value (system, county, code, description) with the evidence behind it: count, median building size, share improved, median units and value, the recurring owner and business words. A county has 50 to 400 of them. Built-in tables and a keyword classifier pre-label every row; Claude labels only the weak ones, `cc label` validates against the 13-class / 76-sub-type taxonomy, caps confidence by who labelled (keyword 0.6, Claude 0.75, human 0.9), and keys county-native codes by county so a code learned in one county never applies in another. On Licking County OH the evidence column caught what the description hid: code "305 Research/Chemical Labs" is owned by QTS, Amazon and EdgeConneX, so it is labelled Data Center.
+
+**DataSift exports already carry First American land-use text.** "Structure type" in a REISift export matches the FA code descriptions word for word (all six values in `Tax Enrich Test.csv` resolved). The repo is public, so FA ships as codes plus our labels only (`data/xw_fa.csv`, no description column) and a SHA-1 index of normalized descriptions (`data/fa_desc_index.csv`); every DataSift user gets the full national table with no labelling and no FA text published.
+
+**Bugs in the original that the port fixes, each regression-tested:**
+- **Missing is not zero.** `fnum()` turned a blank into 0.0, so a file without a building-size or improvement-value column would have sent every parcel to Land. Parsers return None, and the vacant rule needs BOTH fields present and zero.
+- **Row-position joins.** Seven scripts joined tables with `zip(raw, cls)`; a re-sorted file mis-joins silently. Every phase now keys a sqlite table on `rid` (hash of county + APN), and a test shuffles the input and asserts identical output.
+- **100% green owners.** `entity_tn.py` scored a one-parcel cluster green 95. One parcel is now tier `single`; green needs two agreeing signals across 2+ parcels.
+- **Tennessee hardcodes** (situs state, bboxes, area latitude, FIPS 47093, the 478543 count, 2021/2022 sale cutoffs) are read from the data: out-of-state compares each parcel's mailing state to its own situs state, windows are relative to the newest sale in the file.
+
+**Three traps found on live data, not in tests:** the pinned Overture release (2026-06-17.0) no longer exists and `categories` became `taxonomy`, so the release is discovered on S3 at run time and the category column read off the live schema; a coarse property class ("Exempt", Claude-labelled 0.75) outranked the specific use code ("Churches", keyword 0.6) and moved 382 churches to Civic, so property class, zoning and DataSift's building-use bucket are capped at 0.5; and the keyword matcher counted words inside one phrase as a second use ("Commercial Vacant Land", "Condo Office Units"), which put 3,734 parcels in the Licking review queue until conflicts were limited to genuine second uses (676 after).
+
+**Measured.** Knox (FA, 30,024 parcels) against the original `knox_universe_v9.csv`: 99.62% class and sub-type agreement on every row the original classified deterministically (the 99 differences are vacant industrial parcels now called Land/Industrial instead of Land/Commercial); value holdout 46.5% exact / 91.4% within one band, matching the original's published 46/91; owner pairs precision 0.964 / recall 0.976, where the extra merges are name variants v9 missed (Knoxville's Community Dev Corp spellings, Baxter Properties LP / L P / LLC at one PO box). Licking County OH from its public ArcGIS layer, no FA and no TN: 83,786 parcels in 86 seconds, 92.9% at 0.7+ confidence, 8,034 Overture businesses matched by true point-in-polygon (334 confirm, 132 correct, 234 queued), value holdout 71.7% / 96.6%.
+
+**The `\b` heredoc trap hit again** during this build (three backspace bytes in a regex patched through a shell heredoc); `test_package_text_hygiene` now fails on any backspace byte or dash character in the package.
+
 ## Enterprise Prospect Pipeline (build 1.0.46, 2026-08-19)
 
 `src/enterprise_prospects.py` builds the DataSift SALES team's enterprise outbound list: the top property BUYERS nationwide, researched and tiered as prospects to sell DataSift enterprise contracts to. Phases `audit/classify/probe/sweep/rank/verify/queue/merge/export/qa`, state in `output/enterprise_prospects/state.json`, every phase gates on nonzero data and is resumable. Read-only against SiftMap; it must NEVER call `add-properties-by-query` (spends record allowance).
@@ -1397,6 +1428,7 @@ Distribution-ready Claude Co-Work skill files at `Skills for REI/improved/`. Eac
 | 19 | `comp-package.skill` | Deal Analysis | new | Boundary-filtered comp package: /search API pull with 41-row-cap band partitioning, condition bucketing by price/Zestimate ratio, dual-track ARV (same-bed base + labeled reconfig upside), 3-scenario rehab, MAO math, buyer targeting, Excel deliverable spec. Community-safe (own OPENWEBNINJA_API_KEY, requests-only script) |
 | 20 | `vendor-directory-builder.skill` | Operations | new | Vetted contractor/vendor directory for any market: community mining (FB in-group search, self-promoters + recommendation-thread comments), public-record verification (phone provenance, service area, rating with count, license board, BBB), geo sweep + gap analysis + niche gatekeeper layer (utility districts), Excel via bundled build_directory.py. Never-fabricate rule; also THE tool for vetting a found/AI-generated list. Community-safe (openpyxl only, fictional example data) |
 | 21 | `contractor-call-sheet.skill` | Operations | new | Action layer on a finished directory: printable one-page call sheet (build_call_sheet.py, fuzzy column detection, call-first banner for cross-validated providers) + personalized first-contact texts/voicemails + the 6 vetting-call questions. Drafts only, never sends. Community-safe (openpyxl only) |
+| 22 | `commercial-classifier.skill` | Market Intel | new | Any parcel file (FA, DataSift export, county export, Regrid, a county's ArcGIS layer it downloads) -> 13 asset classes / 76 sub-types with confidence + provenance, Overture business-point confirm/correct/queue, value bands calibrated from the county's own sales, true-owner roll-up, review queue. Ships the stdlib `commercial_classifier` engine; Claude labels a county's distinct codes, never its parcels. Community-safe (no keys, FA as codes + hashed index only) |
 
 ### Cross-Skill Verified Consistency
 
