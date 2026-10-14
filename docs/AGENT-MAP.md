@@ -2,7 +2,7 @@
 
 *Every agent, what triggers it, what it touches, where a human still signs off, and the specific trap each one exists to avoid*
 
-82 agents across 9 divisions. Generated from [`docs/agents.json`](agents.json) by `tools/agent_map.py`. Build 1.0.54, 2026-09-21.
+85 agents across 9 divisions. Generated from [`docs/agents.json`](agents.json) by `tools/agent_map.py`. Build 1.0.57, 2026-10-14.
 
 Do not hand-edit this file. Edit `docs/agents.json` and re-run the generator.
 
@@ -1639,7 +1639,7 @@ Builds any DataSift account in the reference account's structure from the bluepr
 
 *Where to spend the next marketing dollar*
 
-4 agents.
+7 agents.
 
 #### Market Analyzer (division lead)
 
@@ -1731,6 +1731,82 @@ Turns the obituary list into a lean-budget call order.
 **Touches.** DataSift API, openpyxl
 
 > **The trap this exists to avoid.** Total Delinquency is liens PLUS taxes. Reading it as the tax figure double counts the lien and inflates exactly the records the model exists to surface. It put a lien-only record at rank 1 before the fix. Also: gate on lead status, not just on sold, or a not_interested record tops your ranking.
+
+#### Parcel Layer Fetcher
+
+`skills/commercial-classifier/SKILL.md` &middot; phase 1 &middot; live
+
+Downloads any county's public ArcGIS parcel layer, polygons included, so a market with no data in hand can still be classified. Pulls free Overture business points for the same area.
+
+**Trigger.** Someone wants commercial property in a county and has no file. cc probe-layer, then cc fetch-parcels.
+
+**Does.**
+
+- Probe the layer: fields, aliases, row count, paging support, and which fields the classifier will use
+- Page through every row with resultOffset, or by object id chunks when the server cannot page
+- Request latitude/longitude, write each polygon as WKT plus a centroid, resume from a progress file
+- Discover the newest Overture places release on S3 and pull every business in the parcels' trimmed bounding box
+
+**Human checkpoint.**
+
+- Finding the county's parcel layer URL
+
+**Outputs.** Parcel CSV with polygons, Field alias sidecar, Business points for the evidence pass
+
+**Touches.** ArcGIS REST, Overture Maps (duckdb, S3), OpenStreetMap Overpass
+
+> **The trap this exists to avoid.** Overture retires releases within months and changed its schema (categories became taxonomy), so a pinned release silently resolves nothing. The release is discovered at run time and the category column is read off the live schema. Proven on Licking County OH: 83,786 parcels with polygons, 8,034 businesses.
+
+#### Commercial Classifier
+
+`skills/commercial-classifier/SKILL.md` &middot; phase 1 &middot; live
+
+Turns any parcel file (FA, DataSift export, county export, Regrid, a fetched layer) into 13 asset classes and 76 sub-types with confidence and provenance, then checks each parcel against the businesses actually on it.
+
+**Trigger.** A list tagged only Commercial, or a county to prospect for a property type. The commercial-classifier skill: cc run.
+
+**Does.**
+
+- Detect the source from its headers and map every column to canonical fields
+- Resolve each parcel through built-in code tables, then labels learned per county, then keywords
+- Write the distinct use codes with evidence; Claude labels the weak ones once per county, never per parcel
+- Apply size, mall, fuel, vacancy, unit and physics rules on canonical fields
+- Confirm, correct or queue each parcel against business points inside its polygon
+
+**Human checkpoint.**
+
+- Reviewing the queue: business disagreements, low confidence, spot checks of learned labels
+
+**Outputs.** Classified CSV with every input column kept, Excel workbook, Review queue, Per-county QA report
+
+**Touches.** commercial_classifier (stdlib), openpyxl, shapely
+
+> **The trap this exists to avoid.** DataSift exports already carry First American land-use text in Structure type, so they resolve through a hashed index with no labelling. Missing is not zero: the old parser read a blank square-footage column as 0 and would have sent every parcel to Land. A coarse property class (Exempt) once outranked the specific use code (Churches) and moved 382 churches to Civic; coarse signals are now capped at 0.5.
+
+#### True Owner and Value Bands
+
+`skills/commercial-classifier/SKILL.md` &middot; phase 1 &middot; live
+
+Rolls every parcel up to its real owner and portfolio, groups owners that share a mailing address, and puts a value band on each parcel calibrated from the county's own sales.
+
+**Trigger.** Runs after classification in cc run.
+
+**Does.**
+
+- Normalize owner names; link by name, by shared mailing address with agreeing name tokens, and by co-owner
+- Block aggregator addresses (banks, servicers) from linking unrelated names
+- Score match tiers: single, green (two signals agree), grey
+- Calibrate sale-to-value ratios per county and class, score half the sales as a holdout, band every parcel
+
+**Human checkpoint.**
+
+- Treating ownership groups as leads, not proven corporate parents
+
+**Outputs.** Entities and ownership groups, Related parties, Value bands with holdout accuracy
+
+**Touches.** commercial_classifier (stdlib)
+
+> **The trap this exists to avoid.** The Tennessee build reported 100% green owner matches because a one-parcel owner scored green by default. One parcel is now its own tier and green needs two agreeing signals across two or more parcels. Assessed-only files with no sales get no value band at all, because the assessment ratio is unknown and guessing it is fiction.
 
 ### Coaching & Performance
 

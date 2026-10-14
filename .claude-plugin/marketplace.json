@@ -11,7 +11,7 @@
     {
       "name": "siftstack-all",
       "source": "./marketplace/bundles/siftstack-all",
-      "description": "The whole SiftStack REI skill library in one install. Installs 27 plugins.",
+      "description": "The whole SiftStack REI skill library in one install. Installs 28 plugins.",
       "category": "Bundles",
       "keywords": [
         "bundle",
@@ -67,7 +67,7 @@
     {
       "name": "siftstack-market-intel",
       "source": "./marketplace/bundles/siftstack-market-intel",
-      "description": "Every SiftStack Market Intelligence skill in one install. Installs 4 plugins.",
+      "description": "Every SiftStack Market Intelligence skill in one install. Installs 5 plugins.",
       "category": "Bundles",
       "keywords": [
         "bundle",
@@ -322,6 +322,24 @@
       "name": "buyer-prospector",
       "source": "./skills/buyer-prospector",
       "description": "Build a real estate buyers list for any US county by pulling from a nationwide database of active buyers, categorizing entities (LLCs, Trusts, Corporations), and researching decision-makers for skip tracing.",
+      "category": "Market Intelligence",
+      "keywords": [
+        "datasift",
+        "real-estate",
+        "tier-none"
+      ],
+      "author": {
+        "name": "DataSift"
+      },
+      "strict": false,
+      "skills": [
+        "./"
+      ]
+    },
+    {
+      "name": "commercial-classifier",
+      "source": "./skills/commercial-classifier",
+      "description": "Classify commercial real estate in any parcel or property file into 13 asset classes and 76 sub-types (Office, Industrial, Retail, Restaurant, Shopping Center, Multifamily, Specialty, Health Care, Hospitality, Sports...",
       "category": "Market Intelligence",
       "keywords": [
         "datasift",

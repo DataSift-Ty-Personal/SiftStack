@@ -3,7 +3,7 @@
 Install the library, find out what you can already run, then add credentials
 only for the things you actually want.
 
-14 work on install, out of 27 current packages. You do not need an API key,
+15 work on install, out of 28 current packages. You do not need an API key,
 a developer account, or a credit card to get value out of this on day one.
 
 ## 1. Install
@@ -61,7 +61,7 @@ There are three tiers, and most people should stop after tier 1 for a while.
 
 ### Tier 1: no credentials
 
-14 work on install.
+15 work on install.
 
 | Skill | What you get |
 |---|---|
@@ -70,6 +70,7 @@ There are three tiers, and most people should stop after tier 1 for a while.
 | `first-market-county-data` | Where to pull county distress lists for any US county |
 | `probate-property-finder` | Find the property behind a probate filing, using free portals |
 | `buyer-prospector` | Cash buyer list for any county, ships its own data |
+| `commercial-classifier` | Commercial asset class and sub-type for any parcel file or county layer |
 | `team-hiring` | Who to hire, what to pay, where to post, how to interview |
 | `playbook-creator` | Turn a recording or transcript into a real SOP |
 | `text-touch-builder` | Four-touch pre-call SMS sequence per record |

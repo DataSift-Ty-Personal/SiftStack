@@ -105,6 +105,10 @@ REQUIRES = {
     "siftstack-core": dict(tier="none", fallback=None,
                            note="The doctor and the setup walkthrough. Every bundle depends on it, so whatever "
                                 "someone installs, they can ask what works right now and what needs a key."),
+    "commercial-classifier": dict(tier="none", fallback=None,
+                                  cost="Free. Public county parcel layers and Overture business points; no keys",
+                                  note="Standard library engine. Optional pip installs: openpyxl (Excel), duckdb "
+                                       "(Overture business points), shapely (faster polygons), pyarrow (parquet)."),
     "dispo-deal-blast": dict(tier="none", fallback=None,
                              note="The method, the guards and the copy rules. The bundled cohort calculator is stdlib only. Wiring it to your own CRM and SMS provider is your call, and every send stays behind a human release."),
 
@@ -165,6 +169,7 @@ CATEGORY = {
     "sift-market-research": "Market Intelligence",
     "first-market-county-data": "Market Intelligence",
     "buyer-prospector": "Market Intelligence",
+    "commercial-classifier": "Market Intelligence",
     "real-estate-comping": "Deal Analysis",
     "comp-package": "Deal Analysis",
     "rehab-estimator": "Deal Analysis",

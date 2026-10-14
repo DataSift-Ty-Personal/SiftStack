@@ -1,0 +1,98 @@
+category,asset_class,sub_type,strength
+gas_station,Retail,Service/Gas Station,hard
+truck_stop,Retail,Service/Gas Station,hard
+car_wash,Specialty,Car Wash,hard
+car_dealer,Retail,Vehicle Related,hard
+used_car_dealer,Retail,Vehicle Related,hard
+automotive_repair,Retail,Vehicle Related,hard
+auto_body_shop,Retail,Vehicle Related,hard
+motorcycle_dealer,Retail,Vehicle Related,hard
+rv_dealer,Retail,Vehicle Related,hard
+hotel,Hospitality,Hotel,hard
+motel,Hospitality,Hotel,hard
+resort,Hospitality,Hotel,hard
+bed_and_breakfast,Hospitality,Bed and Breakfast,hard
+hostel,Hospitality,Hostel,hard
+self_storage_facility,Specialty,Self-Storage,hard
+storage_facility,Specialty,Self-Storage,hard
+marina,Specialty,Marina,hard
+funeral_home,Specialty,Other Specialty,hard
+cemetery,Specialty,Other Specialty,hard
+golf_course,Sports & Entertainment,Golf / Driving Range,hard
+driving_range,Sports & Entertainment,Golf / Driving Range,hard
+country_club,Sports & Entertainment,Golf / Driving Range,hard
+hospital,Health Care,Hospital,hard
+assisted_living_facility,Health Care,Assisted Living,hard
+nursing_home,Health Care,Skilled Nursing Facility,hard
+retirement_home,Health Care,Congregate Senior Housing,hard
+mobile_home_park,Multifamily,Manufactured Housing/Mobile Home,hard
+movie_theater,Sports & Entertainment,Theater/Concert Hall,hard
+theatre,Sports & Entertainment,Theater/Concert Hall,hard
+stadium_arena,Sports & Entertainment,,hard
+race_track,Sports & Entertainment,Race Track,hard
+skating_rink,Sports & Entertainment,Skating Rink,hard
+amusement_park,Sports & Entertainment,Amusement Park,hard
+water_park,Sports & Entertainment,Amusement Park,hard
+supermarket,Retail,Grocery/Convenience Store,hard
+grocery_store,Retail,Grocery/Convenience Store,hard
+shopping_center,Shopping Center,,hard
+shopping_mall,Shopping Center,Regional Mall,hard
+warehouse,Industrial,Warehouse,hard
+place_of_worship,Specialty,Religious Facility,hard
+church_cathedral,Specialty,Religious Facility,hard
+mosque,Specialty,Religious Facility,hard
+synagogue,Specialty,Religious Facility,hard
+religious_organization,Specialty,Religious Facility,hard
+restaurant,Restaurant,,soft
+fast_food_restaurant,Restaurant,,soft
+cafe,Restaurant,,soft
+coffee_shop,Restaurant,,soft
+bar,Restaurant,,soft
+pizza_restaurant,Restaurant,,soft
+bank_credit_union,Retail,Bank,soft
+bank,Retail,Bank,soft
+pharmacy,Retail,Drug Store,soft
+drugstore,Retail,Drug Store,soft
+convenience_store,Retail,Grocery/Convenience Store,soft
+day_care_preschool,Retail,Day Care Facility/Nursery,soft
+child_care_and_day_care,Retail,Day Care Facility/Nursery,soft
+school,Specialty,Schools,soft
+elementary_school,Specialty,Schools,soft
+high_school,Specialty,Schools,soft
+college_university,Specialty,Schools,soft
+dentist,Office,Medical,soft
+doctor,Office,Medical,soft
+medical_center,Office,Medical,soft
+urgent_care_clinic,Office,Medical,soft
+veterinarian,Office,Medical,soft
+department_store,Retail,Freestanding,soft
+discount_store,Retail,Freestanding,soft
+hardware_store,Retail,Freestanding,soft
+auto_parts_and_supply_store,Retail,Freestanding,soft
+tire_shop,Retail,Vehicle Related,soft
+bowling_alley,Sports & Entertainment,,soft
+gym,Sports & Entertainment,,soft
+fitness_center,Sports & Entertainment,,soft
+swimming_pool,Sports & Entertainment,Swimming Pool,soft
+parking,Specialty,Parking,soft
+apartments,Multifamily,,soft
+corporate_office,Office,,soft
+fueling_station,Retail,Service/Gas Station,hard
+auto_dealer,Retail,Vehicle Related,hard
+used_auto_dealer,Retail,Vehicle Related,hard
+christian_place_of_worship,Specialty,Religious Facility,hard
+baptist_place_of_worship,Specialty,Religious Facility,hard
+pharmacy_and_drug_store,Retail,Drug Store,soft
+bank_or_credit_union,Retail,Bank,soft
+lodging,Hospitality,Hotel,soft
+dental_clinic,Office,Medical,soft
+doctors_office,Office,Medical,soft
+primary_care_or_general_clinic,Office,Medical,soft
+outpatient_care_facility,Office,Medical,soft
+urgent_care,Office,Medical,soft
+casual_eatery,Restaurant,,soft
+sandwich_shop,Restaurant,,soft
+mexican_restaurant,Restaurant,,soft
+grocery,Retail,Grocery/Convenience Store,soft
+building_supply_store,Retail,Freestanding,soft
+auto_parts_store,Retail,Freestanding,soft

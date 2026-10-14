@@ -4,7 +4,7 @@ Full-stack real estate investing operations platform built around [DataSift.ai](
 
 Two things live in this repo:
 
-1. **The REI skill library.** 27 current packages that teach Claude to run a specific REI workflow: comp a property, estimate a rehab, find the heirs, score your phone numbers, grade your cold calls. Install them into Claude Code or Claude Cowork from the plugin marketplace, and they keep themselves up to date. **You do not need the platform to use these.**
+1. **The REI skill library.** 28 current packages that teach Claude to run a specific REI workflow: comp a property, estimate a rehab, find the heirs, score your phone numbers, grade your cold calls. Install them into Claude Code or Claude Cowork from the plugin marketplace, and they keep themselves up to date. **You do not need the platform to use these.**
 2. **The platform.** The pipeline that pulls county distress data, enriches it through 10 steps, and pushes it into DataSift ready for sequential marketing. Requires a DataSift.ai account.
 
 Start with the skills. Most people never need anything else.
@@ -20,7 +20,7 @@ Start with the skills. Most people never need anything else.
 /plugin install siftstack-all@siftstack
 ```
 
-That installs all 27 current packages as plugins. Then turn on updates once: run `/plugin`, open **Marketplaces**, select **siftstack**, choose **Enable auto-update**. From then on every improvement pushed here reaches you on its own. Claude Code leaves auto-update off for any marketplace that is not Anthropic's, which is why this step exists.
+That installs all 28 current packages as plugins. Then turn on updates once: run `/plugin`, open **Marketplaces**, select **siftstack**, choose **Enable auto-update**. From then on every improvement pushed here reaches you on its own. Claude Code leaves auto-update off for any marketplace that is not Anthropic's, which is why this step exists.
 
 Want one division instead of everything? Install a bundle: `siftstack-deal-analysis`, `siftstack-market-intel`, `siftstack-crm`, `siftstack-coaching` or `siftstack-operations`. Or install any single skill by name, such as `/plugin install rehab-estimator@siftstack`.
 
@@ -88,7 +88,7 @@ The manifest is the machine-readable index of the whole library: every package, 
 
 ## The catalog
 
-27 current packages. `python3 install.py --list` prints this with full descriptions.
+28 current packages. `python3 install.py --list` prints this with full descriptions.
 
 ### Deal Analysis
 
@@ -108,6 +108,7 @@ The manifest is the machine-readable index of the whole library: every package, 
 | `sift-market-research` | Zip code scoring off DataSift Market Finder, 6 weighted factors, delivered as a 7-sheet Excel report. |
 | `first-market-county-data` | Where to actually pull county distress lists for any US county, across all 7 notice types, including the FOIA templates. |
 | `buyer-prospector` | Build a cash buyer list for any county, categorize the LLCs and trusts, and resolve the humans behind them. |
+| `commercial-classifier` | Classify any parcel file, or a county's free ArcGIS parcel layer, into 13 commercial asset classes and 76 sub-types, checked against the businesses actually on each parcel, with value bands, true owners and a review queue. |
 
 ### Operations
 
@@ -151,7 +152,7 @@ Two superseded packages (`deep-prospecting`, `deep-prospecting-v4`) stay in the 
 
 ### What a skill needs from you
 
-**14 work on install, out of 27 current packages.** No key, no login, no card. Ask Claude to **run the SiftStack doctor**, or from a terminal:
+**15 work on install, out of 28 current packages.** No key, no login, no card. Ask Claude to **run the SiftStack doctor**, or from a terminal:
 
 ```bash
 python3 install.py --doctor
@@ -161,7 +162,7 @@ It reads your environment and a `.env` if you have one, then prints what works n
 
 | Tier | Count | What it means |
 |---|---|---|
-| No credentials | 14 | Works on install |
+| No credentials | 15 | Works on install |
 | A login you already have | 8 | DataSift, SmrtPhone, Google. Browser-driven, no API access needed |
 | A metered API key | 5 | Faster and deeper, and every one has a free route |
 
@@ -180,7 +181,7 @@ Skills degrade rather than fail: a missing key means that step is skipped and th
 
 ## The agent system
 
-The platform is 82 agents across 9 divisions.
+The platform is 85 agents across 9 divisions.
 
 - [**The interactive map**](https://learn.datasift.ai/agent-org-chart), searchable and filterable by division, status, and whether a human still signs off.
 - [**docs/AGENT-MAP.md**](docs/AGENT-MAP.md), the same thing as a document you can read in the repo or hand to Claude.

@@ -249,22 +249,22 @@ footer p { margin:0 0 6px; }
 <div class="mast">
   <div class="wrap mast-in">
     <p class="eyebrow">
-      <span>SiftStack</span><span class="sep">/</span><span>Build 1.0.54</span>
-      <span class="sep">/</span><span>2026-09-21</span>
+      <span>SiftStack</span><span class="sep">/</span><span>Build 1.0.57</span>
+      <span class="sep">/</span><span>2026-10-14</span>
     </p>
     <h1>SiftStack AI Agent Org Chart</h1>
     <p class="lede">Every agent, what triggers it, what it touches, where a human still signs off, and the specific trap each one exists to avoid.</p>
 
     <div class="stats">
-      <div class="stat"><b>82</b><span>agents</span></div>
+      <div class="stat"><b>85</b><span>agents</span></div>
       <div class="stat"><b>9</b><span>divisions</span></div>
-      <div class="stat"><b>75</b><span>live in production</span></div>
-      <div class="stat"><b>55</b><span>with a human gate</span></div>
+      <div class="stat"><b>78</b><span>live in production</span></div>
+      <div class="stat"><b>58</b><span>with a human gate</span></div>
     </div>
 
     <div class="install">
       <h2>Install the skill library</h2>
-      <p>27 Claude skills that drive the agents below. One command, into Claude Code.
+      <p>28 Claude skills that drive the agents below. One command, into Claude Code.
          No clone, no pip, no virtualenv.</p>
       <div class="cmd">
         <code id="cmd">curl -fsSL https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/install.py | python3 -</code>
@@ -1489,7 +1489,7 @@ footer p { margin:0 0 6px; }
   <header class="dept-head">
     <h3>Market Intelligence</h3>
     <p class="dept-tag">Where to spend the next marketing dollar</p>
-    <span class="dept-count"><b>4</b> agents</span>
+    <span class="dept-count"><b>7</b> agents</span>
   </header>
   <div class="grid"><article class="agent" data-dept="market" data-status="live" data-phase="1" data-human="yes" data-search="market analyzer six-factor weighted zip scoring with letter grades and budget allocation. src/market_analyzer.py weights are set from measured distribution, not intuition. weighting a near-constant variable produces a ranking with no spread, which looks rigorous and tells you nothing. market_analyzer.py">
   <details>
@@ -1557,6 +1557,57 @@ footer p { margin:0 0 6px; }
     <div class="agent-body">
       <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">python src/obituary_opportunity.py</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Pulls detail and custom fields, applies gates, scores six weighted components</li><li>Gates: under 3 months since death, already sold, dead statuses, upside down, over buy box</li><li>Renders a branded 6-sheet Excel</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>Every row ships a Must Verify note</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Ranked call order workbook</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">DataSift API</span><span class="chip">openpyxl</span></div></div>
       <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>Total Delinquency is liens PLUS taxes. Reading it as the tax figure double counts the lien and inflates exactly the records the model exists to surface. It put a lien-only record at rank 1 before the fix. Also: gate on lead status, not just on sold, or a not_interested record tops your ranking.</p></div>
+    </div>
+  </details>
+</article><article class="agent" data-dept="market" data-status="live" data-phase="1" data-human="yes" data-search="parcel layer fetcher downloads any county&#x27;s public arcgis parcel layer, polygons included, so a market with no data in hand can still be classified. pulls free overture business points for the same area. skills/commercial-classifier/skill.md overture retires releases within months and changed its schema (categories became taxonomy), so a pinned release silently resolves nothing. the release is discovered at run time and the category column is read off the live schema. proven on licking county oh: 83,786 parcels with polygons, 8,034 businesses. arcgis rest overture maps (duckdb, s3) openstreetmap overpass">
+  <details>
+    <summary>
+      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="agent-name">Parcel Layer Fetcher</span>
+      <span class="agent-meta">
+        <span class="badge badge-live">Live</span>
+        <span class="badge badge-gate">Human gate</span>
+      </span>
+      <span class="agent-role">Downloads any county&#x27;s public ArcGIS parcel layer, polygons included, so a market with no data in hand can still be classified. Pulls free Overture business points for the same area.</span>
+      <code class="src">skills/commercial-classifier/SKILL.md</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">Someone wants commercial property in a county and has no file. cc probe-layer, then cc fetch-parcels.</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Probe the layer: fields, aliases, row count, paging support, and which fields the classifier will use</li><li>Page through every row with resultOffset, or by object id chunks when the server cannot page</li><li>Request latitude/longitude, write each polygon as WKT plus a centroid, resume from a progress file</li><li>Discover the newest Overture places release on S3 and pull every business in the parcels&#x27; trimmed bounding box</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>Finding the county&#x27;s parcel layer URL</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Parcel CSV with polygons, Field alias sidecar, Business points for the evidence pass</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">ArcGIS REST</span><span class="chip">Overture Maps (duckdb, S3)</span><span class="chip">OpenStreetMap Overpass</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>Overture retires releases within months and changed its schema (categories became taxonomy), so a pinned release silently resolves nothing. The release is discovered at run time and the category column is read off the live schema. Proven on Licking County OH: 83,786 parcels with polygons, 8,034 businesses.</p></div>
+    </div>
+  </details>
+</article><article class="agent" data-dept="market" data-status="live" data-phase="1" data-human="yes" data-search="commercial classifier turns any parcel file (fa, datasift export, county export, regrid, a fetched layer) into 13 asset classes and 76 sub-types with confidence and provenance, then checks each parcel against the businesses actually on it. skills/commercial-classifier/skill.md datasift exports already carry first american land-use text in structure type, so they resolve through a hashed index with no labelling. missing is not zero: the old parser read a blank square-footage column as 0 and would have sent every parcel to land. a coarse property class (exempt) once outranked the specific use code (churches) and moved 382 churches to civic; coarse signals are now capped at 0.5. commercial_classifier (stdlib) openpyxl shapely">
+  <details>
+    <summary>
+      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="agent-name">Commercial Classifier</span>
+      <span class="agent-meta">
+        <span class="badge badge-live">Live</span>
+        <span class="badge badge-gate">Human gate</span>
+      </span>
+      <span class="agent-role">Turns any parcel file (FA, DataSift export, county export, Regrid, a fetched layer) into 13 asset classes and 76 sub-types with confidence and provenance, then checks each parcel against the businesses actually on it.</span>
+      <code class="src">skills/commercial-classifier/SKILL.md</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">A list tagged only Commercial, or a county to prospect for a property type. The commercial-classifier skill: cc run.</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Detect the source from its headers and map every column to canonical fields</li><li>Resolve each parcel through built-in code tables, then labels learned per county, then keywords</li><li>Write the distinct use codes with evidence; Claude labels the weak ones once per county, never per parcel</li><li>Apply size, mall, fuel, vacancy, unit and physics rules on canonical fields</li><li>Confirm, correct or queue each parcel against business points inside its polygon</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>Reviewing the queue: business disagreements, low confidence, spot checks of learned labels</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Classified CSV with every input column kept, Excel workbook, Review queue, Per-county QA report</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">commercial_classifier (stdlib)</span><span class="chip">openpyxl</span><span class="chip">shapely</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>DataSift exports already carry First American land-use text in Structure type, so they resolve through a hashed index with no labelling. Missing is not zero: the old parser read a blank square-footage column as 0 and would have sent every parcel to Land. A coarse property class (Exempt) once outranked the specific use code (Churches) and moved 382 churches to Civic; coarse signals are now capped at 0.5.</p></div>
+    </div>
+  </details>
+</article><article class="agent" data-dept="market" data-status="live" data-phase="1" data-human="yes" data-search="true owner and value bands rolls every parcel up to its real owner and portfolio, groups owners that share a mailing address, and puts a value band on each parcel calibrated from the county&#x27;s own sales. skills/commercial-classifier/skill.md the tennessee build reported 100% green owner matches because a one-parcel owner scored green by default. one parcel is now its own tier and green needs two agreeing signals across two or more parcels. assessed-only files with no sales get no value band at all, because the assessment ratio is unknown and guessing it is fiction. commercial_classifier (stdlib)">
+  <details>
+    <summary>
+      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="agent-name">True Owner and Value Bands</span>
+      <span class="agent-meta">
+        <span class="badge badge-live">Live</span>
+        <span class="badge badge-gate">Human gate</span>
+      </span>
+      <span class="agent-role">Rolls every parcel up to its real owner and portfolio, groups owners that share a mailing address, and puts a value band on each parcel calibrated from the county&#x27;s own sales.</span>
+      <code class="src">skills/commercial-classifier/SKILL.md</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">Runs after classification in cc run.</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Normalize owner names; link by name, by shared mailing address with agreeing name tokens, and by co-owner</li><li>Block aggregator addresses (banks, servicers) from linking unrelated names</li><li>Score match tiers: single, green (two signals agree), grey</li><li>Calibrate sale-to-value ratios per county and class, score half the sales as a holdout, band every parcel</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>Treating ownership groups as leads, not proven corporate parents</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Entities and ownership groups, Related parties, Value bands with holdout accuracy</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">commercial_classifier (stdlib)</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>The Tennessee build reported 100% green owner matches because a one-parcel owner scored green by default. One parcel is now its own tier and green needs two agreeing signals across two or more parcels. Assessed-only files with no sales get no value band at all, because the assessment ratio is unknown and guessing it is fiction.</p></div>
     </div>
   </details>
 </article></div>
