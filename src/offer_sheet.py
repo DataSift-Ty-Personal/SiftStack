@@ -59,6 +59,7 @@ DEFAULT_TITLE_PCT = 0.0077
 DEFAULT_ESCROW_SELL = 900
 DEFAULT_REALTOR_PCT = 0.054
 DEFAULT_TRANSFER_PCT = 0.0037   # TN transfer tax plus recording
+DEFAULT_DEMO = 15_000        # clear a 1,900 sf 1930s house in city limits, asbestos survey included
 MAX_COMPS = 5
 MAX_GATES = 4
 
@@ -125,6 +126,31 @@ def _hydrate(pack: dict, walk: dict, args) -> None:
         "assign": rng(assign, confident=True), "assign_point": assign,
         "as_is": rng(as_is, confident=True), "as_is_point": as_is,
     }}
+
+
+def land_inputs(pack: dict, walk: dict, args) -> tuple[float, float, str]:
+    """(lot_value, demo, basis) for the tear-down floor. CLI wins, then the walk,
+    then the pack's land notes, then a $/sqft read off the pack's land comps.
+
+    Returns lot_value 0 when nothing on disk can say what dirt sells for, and
+    the block is left off the page rather than printed as $0.
+    """
+    notes = pack.get("land_notes") or {}
+    lot_value = _num(args.lot_value) or _num(walk.get("lot_value")) or _num(notes.get("lot_value"))
+    demo = _num(args.demo) or _num(walk.get("demo_cost")) or _num(notes.get("demo_cost")) or DEFAULT_DEMO
+    basis = walk.get("lot_value_basis") or notes.get("basis") or ""
+    if not lot_value:
+        land = [c for c in _revive(pack.get("land_comps")) if c.price and c.lot_acres]
+        # Small infill lots only: $/sqft falls fast with size, so acreage would drag it.
+        small = [c.price / (c.lot_acres * 43560) for c in land if c.lot_acres * 43560 <= 12_000]
+        lot_sqft = _num(pack["subject"].get("lot_acres")) * 43560
+        if len(small) >= 3 and lot_sqft:
+            small.sort()
+            psf = small[len(small) // 2]
+            lot_value = round(psf * lot_sqft, -3)
+            basis = basis or (f"median ${psf:.2f}/sqft over {len(small)} LOT-typed sales "
+                              f"under 12,000 sqft inside the boundary, on {lot_sqft:,.0f} sqft")
+    return lot_value, demo, basis
 
 
 def sheet_offer(wb: Workbook, pack: dict, walk: dict, args) -> None:
@@ -284,6 +310,29 @@ def sheet_offer(wb: Workbook, pack: dict, walk: dict, args) -> None:
              val="=IFERROR(OfferToSeller/AsIs,0)", val_fmt=PCT1, fill=CALC_FILL,
              note="Under 100% means we are buying below what as-is houses trade for here")
     r += 1
+
+    # ── the tear-down floor ────────────────────────────────────────────
+    # What a builder can pay with the house standing: dirt less demolition.
+    # Sits under the offer so the page says in one line whether the structure
+    # is carrying the price. Skipped, not zeroed, when no land read exists.
+    lot_value, demo, basis = land_inputs(pack, walk, args)
+    if lot_value:
+        r = _band(ws, r, "Tear-down floor   (what the dirt is worth with the house gone)",
+                  col=1, span=7)
+        r = _row(ws, r, 1, "Vacant lot value (land comps)", val=lot_value, fill=INPUT_FILL)
+        name("LotValue", 3, r - 1)
+        r = _row(ws, r, 1, "Demolition to clear it", val=demo, fill=INPUT_FILL)
+        name("Demo", 3, r - 1)
+        r = _row(ws, r, 1, "Tear-down floor (lot less demo)", val="=LotValue-Demo",
+                 bold=True, fill=TOTAL_FILL)
+        name("TearDownFloor", 3, r - 1)
+        r = _row(ws, r, 1, "Offer over the tear-down floor",
+                 val="=OfferToSeller-TearDownFloor", fill=CALC_FILL,
+                 note="Every dollar here is paid for the structure, not the land")
+        if basis:
+            wide_rows.append(r)
+            r = _para(ws, r, "Lot value basis: " + basis, size=8.5, color=GREY, span=7)
+        r += 1
 
     # ── if we wholesale it (the default) ───────────────────────────────
     top = r
@@ -575,6 +624,10 @@ def main() -> int:
     ap.add_argument("--escrow-sell", type=float, default=DEFAULT_ESCROW_SELL)
     ap.add_argument("--realtor-pct", type=float, default=DEFAULT_REALTOR_PCT)
     ap.add_argument("--transfer-pct", type=float, default=DEFAULT_TRANSFER_PCT)
+    ap.add_argument("--lot-value", dest="lot_value", type=float, default=0,
+                    help="vacant lot value for the tear-down floor (else walk, pack, or land comps)")
+    ap.add_argument("--demo", type=float, default=0,
+                    help=f"demolition cost for the tear-down floor (default {DEFAULT_DEMO:,})")
     ap.add_argument("--prepared", default="")
     ap.add_argument("--offer-only", action="store_true",
                     help="Render just the Offer page, no backup tabs")

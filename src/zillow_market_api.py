@@ -73,6 +73,7 @@ class MarketListing:
     rent_zestimate: float = 0.0
     days_on_zillow: int = 0
     lot_acres: float = 0.0
+    tax_assessed: float = 0.0   # county assessed value as Zillow carries it
     detail_url: str = ""
     raw: dict = field(default_factory=dict)
 
@@ -122,9 +123,26 @@ def normalize(item: dict) -> MarketListing:
         rent_zestimate=_num(item.get("rentZestimate")),
         days_on_zillow=int(_num(item.get("daysOnZillow"))),
         lot_acres=round(lot_acres, 3),
+        tax_assessed=_num(item.get("taxAssessedValue")),
         detail_url=item.get("detailUrl") or "",
         raw=item,
     )
+
+
+LAND_TYPES = ("LOT", "LAND")
+
+
+def split_land(listings: list["MarketListing"]) -> tuple[list["MarketListing"], list["MarketListing"]]:
+    """Separate houses from land so a comp pull never silently loses the lot sales.
+
+    Zillow types a raw lot as LOT, but it also types a NEW BUILD sold off a lot
+    listing as LOT (156 Old State Rd: 688 sf 3/2 at $265,000, typed LOT), and a
+    house sold at land value can carry a livingArea. Callers judge those by
+    price and sqft; this only sorts by the type Zillow assigned.
+    """
+    houses = [l for l in listings if l.home_type not in LAND_TYPES]
+    land = [l for l in listings if l.home_type in LAND_TYPES]
+    return houses, land
 
 
 class ZillowMarketAPI:
@@ -188,6 +206,10 @@ class ZillowMarketAPI:
         cutoff = (datetime.now() - timedelta(days=months_back * 30)).strftime("%Y-%m-%d")
         listings = [normalize(i) for i in collected.values()]
         listings = [l for l in listings if l.sold_date >= cutoff]
+        # The land rows are kept on the client whatever houses_only says, so a
+        # tear-down or lot-value read never needs a second paid pull.
+        _, self.last_land = split_land(listings)
+        self.last_land.sort(key=lambda l: l.sold_date, reverse=True)
         if houses_only:
             listings = [l for l in listings if l.home_type == "SINGLE_FAMILY"]
         listings.sort(key=lambda l: l.sold_date, reverse=True)

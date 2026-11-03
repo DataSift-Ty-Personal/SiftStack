@@ -49,6 +49,14 @@ MEASURED LIVE 2026-09-02, before any of this was written:
     end-of-results and must never break the loop; termination keys on the
     reported total.
 
+    PAGE DEPTH IS THE VARIABLE, NOT SLICE COUNT. The value-band test above was
+    49 pages deep and still drifted, which read as "partitioning does not help".
+    It does, if the slices are SHALLOW: sweeping the sold set one calendar
+    quarter at a time is 5 to 7 pages per slice and returns 100.0% coverage
+    (1,215/1,215, 1,691/1,691, 1,537/1,537 on three separate quarters) where a
+    single three-year Knox sweep returned 75.9%. Keep any slice under about ten
+    pages and pagination is reliable.
+
     AND THE MISSING ROWS CANNOT BE RECOVERED BY ASKING AGAIN. A second full
     Blount pass returned EXACTLY zero new ids (39,520 both times) and a Knox
     re-walk found zero new across 340 pages. So the ~6 to 17% that never appears
@@ -358,6 +366,134 @@ def phase_sweep(args) -> None:
     print("\nsweep complete:")
     for k, v in totals.items():
         print("  %-8s %7s rows" % (k, v["written"]))
+
+
+# ----------------------------------------------------------------- sold ----
+
+SOLD_CUTOFF = "2023-01-01"
+
+# Arms-length only. A quitclaim to an heir or a $1 family transfer is NOT a
+# market sale, it is an inherited property, and those are among the better lead
+# types this list exists to surface. Excluding them would delete leads in the
+# name of removing sales.
+SOLD_FILTERS = {
+    "extra_last_sale_date_min": SOLD_CUTOFF,
+    "extra_last_sale_value_min": 1000,
+    "extra_is_last_sale_interfamily": False,
+}
+
+
+def _quarters(cutoff: str) -> list:
+    """[(from, to), ...] one calendar quarter each, cutoff to today."""
+    y, m = int(cutoff[:4]), int(cutoff[5:7])
+    m = ((m - 1) // 3) * 3 + 1
+    today = datetime.now()
+    out = []
+    while (y, m) <= (today.year, ((today.month - 1) // 3) * 3 + 1):
+        ny, nm = (y + 1, 1) if m == 10 else (y, m + 3)
+        out.append(("%04d-%02d-01" % (y, m), "%04d-%02d-01" % (ny, nm)))
+        y, m = ny, nm
+    return out
+
+
+def phase_sold(args) -> None:
+    """Sweep every property sold since the cutoff, so they can be excluded by id.
+
+    WHY BY ID AND NOT BY AN INVERTED FILTER. `extra_last_sale_date_max` reads,
+    but it does not reconcile: Knox is 153,757 SFR total and 25,659 sold since
+    2023, implying 128,098 not-sold, while date_max at 2022-12-31 returns only
+    99,648. The 28,450 gap is properties with NO SALE DATE ON RECORD, which a
+    max-date comparison silently drops. Those are the long-held free-and-clear
+    houses that dominate the top of the distress ranking, so filtering that way
+    would delete the best leads while looking entirely reasonable.
+
+    WHY ONE QUARTER AT A TIME. A single three-year sweep of Knox reported 24,763
+    sold and returned only 18,802 unique ids, 75.9% coverage, because offset
+    pagination repeats rows at depth. Walking the same window one calendar
+    quarter at a time returns 100.0% (measured on three separate quarters:
+    1,215/1,215, 1,691/1,691, 1,537/1,537). The deciding factor is PAGE DEPTH,
+    not slice count: quarters are 5 to 7 pages each. An earlier test that
+    concluded "partitioning does not help" used a 49-page value band, which is
+    still deep enough to drift. Keep every slice under about ten pages.
+    """
+    sc = SearchClient(min_interval=args.min_interval)
+    qs = _quarters(SOLD_CUTOFF)
+    out = {"cutoff": SOLD_CUTOFF, "filters": SOLD_FILTERS,
+           "quarters": len(qs), "counties": {}, "ids": [],
+           "when": datetime.now().isoformat(timespec="seconds")}
+    seen = set()
+
+    for fips, name, st in COUNTIES:
+        base = sc.search(search_body(fips, name, st, SFR))["total_results"]
+        whole = dict(SFR, **SOLD_FILTERS)
+        reported = sc.search(search_body(fips, name, st, whole))["total_results"]
+        # Prove the keys move the count before trusting a single id from them.
+        gate(reported != base,
+             "%s: the sold filter returned the unfiltered count (%s); the keys "
+             "are being ignored" % (name, reported))
+        log.info("%s: %s of %s SFR sold since %s, walking %d quarters",
+                 name, reported, base, SOLD_CUTOFF, len(qs))
+
+        got = 0
+        thin = []
+        for lo, hi in qs:
+            f = dict(SFR, **SOLD_FILTERS)
+            f["extra_last_sale_date_min"] = lo
+            f["extra_last_sale_date_max"] = hi
+            qtot = sc.search(search_body(fips, name, st, f))["total_results"]
+            if not qtot:
+                continue
+            qseen = set()
+            page = 1
+            empty = 0
+            while True:
+                r = sc.search(search_body(fips, name, st, f, page, PAGE_SIZE))
+                batch = r.get("data") or []
+                if not batch:
+                    if (page - 1) * PAGE_SIZE >= qtot:
+                        break
+                    empty += 1
+                    if empty >= 3:
+                        break
+                    time.sleep(2.0 * empty)
+                    continue
+                empty = 0
+                for row in batch:
+                    rid = str(row.get("id") or "")
+                    if rid:
+                        qseen.add(rid)
+                page += 1
+                if len(qseen) >= qtot or (page - 1) * PAGE_SIZE >= qtot:
+                    break
+            cov = 100.0 * len(qseen) / qtot
+            if cov < 99.0:
+                thin.append("%s %.0f%%" % (lo[:7], cov))
+            new_ids = qseen - seen
+            seen |= qseen
+            got += len(qseen)
+            log.info("  %s %s: %s of %s (%.1f%%), %s new",
+                     name, lo[:7], len(qseen), qtot, cov, len(new_ids))
+
+        cover = 100.0 * got / reported if reported else 0.0
+        out["counties"][name] = {"total_reported": reported, "ids_found": got,
+                                 "coverage_pct": round(cover, 1),
+                                 "thin_quarters": thin}
+        log.info("%s: %s sold ids of %s reported (%.1f%% coverage)",
+                 name, got, reported, cover)
+
+    out["ids"] = sorted(seen)
+    _save(OUT / "sold_ids.json", out)
+    mark_done("sold", n=len(seen), cutoff=SOLD_CUTOFF)
+    print()
+    print("sold since %s (arms-length, $1,000+): %s unique ids"
+          % (SOLD_CUTOFF, format(len(seen), ",")))
+    for k, v in out["counties"].items():
+        print("  %-8s %7s found vs %7s reported  (%.1f%% coverage)%s"
+              % (k, format(v["ids_found"], ","),
+                 format(v["total_reported"], ","), v["coverage_pct"],
+                 "  THIN: " + ", ".join(v["thin_quarters"])
+                 if v["thin_quarters"] else ""))
+    print("written: %s" % (OUT / "sold_ids.json"))
 
 
 # ------------------------------------------------------------ aggregate ----
@@ -1190,7 +1326,8 @@ def phase_report(args) -> None:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("--phase", required=True, choices=["probe", "sweep", "suppress", "hydrate", "geo", "report"])
+    ap.add_argument("--phase", required=True, choices=["probe", "sweep", "sold", "suppress", "hydrate", "geo",
+                             "report"])
     ap.add_argument("--resume", action="store_true",
                     help="continue a partial sweep instead of restarting")
     ap.add_argument("--min-interval", type=float, default=0.30,
@@ -1222,11 +1359,14 @@ def main() -> int:
     ap.add_argument("--seed", type=int, default=17)
     ap.add_argument("--nb-min-properties", type=int, default=60,
                     help="geo: cut a neighborhood with fewer than this many SFR")
-    ap.add_argument("--k", type=int, default=3,
-                    help="geo: neighbours voting on each assignment. Measured "
-                         "on 1,597 anchors: k=1 83.6%%, k=3 83.3%%, k=5 77.9%%. "
-                         "More neighbours smooth ACROSS boundaries, which is "
-                         "the opposite of what is wanted, so k stays small.")
+    ap.add_argument("--k", type=int, default=1,
+                    help="geo: neighbours voting on each assignment. THE BEST k "
+                         "TRACKS ANCHOR DENSITY, it is not a fixed truth. At "
+                         "1,597 anchors: k=1 83.6%%, k=3 83.3%%, k=5 77.9%%. At "
+                         "21,309 anchors: k=1 95.2%%, k=3 94.7%%. Dense anchors "
+                         "put the single nearest one inside the right boundary "
+                         "already, so voting only drags in neighbours from "
+                         "across it. Re-measure after a big hydration.")
     ap.add_argument("--min-accuracy", type=float, default=80.0,
                     help="geo: fail below this holdout accuracy")
     ap.add_argument("--out", default="", help="report: output xlsx path")
@@ -1237,6 +1377,7 @@ def main() -> int:
         format="%(asctime)s %(levelname)s %(message)s", datefmt="%H:%M:%S")
     OUT.mkdir(parents=True, exist_ok=True)
     {"probe": phase_probe, "sweep": phase_sweep,
+     "sold": phase_sold,
      "suppress": phase_suppress, "hydrate": phase_hydrate,
      "geo": phase_geo, "report": phase_report}[a.phase](a)
     return 0
