@@ -28,6 +28,11 @@ log = logging.getLogger(__name__)
 # ------------------------------------------------------------------ events
 
 def process_event(row: dict) -> dict:
+    # The receiver and the inline worker both reach for a fresh event; only
+    # the one holding the claim runs it.
+    if row.get("id") is not None and not store.claim_event(row["id"]):
+        log.info("event %s already being processed, skipped", row["id"])
+        return {"action": "in_progress"}
     payload = json.loads(row["payload"]) if isinstance(row["payload"], str) else row["payload"]
     try:
         result = engine.process(row["source"], payload)
@@ -282,6 +287,16 @@ def run_once(with_reconcile: bool = True) -> dict:
     handoffs = flush_escalations()
     outbox = drain_outbox()
     result = {"events": events, "handoffs": handoffs, **outbox}
+    # Smarter Contact replies and labels leave through Smarter Contact, never
+    # through the smrtPhone outbox above.
+    try:
+        from . import sc_inbound
+
+        sc = sc_inbound.drain()
+        if any(sc.values()):
+            result["smartercontact"] = sc
+    except Exception:  # noqa: BLE001 - one channel failing must not stop the other
+        log.exception("smartercontact queue drain failed")
     if _campaign_result.get("released"):
         result["campaign_released"] = _campaign_result.pop("released")
 

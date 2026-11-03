@@ -14,6 +14,7 @@ primary_region = "iad"          # matches the app that already exists
 [env]
   SMS_AGENT_PHASE = "1"         # 1 classify | 2 +escalate | 3 +draft | 4 +auto-send
   SMS_AGENT_DRY_RUN = "1"       # flip to 0 only after a watched live send
+  SMS_AGENT_CAMPAIGN = "0"      # daily seller auto-campaign OFF (2026-09-11, duplicate sends). The SECRET of the same name overrides this line and must also be 0; secrets beat [env].
   SMS_AGENT_TRANSPORT = "api"
   SMS_AGENT_INLINE_WORKER = "1"
   SMS_AGENT_LOCALITY = "Blount County"

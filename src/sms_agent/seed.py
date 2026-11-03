@@ -416,7 +416,8 @@ def build(rows: Iterable[dict], touch: int, sender_fallback: str = "",
             sender=cand.sender,
         )
 
-        ok, problems = respond.validate(cand.message, max_questions=2)
+        # A 5-digit house number is not a zip: exempt exactly this street.
+        ok, problems = respond.validate(cand.message, max_questions=2, allowed_address=cand.street)
         if not ok:
             out.append(cand.hold("copy failed the human-voice check: " + "; ".join(problems)))
             continue

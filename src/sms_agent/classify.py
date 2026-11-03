@@ -35,6 +35,23 @@ OPT_OUT = [
     r"\bleave\s+me\s+alone\b",
     r"\blose\s+my\s+number\b",
     r"\bnever\s+(text|contact|message)\s+me\b",
+    # Missed live on the Smarter Contact launch (2026-10-28) and read as a soft
+    # no, which the auto reply would have answered with a question: "You say
+    # that, but y'all still do it. Stop it" and "I'm a Realtor! Stop". The FCC
+    # rule is revocation "by any reasonable means", so a STOP that ends a
+    # sentence counts even when it is not the whole message.
+    r"\bplease\s+stop\b",
+    r"\bstop\s+it\b",
+    r"(?:^|[.!?,]\s*)stop\s*(?:now|please)?\s*[.!]*\s*$",
+    # A mocking reply is a no to ever hearing from us again (Ty, 2026-10-30:
+    # "Sold it to ya mom, she didn't tell you?" goes DNC).
+    r"\b(?:ya|yo|your|ur)\s+(?:mom|mama|momma|moms)\b",
+    # An insult is a no to ever hearing from us again. "Take your scam and stick
+    # it up your ass" read ASKING_WHO and got a cheerful who-reply (2026-10-30).
+    r"\b(?:fuck|f\*+k|screw|piss)\s+(?:off|you|u)\b",
+    r"\bstick\s+it\b",
+    r"\bup\s+your\s+(?:ass|butt)\b",
+    r"\b(?:go\s+to\s+hell|kiss\s+my\s+ass|get\s+lost|eat\s+shit|suck\s+it)\b",
 ]
 
 # Strong signals only. A wrong-number flip writes to the CRM and permanently
@@ -159,6 +176,11 @@ HOSTILE_NOW = [
 # number stays workable and a person is told.
 BEREAVEMENT_NOW = [
     r"\b(passed\s+away|passed\s+on|died|deceased|funeral|in\s+hospice)\b",
+    # "John is dead. Please stop texting." (live, 2026-10-28) matched none of
+    # the above, so the death never reached the record.
+    r"\b(is|was|has\s+been)\s+dead\b",
+    r"\b(mom|mother|dad|father|husband|wife|owner|grandma|grandmother|grandpa|grandfather|"
+    r"brother|sister|son|daughter|he|she)\s+(has\s+)?passed\b",
 ]
 
 SENSITIVE_OTHER = [
@@ -209,12 +231,19 @@ def classify_rules(text: str) -> Optional[Classification]:
     if not t:
         return Classification("EMPTY", 1.0, "rules")
 
-    hit = _hit(t, ESCALATE_NOW)
+    hit = _hit(t, HOSTILE_NOW)
     if hit:
         return Classification("ESCALATE", 1.0, "rules", f"sensitive: {hit}")
+    # Opt-out BEFORE bereavement: a sensitive reply only pauses the thread and
+    # leaves the number live, so "John is dead. Please stop texting." has to be
+    # honored as an opt-out. The death still reaches the record (engine notes it).
     hit = _hit(t, OPT_OUT)
     if hit:
-        return Classification("OPT_OUT", 1.0, "rules", f"opt-out: {hit}")
+        also = " (also reports a death)" if _hit(t, BEREAVEMENT_NOW) else ""
+        return Classification("OPT_OUT", 1.0, "rules", f"opt-out: {hit}{also}")
+    hit = _hit(t, BEREAVEMENT_NOW + SENSITIVE_OTHER)
+    if hit:
+        return Classification("ESCALATE", 1.0, "rules", f"sensitive: {hit}")
     hit = _hit(t, WRONG_NUMBER)
     if hit:
         return Classification("WRONG_NUMBER", 0.95, "rules", f"wrong-number: {hit}")

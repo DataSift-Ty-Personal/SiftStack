@@ -103,7 +103,7 @@ def run(live_model: bool = False) -> int:
         stub.slack.append(text)
         or stub.slack_programs.append(program or "seller")
         or True)
-    for name in ("add_tags", "set_status", "post_note", "assign", "bump_sms_attempts"):
+    for name in ("add_tags", "add_list", "set_status", "post_note", "assign", "bump_sms_attempts"):
         setattr(
             crm, name,
             (lambda n: lambda *a, **k: (stub.crm_writes.append((n, a)) or {"_dry_run": True}))(name),
@@ -121,6 +121,42 @@ def run(live_model: bool = False) -> int:
         "owner_first": "Maron", "street": "158 Old State Rd", "city": "Maryville",
         "county": "Blount", "assigned_name": "Adriana", "record_uuid": uuid,
     }
+
+    # Smarter Contact: an in-memory account. The workstation .env carries the
+    # real login, so without this the suite would read and text live threads.
+    from . import sc_client
+
+    stub.sc_sent, stub.sc_labels, stub.sc_threads = [], [], {}
+    config.SC_FIREBASE_API_KEY, config.SC_REFRESH_TOKEN = "selftest", "selftest"
+
+    def _sc_never(*a, **k):
+        raise AssertionError("selftest reached the real Smarter Contact API")
+
+    def _sc_send(contact_id, content):
+        stub.sc_sent.append((contact_id, content))
+        stub.sc_threads.setdefault(contact_id, []).append(
+            {"id": f"o{len(stub.sc_sent)}", "dir": "out", "body": content, "created_at": "z",
+             "raw_direction": "OUTGOING", "manual": True})
+        return f"sc-msg-{len(stub.sc_sent)}"
+
+    sc_client.gql = _sc_never
+    sc_client._id_token = _sc_never
+    sc_client.thread = lambda contact_id, limit=12: list(stub.sc_threads.get(contact_id, []))[-limit:]
+    sc_client.contact_id_for = lambda phone: ""
+    stub.sc_apn = {}   # contact id -> the Sift record it was pushed from
+    stub.sc_pending, stub.sc_pulled = [{"id": "camp-t2", "groups": ["grp-t2"]}], []   # follow-ups not yet sent
+    sc_client.pending_followups = lambda: [dict(c) for c in stub.sc_pending]
+    sc_client.remove_from_group = lambda group_id, ids: (
+        stub.sc_pulled.append((ids[0], group_id)) or True)
+    sc_client.remove_from_campaign = lambda contact_id, campaign_id: False
+    stub.sc_dnc = []
+    sc_client.add_contact_dnc = lambda contact_id: (stub.sc_dnc.append(contact_id) or "DNC")
+    sc_client.contact_record_uuid = lambda contact_id: stub.sc_apn.get(contact_id, "")
+    sc_client.send_message = _sc_send
+    sc_client.add_labels = lambda ids, titles: stub.sc_labels.append((tuple(ids), tuple(titles)))
+    from . import sc_inbound as _sci
+    stub.listing_status = _sci.listing_status        # the real one, checked in 11c
+    _sci.listing_status = lambda rec: ""              # a test never calls Zillow
 
     if not live_model:
         # Deterministic classification and drafting, so a network blip is never
@@ -245,10 +281,10 @@ def run(live_model: bool = False) -> int:
     out = inbound("8650009111", "who is this?")
     r.check("falls back to a human when the template is off",
             out.get("action") == "needs_human_reply", str(out.get("action")))
-    # The channel is interested parties only, so this reaches the digest and the
-    # log rather than Slack. Asserted so the trade-off is deliberate: a question
-    # nobody answers is now visible only to whoever reads the digest.
-    r.check("bookkeeping stays out of the channel", len(stub.slack) == before,
+    # A question is a person waiting, not bookkeeping. Kept out of the channel
+    # until 2026-10-30, it meant six went unanswered for up to two days.
+    r.check("a question nobody answered reaches the channel, once",
+            len(stub.slack) == before + 1 and "replied with a question" in stub.slack[-1],
             f"{len(stub.slack) - before} posts")
     config.PHASE, config.ANSWER_WHO = _phase, _answer
 
@@ -290,6 +326,22 @@ def run(live_model: bool = False) -> int:
         r.check(f"bereavement, not hostile: {text[:26]!r}",
                 bool(_c._hit(text.lower(), _c.BEREAVEMENT_NOW))
                 and not _c._hit(text.lower(), _c.HOSTILE_NOW))
+    # Live misses from the Smarter Contact launch (2026-10-28): a STOP that ends
+    # a sentence is an opt-out, and an opt-out wins over a reported death.
+    for text in ("You say that, but y'all still do it. Stop it", "I'm a Realtor! Stop",
+                 "Please stop", "Not interested. Stop.", "John is dead. Please stop texting."):
+        got = _c.classify_rules(text)
+        r.check(f"opt-out: {text[:34]!r}", bool(got) and got.intent == "OPT_OUT",
+                got.intent if got else "model")
+    for text in ("Can you stop by Saturday?", "I can't stop thinking about selling",
+                 "near the bus stop on Main"):
+        got = _c.classify_rules(text)
+        r.check(f"not an opt-out: {text[:34]!r}", not got or got.intent != "OPT_OUT",
+                got.intent if got else "model")
+    for text in ("John is dead", "my mom passed last spring"):
+        got = _c.classify_rules(text)
+        r.check(f"death without an opt-out stays sensitive: {text!r}",
+                bool(got) and got.intent == "ESCALATE", got.intent if got else "model")
 
     before_sup = store.is_suppressed("8650005555")
     out = inbound("8650005555", "this has become harassment, my attorney will call")
@@ -788,6 +840,65 @@ def run(live_model: bool = False) -> int:
     r.check("marks the number dead", out.get("action") == "dead", str(out.get("action")))
     r.check("phone flipped to DEAD",
             any(w[0] == "set_phone_status" and w[1][2] == "DEAD" for w in stub.crm_writes))
+
+    # ---- 6b. delivery verdicts survive dedupe and roll up ----------------
+    print("\ndeliverability")
+    from . import deliverability, receiver
+
+    k_sent = receiver._dedupe_key(
+        "smrtphone", {"event": "smsDeliveryCallback", "smsId": "st-e", "status": "sent"})
+    k_dlv = receiver._dedupe_key(
+        "smrtphone", {"event": "smsDeliveryCallback", "smsId": "st-e", "status": "delivered"})
+    r.check("dedupe key separates statuses on one smsId", k_sent != k_dlv, k_dlv)
+    r.check("a retry of the same status still collapses",
+            k_dlv == receiver._dedupe_key(
+                "smrtphone", {"event": "smsDeliveryCallback", "smsId": "st-e",
+                              "status": "delivered"}))
+    r.check("non-delivery events keep the id-only key",
+            receiver._dedupe_key(
+                "smrtphone", {"event": "smsOutgoing", "smsId": "st-e"}).endswith(":st-e"))
+
+    # Synthetic traffic on numbers no other section uses: two pools, one
+    # delivered-after-sent, one spam refusal, one registration refusal, one
+    # reply. The report must reproduce all of it.
+    def _ev(event: str, p: dict) -> None:
+        p = dict(p, event=event)
+        store.record_event("smrtphone", event, receiver._dedupe_key("smrtphone", p), p)
+
+    _ev("smsOutgoing", {"smsId": "dv-1", "from": "+18659990001",
+                        "callerIdName": "SelftestPool - 1"})
+    _ev("smsOutgoing", {"smsId": "dv-2", "from": "+18659990001",
+                        "callerIdName": "SelftestPool - 1"})
+    _ev("smsOutgoing", {"smsId": "dv-3", "from": "+18659990002",
+                        "callerIdName": "Selftest - Dispo"})
+    _ev("smsDeliveryCallback", {"smsId": "dv-1", "status": "sent"})
+    _ev("smsDeliveryCallback", {"smsId": "dv-1", "status": "delivered"})
+    _ev("smsDeliveryCallback", {"smsId": "dv-2", "status": "undelivered",
+        "failure_reason": "Your message was flagged as objectionable by the carrier."})
+    _ev("smsDeliveryCallback", {"smsId": "dv-3", "status": "undelivered",
+        "failure_reason": "You are sending messages to the US using a US 10DLC number"
+                          " that is not associated with an approved A2P 10DLC Campaign."})
+    _ev("smsIncoming", {"smsId": "dv-r1", "from": "+15559990111",
+                        "to": "+18659990001", "message": "who is this"})
+
+    dv = deliverability.collect(days=1)
+    n1 = dv["numbers"].get("+18659990001", {})
+    n2 = dv["numbers"].get("+18659990002", {})
+    r.check("pool split by callerIdName",
+            n1.get("pool") == "SelftestPool" and n2.get("pool") == "Dispo",
+            f"{n1.get('pool')} / {n2.get('pool')}")
+    r.check("delivered verdict survives after a sent callback",
+            n1.get("delivered") == 1, str(n1))
+    r.check("spam refusal classified", n1.get("fail", {}).get("spam_flag") == 1,
+            str(n1.get("fail")))
+    r.check("registration refusal classified",
+            n2.get("fail", {}).get("registration") == 1, str(n2.get("fail")))
+    r.check("reply joined to the sending number", n1.get("replies") == 1, str(n1))
+    r.check("registration finding raised",
+            any("REGISTRATION" in f for f in dv["findings"]), " | ".join(dv["findings"]))
+    dv_text = deliverability.render(dv, full=True)
+    r.check("report renders both pools",
+            "SelftestPool" in dv_text and "Dispo" in dv_text)
 
     # ---- 7. the output validator ----------------------------------------
     print("\noutput validator")
@@ -1331,6 +1442,554 @@ def run(live_model: bool = False) -> int:
     r.check("worker skips suppressed numbers", result["skipped"] >= 1, str(result))
     r.check("nothing reached the transport in dry run", not stub.sent, str(stub.sent[:2]))
 
+    # ---- 11b. Smarter Contact replies never send --------------------------
+    # The thread lives in Smarter Contact, so this path classifies, writes the
+    # CRM and pages Slack, and sends NOTHING, even here at phase 4 where the
+    # smrtPhone path would draft and send.
+    print("\nsmarter contact replies")
+    import hashlib
+    import hmac
+    import time as _time
+
+    from . import sc_inbound
+
+    def _sig(secret: str, raw: bytes, ts: int) -> str:
+        return f"t={ts},v1=" + hmac.new(secret.encode(), f"{ts}.".encode() + raw,
+                                        hashlib.sha256).hexdigest()
+
+    secret, raw, now = "whsec_selftest", b'{"id":"evt_1"}', int(_time.time())
+    r.check("SC signature: a valid one passes", sc_inbound.signature_ok(_sig(secret, raw, now), raw, secret))
+    r.check("SC signature: a tampered body fails",
+            not sc_inbound.signature_ok(_sig(secret, raw, now), raw + b" ", secret))
+    r.check("SC signature: the wrong secret fails",
+            not sc_inbound.signature_ok(_sig(secret, raw, now), raw, "whsec_other"))
+    r.check("SC signature: no secret configured fails closed",
+            not sc_inbound.signature_ok(_sig(secret, raw, now), raw, ""))
+    r.check("SC signature: a 90-minute retry still passes",
+            sc_inbound.signature_ok(_sig(secret, raw, now - 90 * 60), raw, secret))
+    r.check("SC signature: a 4-hour-old timestamp fails",
+            not sc_inbound.signature_ok(_sig(secret, raw, now - 4 * 3600), raw, secret))
+
+    def sc(phone: str, content: str, mid: str, test: bool = False) -> dict:
+        body = {"id": "evt_" + mid, "event": "message.received.v1", "data": {
+            "account_id": "acct", "message_id": mid, "contact_id": "c-" + mid,
+            "from_number": "+1" + phone, "to_number": "+18655550100", "content": content}}
+        if test:
+            body["test"] = True
+        return engine.process("smartercontact", body)
+
+    sc_phones = ("8657770001", "8657770002", "8657770003")
+    for p in sc_phones:
+        store.map_phone(p, record_uuid="rec-sc-" + p[-4:], context=ctx)
+    sent_before, slack_before = len(stub.sent), len(stub.slack)
+
+    out = sc(sc_phones[0], "How much would you pay for it?", "m1")
+    r.check("SC hot reply is handed off", out.get("action") == "handoff", str(out.get("action")))
+    r.check("SC hot reply records where the thread lives",
+            (store.lookup_phone(sc_phones[0]) or {}).get("context", {}).get("reply_in") == "Smarter Contact")
+    out = sc(sc_phones[1], "who is this?", "m2")
+    r.check("SC question goes to a human", out.get("action") == "needs_human_reply", str(out.get("action")))
+    # "Needs an answer" was an ops notice, and SLACK_INTERESTED_ONLY dropped
+    # every one for three days (2026-10-28 to 10-30). It must reach the channel.
+    notice = " ".join(stub.slack[slack_before:])
+    r.check("SC question is POSTED to the channel, with the conversation link",
+            config.SLACK_INTERESTED_ONLY and "replied with a question" in notice
+            and "messenger-full/c-m2" in notice, notice[:200])
+    out = sc(sc_phones[2], "STOP", "m3")
+    r.check("SC opt-out is honoured", out.get("action") == "opted_out", str(out.get("action")))
+    out = sc(sc_phones[0], "test", "m4", test=True)
+    r.check("SC test delivery is ignored", out.get("action") == "ignored", str(out))
+    r.check("SC replies sent NOTHING through smrtPhone", len(stub.sent) == sent_before,
+            str(stub.sent[sent_before:])[:200])
+    queued = store._conn().execute(
+        "SELECT COUNT(*) FROM outbox WHERE phone IN (?,?,?)", sc_phones).fetchone()[0]
+    r.check("SC replies queued NOTHING in the outbox, even at phase 4", queued == 0, f"{queued} rows")
+    conv = store.get_conversation(sc_phones[0]) or {}
+    r.check("SC thread never gets a smrtPhone sticky sender", not conv.get("from_number"),
+            str(conv.get("from_number")))
+    escalate.hot_lead(sc_phones[0], "how much?", "INTERESTED", dict(ctx, reply_in="Smarter Contact"))
+    r.check("hot-lead post says the thread is in Smarter Contact",
+            "Thread is in *Smarter Contact*" in stub.slack[-1], stub.slack[-1][:200])
+    r.check("SC with auto reply OFF queues no reply or label (only the opt-out's DNC)",
+            not [x for x in store.sc_due(at="9999") if x["kind"] != "dnc"] and not stub.sc_sent,
+            str(store.sc_counts()))
+
+    # ---- 11c. Smarter Contact auto replies (behind the switch) -----------
+    # Fixed copy in Adriana's voice, sent through Smarter Contact on the
+    # thread's own number, never through smrtPhone, never to an interested
+    # owner, never after a person has stepped in.
+    print("\nsmarter contact auto replies")
+    from .knowledge import sc_replies
+
+    saved = (config.SC_AUTO_REPLY, config.SC_AUTO_LABEL, config.SC_REPLY_DELAY_MIN,
+             config.SC_REPLY_DELAY_MAX, config.DRY_RUN, sender_pool.within_quiet_hours)
+    config.SC_AUTO_REPLY = config.SC_AUTO_LABEL = True
+    config.SC_REPLY_DELAY_MIN = config.SC_REPLY_DELAY_MAX = 0
+    sender_pool.within_quiet_hours = lambda phone, at=None: True
+    sent_before = len(stub.sent)
+
+    def sc2(phone: str, content: str, contact: str) -> dict:
+        n = sum(len(v) for v in stub.sc_threads.values())
+        stub.sc_threads.setdefault(contact, []).append(
+            {"id": f"i{n}", "dir": "in", "body": content, "created_at": "z", "raw_direction": "INCOMING",
+             "manual": True})
+        body = {"id": f"evt_ar{n}", "event": "message.received.v1", "data": {
+            "message_id": f"ar{n}", "contact_id": contact, "from_number": "+1" + phone,
+            "to_number": "+18655550100", "content": content}}
+        # Logged and finished exactly as the receiver and worker do, so the
+        # repair tools (catch_up, recheck_opt_outs) can read it back.
+        event_id = store.record_event("smartercontact", "message.received.v1", body["id"], body)
+        result = engine.process("smartercontact", body)
+        store.finish_event(event_id, _json.dumps(result)[:2000])
+        return result
+
+    def drain_live() -> dict:
+        config.DRY_RUN = False   # every SC edge is stubbed above
+        try:
+            return sc_inbound.drain()
+        finally:
+            config.DRY_RUN = True
+
+    def sc_rows(phone: str, kind: str = "") -> list[dict]:
+        q = "SELECT * FROM sc_outbox WHERE phone=?" + (" AND kind=?" if kind else "") + " ORDER BY id"
+        return [dict(x) for x in store._conn().execute(q, (phone, kind) if kind else (phone,))]
+
+    ar = {k: f"86577710{i:02d}" for i, k in enumerate(
+        ("who", "ni", "firm", "wrong", "hot", "stop", "person", "stale", "off", "yes", "cap", "fail"))}
+    for p in ar.values():
+        store.map_phone(p, record_uuid="rec-ar-" + p[-4:], context=ctx)
+
+    # Every variant, rendered the way it ships, passes both validators.
+    bad = []
+    for pool_name, pool in sc_replies.ALL_POOLS.items():
+        for t in pool:
+            for first in ("Maron", ""):
+                m = sc_replies.render(t, first, "158 Old State Rd", "Maryville", "Adriana")
+                ok, blocked = respond.validate(m, max_questions=1)
+                if not ok or sc_replies.problems(m) or "{" in m or "Hi ," in m:
+                    bad.append(f"{pool_name}: {m} {blocked} {sc_replies.problems(m)}")
+    r.check("every SC reply variant passes the validators", not bad, "; ".join(bad)[:300])
+    r.check("SC copy never names a company, a price or the list",
+            not any(w in " ".join(" ".join(p) for p in sc_replies.ALL_POOLS.values()).lower()
+                    for w in ("volunteer", "llc", "$", "cash", "offer", "foreclos", "probate", "auction")))
+    r.check("SC copy check catches a filtered word", bool(sc_replies.problems("Can you talk now?")))
+    r.check("SC copy check catches a dash", bool(sc_replies.problems("Sure \u2014 thanks")))
+    r.check("SC never auto labels Lead (Adriana decides that)", "INTERESTED" not in sc_replies.LABELS)
+
+    out = sc2(ar["who"], "who is this?", "c-who")
+    rows = sc_rows(ar["who"], "reply")
+    r.check("SC who-is-this gets one queued answer", out.get("action") == "answered" and len(rows) == 1,
+            f"{out.get('action')} {out.get('actions')}")
+    r.check("SC who-answer speaks as Adriana, a local person",
+            bool(rows) and "Adriana" in rows[0]["body"] and "local" in rows[0]["body"],
+            rows[0]["body"] if rows else "")
+    d = drain_live()
+    r.check("SC queue sends the answer through Smarter Contact", d.get("sent", 0) >= 1
+            and stub.sc_sent and stub.sc_sent[-1][0] == "c-who", str(d))
+    out = sc2(ar["who"], "who is this really", "c-who")
+    drain_live()   # each answer goes out before the next ask, as it would live
+    rows = sc_rows(ar["who"], "reply")
+    # Ty, 2026-10-30: the agent is the setter; asking again gets the next answer
+    # (public record, the county), and Adriana only takes the interested ones.
+    r.check("SC asking twice gets the public-record answer, not a pause",
+            out.get("action") == "answered" and len(rows) == 2 and "public records" in rows[1]["body"]
+            and "county" in rows[1]["body"]
+            and (store.get_conversation(ar["who"]) or {}).get("state") != "paused",
+            f"{out.get('action')} {out.get('actions')} {[x['body'] for x in rows]}")
+    out = sc2(ar["who"], "?????", "c-who")
+    drain_live()
+    rows = sc_rows(ar["who"], "reply")
+    r.check("SC a third ask gets the one clarify answer, never a repeat",
+            len(rows) == 3 and len({sc_replies.pool_of(x["body"]) for x in rows}) == 3,
+            f"{out.get('action')} {[x['body'][:40] for x in rows]}")
+    slack_before = len(stub.slack)
+    out = sc2(ar["who"], "who is this??", "c-who")
+    r.check("SC once every answer has gone out, the next one goes to Adriana",
+            out.get("action") == "needs_human_reply" and len(sc_rows(ar["who"], "reply")) == 3
+            and len(stub.slack) == slack_before + 1, f"{out.get('action')} {out.get('actions')}")
+    howco = "8657771097"
+    store.map_phone(howco, record_uuid="rec-ar-howco", context=ctx)
+    sc2(howco, "Name ,Company ,and how did you get this number?", "c-howco")
+    rows = sc_rows(howco, "reply")
+    r.check("SC 'name, company, how did you get this number' gets the public-record answer",
+            len(rows) == 1 and sc_replies.pool_of(rows[0]["body"]) == "HOW_NUMBER"
+            and "investor" in rows[0]["body"], str([x["body"] for x in rows]))
+
+    # 2026-10-30: "12105 Sample Mill Rd" read as a zip and blocked the answer.
+    big = "8657771095"
+    store.map_phone(big, record_uuid="rec-ar-big", context=dict(ctx, street="12105 Sample Mill Rd"))
+    sc2(big, "How did you get this phone number?", "c-big")
+    rows = sc_rows(big, "reply")
+    r.check("SC a 5-digit house number is not a zip: the answer goes out",
+            len(rows) == 1 and "12105 Sample Mill Rd" in rows[0]["body"], str([x["body"] for x in rows]))
+    r.check("a stray zip next to the approved street is still blocked",
+            not respond.validate("Is 12105 Sample Mill Rd 37931 yours?",
+                                 allowed_address="12105 Sample Mill Rd")[0])
+
+    # Ty, 2026-10-30: "No" then "How you get this number who are you?" must be
+    # answered. It gets the closing answer: no question, no second pitch.
+    after_no = "8657771096"
+    store.map_phone(after_no, record_uuid="rec-ar-afterno", context=ctx)
+    sc2(after_no, "Not interested", "c-afterno")
+    sc2(after_no, "Who is this? How did you get my number", "c-afterno")
+    drain_live()
+    rows = sc_rows(after_no, "reply")
+    r.check("SC a who-question after a no gets the closing answer, with no question in it",
+            len(rows) == 1 and sc_replies.pool_of(rows[0]["body"]) == "HOW_CLOSING" and "?" not in rows[0]["body"]
+            and (store.get_conversation(after_no) or {}).get("state") == "closed", str([x["body"] for x in rows]))
+    slack_before = len(stub.slack)
+    sc2(after_no, "who is this?", "c-afterno")
+    sc2(after_no, "Thanks!", "c-afterno")
+    r.check("SC after the closing answer: a second ask goes to Adriana, a thanks gets nothing",
+            len(sc_rows(after_no, "reply")) == 1 and len(stub.slack) == slack_before + 1,
+            f"{[x['body'][:30] for x in sc_rows(after_no, 'reply')]} {stub.slack[slack_before:]}")
+
+    # Record status, readable per test (the real get_record would hit Sift).
+    stub.statuses, _real_get_record = {}, crm.get_record
+    crm.get_record = lambda uuid, fresh=False: {"uuid": uuid, "status": stub.statuses.get(uuid)}
+
+    # Ty, 2026-10-28: a no is a verified number and nothing more. No question,
+    # no sign-off; the phone goes CORRECT in Sift and the contact is labeled.
+    writes_before = len(stub.crm_writes)
+    out = sc2(ar["ni"], "not interested", "c-ni")
+    kinds = [(x["kind"], x["body"]) for x in sc_rows(ar["ni"])]
+    r.check("SC no: labeled Not interested, nothing texted back",
+            kinds == [("label", "Not interested")], str(kinds))
+    r.check("SC no: the number goes CORRECT in Sift",
+            ("set_phone_status", ("rec-ar-" + ar["ni"][-4:], ar["ni"], "CORRECT")) in stub.crm_writes[writes_before:],
+            str(stub.crm_writes[writes_before:])[:200])
+    r.check("SC no: the thread closes", (store.get_conversation(ar["ni"]) or {}).get("state") == "closed")
+    drain_live()
+    r.check("SC Not interested label reaches Smarter Contact",
+            (("c-ni",), ("Not interested",)) in stub.sc_labels, str(stub.sc_labels))
+
+    r.check("SC no: the record goes Not Interested in Sift (the label alone never reaches it)",
+            ("set_status", ("rec-ar-" + ar["ni"][-4:], config.SC_NI_STATUS)) in stub.crm_writes[writes_before:],
+            str([w for w in stub.crm_writes[writes_before:] if w[0] == "set_status"]))
+    stub.statuses["rec-ar-" + ar["firm"][-4:]] = "new_lead"
+    writes_before = len(stub.crm_writes)
+    sc2(ar["firm"], "Not interested, I will never sell it", "c-firm")
+    r.check("SC no on a record someone is working: status left alone",
+            not any(w[0] == "set_status" for w in stub.crm_writes[writes_before:]),
+            str([w for w in stub.crm_writes[writes_before:] if w[0] == "set_status"]))
+    r.check("SC firm no: label only, no reply either",
+            [(x["kind"], x["intent"]) for x in sc_rows(ar["firm"])] == [("label", "NOT_INTERESTED")],
+            str(sc_rows(ar["firm"])))
+
+    sc2(ar["wrong"], "wrong number", "c-wrong")
+    drain_live()
+    r.check("SC wrong number: apology sent and labeled, despite suppression",
+            any(c == "c-wrong" and "sorry" in b.lower() for c, b in stub.sc_sent)
+            and (("c-wrong",), ("Wrong Number",)) in stub.sc_labels, str(stub.sc_sent[-1:]))
+
+    out = sc2(ar["hot"], "How much would you pay for it?", "c-hot")
+    r.check("SC interested owner gets NO auto reply and is handed off",
+            out.get("action") == "handoff" and not sc_rows(ar["hot"]), str(sc_rows(ar["hot"])))
+    hot_ctx = (store.lookup_phone(ar["hot"]) or {}).get("context") or {}
+    escalate.hot_lead(ar["hot"], "How much would you pay for it?", "INTERESTED", hot_ctx)
+    r.check("SC a reply pulls the contact out of every pending follow-up",
+            ("c-hot", "grp-t2") in stub.sc_pulled and ("c-ni", "grp-t2") in stub.sc_pulled, str(stub.sc_pulled[-4:]))
+    r.check("SC hot-lead post links straight to the Smarter Contact conversation",
+            "app.smartercontact.com/messenger-full/c-hot" in stub.slack[-1], stub.slack[-1][:300])
+
+    writes_before = len(stub.crm_writes)
+    sc2(ar["stop"], "I'm a Realtor! Stop", "c-stop")
+    r.check("SC opt-out: no reply, labeled Unknown DNC",
+            [(x["kind"], x["body"]) for x in sc_rows(ar["stop"]) if x["kind"] != "dnc"] == [("label", "Unknown DNC")],
+            str(sc_rows(ar["stop"])))
+    drain_live()
+    r.check("SC opt-out goes on Smarter Contact's own DNC (it only blocks the STOP keyword itself)",
+            "c-stop" in stub.sc_dnc, str(stub.sc_dnc))
+    wrong_rows = {x["kind"]: x for x in sc_rows(ar["wrong"])}
+    store._conn().execute("UPDATE sc_outbox SET not_before='2000-01-01' WHERE kind='dnc' AND status='queued'")
+    drain_live()
+    r.check("SC wrong number goes on Smarter Contact's DNC too, once the apology is out",
+            "c-wrong" in stub.sc_dnc, str(stub.sc_dnc))
+    r.check("SC wrong number: the apology is scheduled BEFORE the DNC (a DNC'd contact cannot be texted)",
+            wrong_rows["reply"]["not_before"] < wrong_rows["dnc"]["not_before"]
+            or wrong_rows["reply"]["status"] == "sent", str({k: (x["not_before"], x["status"]) for k, x in wrong_rows.items()}))
+    r.check("SC a plain no is NOT put on Smarter Contact's DNC", "c-ni" not in stub.sc_dnc, str(stub.sc_dnc))
+    # 2026-10-30: "Leave me the hell alone, reported to police" is ESCALATE,
+    # not OPT_OUT, so it was suppressed by the agent but left textable in
+    # Smarter Contact.
+    hostile = "8657771099"
+    store.map_phone(hostile, record_uuid="rec-ar-1099", context=ctx)
+    out = sc2(hostile, "Leave me the hell alone. This is harassment, reported to police", "c-hostile")
+    store._conn().execute("UPDATE sc_outbox SET not_before='2000-01-01' WHERE kind='dnc' AND status='queued'")
+    drain_live()
+    r.check("SC hostile reply: no text back, and it goes on Smarter Contact's DNC",
+            out.get("action") == "escalated" and "c-hostile" in stub.sc_dnc
+            and not sc_rows(hostile, "reply"), f"{out.get('action')} {stub.sc_dnc} {sc_rows(hostile)}")
+
+    # 2026-10-30: the receiver and the inline worker both picked up each slow
+    # Smarter Contact reply, so every one ran twice.
+    from . import worker as _worker
+    eid = store.record_event("smartercontact", "message.received.v1", "evt_claim1",
+                             {"id": "evt_claim1", "event": "message.received.v1", "data": {}})
+    first, second = store.claim_event(eid), store.claim_event(eid)
+    r.check("an event can be claimed by one processor only", first and not second, f"{first} {second}")
+    row = dict(store._conn().execute("SELECT * FROM events WHERE id=?", (eid,)).fetchone())
+    r.check("a second processor skips an event already in progress",
+            _worker.process_event(row).get("action") == "in_progress"
+            and store._conn().execute("SELECT processed_at FROM events WHERE id=?", (eid,)).fetchone()[0] is None)
+    store._conn().execute("UPDATE event_claims SET claimed_at='2000-01-01T00:00:00+00:00' WHERE event_id=?", (eid,))
+    r.check("a claim left by a dead process expires and is retaken", store.claim_event(eid))
+    store.finish_event(eid, "{}")
+    r.check("a finished event cannot be claimed again", not store.claim_event(eid))
+
+    # 2026-10-30: an unsure read got no reply and no notice, so nobody ever saw
+    # "you should really update you calls". The setter now explains and asks.
+    unsure = "8657771098"
+    store.map_phone(unsure, record_uuid="rec-ar-1098", context=ctx)
+    saved_llm, slack_before = classify.classify_llm, len(stub.slack)
+    classify.classify_llm = lambda text, history=None: classify.Classification("OTHER", 0.5, "llm", "stub")
+    try:
+        out = sc2(unsure, "you should really update you calls", "c-unsure")
+    finally:
+        classify.classify_llm = saved_llm
+    rows = sc_rows(unsure, "reply")
+    r.check("SC unsure read gets the clarify answer, not a page to Adriana",
+            len(rows) == 1 and sc_replies.pool_of(rows[0]["body"]) == "CLARIFY"
+            and len(stub.slack) == slack_before, f"{out.get('actions')} {stub.slack[slack_before:]}")
+    r.check("SC unsure read does NOT mark the phone CORRECT",
+            ("set_phone_status", ("rec-ar-1098", unsure, "CORRECT")) not in stub.crm_writes,
+            str([w for w in stub.crm_writes if "rec-ar-1098" in str(w)]))
+
+    # 2026-10-30 (Ty): a price far above Sift's value, or a house already listed,
+    # is not worth Adriana's call. Cases are the live ones from launch week.
+    prices = [sc_inbound.asking_price(t) for t in (
+        "650000", "155k", "2 million", "10 acres - $500,000.00", "6155550163 is Angelica",
+        "Fri 2, @ 3903 selma", "Yes. $130K", "a million or two", "$1.2 million")]
+    r.check("asking_price reads the forms people text",
+            prices == [650000, 155000, 2000000, 500000, 0, 0, 130000, 1000000, 1200000], str(prices))
+    recs = {"rec-ar-1097": {"estimate_value": "599000.00", "mls": "Off Market"},
+            "rec-ar-1096": {"estimate_value": "190000.00", "mls": "Off Market"},
+            "rec-ar-1095": {"estimate_value": "589000.00", "mls": "Listed"},
+            "rec-ar-1094": {"estimate_value": "112000.00", "mls": "Off Market"},
+            "rec-ar-1093": {"estimate_value": "200000.00", "mls": "Off Market"},
+            "rec-ar-1091": {"estimate_value": "200000.00", "mls": "Off Market"},
+            "rec-ar-1090": {"estimate_value": "200000.00", "mls": "Off Market"},
+            "rec-ar-1092": {"estimate_value": "730000.00", "mls": "Off Market",
+                            "address": {"street": "1009 Sample Hood Rd"}}}
+    gate = {k: f"865777{k[-4:]}" for k in recs}
+    for rec_id, p in gate.items():
+        store.map_phone(p, record_uuid=rec_id, context=ctx)
+    saved_get = crm.get_record
+    crm.get_record = lambda uuid, fresh=False: recs.get(uuid) or saved_get(uuid, fresh)
+    classify.classify_llm = lambda text, history=None: classify.Classification("INTERESTED", 0.9, "llm", "stub")
+    try:
+        slack_before = len(stub.slack)
+        out = sc2(gate["rec-ar-1097"], "2 million", "c-1097")
+        r.check("SC '2 million' on a $599K house is not pushed, it is Not Interested",
+                out.get("action") == "not_interested" and not store.escalation_posted(gate["rec-ar-1097"])
+                and not store.due_escalations() and len(stub.slack) == slack_before
+                and ("set_status", ("rec-ar-1097", config.SC_NI_STATUS)) in stub.crm_writes,
+                f"{out.get('action')} {out.get('actions')}")
+        out = sc2(gate["rec-ar-1096"], "155k", "c-1096")
+        r.check("SC '155k' on a $190K house is still handed off", out.get("action") == "handoff",
+                str(out.get("action")))
+        out = sc2(gate["rec-ar-1095"], "Yes.\nIt is for sale.\nPlease make a bid.", "c-1095")
+        r.check("SC interested reply on a listed house is not pushed", out.get("action") == "not_interested"
+                and any("listed on the MLS" in a for a in out.get("actions") or []), str(out.get("actions")))
+        out = sc2(gate["rec-ar-1094"], "Yes, I'd consider it", "c-1094")
+        store.mark_escalation_posted(gate["rec-ar-1094"])
+        out = sc2(gate["rec-ar-1094"], "Sure, i can meet you there Friday. I'm looking for $300k", "c-1094")
+        r.check("SC a high price after the 'yes' was posted: Adriana is told to skip it",
+                out.get("action") == "not_interested" and "skip" in stub.slack[-1]
+                and "Marked Not Interested" in stub.slack[-1], f"{out.get('actions')} {stub.slack[-1][:160]}")
+        # Sift read "Off Market"; Zillow had it agent-listed at $750,000 (live, 2026-10-30).
+        sc_inbound.listing_status = lambda rec: (
+            "for sale by agent, $750,000, 58 days"
+            if (rec.get("address") or {}).get("street") == "1009 Sample Hood Rd" else "")
+        out = sc2(gate["rec-ar-1092"], "650000", "c-1092")
+        sc_inbound.listing_status = lambda rec: ""
+        r.check("SC interested reply on a house Zillow has listed is not pushed, whatever Sift says",
+                out.get("action") == "not_interested"
+                and any("active on Zillow" in a for a in out.get("actions") or []), str(out.get("actions")))
+        classify.classify_llm = lambda text, history=None: classify.Classification("OTHER", 0.5, "llm", "stub")
+        out = sc2(gate["rec-ar-1093"], "Nope", "c-1093")
+        r.check("SC a bare 'Nope' is Not Interested, phone left unverified",
+                out.get("action") == "not_interested"
+                and ("set_phone_status", ("rec-ar-1093", gate["rec-ar-1093"], "CORRECT")) not in stub.crm_writes
+                and ("set_status", ("rec-ar-1093", config.SC_NI_STATUS)) in stub.crm_writes,
+                f"{out.get('action')} {out.get('actions')}")
+        # Live 2026-10-30 to 11-02: 85 bare "No"s read as WRONG_NUMBER at 0.72-0.85
+        # got the apology and a DNC. However sure the read, a bare no is NI, unverified.
+        for rec_id, read in (("rec-ar-1091", "WRONG_NUMBER"), ("rec-ar-1090", "NOT_INTERESTED")):
+            classify.classify_llm = lambda text, history=None, i=read: classify.Classification(i, 0.85, "llm", "stub")
+            ph = gate[rec_id]
+            out = sc2(ph, "No", f"c-{rec_id[-4:]}")
+            queued_rows = [tuple(x) for x in store._conn().execute(
+                "SELECT kind, status FROM sc_outbox WHERE phone=? AND kind IN ('reply','dnc')", (ph,))]
+            phone_writes = [w for w in stub.crm_writes if w[0] == "set_phone_status" and rec_id in str(w)]
+            r.check(f"SC a bare 'No' read confidently as {read}: Not Interested, no text, no DNC, unverified",
+                    out.get("action") == "not_interested" and not queued_rows and not phone_writes
+                    and not store.is_suppressed(ph)
+                    and ("set_status", (rec_id, config.SC_NI_STATUS)) in stub.crm_writes,
+                    f"{out.get('action')} {queued_rows} {phone_writes} {out.get('actions')}")
+    finally:
+        crm.get_record, classify.classify_llm = saved_get, saved_llm
+    r.check("a mocking reply is an opt-out",
+            classify.classify("Sold it to ya mom, she didn't tell you?").intent == "OPT_OUT")
+    insults = {t: classify.classify(t).intent for t in (
+        "Take your scam and stick it up your ass.", "nah fuck off:)", "Go to hell")}
+    r.check("an insult is an opt-out, never a who-reply", set(insults.values()) == {"OPT_OUT"}, str(insults))
+    kept = {t: classify.classify(t).intent for t in ("Is this a scam?", "who is this?")}
+    r.check("asking if it is a scam is still a question", set(kept.values()) == {"ASKING_WHO"}, str(kept))
+
+    class _Resp:
+        def __init__(self, data):
+            self.ok, self._data = True, data
+
+        def json(self):
+            return {"data": self._data}
+
+    saved_req, saved_key = sc_inbound.requests.get, config.ZILLOW_API_KEY
+    config.ZILLOW_API_KEY = "test"
+    home = {"address": {"street": "1009 Sample Hood Rd", "city": "Knoxville", "state": "TN", "postal_code": "37932"}}
+    reads = {}
+    for name, data in (
+            ("agent", {"homeStatus": "FOR_SALE", "keystoneHomeStatus": "ForSale", "price": 750000,
+                       "daysOnZillow": 58, "listingSubType": {"isFSBA": True}}),
+            ("fsbo", {"homeStatus": "FOR_SALE", "keystoneHomeStatus": "ForSale", "price": 200000,
+                      "listingSubType": {"isFSBO": True}}),
+            ("sold", {"homeStatus": "SOLD", "keystoneHomeStatus": "RecentlySold", "price": 150000})):
+        sc_inbound.requests.get = lambda *a, _d=data, **k: _Resp(_d)
+        reads[name] = stub.listing_status(home)
+    sc_inbound.requests.get = lambda *a, **k: (_ for _ in ()).throw(sc_inbound.requests.ConnectionError("down"))
+    reads["down"] = stub.listing_status(home)
+    sc_inbound.requests.get, config.ZILLOW_API_KEY = saved_req, saved_key
+    r.check("Zillow: an agent listing is on the market, FSBO, sold and a failed lookup are not",
+            reads["agent"] == "for sale by agent, $750,000, 58 days"
+            and reads["fsbo"] == reads["sold"] == reads["down"] == "", str(reads))
+    r.check("SC opt-out lands on the DNC list in Sift",
+            ("add_list", ("rec-ar-" + ar["stop"][-4:], config.LIST_DNC)) in stub.crm_writes[writes_before:],
+            str([w for w in stub.crm_writes[writes_before:] if w[0] == "add_list"]))
+    r.check("SC opt-out phone goes DNC in Sift",
+            any(w[0] == "set_phone_status" and "DNC" in str(w[1][2]) for w in stub.crm_writes[writes_before:]),
+            str([w for w in stub.crm_writes[writes_before:] if w[0] == "set_phone_status"]))
+
+    stub.sc_threads["c-person"] = [{"id": "p1", "dir": "out", "body": "Hey, it's Adriana, call me back",
+                                    "created_at": "a", "raw_direction": "OUTGOING", "manual": True}]
+    sc2(ar["person"], "who is this?", "c-person")
+    r.check("SC never auto replies once a person has typed in the thread",
+            not sc_rows(ar["person"], "reply")
+            and (store.get_conversation(ar["person"]) or {}).get("state") == "paused")
+
+    sc2(ar["stale"], "who is this?", "c-stale")
+    stub.sc_threads["c-stale"].append({"id": "p2", "dir": "out", "body": "Hi! Adriana here, typing by hand",
+                                       "created_at": "zz", "raw_direction": "OUTGOING", "manual": True})
+    n = len(stub.sc_sent)
+    drain_live()
+    r.check("SC queued reply is dropped when a person answers first",
+            not any(x[0] == "c-stale" for x in stub.sc_sent[n:])
+            and sc_rows(ar["stale"], "reply")[0]["status"] == "cancelled"
+            and (store.get_conversation(ar["stale"]) or {}).get("state") == "paused",
+            str(sc_rows(ar["stale"], "reply")))
+
+    sc2(ar["off"], "who is this?", "c-off")
+    config.SC_AUTO_REPLY = False
+    drain_live()
+    config.SC_AUTO_REPLY = True
+    r.check("SC switch flipped off cancels what is waiting",
+            sc_rows(ar["off"], "reply")[0]["status"] == "cancelled", str(sc_rows(ar["off"], "reply")))
+
+    stub.sc_threads["c-yes"] = [{"id": "t1", "dir": "out", "body": "Hi Maron, is 158 Old State Rd yours?",
+                                 "created_at": "a", "raw_direction": "OUTGOING", "manual": False}]
+    sc2(ar["yes"], "Yes it is", "c-yes")
+    rows = sc_rows(ar["yes"], "reply")
+    r.check("SC ownership yes gets the would-you-sell question",
+            len(rows) == 1 and "sell" in rows[0]["body"] and "Maron" in rows[0]["body"], str(rows))
+    r.check("SC ownership yes marks the number CORRECT in Sift",
+            ("set_phone_status", ("rec-ar-" + ar["yes"][-4:], ar["yes"], "CORRECT")) in stub.crm_writes,
+            str([w for w in stub.crm_writes if w[0] == "set_phone_status"][-3:]))
+
+    for i in range(config.SC_MAX_AUTO_REPLIES):
+        store.sc_finish(store.sc_queue(ar["cap"], "c-cap", "reply", f"earlier reply {i}", "OTHER"), "sent")
+    sc2(ar["cap"], "who is this?", "c-cap")
+    r.check("SC stops auto replying at the per-thread cap",
+            len(sc_rows(ar["cap"], "reply")) == config.SC_MAX_AUTO_REPLIES, str(sc_rows(ar["cap"], "reply")))
+
+    def _dnc_refusal(contact_id, content):
+        raise sc_client.SCError('[{"message": "Messages cannot be sent to contacts while they are on your DNC list."}]')
+
+    sc_client.send_message, real_send0 = _dnc_refusal, sc_client.send_message
+    store.sc_queue("8657772098", "c-dncd", "reply", "So sorry about that!", "WRONG_NUMBER")
+    stub.sc_threads["c-dncd"] = [{"id": "x", "dir": "in", "body": "wrong", "created_at": "z",
+                                  "raw_direction": "INCOMING", "manual": True}]
+    slack_before_dnc = len(stub.slack)
+    drain_live()
+    sc_client.send_message = real_send0
+    r.check("SC a send refused for a DNC'd contact is a quiet skip, not an outage alert",
+            sc_rows("8657772098", "reply")[0]["status"] == "cancelled" and len(stub.slack) == slack_before_dnc,
+            str(sc_rows("8657772098", "reply")))
+
+    def _boom(contact_id, content):
+        raise sc_client.SCError("HTTP 401 from https://api.smartercontact.com/gql")
+
+    store.set_meta("sc_health_posted", "")
+    sc_client.send_message, real_send = _boom, sc_client.send_message
+    sc2(ar["fail"], "who is this?", "c-fail")
+    slack_n = len(stub.slack)
+    for _ in range(sc_inbound.RETRIES):
+        store._conn().execute("UPDATE sc_outbox SET not_before='2000-01-01' WHERE status='queued'")
+        drain_live()
+    sc_client.send_message = real_send
+    r.check("SC send failures retry, then fail loudly once in the channel",
+            sc_rows(ar["fail"], "reply")[0]["status"] == "failed"
+            and sum("Smarter Contact reply failed" in s for s in stub.slack[slack_n:]) == 1,
+            str(stub.slack[slack_n:])[:300])
+
+    # The record behind the contact wins over the phone map, which can hold a
+    # different record that shares the number (9 of 74 on launch day).
+    shared = "8657772099"
+    store.map_phone(shared, record_uuid="rec-old-campaign", context=ctx)
+    stub.sc_apn["c-shared"] = "rec-p1-2099"
+    writes_before = len(stub.crm_writes)
+    sc2(shared, "Not interested", "c-shared")
+    hit = [w[1][0] for w in stub.crm_writes[writes_before:] if w[0] in ("set_phone_status", "set_status")]
+    r.check("SC dispositions land on the contact's own Priority 1 record",
+            bool(hit) and set(hit) == {"rec-p1-2099"}, str(hit))
+
+    # Catch-up: replies that arrived while the switch was off get exactly one
+    # answer when it goes on, and only where it is still the owner's turn.
+    cu = {"who": "8657772001", "yes": "8657772002", "answered": "8657772003", "ni": "8657772004"}
+    for p in cu.values():
+        store.map_phone(p, record_uuid="rec-cu-" + p[-4:], context=ctx)
+    config.SC_AUTO_REPLY = False
+    since = store.now()
+    sc2(cu["who"], "who is this?", "c-cuwho")
+    stub.sc_threads["c-cuyes"] = [{"id": "t2", "dir": "out", "body": "Hi Maron, is 158 Old State Rd yours?",
+                                   "created_at": "a", "raw_direction": "OUTGOING", "manual": False}]
+    sc2(cu["yes"], "Yep", "c-cuyes")
+    sc2(cu["answered"], "who is this?", "c-cuans")
+    stub.sc_threads["c-cuans"].append({"id": "p3", "dir": "out", "body": "Hi, Adriana here!", "created_at": "zz",
+                                       "raw_direction": "OUTGOING", "manual": True})
+    sc2(cu["ni"], "not interested", "c-cuni")
+    config.SC_AUTO_REPLY = True
+    dry = {x["phone"]: x for x in sc_inbound.catch_up(commit=False, since=since)}
+    r.check("SC catch-up plans a reply for the waiting who-is-this and the yes",
+            "reply" in dry[cu["who"]]["actions"] and "reply" in dry[cu["yes"]]["actions"], str(dry)[:300])
+    r.check("SC catch-up skips a thread a person already answered",
+            "reply" not in dry[cu["answered"]]["actions"] and dry[cu["answered"]]["skip"], str(dry[cu["answered"]]))
+    r.check("SC catch-up texts nobody who said no", "reply" not in dry[cu["ni"]]["actions"], str(dry[cu["ni"]]))
+    r.check("SC catch-up dry run queues nothing", not sc_rows(cu["who"], "reply"))
+    sc_inbound.catch_up(commit=True, since=since)
+    first = sum(len(sc_rows(p, "reply")) for p in cu.values())
+    sc_inbound.catch_up(commit=True, since=since)
+    r.check("SC catch-up queues each answer once, and a rerun adds nothing",
+            first == 2 and sum(len(sc_rows(p, "reply")) for p in cu.values()) == 2, f"{first} rows")
+
+    r.check("SC auto replies sent NOTHING through smrtPhone", len(stub.sent) == sent_before,
+            str(stub.sent[sent_before:])[:200])
+    queued = store._conn().execute(
+        f"SELECT COUNT(*) FROM outbox WHERE phone IN ({','.join('?' * len(ar))})", tuple(ar.values())).fetchone()[0]
+    r.check("SC auto replies never touch the smrtPhone outbox", queued == 0, f"{queued} rows")
+
+    crm.get_record = _real_get_record
+    (config.SC_AUTO_REPLY, config.SC_AUTO_LABEL, config.SC_REPLY_DELAY_MIN,
+     config.SC_REPLY_DELAY_MAX, config.DRY_RUN, sender_pool.within_quiet_hours) = saved
+
     # ---- 12. the HTTP surface -------------------------------------------
     # The one part of this that faces the open internet. Neither vendor signs
     # its payloads, so the secret path and the allowlist ARE the auth.
@@ -1384,6 +2043,60 @@ def run(live_model: bool = False) -> int:
             config.ALLOWED_IPS = ["203.0.113.9"]
             resp = client.post(good, json={"event": "smsIncoming", "smsId": "http-2"})
             r.check("enforces the IP allowlist", resp.status_code == 404, f"got {resp.status_code}")
+
+            # Smarter Contact signs its deliveries; the smrtPhone allowlist
+            # (still set above) must not drop them.
+            import json as _json
+
+            config.SC_SIGNING_SECRET, config.SC_WEBHOOK_TOKEN = "whsec_selftest", "tok-selftest"
+            sc_url = "/hooks/smartercontact"
+            sc_body = _json.dumps({"id": "evt_http1", "event": "message.received.v1", "test": True,
+                                   "data": {"from_number": "+18657770009", "content": "hi"}}).encode()
+            sig = _sig("whsec_selftest", sc_body, int(_time.time()))
+            hdrs = {"X-SC-Signature": sig, "content-type": "application/json"}
+            resp = client.post(sc_url, content=sc_body, headers=hdrs)
+            r.check("SC route accepts a signed delivery despite the smrtPhone allowlist",
+                    resp.status_code == 200 and bool(resp.json().get("event_id")),
+                    f"{resp.status_code} {resp.text[:120]}")
+            resp = client.post(sc_url, content=sc_body, headers=hdrs)
+            r.check("SC route dedupes a retry on the event id",
+                    resp.json().get("duplicate") is True, resp.text[:120])
+            resp = client.post(sc_url, content=sc_body,
+                               headers={"X-SC-Signature": sig.replace("v1=", "v1=0")})
+            r.check("SC route refuses a bad signature with 401", resp.status_code == 401,
+                    f"got {resp.status_code}")
+
+            # The support-configured webhook: bearer token, legacy flat body.
+            bearer = {"Authorization": "Bearer tok-selftest"}
+            v0 = {"direction": "incoming", "senderId": "c1", "senderPhoneNumber": "+18657770010",
+                  "recipientPhoneNumber": "+18655550100", "content": "who is this",
+                  "createdAt": "2026-10-26T15:00:00.000Z", "test": True}
+            resp = client.post(sc_url, json=v0, headers=bearer)
+            r.check("SC route accepts our bearer token", resp.status_code == 200
+                    and bool(resp.json().get("event_id")), f"{resp.status_code} {resp.text[:120]}")
+            resp = client.post(sc_url, json=dict(v0, content="how much", createdAt="2026-10-26T15:01:00Z"),
+                               headers=bearer)
+            r.check("SC legacy replies with no event id are NOT collapsed as duplicates",
+                    bool(resp.json().get("event_id")), resp.text[:120])
+            resp = client.post(sc_url, json=v0, headers=bearer)
+            r.check("SC legacy retry of the same reply IS deduped",
+                    resp.json().get("duplicate") is True, resp.text[:120])
+            resp = client.post(sc_url, json=v0, headers={"Authorization": "Bearer wrong"})
+            r.check("SC route refuses a wrong bearer token", resp.status_code == 401,
+                    f"got {resp.status_code}")
+            resp = client.post(sc_url, json={"unexpected": "shape", "x": 1}, headers=bearer)
+            r.check("SC route stores an unknown body instead of rejecting it",
+                    resp.status_code == 200, f"got {resp.status_code}")
+            r.check("an unknown SC body is not processed as a reply",
+                    engine.process("smartercontact", {"unexpected": "shape"}).get("action") == "ignored")
+            r.check("SC legacy body becomes the v1 envelope",
+                    sc_inbound.normalize(v0).get("data", {}).get("from_number") == "+18657770010"
+                    and sc_inbound.normalize(v0).get("event") == "message.received.v1")
+
+            config.SC_SIGNING_SECRET, config.SC_WEBHOOK_TOKEN = "", ""
+            resp = client.post(sc_url, json=v0, headers=bearer)
+            r.check("SC route refuses everything while no token or secret is set",
+                    resp.status_code == 401, f"got {resp.status_code}")
             config.ALLOWED_IPS = []
     except ImportError as exc:
         r.check("fastapi TestClient available", False, str(exc))

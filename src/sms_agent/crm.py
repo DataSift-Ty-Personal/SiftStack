@@ -828,6 +828,23 @@ def add_tags(record_uuid: str, tags: list[str]) -> dict:
         return {"error": str(exc)}
 
 
+def add_list(record_uuid: str, title: str) -> dict:
+    """Attach one list by TITLE. add-lists takes a STRING; an array 201s and
+    attaches nothing (the datasift_api_upload contract)."""
+    c = client()
+    if not c:
+        return {"error": unavailable_reason()}
+    if config.DRY_RUN:
+        return _dry("add_list", uuid=record_uuid, list=title)
+    try:
+        out = c._request(f"/api/internal/property/{record_uuid}/add-lists/",
+                         method="POST", body={"lists": title})
+        forget_record(record_uuid)
+        return out if isinstance(out, dict) else {"ok": True}
+    except Exception as exc:  # noqa: BLE001
+        return {"error": str(exc)}
+
+
 def set_status(record_uuid: str, status: str) -> dict:
     c = client()
     if not c:
