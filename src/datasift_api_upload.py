@@ -104,16 +104,21 @@ class ApiError(RuntimeError):
 class Api:
     def __init__(self):
         e = env()
-        try:
-            self.email, self.pw = e["DATASIFT_EMAIL"], e["DATASIFT_PASSWORD"]
-        except KeyError as exc:
-            raise RuntimeError(
-                f"{exc.args[0]} is not set. The uploader mints its own JWT from "
-                "DATASIFT_EMAIL / DATASIFT_PASSWORD; set them as env vars "
-                "(Fly secrets) or in .env."
-            ) from None
         self.token = ""
         self.minted = 0.0
+        self.api_key = ""
+        if not (e.get("DATASIFT_EMAIL") and e.get("DATASIFT_PASSWORD")):
+            # No login on this box (the agents app, a customer install): the Open API key
+            # reaches every /api/internal/ route this uploader writes (verified 2026-11-03),
+            # so nobody ever hands over a password.
+            self.api_key = (e.get("REISIFT_API_KEY") or "").strip()
+            if not self.api_key:
+                raise RuntimeError(
+                    "Set REISIFT_API_KEY (the DataSift Open API key), or DATASIFT_EMAIL / "
+                    "DATASIFT_PASSWORD on a workstation that still mints a JWT."
+                )
+            return
+        self.email, self.pw = e["DATASIFT_EMAIL"], e["DATASIFT_PASSWORD"]
         self._mint()
 
     def _mint(self):
@@ -126,11 +131,11 @@ class Api:
 
     def call(self, path, method="GET", body=None, _retry=True, headers=None):
         # JWTs are short-lived; refresh transparently rather than dying mid-run.
-        if time.time() - self.minted > 1800:
+        if not self.api_key and time.time() - self.minted > 1800:
             self._mint()
         data = json.dumps(body).encode() if body is not None else None
-        hdrs = {"Authorization": "Bearer " + self.token,
-                "Content-Type": "application/json"}
+        auth = "Api-Key " + self.api_key if self.api_key else "Bearer " + self.token
+        hdrs = {"Authorization": auth, "Content-Type": "application/json"}
         hdrs.update(headers or {})
         req = urllib.request.Request(BASE + path, data=data, method=method, headers=hdrs)
         try:
@@ -138,7 +143,7 @@ class Api:
                 t = r.read().decode()
                 return json.loads(t) if t.strip().startswith(("{", "[")) else t
         except urllib.error.HTTPError as e:
-            if e.code == 401 and _retry:
+            if e.code == 401 and _retry and not self.api_key:
                 self._mint()
                 return self.call(path, method, body, _retry=False, headers=headers)
             raise ApiError(e.code, method, path, e.read().decode())

@@ -70,7 +70,12 @@ def resolve(address: str) -> dict:
     crm = dp._crm_clients()[0]
     hits = crm.search_by_address(address, limit=5)
     dp.gate(len(hits) == 1, "%d CRM records match %r; pass the full street line" % (len(hits), address))
-    uuid = hits[0]["uuid"]
+    return row_for(hits[0]["uuid"], crm)
+
+
+def row_for(uuid: str, crm=None) -> dict:
+    """The Dream 100 row shape for a record already known by uuid (a webhook hands us the uuid)."""
+    crm = crm or dp._crm_clients()[0]
     rec = crm.get_record(uuid)
     a, ow = rec.get("address") or {}, rec.get("owner") or {}
     ma = ow.get("address") or {}
@@ -592,8 +597,8 @@ def phase_build(args, run, row):
         run.p("packs", d["slug"] + "_board_note.txt").write_text(note, encoding="utf-8")
         for what, text in (("pack", md.read_text(encoding="utf-8")), ("board note", note)):
             dp.gate("—" not in text and "–" not in text, "%s carries an em or en dash" % what)
-        print("  pack %s\n  note %s (%d lines)" % (Path(pdf).relative_to(dp.ROOT),
-                                                 run.p("packs", d["slug"] + "_board_note.txt").relative_to(dp.ROOT),
+        print("  pack %s\n  note %s (%d lines)" % (dp.rel(pdf),
+                                                 dp.rel(run.p("packs", d["slug"] + "_board_note.txt")),
                                                  note.count("\n") + 1))
 
 

@@ -971,6 +971,30 @@ back and read back clean: 20 new numbers tagged `[relationship, tier, source]`, 
   through files; a test asserts the module holds no backspace byte.
 - `GET/PATCH /api/internal/owner/{uuid}/` carries `deceased`, verified by read-back.
 
+## Agents Brain: status change fires the Research agent (build 1.0.59, 2026-11-03)
+
+`src/agents/` is the infrastructure for four autonomous agents (Analysis, Research, Sales Assistant, Operations; see the `project-four-agent-consolidation` memory). One always-on brain per install: FastAPI receives DataSift sequence webhooks, writes a task into a SQLite queue on its own volume, one worker thread runs the owning agent, writes back over the Open API key, posts to Slack. Nothing shared between customers, no Supabase, no password anywhere. Fly app `siftstack-agents` (`fly.agents.toml`, `deploy/Dockerfile.agents`, secrets via `deploy/sync_agents_secrets.py`, which never sends DATASIFT_EMAIL/PASSWORD).
+
+```bash
+python src/agents/cli.py selftest                     # zero network (45 checks; needs the repo .venv for fastapi)
+python src/agents/cli.py run --address "123 Example St"   # run the deep prospect in-process
+python src/agents/cli.py setup-datasift [--commit]    # webhook + sequence, dry by default, read back
+python src/agents/cli.py status
+```
+
+**First workflow: status changed to "Deep Prospecting" -> Research agent deep prospect.** ty+2 already had the sequence "Send to Deep Prospecting" (trigger `property.status.updated` to `deep prospecting`), inactive, creating a card in a DELETED column. `setup-datasift` repairs it in place (plans cap sequence counts): card into "Check Relatives" on the Deep Prospecting board plus a `send-webhook` action, active. The chain is `deep_prospect_record` with Claude as the researcher: records -> smartskip -> merge -> RESEARCH (Claude Opus 5.5 + web search/fetch) -> ANALYSIS -> heirs -> score -> gapfill -> verify -> FINAL ANALYSIS -> build -> writeback. `AGENTS_MODE=dry` (default) pays no vendor and writes nothing to the CRM; live spends inside `AGENTS_RUN_CAP_USD` (5) / `AGENTS_DAILY_CAP_USD` (25), skipping (not failing) any paid phase that would cross a cap. Run folders sit on the volume keyed by address, so a re-run reuses paid SmartSkip orders. Dedupe: one record is not re-run inside `AGENTS_DEDUPE_HOURS` (24).
+
+**Contracts learned building it (all verified live 2026-11-03):**
+- **DataSift webhook action:** `{"action": "send-webhook", "payload": {"webhook_uuid": <uuid>, "label": "send.webhook"}}`, read out of the app bundle (`main.min.js`, unminified, `ACTION_VALIDATORS['send-webhook']` requires `webhook_uuid`; feature flag `isWebhooksUser`). Webhook registry: `POST /api/internal/integration/webhook/` takes only `name` + `url`, so the secret rides in the URL path. The webhook BODY is still unseen: `router.record_uuid` extracts defensively and a body with no record id is logged and posted, never run.
+- **The Open API key reaches every write the chain makes:** property PATCH/message/pin, custom-field update-values, add-lists, owner PATCH (`deceased`), owner upsert-phones, sequence/board/column/webhook create. `datasift_api_upload.Api` uses the key whenever DATASIFT_EMAIL/PASSWORD are absent; `dream100_dp._crm_clients` falls back to `crm_key_client` (key-only ports of the Deal Room CRMClient reads and the dossier helpers) when the Desktop `_api/clients` folder is missing.
+- **Structured outputs reject schemas this size** ("The compiled grammar is too large"). The research and analysis schemas stay the contract, but Claude returns JSON in text and `researcher.conform()` forces the shape (fills empties, drops extras, coerces enums), so every reader can index blindly.
+- **Guards in code, not just the prompt:** a claim whose URL Claude never opened or searched in this run moves to `unresolved`; the owner is marked deceased only when an obituary opened this run backs it AND the decedent shares two name tokens with the owner of record (the spouse-obituary trap); an empty `trace_address` is dropped because `heir_rows` would otherwise override the real street with it and skip the heir; empty CRM fields never write.
+- **`relative_to(ROOT)` crashed every run off the repo** (the Fly volume is `/data`). `dream100_dp.rel()` returns the absolute path there; a stored absolute path still resolves because `ROOT / "/data/x"` is `/data/x`. Writing that helper with a regex also rewrote the helper's own body into infinite recursion: the dry run caught it, a reason to always dry-run before deploying.
+- `load_env()` now returns the process environment too: Fly secrets arrive as env vars and there is no `.env`, and phases read keys off that dict.
+- **No `.dockerignore` existed**, so every Fly build uploaded `output/` (seller data, gigabytes) and `.env` to the builder. Added; every Dockerfile only COPYs `src/`, `deploy/`, `skills/`, `.actor/`, `requirements.txt`.
+- `anthropic==0.86.0` is pinned in the image: it is what the run was verified on. It warns that it does not model the newest web-fetch result blocks; a 2.x upgrade could not be tested locally because the scratchpad path breaks Windows' 260-character limit inside a venv.
+- The `.env` FLY_API_TOKEN is scoped to `siftstack` only and cannot create apps; standing up `siftstack-agents` needs `fly auth login`.
+
 ## Single-Record Deep Prospecting (build 1.0.58, 2026-10-27)
 
 `src/deep_prospect_record.py` runs deep-prospecting v5 on ANY one ty+2 record by street line. It reuses every `dream100_dp` phase and adds what an heir case needs. Run folder `output/deep_prospect/<address slug>/`; `research/` and `analysis/` JSON are researcher-written exactly as in the Dream 100 run. First run: an Obituary list record (owner died early 2026, house in his trust, four children traced, 20 numbers written, about $0.80).

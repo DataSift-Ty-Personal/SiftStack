@@ -113,7 +113,20 @@ def load_env() -> dict:
                 env[k.strip()] = v.strip().strip('"').strip("'")
     for k, v in env.items():
         os.environ.setdefault(k, v)
-    return env
+    # A Fly box has no .env: its keys arrive as real environment variables (secrets), and the
+    # phases read keys off this dict, so it must carry the environment too, not just the file.
+    return dict(os.environ)
+
+
+def rel(p) -> str:
+    """Repo-relative when the file is under the repo, else absolute: an agents run lives on the
+    Fly volume (/data), outside the repo, and relative_to() raised there. A stored absolute path
+    still resolves, because ROOT / "/data/x" is "/data/x"."""
+    p = Path(p)
+    try:
+        return str(p.relative_to(ROOT))
+    except ValueError:
+        return str(p)
 
 
 def gate(ok: bool, msg: str):
@@ -158,6 +171,12 @@ def top_rows(n: int) -> list[dict]:
 # ------------------------------------------------------------------ records --
 
 def _crm_clients():
+    if not API_CLIENTS.exists():
+        # Off the workstation (the agents box on Fly, a customer install): the same reads over
+        # the Open API key alone, no Deal Room checkout, no password.
+        import crm_key_client as kc            # noqa: E402
+        from siftmap_standalone import SiftMapClient as KeySiftMap  # noqa: E402
+        return kc.from_env(), KeySiftMap(), kc.resolve_actor, kc.summarize_activity_log
     sys.path.insert(0, str(API_CLIENTS))
     os.environ["REISIFT_ACCOUNT"] = "datasift-apikey"
     from crm_api import CRMClient            # noqa: E402
@@ -284,7 +303,7 @@ def _transcribe_calls(run: Run, slug: str, timeline: list) -> float:
         mp3 = run.p("audio", "%s_%s.mp3" % (slug, cid))
         txt = run.p("audio", "%s_%s.txt" % (slug, cid))
         strict = run.p("audio", "%s_%s_strict.txt" % (slug, cid))
-        row["transcript_file"] = str(txt.relative_to(ROOT))
+        row["transcript_file"] = rel(txt)
         if not mp3.exists():
             req = urllib.request.Request(row["recording"], headers=UA)
             with urllib.request.urlopen(req, timeout=60) as r:
@@ -346,7 +365,7 @@ def _street_view(run: Run, slug: str, lat, lon) -> dict:
     key = os.environ.get("GOOGLE_STREETVIEW_API_KEY", "")
     out = run.p("img", slug + ".jpg")
     if out.exists():
-        return {"file": str(out.relative_to(ROOT)), "cached": True}
+        return {"file": rel(out), "cached": True}
     if not (key and lat and lon):
         return {"error": "no key or no coordinates"}
     q = urllib.parse.urlencode({"location": "%s,%s" % (lat, lon), "key": key, "source": "outdoor",
@@ -361,7 +380,7 @@ def _street_view(run: Run, slug: str, lat, lon) -> dict:
     req = urllib.request.Request(SV_IMAGE + "?" + q, headers=UA)
     with urllib.request.urlopen(req, timeout=40) as r:
         out.write_bytes(r.read())
-    return {"file": str(out.relative_to(ROOT)), "pano_date": meta.get("date"), "heading": round(heading, 1)}
+    return {"file": rel(out), "pano_date": meta.get("date"), "heading": round(heading, 1)}
 
 
 def _owner_query(title_owner: str) -> str:
@@ -372,7 +391,9 @@ def _owner_query(title_owner: str) -> str:
 def phase_records(args, run: Run):
     load_env()
     rows = top_rows(args.top)
-    full = json.loads(FULL.read_text(encoding="utf-8"))
+    # The Dream 100 pull file exists only on the workstation that ran it; a single-record run
+    # anywhere else reads the live record instead.
+    full = json.loads(FULL.read_text(encoding="utf-8")) if FULL.exists() else {}
     vendor = _vendor_rows({str(r["dataflik_id"]) for r in rows})
     crm, smc, resolve_actor, summarize = _crm_clients()
     out, sv_cost, tx_cost = [], 0.0, 0.0
@@ -429,7 +450,7 @@ def phase_records(args, run: Run):
         run.ledger("streetview", sv_cost, "%d Street View images" % round(sv_cost / STREETVIEW_PER_IMG))
     if tx_cost:
         run.ledger("transcription", tx_cost, "answered call recordings, Gemini 2.5 Flash via OpenRouter")
-    print("records: %d written to %s" % (len(out), run.p("records.json").relative_to(ROOT)))
+    print("records: %d written to %s" % (len(out), rel(run.p("records.json"))))
 
 
 # ---------------------------------------------------------------- smartskip --
@@ -1020,7 +1041,13 @@ def timeline_rows(x: dict) -> list[list]:
                          fmt_phone(t["to"] if t.get("direction") == "outbound" else t["from"]),
                          (t.get("text") or "")[:160] + (" [%s]" % t["status"] if t.get("status") == "failed" else "")])
         elif t["kind"] == "note":
-            rows.append([t["when"][:10], "Note", t.get("who") or "", "", t.get("text") or ""])
+            text = t.get("text") or ""
+            if MARKER in text:
+                continue      # our own earlier research note: the pack already is that content
+            # An untrimmed board note became one 800-point table cell and reportlab refused the
+            # page (LayoutError) on every re-run of a record that had been deep prospected before.
+            rows.append([t["when"][:10], "Note", t.get("who") or "", "",
+                         text if len(text) <= 400 else text[:400].rsplit(" ", 1)[0] + " ..."])
     return rows
 
 
@@ -1786,13 +1813,13 @@ def phase_build(args, run: Run):
         md = run.p("packs", d["slug"] + ".md")
         md.write_text(pack_md(d), encoding="utf-8")
         pdf = render_pdf(md, md.with_suffix(".pdf"), photo=run.p("img", d["slug"] + ".jpg"))
-        print("  pack %s" % Path(pdf).relative_to(ROOT))
+        print("  pack %s" % rel(pdf))
     stamp = date.today().strftime("%Y%m%d")
     full = build_workbook(data, run.p("Dream100_Top5_DeepProspect_%s.xlsx" % stamp), redact=False,
                           audit=audit, ledger=ledger, run=run)
     demo = build_workbook(data, run.p("Dream100_Top5_DeepProspect_DEMO_redacted_%s.xlsx" % stamp), redact=True,
                           audit=audit, ledger=ledger, run=run)
-    print("  workbook %s\n  workbook %s" % (full.relative_to(ROOT), demo.relative_to(ROOT)))
+    print("  workbook %s\n  workbook %s" % (rel(full), rel(demo)))
 
 
 # ----------------------------------------------------------------- writeback --

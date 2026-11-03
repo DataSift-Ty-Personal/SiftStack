@@ -1,0 +1,37 @@
+# SiftStack agents brain: one always-on machine, SQLite queue on its own volume.
+#   fly apps create siftstack-agents
+#   fly volumes create agents_data --size 1 --region iad -a siftstack-agents
+#   python deploy/sync_agents_secrets.py --commit
+#   fly deploy -c fly.agents.toml
+# A separate app from the SMS agent (siftstack) and the FTM pull (siftstack-ftm): a long deep
+# prospect run must never sit in front of an SMS webhook, and each app keeps its own volume.
+app = "siftstack-agents"
+primary_region = "iad"
+
+[build]
+  dockerfile = "deploy/Dockerfile.agents"
+
+[env]
+  AGENTS_PUBLIC_URL = "https://siftstack-agents.fly.dev"
+  # Secrets beat [env]: if AGENTS_MODE is ever set as a secret, that value wins and this line
+  # lies. Ask the box: GET /health reports the effective mode.
+  AGENTS_MODE = "dry"
+  AGENTS_RUN_CAP_USD = "5"
+  AGENTS_DAILY_CAP_USD = "25"
+  AGENTS_DP_COLUMN = "Check Relatives"
+
+[mounts]
+  source = "agents_data"
+  destination = "/data"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  # Never auto-stop: a stopped machine drops the DataSift webhook and nothing replays it.
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "1gb"
