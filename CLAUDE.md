@@ -971,6 +971,67 @@ back and read back clean: 20 new numbers tagged `[relationship, tier, source]`, 
   through files; a test asserts the module holds no backspace byte.
 - `GET/PATCH /api/internal/owner/{uuid}/` carries `deceased`, verified by read-back.
 
+## Vacant Land: buildable lots, Union County OH (build 1.0.60, 2026-11-05)
+
+`src/vacant_land.py` finds every vacant parcel of 0.20 to 2.00 acres in a county, screens out the ones that cannot carry a house, ranks the owners by motivation, prices an offer band off real lot sales and writes the marketing plan. County GIS is the truth for the PARCEL, SiftMap for the OWNER. Read-only everywhere; `pull` is dry unless `--commit --key-env <VAR>` names the TARGET account's Open API key. Output `output/vacant_land/union_oh/`: `Union_OH_Buildable_Lots_<date>.xlsx` (Overview, Mail list, Marketing plan, Not marketable, Builder inventory, Lot comps, Lot buyers, Sources and caveats) + `mail_list.csv`. Tests: `python tests/test_vacant_land.py` (95 checks, zero network); the LIVE test is `--phase probe` (exit 3 if the contract moved).
+
+```bash
+python src/vacant_land.py --phase probe     # live: proves the land filter by count delta
+python src/vacant_land.py --phase all       # county sweep topo screen hydrate score export (~20 min cold)
+python src/vacant_land.py --phase pull      # dry tier plan; --commit --key-env TARGET_KEY sends it
+```
+
+**Live result 2026-11-05:** 36,768 parcels -> 1,927 vacant-class in the window -> 496 BUILT SINCE REAPPRAISAL, 276 NOT BUILDABLE (144 landlocked, 88 floodplain, 70 strips, 14 steep, 14 non-residential zoning), 213 public or common area, 129 builder inventory -> **813 marketable** (162 buildable, 490 likely, 161 verify) -> **625 mailable** (tier A 48, B 168, C 409; excluded 131 bought in the last 2 years, 5 on MLS, 53 with no DataSift owner). Biggest segment is 200 neighbor side lots (owner holds the house next door). Lot comps: 148 valid lot sales in 36 months, county median $165,000.
+
+**SiftMap contracts (count-delta proven, all silent if wrong):** `type_land: true` is the ONLY land filter (40,017 -> 4,379); `type_land_residential`, `type_vacant_land`, `type_lot`, `type_vacant`, `type_commercial`, `type_farm` all return the unfiltered count, and there is still no lot-size filter. **type_land is RESIDENTIAL vacant only:** SiftMap files small ag lots as "Rural/Agricultural-Vacant Land", which it never returns. hydrate reaches them by searching with the parcel's own bounds as the `polygon` viewport (`filters: {}`), point-in-polygon, then requires detail `apn` digits == county CAMA number (170 of 193 found, 8 ids rejected on apn). Row `distressors` is `{key: {is_active}}` with every key on every row. The AVM is junk on land ($1,249,000 on a 0.022 ac sliver).
+
+**County traps (Union GIS, `www7.co.union.oh.us/unioncountyohio/rest/services/`):**
+- **The class lags construction.** 2,185 "vacant" (500) sales in 36 months had a median of $590K at 7.5x land value: new houses. Built-on = dwelling year, sale at 3x+ land value and $150K+, or a permit in 3 years.
+- **The dwelling layer has a row for ~every parcel;** `age` is the year built and `'0'` means no house. Membership alone marked 1,035 of 1,046 lots built.
+- Acreage is BLANK on platted lots (measure the polygon, 875 of 1,927); `ZipCode` holds "MARYSVILLE OH 43040"; ParcelMailingAddress refuses queries (mailing comes from SiftMap).
+- **No sewer layer exists, and soil cannot decide it:** USDA rates nearly every Union soil "Very limited" for septic fields. Sewer proxy = median lot size of houses within 1,000 ft (under 0.50 ac sewer, 1.0+ septic), else platted and under 0.50 ac = sewer, unplatted with few houses = rural septic.
+
+**Topography (Ty's ask) is USGS 3DEP, free and keyless, 1 m lidar.** `computeStatisticsHistograms` costs 7-8 s a call whatever the area (3 hours for the county); `getSamples` reads 1,000 points in ~11 s, so `topo` samples a ~60-point grid per lot plus a 150 ft ring and batches ~10 lots per request (192 requests, ~8 min). Measures: share of the lot over a 15% grade (fail at 50%), relief, and how far the lot's median sits under its ring. Union is flat: 107 lots are steep, 165 sit 2+ ft low, and sitting low (drainage, fill) is the signal that matters here.
+
+**Pricing: never one county figure.** Jerome subdivision lots are 98 of 148 comps (median $186,800) and would triple a rural lot's value. Order: same township and size band (5+ sales) -> the lot's auditor land value (detail `assessed_land_value / 0.35`) x its township's sale-to-land ratio, or the rural 1.95 (Jerome and Washington/Dublin run 1.20) -> rural lot sales in the size band. **Class 110 is CAUV farm valuation ($29-$400 land values on house-size lots) and is never priced off land value.** Offer band default 50-65% of the reference (`--offer-low/--offer-high`).
+
+**Tiers are rules, not a blended cutoff:** buildability topped out near 82 and motivation near 35, so a blended 70 put nobody in A. A = build 65+ with a strong signal (tax, estate, out of state, liens); B = build 55+ with motivation 12+.
+
+## Builder Land Desk: buy boxes from deeds, lots matched to builders (build 1.0.61, 2026-11-06)
+
+`src/builder_land.py` runs a business model Ty took from a wholesaler friend: find the buyers who target one niche, learn exactly what they buy, and build the seller list to match. For land, those buyers are builders, and all of their purchases are on the deeds. For any county, the module reads each builder's buy box off those purchases: where they buy, lot size, price paid, what they build and sell. It then matches the lots on the ground today to the builders who would buy them. It works as a county run and as a national screen. It is read-only on the opensearch MCP and never writes to an account (a test asserts it never calls `add-properties-by-query`). Output: `output/builder_land/<market>/<Market>_Builder_Land_Desk_<date>.xlsx`, which carries Overview with a verdict line, Builder buy boxes with a call opening line per builder, the Lot list mail list, Lots by builder (filter to one builder to get their tailored list), Teardowns, Development tracts, Competitors, Economics (live formulas), Builder intake, Niches, and Sources and caveats. Tests: `python tests/test_builder_land.py` (72 checks, zero network).
+
+```bash
+python src/builder_land.py --market knox_blount --fips 47093,47009 --phase all --streams 6
+python src/builder_land.py --market union_oh --fips 39159 --phase all --lots-csv output/vacant_land/union_oh/mail_list.csv
+python src/builder_land.py --phase national            # every county, cached; --refresh re-pulls
+```
+
+**Results (2026-11-06):**
+- **Knox and Blount: yes.** 110 buyers qualify: 3 or more purchases since 2021, on 2 or more separate deeds, with a purchase in the last 24 months. Of those, 81 buy lots. 2,915 lots owned by individuals fit at least one builder and 1,182 fit 3 or more. Builders paid a median $40K. The measured quick-flip spread is a $15K median over 47 days. These builders bought 134 lots in the last 12 months, and 66% of their purchases came from individuals. Only 22 of the 110 have phones in the dispo registry, which is the gap to close before outreach.
+- **Union OH: no.** Repeat buyers there are production builders (Maronda, Pulte, Rockford, Jerome Village) and tract buyers. Only 3 of the 610 screened lots fit a repeat builder, and 66% of rural homesites are still owned by the person who bought the lot, so those lots sell retail.
+- **Franklin OH (Columbus): yes.** It is the Knox shape at a bigger scale: about 86 urban infill homes a year, 1,988 infill lot purchases since 2021, and buyers with 3 or more purchases took 44% of them. Median lot $35K, median new home $300K. 55 active builders (51 of them buy lots), 1,306 fitting lots, 505 that fit 3 or more builders, 3,704 teardowns. The largest builders are Walnut Homes For You, Monticello Homes and ARV Investors. None are in the dispo registry, which only covers Knox and Blount. 871 of the fitting lots have no postal address; for these the place fields are blanked by `place()`, because the district-as-city artifact otherwise reads "Columbus Grove 45830". The full live run (370,613 parcels, 8 balanced streams, 57 history batches) took 25 minutes.
+- **National ranking:** Harris, Dallas and Tarrant TX lead, then Hidalgo, Cook, Jackson MO, Johnson KS and Wake. Knox ranks 96th of 2,183 counties, Franklin OH 29th, Union OH 729th.
+
+**The buy box and the fit:**
+- **Purchases are DEED DATES, not parcels.** A 13-lot deed is one purchase, and a takedown is priced at the deed price divided by its lot count. A deed priced at 3x or more of the parcel's value also carried parcels outside the list, so it gets no lot price (Ball Homes and Mesana had read $1.37M and $1.5M "lots").
+- **Box contents:** lot size is p10-p90 widened 20-25%; price is p25-p75; areas and ZIPs are by count; finished size and resale come from the houses the builder built.
+- **A lot fits a builder** when one of that builder's own lots is within 600 m (acreage 3 km, tracts 5 km) and the lot size is inside their range. A class with only one purchase is an event, not a box.
+- **Offer** = what the fitting builders paid nearby, minus the fee (`--fee`, default $12K). There is no offer when the fee would exceed 60% of the lot price.
+- **Slivers** under 0.06 acres are not lots.
+
+**Deed-chain fix with reach beyond this module:** the jump's exit must be priced like a finished house (at least 40% of today's value deflated to the sale year). Without that, a lot wholesaled at 1.5x before the build is read as the builder's purchase plus the new-home sale, which misattributes the builder and hides the middleman. The Knox niche scripts in `output/niche_buyers/method/` predate this fix.
+
+**National screen, three traps in buyer-stats:**
+- **A purchase is counted by the parcel's CURRENT class.** A builder's lot that became a house therefore leaves `land_residential`, which makes land `FLIP` mean land bought and resold as land. The first ranking built on it put the Florida and Arizona platted-lot sellers on top (Western Land and Ranches, Parcels A Plenty, Lots of Land LLC). The builder signal is now small buyers of single-family parcels with a builder name, matched by wildcards on the keyword `buyer_full_name` in one aggregation (about 8 s). It misses unnamed builders such as Braden, and it counts some house flippers with "Homes" in the name, so it ranks markets and does not size them.
+- **Land `WHOLESALE` is the lot wholesalers** (on Knox: SMP Holdings, the same name the deeds found).
+- **HOAs, POAs, utilities and fire districts** top the raw land counts. They are filtered by name client side (`JUNK`).
+
+**Pull mechanics:**
+- **Equal dataflik_id ranges are lopsided** (one Union stream held most of the rows). Even a 400-bucket histogram is not enough: Franklin OH put 276,000 of its 370,000 parcels in 2 buckets. `id_buckets` re-histograms any bucket holding more than half of one stream's share, up to 3 levels, and `balanced_edges` cuts the streams from the result (8 streams came out at 32,000-50,000 rows each). The edges are saved so a resume keeps them.
+- `--from-dir` imports an earlier pull.
+- Patch scripts containing triple quotes break bash heredocs; write them with the file tool.
+
 ## Agents Brain: status change fires the Research agent (build 1.0.59, 2026-11-03)
 
 `src/agents/` is the infrastructure for four autonomous agents (Analysis, Research, Sales Assistant, Operations; see the `project-four-agent-consolidation` memory). One always-on brain per install: FastAPI receives DataSift sequence webhooks, writes a task into a SQLite queue on its own volume, one worker thread runs the owning agent, writes back over the Open API key, posts to Slack. Nothing shared between customers, no Supabase, no password anywhere. Fly app `siftstack-agents` (`fly.agents.toml`, `deploy/Dockerfile.agents`, secrets via `deploy/sync_agents_secrets.py`, which never sends DATASIFT_EMAIL/PASSWORD).
