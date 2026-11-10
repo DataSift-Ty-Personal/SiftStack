@@ -49,6 +49,54 @@ WORKER_INTERVAL = int(_env("SMS_AGENT_WORKER_INTERVAL", "20"))
 # still fresh, and light enough not to hammer the log.
 RECONCILE_INTERVAL = int(_env("SMS_AGENT_RECONCILE_INTERVAL", "300"))
 ALLOWED_IPS = [x.strip() for x in _env("SMS_AGENT_ALLOWED_IPS", "").split(",") if x.strip()]
+# Smarter Contact (ConnectSI) DOES sign its webhooks: the account's whsec_
+# secret from Connect > Webhooks. Its route skips the IP allowlist (built for
+# smrtPhone) and is refused outright while this is unset. Retries keep their
+# first timestamp for ~90 minutes, hence an age window of hours.
+SC_SIGNING_SECRET = _env("SMARTERCONTACT_SIGNING_SECRET", "")
+# The webhook Smarter Contact's own team configures (event SMS_MESSAGE_RECEIVED)
+# authenticates with a header we chose instead: "Authorization: Bearer <this>".
+# A token of its own, so nothing Smarter Contact holds opens the smrtPhone feed.
+SC_WEBHOOK_TOKEN = _env("SMARTERCONTACT_WEBHOOK_TOKEN", "")
+SC_SIGNATURE_MAX_AGE = int(_env("SMARTERCONTACT_SIGNATURE_MAX_AGE", str(3 * 60 * 60)))
+# Replies and labels in Smarter Contact go through its web app's own API, signed
+# in as Ty's account (no public API on this plan). The refresh token is the
+# login: a password change or "sign out everywhere" kills it.
+SC_FIREBASE_API_KEY = _env("SMARTERCONTACT_FIREBASE_API_KEY", "")
+SC_REFRESH_TOKEN = _env("SMARTERCONTACT_REFRESH_TOKEN", "")
+# The off switch. 0 = classify, label and page Adriana but never text anyone
+# back from Smarter Contact. Flip to 1 only after real replies have arrived.
+SC_AUTO_REPLY = _env("SMARTERCONTACT_AUTO_REPLY", "0") in ("1", "true", "True")
+# Labels set in Smarter Contact (Not interested, Wrong Number, Unknown DNC). The
+# DataSift integration turns each into a status or phone status, so they are a
+# write to the CRM too and have their own switch.
+SC_AUTO_LABEL = _env("SMARTERCONTACT_AUTO_LABEL", "0") in ("1", "true", "True")
+# A reply that lands in seconds reads as a bot; one that lands in a couple of
+# minutes reads as a person who saw the phone buzz.
+SC_REPLY_DELAY_MIN = int(_env("SMARTERCONTACT_REPLY_DELAY_MIN", "90"))
+SC_REPLY_DELAY_MAX = int(_env("SMARTERCONTACT_REPLY_DELAY_MAX", "240"))
+# After this many auto replies on one thread, the next reply goes to a person.
+# Three: who, how we got the number, and one clarify (Ty, 2026-10-30).
+SC_MAX_AUTO_REPLIES = int(_env("SMARTERCONTACT_MAX_AUTO_REPLIES", "3"))
+# A model read below this is left for a person ("This is Debbie. Yes we are.
+# Do you have an issue with?" read ASKING_WHO at 0.50 on launch day).
+SC_MIN_CONFIDENCE = float(_env("SMARTERCONTACT_MIN_CONFIDENCE", "0.65"))
+# A "not interested" text sets the Sift status to Not Interested (Ty, 2026-10-28),
+# the same disposition the Smarter Contact label maps to. Only on a record no one
+# is working: a sold, contracted or live-lead record keeps its status and gets a note.
+SC_NI_STATUS = _env("SMARTERCONTACT_NI_STATUS", "not_interested")
+SC_NI_OVERWRITE = {s.strip().lower() for s in
+                   _env("SMARTERCONTACT_NI_OVERWRITE_STATUSES", ",prospecting").split(",")}
+# An interested reply naming a price above this multiple of Sift's value is not
+# worth Adriana's call (Ty, 2026-10-30: "2 million" on a $599K house). It is
+# dispositioned Not Interested instead of being pushed to the channel.
+SC_PRICE_CEILING = float(_env("SMARTERCONTACT_PRICE_CEILING", "1.25"))
+# A record whose MLS field reads one of these is on the market: not worth the time.
+SC_LISTED_MLS = {s.strip().lower() for s in _env("SMARTERCONTACT_LISTED_MLS", "listed,pending,active").split(",")}
+# Sift's MLS field lags: one house read "Off Market" while Zillow had it
+# agent-listed at $750,000 for 58 days. Zillow is checked on every interested
+# reply when this key is set (OpenWeb Ninja property-details-address).
+ZILLOW_API_KEY = _env("OPENWEBNINJA_API_KEY", "")
 RECEIVER_HOST = _env("SMS_AGENT_HOST", "0.0.0.0")
 RECEIVER_PORT = int(_env("SMS_AGENT_PORT", "8080"))
 
@@ -257,6 +305,9 @@ TAG_AI_PAUSED = f"{TAG_PREFIX}ai_paused"
 TAG_AI_HANDLED = f"{TAG_PREFIX}ai_handled"
 TAG_ESCALATED = f"{TAG_PREFIX}escalated"
 TAG_OPT_OUT = "Do Not Market"
+# Every opt-out and legal hard stop also lands on this Sift list (Ty, 2026-10-28),
+# so one list holds everyone who told us to stop.
+LIST_DNC = _env("SMS_AGENT_DNC_LIST", "DNC")
 # Marketing dispositions for sensitive replies (Ty, 2026-08-26). A grieving
 # family telling us to go away does not need a Slack post; it needs the record
 # marked so nobody contacts them again. The channel is for live sellers.

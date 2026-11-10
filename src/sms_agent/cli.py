@@ -527,6 +527,14 @@ def cmd_digest(args) -> int:
     return 0
 
 
+def cmd_deliverability(args) -> int:
+    """Connectivity readout: verdicts, refusal reasons, reply-rate trend."""
+    from . import deliverability
+
+    print(deliverability.run(days=args.days, full=args.full, db_path=args.db))
+    return 0
+
+
 def cmd_selftest(args) -> int:
     """Exercise every phase offline. Sends nothing, writes nothing."""
     from . import selftest
@@ -745,6 +753,14 @@ def main() -> int:
     p.add_argument("--days", type=int, default=1)
     p.add_argument("--post", action="store_true", help="also post it to Slack")
     p.set_defaults(fn=cmd_digest)
+
+    p = sub.add_parser("deliverability",
+                       help="connectivity readout: carrier verdicts, refusal reasons, reply rates")
+    p.add_argument("--days", type=int, default=60)
+    p.add_argument("--full", action="store_true", help="per-week and per-number tables")
+    p.add_argument("--db", default=None,
+                   help="read a specific sqlite file (e.g. a copy pulled from Fly)")
+    p.set_defaults(fn=cmd_deliverability)
 
     p = sub.add_parser("selftest", help="exercise every phase offline; sends nothing")
     p.add_argument("--live-model", action="store_true",

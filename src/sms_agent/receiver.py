@@ -10,6 +10,7 @@ silently lose events. Everything downstream runs in the worker.
 Endpoints (the secret is in the path because neither vendor signs its payload):
     POST /hooks/{secret}/smrtphone
     POST /hooks/{secret}/datasift
+    POST /hooks/smartercontact   (bearer token or HMAC signature, see sc_inbound.py)
     GET  /health
 """
 from __future__ import annotations
@@ -82,6 +83,13 @@ def _dedupe_key(source: str, payload: dict) -> str:
     event = str(payload.get("event") or "")
     for key in ("smsId", "callId", "dialerCallId", "id"):
         if payload.get(key):
+            # A delivery callback progresses sent -> delivered/undelivered
+            # under ONE smsId. Keying on the id alone kept whichever status
+            # arrived first and silently discarded the final verdict, which
+            # made delivery rates unmeasurable. Retries of the same status
+            # still collapse.
+            if event == "smsDeliveryCallback" and payload.get("status"):
+                return f"{source}:{event}:{payload[key]}:{payload['status']}"
             return f"{source}:{event}:{payload[key]}"
     # No natural id (DNC/DNT, spam-list, DataSift). Fall back to the content.
     parts = [source, event]
@@ -145,6 +153,40 @@ async def datasift_hook(secret: str, request: Request, background: BackgroundTas
     if not isinstance(payload, dict):
         payload = {"payload": payload}
     return _ingest("datasift", payload, background)
+
+
+@app.post("/hooks/smartercontact")
+async def smartercontact_hook(request: Request, background: BackgroundTasks) -> Any:
+    """Smarter Contact replies.
+
+    No secret in the path: Smarter Contact's team configures this webhook by
+    hand, and the shared path secret also guards the smrtPhone feed. Instead a
+    delivery must carry EITHER our bearer token (the support-configured
+    webhook) OR a valid ConnectSI X-SC-Signature, and with neither configured
+    everything is refused. The IP allowlist does not apply: it is smrtPhone's
+    addresses and would silently drop every Smarter Contact delivery. A failed
+    check returns 401, so Smarter Contact retries while a credential is fixed
+    instead of the event being acknowledged and lost.
+    """
+    import json
+
+    from . import sc_inbound
+
+    raw = await request.body()
+    if not (sc_inbound.bearer_ok(request.headers.get("authorization", ""), config.SC_WEBHOOK_TOKEN)
+            or sc_inbound.signature_ok(request.headers.get("x-sc-signature", ""), raw,
+                                       config.SC_SIGNING_SECRET)):
+        log.warning("smartercontact webhook refused: no valid token or signature")
+        return Response(status_code=status.HTTP_401_UNAUTHORIZED)
+    try:
+        payload = json.loads(raw)
+    except ValueError:
+        text = raw.decode("utf-8", "replace")
+        store.record_event("smartercontact", "unparseable", f"raw:{hash(text)}", {"raw": text[:4000]})
+        return {"ok": True, "note": "unparseable body logged"}
+    if not isinstance(payload, dict):
+        return {"ok": True, "note": "non-object payload ignored"}
+    return _ingest("smartercontact", sc_inbound.normalize(payload), background)
 
 
 @app.get("/health")

@@ -24,8 +24,12 @@ log = logging.getLogger(__name__)
 
 # The only alert kinds allowed to reach the channel. A live seller, and the
 # daily campaign summary that was explicitly asked for. Everything else is
-# bookkeeping and belongs in the digest.
-ALWAYS_POST = {"handoff", "campaign", "sensitive"}
+# bookkeeping and belongs in the digest. `sc_health` is the Smarter Contact
+# login or send path failing: without it, auto replies stop silently and every
+# thread looks like a quiet owner.
+# needs_reply: someone is waiting on a person. It went out as "ops" until
+# 2026-10-30 and the interested-only filter dropped every one for three days.
+ALWAYS_POST = {"handoff", "campaign", "sensitive", "sc_health", "needs_reply"}
 
 RECORD_URL = "https://app.reisift.io/records/properties/{uuid}/details"
 
@@ -106,6 +110,14 @@ def hot_lead(
     if detail:
         lines.append(", ".join(detail))
     lines.append(f"Read: *{intent}*" + (f" - {note}" if note else ""))
+    if ctx.get("reply_link"):
+        # Straight to the conversation, where the call button dials from the
+        # same number that texted them (Ty, 2026-10-28).
+        lines.append(f"<{ctx['reply_link']}|Open the conversation in {ctx.get('reply_in') or 'the inbox'}> "
+                     "to reply or call from the number that texted them. The agent has stopped texting this one.")
+    elif ctx.get("reply_in"):
+        lines.append(f"Thread is in *{ctx['reply_in']}*: reply there, not from smrtPhone. "
+                     "The agent has stopped texting this one.")
     if record_uuid:
         lines.append(RECORD_URL.format(uuid=record_uuid))
 

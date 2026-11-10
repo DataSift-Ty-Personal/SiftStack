@@ -66,11 +66,31 @@ function findMmdc() {
   return null;
 }
 
+// Brand theme for every chart: navy on a light tint instead of Mermaid's
+// default purple. A per-chart %%{init}%% directive or style line still wins.
+const MERMAID_CONFIG = {
+  theme: "base",
+  themeVariables: {
+    fontFamily: "Arial, Helvetica, sans-serif",
+    primaryColor: "#F1F3F8",
+    primaryBorderColor: "#0A1130",
+    primaryTextColor: "#0A1130",
+    lineColor: "#0A1130",
+    secondaryColor: "#FFFFFF",
+    tertiaryColor: "#FFFFFF",
+    clusterBkg: "#F8F9FA",
+    clusterBorder: "#DFE6E9",
+    edgeLabelBackground: "#FFFFFF",
+  },
+};
+const MERMAID_CONFIG_FILE = path.join(os.tmpdir(), `mermaid_config_${process.pid}.json`);
+
 function renderMermaid(code, outputPath, mmdc) {
   const tmpFile = path.join(os.tmpdir(), `mermaid_${Date.now()}_${Math.random().toString(36).slice(2)}.mmd`);
   fs.writeFileSync(tmpFile, code);
+  if (!fs.existsSync(MERMAID_CONFIG_FILE)) fs.writeFileSync(MERMAID_CONFIG_FILE, JSON.stringify(MERMAID_CONFIG));
   try {
-    execSync(`${mmdc} -i "${tmpFile}" -o "${outputPath}" -b white -w 1200 -s 2`, {
+    execSync(`${mmdc} -i "${tmpFile}" -o "${outputPath}" -c "${MERMAID_CONFIG_FILE}" -b white -w 1200 -s 2`, {
       timeout: 30000, stdio: "pipe"
     });
     return fs.existsSync(outputPath) && fs.statSync(outputPath).size > 0;
@@ -85,8 +105,13 @@ function renderMermaid(code, outputPath, mmdc) {
 // ---------------------------------------------------------------------------
 // Colors
 // ---------------------------------------------------------------------------
+// DataSift brand: navy 0A1130, blue 316AFF, green 1B9E5A, gold for caveats.
+// Table headers are a light tint with a navy rule, never a solid colored band.
 const COLORS = {
-  darkNavy: "1A1A2E",
+  darkNavy: "0A1130",
+  accentBlue: "316AFF",
+  brandGreen: "1B9E5A",
+  gold: "F9A825",
   darkGray: "2D3436",
   medGray: "636E72",
   lightGray: "DFE6E9",
@@ -98,7 +123,7 @@ const COLORS = {
   screenshotText: "555555",
   quoteBg: "F0F7FF",
   quoteText: "2D3436",
-  headerBg: "D5E8F0",
+  tableHeaderBg: "F1F3F8",
 };
 
 // ---------------------------------------------------------------------------
@@ -245,12 +270,15 @@ function parseMarkdown(md) {
 
     // Numbered list
     if (/^\s*\d+\.\s+/.test(line)) {
+      // Keep the number the author wrote, so a list split by a screenshot
+      // (1-2, image, 3-4) continues at 3 instead of restarting at 1.
+      const start = parseInt(line.match(/^\s*(\d+)\./)[1], 10);
       const items = [];
       while (i < lines.length && /^\s*\d+\.\s+/.test(lines[i])) {
         items.push(lines[i].replace(/^\s*\d+\.\s+/, ""));
         i++;
       }
-      blocks.push({ type: "numbered_list", items });
+      blocks.push({ type: "numbered_list", items, start });
       continue;
     }
 
@@ -351,6 +379,7 @@ async function buildDocx(mdText, outputPath, docTitle, baseDir = process.cwd()) 
           : HeadingLevel.HEADING_4;
         children.push(new Paragraph({
           heading: headingLevel,
+          keepNext: true, // never strand a heading at the bottom of a page
           children: inlineToRuns(block.text),
           spacing: level <= 2 ? { before: 240, after: 120 } : { before: 180, after: 80 },
           ...(level <= 2 ? {
@@ -361,8 +390,10 @@ async function buildDocx(mdText, outputPath, docTitle, baseDir = process.cwd()) 
       }
 
       case "paragraph": {
-        // Detect motto (italic wrapped)
-        if (block.text.startsWith("*") && block.text.endsWith("*") && block.text.length < 200) {
+        // Detect motto (single-asterisk italic line). A bold-only line like
+        // "**Actions:**" also starts and ends with "*" and must not match, or
+        // every SOP label renders centered and gray.
+        if (/^\*[^*].*[^*]\*$/.test(block.text) && block.text.length < 200) {
           const clean = block.text.replace(/^\*+|\*+$/g, "");
           children.push(new Paragraph({
             alignment: AlignmentType.CENTER,
@@ -399,18 +430,22 @@ async function buildDocx(mdText, outputPath, docTitle, baseDir = process.cwd()) 
           })
         );
 
+        // Table-level borders must be cleared too, or Word falls back to its
+        // default black outline around every callout.
+        const noBorder = { style: BorderStyle.NONE, size: 0, color: "FFFFFF" };
         children.push(new Table({
           width: { size: CONTENT_WIDTH, type: WidthType.DXA },
           columnWidths: [CONTENT_WIDTH],
+          borders: { top: noBorder, bottom: noBorder, left: noBorder, right: noBorder, insideHorizontal: noBorder, insideVertical: noBorder },
           rows: [new TableRow({
             children: [new TableCell({
               width: { size: CONTENT_WIDTH, type: WidthType.DXA },
               shading: { fill: bgColor, type: ShadingType.CLEAR },
               borders: {
-                top: { style: BorderStyle.NONE, size: 0 },
-                bottom: { style: BorderStyle.NONE, size: 0 },
-                right: { style: BorderStyle.NONE, size: 0 },
-                left: { style: BorderStyle.SINGLE, size: 6, color: isProTip ? "2D6A4F" : isScreenshot ? "F9A825" : "4A90D9" },
+                top: thinBorder,
+                bottom: thinBorder,
+                right: thinBorder,
+                left: { style: BorderStyle.SINGLE, size: 6, color: isProTip ? COLORS.brandGreen : isScreenshot ? COLORS.gold : COLORS.accentBlue },
               },
               margins: { top: 100, bottom: 100, left: 200, right: 200 },
               children: quoteParagraphs,
@@ -462,7 +497,7 @@ async function buildDocx(mdText, outputPath, docTitle, baseDir = process.cwd()) 
               finalH = maxH;
             }
 
-            children.push(new Paragraph({ spacing: { before: 120, after: 120 } }));
+            children.push(new Paragraph({ spacing: { before: 120, after: 120 }, keepNext: true }));
             children.push(new Paragraph({
               alignment: AlignmentType.CENTER,
               children: [new ImageRun({
@@ -496,9 +531,10 @@ async function buildDocx(mdText, outputPath, docTitle, baseDir = process.cwd()) 
           const ratio = Math.min(maxW / img.dims.width, maxH / img.dims.height, 1);
           const finalW = Math.round(img.dims.width * ratio);
           const finalH = Math.round(img.dims.height * ratio);
-          children.push(new Paragraph({ spacing: { before: 120 } }));
+          children.push(new Paragraph({ spacing: { before: 120 }, keepNext: true }));
           children.push(new Paragraph({
             alignment: AlignmentType.CENTER,
+            keepNext: Boolean(block.alt), // keep the caption on the image's page
             children: [new ImageRun({
               type: img.dims.type,
               data: img.data,
@@ -542,20 +578,31 @@ async function buildDocx(mdText, outputPath, docTitle, baseDir = process.cwd()) 
       case "table": {
         if (!block.rows.length) break;
         const colCount = block.rows[0].length;
-        const colWidth = Math.floor(CONTENT_WIDTH / colCount);
-        const columnWidths = Array(colCount).fill(colWidth);
+        // Size columns to their content (longest cell, capped) so a short
+        // number column does not take the same width as a sentence column.
+        const weights = Array(colCount).fill(6);
+        for (const row of block.rows) {
+          row.forEach((cell, i) => {
+            const len = String(cell).replace(/[*`]/g, "").length;
+            weights[i] = Math.max(weights[i], Math.min(len, 60));
+          });
+        }
+        const totalWeight = weights.reduce((a, b) => a + b, 0);
+        const columnWidths = weights.map(w => Math.floor(CONTENT_WIDTH * w / totalWeight));
         // Adjust last column to account for rounding
-        columnWidths[colCount - 1] = CONTENT_WIDTH - colWidth * (colCount - 1);
+        columnWidths[colCount - 1] = CONTENT_WIDTH - columnWidths.slice(0, -1).reduce((a, b) => a + b, 0);
+        const headerBorders = { ...cellBorders, bottom: { style: BorderStyle.SINGLE, size: 8, color: COLORS.darkNavy } };
 
         const rows = block.rows.map((row, rowIdx) => {
           const isHeader = rowIdx === 0;
           return new TableRow({
+            tableHeader: isHeader,
             children: row.map((cell, colIdx) => new TableCell({
               width: { size: columnWidths[colIdx], type: WidthType.DXA },
-              borders: cellBorders,
+              borders: isHeader ? headerBorders : cellBorders,
               margins: cellMargins,
               shading: {
-                fill: isHeader ? COLORS.darkNavy : (rowIdx % 2 === 0 ? COLORS.white : COLORS.veryLightGray),
+                fill: isHeader ? COLORS.tableHeaderBg : (rowIdx % 2 === 0 ? COLORS.white : COLORS.veryLightGray),
                 type: ShadingType.CLEAR,
               },
               children: [new Paragraph({
@@ -563,7 +610,7 @@ async function buildDocx(mdText, outputPath, docTitle, baseDir = process.cwd()) 
                   font: "Arial",
                   size: 18,
                   bold: isHeader,
-                  color: isHeader ? COLORS.white : COLORS.darkGray,
+                  color: isHeader ? COLORS.darkNavy : COLORS.darkGray,
                 }),
               })],
             })),
@@ -586,7 +633,7 @@ async function buildDocx(mdText, outputPath, docTitle, baseDir = process.cwd()) 
             indent: { left: 720, hanging: 360 },
             spacing: { after: 60 },
             children: [
-              new TextRun({ text: `${idx + 1}. `, bold: true, font: "Arial", size: 20 }),
+              new TextRun({ text: `${(block.start || 1) + idx}. `, bold: true, font: "Arial", size: 20 }),
               ...inlineToRuns(item, { font: "Arial", size: 20 }),
             ],
           }));
@@ -704,6 +751,7 @@ async function buildDocx(mdText, outputPath, docTitle, baseDir = process.cwd()) 
 
   // Cleanup
   try { fs.rmSync(tmpDir, { recursive: true }); } catch {}
+  try { fs.unlinkSync(MERMAID_CONFIG_FILE); } catch {}
 }
 
 // ---------------------------------------------------------------------------

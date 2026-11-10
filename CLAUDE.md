@@ -319,7 +319,7 @@ python src/datasift_api_upload.py --commit
 
 ### DataSift API upload contract (hard-won, 2026-08)
 
-**Auth: mint the JWT, never paste one.** `POST /api/token/` with `DATASIFT_EMAIL` / `DATASIFT_PASSWORD` from `.env` returns `{access, refresh}`. The uploader mints on start and re-mints every 30 minutes so long runs cannot die on expiry. **The Open API key cannot do this job** — custom fields do not exist anywhere in its 93-route surface and every write 401s. The minted user JWT reaches `/api/internal/` where they do.
+**Auth: mint the JWT, never paste one.** `POST /api/token/` with `DATASIFT_EMAIL` / `DATASIFT_PASSWORD` from `.env` returns `{access, refresh}`. The uploader mints on start and re-mints every 30 minutes so long runs cannot die on expiry. **Correction, verified live 2026-11-03: the Open API key DOES reach the `/api/internal/` write routes.** Custom fields are absent from the key's documented 93-route surface, which is where the old "every write 401s" note came from, but `authorization: Api-Key <key>` on `/api/internal/` passes the permission check for create (`POST /api/internal/property/` empty body -> 400 "address/owner required"), `add-lists` (400 "lists required") and `custom-field/update-values` (bogus field uuid -> 400 "Invalid field UUID"), against a 401 for a fake key. The SMS agent's `crm_standalone` already writes tags, status and notes this way. So customer-facing agents can run on the key alone, with no password (Ty, 2026-11-03: never collect customer passwords). Not yet done: one real create plus read-back on the key before switching the uploader off the JWT.
 
 Four traps, each of which fails silently or cryptically:
 1. **Tags must be an ARRAY.** A comma string creates one tag literally named `"Courthouse Data, code_violation, Knox"`.
@@ -846,6 +846,252 @@ reverse-engineering filter keys, and a 39MB screen recording carrying seller
 data. All now gitignored. The sending DIDs were also removed from this file and
 replaced with a pointer to the gitignored pool.
 
+## D4D Top 3,000 Call List (build 1.0.53, 2026-09-11)
+
+`src/d4d_call_list.py` turns the Driving for Dollars visual distress ranking
+(`output/Knox_Blount_Master_<date>.xlsx`, sheet "All properties", sorted by the vendor's
+`visual_distress_score`) into a dialer-ready list: top N rows -> every one a DataSift record ->
+DataSift skip trace -> Trestle tier on every unscored number -> tiers written back onto the CRM
+phones -> two CSVs. Phases `cohort/pull/skiptrace/harvest/score/writeback/export/qa`, DRY by
+default + `--commit`, resumable state in `output/d4d_call_list/`. Tests:
+`python tests/test_d4d_call_list.py` (zero network).
+
+**Live run 2026-09-11, top 3,000 (score 100 down to 69, Knox 2,997 / Blount 3):** 1,286 were
+already records, **1,714 pulled in**, 3,000 of 3,000 harvested with **20,501 phones**, 7,411 already
+tiered, **10,849 numbers Trestle-scored for $162.73 with zero errors** (Dial First 4,749 / Second 720
+/ Third 588 / Fourth 3,648 / Drop 1,110 / litigator 24), tiers written to **2,246 owners / 11,036
+phones** with 0 mismatches on an 80-owner read-back. Export: 2,997 properties, **2,916 with a
+callable number**, 19,282 phone rows, 81 with nothing callable.
+
+**Contracts learned, each verified live:**
+- **Pull by id works through `add-properties-by-query`** with `query.addresses =
+  [{"search": "<dataflik_id>", "type": "ids"}, ...]`, `filters: {}`, `polygon: WORLD`, chunks of
+  250. Probed on one id with a read-back (`dataflik_id` matched, list attached) before the batch.
+  It is async: 1,713 ids landed in about 6 minutes, polled through the same search-by-ids call,
+  which also returns `saved` + `saved_uuid` live. The documented-only `/properties/add-properties/`
+  route was never needed.
+- **The SiftMap add skip traces on its own** on the unlimited plan: 37 of 40 sampled new records
+  carried phones minutes after landing, account traced count 56,207 -> 57,303, `value_spent`
+  still $0. So the wizard was unnecessary. It was also BROKEN: `_filter_by_list` no longer finds
+  `#Records__Filters_Trigger` and `skip_trace_records` then "continues anyway", which means
+  SELECT ALL on the whole account. The run was killed at the Send To menu before it submitted.
+  Do not run that wizard unattended until the list filter is fixed.
+- **SiftMap holds two ids for one address.** Three top-3,000 rows were duplicates of another row
+  at the same address (ranks 12/234, 973/974, 2308/2309); DataSift dropped the second pull as an
+  address duplicate (the uuid 404s minutes after landing) and attached the list to its existing
+  record. The export sends the second occurrence to the no-phone file as "duplicate of rank N".
+- **A record's `dataflik_id` equals the workbook `PropertyID`** on 3,000 of 3,000, so the join
+  needs no address matching.
+- `upsert-phones` is sent once per OWNER with only the changed phones (2,246 calls instead of
+  11,036); untouched phones are never re-sent. Two 504s on the first pass were retried by the
+  resumable state. The read-back must sample owners still in the plan: a refreshed record no
+  longer has eligible phones, so it drops out of `planned_writes` and a naive sample KeyErrors.
+- Trestle's free key was already exhausted for September (1,000 used on 09-09), so the router
+  billed everything to the paid key. Check `trestle_router.py usage` before quoting a cost.
+
+## Dream 100 (build 1.0.55, 2026-09-22)
+
+`src/dream100.py` + `src/dream100_build.py` rank the D4D top 3,000 by OPPORTUNITY SIZE and write
+the hundred largest to a workbook and to a CRM list. Three sources joined on the record uuid: the
+D4D visual distress rank (`output/d4d_call_list/cohort.json`), the FULL CRM record (investor,
+realtor and on-market scores plus every deal field: value, equity, mortgage, taxes, last sale,
+rental value, vacancy, owner age, deceased, dates), and the lists the account itself attached.
+Tests: `python tests/test_dream100.py` (19 checks, zero network).
+
+```bash
+python src/dream100.py --phase pull             # full records, ~2.2/s, resumable (23 min for 3,000)
+python src/dream100.py --phase build --top 100  # workbook + CSV + dream100_ranked.json
+python src/dream100.py --phase attach --commit  # list + tag "Dream 100" on the top rows, read-back first
+```
+
+**The harvest that `d4d_call_list` keeps is a projection and has NO investor score**, which is why
+a second pull of the full record was needed. `/api/internal/property/{uuid}/` carries
+`investor_score`, `realtor_score`, `on_market_score`, `rental_value`, `loan_to_value`,
+`open_mortgages`, `tax_delinquent_value`, `owned_since`, `secondary_owners`, and the owner's
+`age`/`deceased`/`dnc`/attempt counters. Custom fields are NOT on it (separate route, not needed).
+
+**Opportunity score, 100 points, every component a column:** deal size 35 (discount room =
+min(equity $, 30% of value), ramp $15K to $120K: a seller cannot sell below the payoff and the
+70% rule gap is the most a wholesale buyer pays for), condition 20 (D4D score ramp 69 to 100),
+investor 20 (ramp 20 to 90, up to 5 off when realtor_score >= 70), evidence 15 (list points:
+Foreclosure/Trustee 5, Tax Delinquent/Vacant/Probate/Obituary/Condemned 4, Liens/Bankruptcy/
+Divorce 3, Tired Landlord/Out-of-State 2, Senior/Absentee 1, plus record fields, capped at 14
+raw), reach 10 (best Trestle tier; DNC = mail only). Gates, each counted on the Excluded sheet:
+dead status, recently sold / Do Not Market tags, Dispo buyer lists (the owner is a buyer), no
+value, over $700K, not single family (the structure string `Residential (General) (Single)` IS
+single family; match on multi/duplex/condo/town/mobile, never on the absence of "single family"),
+upside down, listed on the MLS. In-progress records are KEPT and flagged, because a Dream 100 that
+hides the team's own hottest files is wrong.
+
+**Live result (ty+2, 2026-09-22):** 2,856 qualified of 2,997, 141 excluded (36 not interested,
+29 listed or pending on the MLS, 19 sold, 12 on a Dispo buyer list, 9 Do Not Market or recently
+sold, 7 upside down). Dream 100 combined value $32.9M, combined discount room $9.9M, median value
+$309K, 98 of 100 reachable on a Dial First or Second number, 4 entity owners, 36 vacant, 26 already
+in the pipeline. 99 Knox / 1 Blount (the D4D cohort itself is 2,997 Knox), and 37917 alone holds 38
+rows. List + tag `Dream 100` attached to all 100 with a read-back on rank 1.
+
+**The biggest finding is the Portfolio owners sheet, not the ranking.** 194 owners hold two or
+more properties in the D4D 3,000; the top one holds 22 ($4.9M value, $1.46M discount room) and the
+next 13. One conversation there is worth more than a dozen single rows, and the per-property score
+cannot see it. Every Dream row carries "Owner's other D4D records" for the same reason.
+
+## Dream 100 deep prospecting (build 1.0.56, 2026-09-23)
+
+`src/dream100_dp.py` runs deep-prospecting v5 on the top N of `dream100_ranked.json`. Phases
+`records / smartskip / merge / gapfill / score / build / writeback / qa`, DRY by default, `--commit`
+to spend or write, `--only <slugs>` for writeback. Two layers are written by a researcher, never by
+the module: `research/<slug>.json` (agents; every claim carries a URL and a verbatim quote) and
+`analysis/<slug>.json` (headline, who must sign, outreach). Output: a pack PDF per property, a
+workbook plus a redacted demo twin, and the CRM write-back. Tests: `python tests/test_dream100_dp.py`.
+
+**Top 5 run (2026-09-23): every record changed once researched.** Three owners of record were
+dead (in 2024, 1999 and 2025, the last with a son as executor and a probate case open), and
+the team had been calling and texting all three by name. The two living owners carried wrong CRM
+facts: one is 85, not 95, and his mailing address is a stranger's house; the other is a
+33-year-old portfolio holder winding down two LLCs. Written
+back and read back clean: 20 new numbers tagged `[relationship, tier, source]`, 5 pinned notes, tag
+`Deep Prospected`, decision-maker fields on 5, death fields plus `owner.deceased` on 3. Cost $1.79.
+
+**Lessons, each measured on this run:**
+- **Audio models invent speech on short clips.** 9 of 37 call recordings came back as whole
+  invented conversations (660 words from 11 seconds). A transcript counts only at 3 words a second
+  or less of real audio (ffprobe), plus a strict second pass that forbids guessing.
+- **The activity log is per OWNER.** Touches on the owner's other properties show up on this record
+  (every call to one owner asked about his other house). Call direction comes from the payload, never
+  the author: a Kixie dial is logged by "system" and reads like an inbound call.
+- **SmartSkip is stale on deaths in both directions.** It listed three relatives who died in 2000,
+  2017 and 2007 as living. Its Deceased flag was right on
+  all 3 owners here, and it is still only advisory.
+- **A mailing address on the same parcel is a second home, not an absentee owner** (two of the five). Selling the parcel sells the widow's own home.
+- **AVMs overstate these deals:** one read $659,000 against a $153,900 county appraisal, another
+  $402,000 against $87,100. Name-based tax joins also mix parcels: the "unpaid 2015 to 2021" note on
+  one record belonged to the owner's lot on another street.
+- **Maiden-name emails confirm daughters** (a gmail address built on the family's surname, found on a married daughter's record).
+- **The `\b` heredoc trap hit again** and the name harvester matched nothing. Regex patches go
+  through files; a test asserts the module holds no backspace byte.
+- `GET/PATCH /api/internal/owner/{uuid}/` carries `deceased`, verified by read-back.
+
+## Vacant Land: buildable lots, Union County OH (build 1.0.60, 2026-11-05)
+
+`src/vacant_land.py` finds every vacant parcel of 0.20 to 2.00 acres in a county, screens out the ones that cannot carry a house, ranks the owners by motivation, prices an offer band off real lot sales and writes the marketing plan. County GIS is the truth for the PARCEL, SiftMap for the OWNER. Read-only everywhere; `pull` is dry unless `--commit --key-env <VAR>` names the TARGET account's Open API key. Output `output/vacant_land/union_oh/`: `Union_OH_Buildable_Lots_<date>.xlsx` (Overview, Mail list, Marketing plan, Not marketable, Builder inventory, Lot comps, Lot buyers, Sources and caveats) + `mail_list.csv`. Tests: `python tests/test_vacant_land.py` (95 checks, zero network); the LIVE test is `--phase probe` (exit 3 if the contract moved).
+
+```bash
+python src/vacant_land.py --phase probe     # live: proves the land filter by count delta
+python src/vacant_land.py --phase all       # county sweep topo screen hydrate score export (~20 min cold)
+python src/vacant_land.py --phase pull      # dry tier plan; --commit --key-env TARGET_KEY sends it
+```
+
+**Live result 2026-11-05:** 36,768 parcels -> 1,927 vacant-class in the window -> 496 BUILT SINCE REAPPRAISAL, 276 NOT BUILDABLE (144 landlocked, 88 floodplain, 70 strips, 14 steep, 14 non-residential zoning), 213 public or common area, 129 builder inventory -> **813 marketable** (162 buildable, 490 likely, 161 verify) -> **625 mailable** (tier A 48, B 168, C 409; excluded 131 bought in the last 2 years, 5 on MLS, 53 with no DataSift owner). Biggest segment is 200 neighbor side lots (owner holds the house next door). Lot comps: 148 valid lot sales in 36 months, county median $165,000.
+
+**SiftMap contracts (count-delta proven, all silent if wrong):** `type_land: true` is the ONLY land filter (40,017 -> 4,379); `type_land_residential`, `type_vacant_land`, `type_lot`, `type_vacant`, `type_commercial`, `type_farm` all return the unfiltered count, and there is still no lot-size filter. **type_land is RESIDENTIAL vacant only:** SiftMap files small ag lots as "Rural/Agricultural-Vacant Land", which it never returns. hydrate reaches them by searching with the parcel's own bounds as the `polygon` viewport (`filters: {}`), point-in-polygon, then requires detail `apn` digits == county CAMA number (170 of 193 found, 8 ids rejected on apn). Row `distressors` is `{key: {is_active}}` with every key on every row. The AVM is junk on land ($1,249,000 on a 0.022 ac sliver).
+
+**County traps (Union GIS, `www7.co.union.oh.us/unioncountyohio/rest/services/`):**
+- **The class lags construction.** 2,185 "vacant" (500) sales in 36 months had a median of $590K at 7.5x land value: new houses. Built-on = dwelling year, sale at 3x+ land value and $150K+, or a permit in 3 years.
+- **The dwelling layer has a row for ~every parcel;** `age` is the year built and `'0'` means no house. Membership alone marked 1,035 of 1,046 lots built.
+- Acreage is BLANK on platted lots (measure the polygon, 875 of 1,927); `ZipCode` holds "MARYSVILLE OH 43040"; ParcelMailingAddress refuses queries (mailing comes from SiftMap).
+- **No sewer layer exists, and soil cannot decide it:** USDA rates nearly every Union soil "Very limited" for septic fields. Sewer proxy = median lot size of houses within 1,000 ft (under 0.50 ac sewer, 1.0+ septic), else platted and under 0.50 ac = sewer, unplatted with few houses = rural septic.
+
+**Topography (Ty's ask) is USGS 3DEP, free and keyless, 1 m lidar.** `computeStatisticsHistograms` costs 7-8 s a call whatever the area (3 hours for the county); `getSamples` reads 1,000 points in ~11 s, so `topo` samples a ~60-point grid per lot plus a 150 ft ring and batches ~10 lots per request (192 requests, ~8 min). Measures: share of the lot over a 15% grade (fail at 50%), relief, and how far the lot's median sits under its ring. Union is flat: 107 lots are steep, 165 sit 2+ ft low, and sitting low (drainage, fill) is the signal that matters here.
+
+**Pricing: never one county figure.** Jerome subdivision lots are 98 of 148 comps (median $186,800) and would triple a rural lot's value. Order: same township and size band (5+ sales) -> the lot's auditor land value (detail `assessed_land_value / 0.35`) x its township's sale-to-land ratio, or the rural 1.95 (Jerome and Washington/Dublin run 1.20) -> rural lot sales in the size band. **Class 110 is CAUV farm valuation ($29-$400 land values on house-size lots) and is never priced off land value.** Offer band default 50-65% of the reference (`--offer-low/--offer-high`).
+
+**Tiers are rules, not a blended cutoff:** buildability topped out near 82 and motivation near 35, so a blended 70 put nobody in A. A = build 65+ with a strong signal (tax, estate, out of state, liens); B = build 55+ with motivation 12+.
+
+## Builder Land Desk: buy boxes from deeds, lots matched to builders (build 1.0.61, 2026-11-06)
+
+`src/builder_land.py` runs a business model Ty took from a wholesaler friend: find the buyers who target one niche, learn exactly what they buy, and build the seller list to match. For land, those buyers are builders, and all of their purchases are on the deeds. For any county, the module reads each builder's buy box off those purchases: where they buy, lot size, price paid, what they build and sell. It then matches the lots on the ground today to the builders who would buy them. It works as a county run and as a national screen. It is read-only on the opensearch MCP and never writes to an account (a test asserts it never calls `add-properties-by-query`). Output: `output/builder_land/<market>/<Market>_Builder_Land_Desk_<date>.xlsx`, which carries Overview with a verdict line, Builder buy boxes with a call opening line per builder, the Lot list mail list, Lots by builder (filter to one builder to get their tailored list), Teardowns, Development tracts, Competitors, Economics (live formulas), Builder intake, Niches, and Sources and caveats. Tests: `python tests/test_builder_land.py` (72 checks, zero network).
+
+```bash
+python src/builder_land.py --market knox_blount --fips 47093,47009 --phase all --streams 6
+python src/builder_land.py --market union_oh --fips 39159 --phase all --lots-csv output/vacant_land/union_oh/mail_list.csv
+python src/builder_land.py --phase national            # every county, cached; --refresh re-pulls
+```
+
+**Results (2026-11-06):**
+- **Knox and Blount: yes.** 110 buyers qualify: 3 or more purchases since 2021, on 2 or more separate deeds, with a purchase in the last 24 months. Of those, 81 buy lots. 2,915 lots owned by individuals fit at least one builder and 1,182 fit 3 or more. Builders paid a median $40K. The measured quick-flip spread is a $15K median over 47 days. These builders bought 134 lots in the last 12 months, and 66% of their purchases came from individuals. Only 22 of the 110 have phones in the dispo registry, which is the gap to close before outreach.
+- **Union OH: no.** Repeat buyers there are production builders (Maronda, Pulte, Rockford, Jerome Village) and tract buyers. Only 3 of the 610 screened lots fit a repeat builder, and 66% of rural homesites are still owned by the person who bought the lot, so those lots sell retail.
+- **Franklin OH (Columbus): yes.** It is the Knox shape at a bigger scale: about 86 urban infill homes a year, 1,988 infill lot purchases since 2021, and buyers with 3 or more purchases took 44% of them. Median lot $35K, median new home $300K. 55 active builders (51 of them buy lots), 1,306 fitting lots, 505 that fit 3 or more builders, 3,704 teardowns. The largest builders are Walnut Homes For You, Monticello Homes and ARV Investors. None are in the dispo registry, which only covers Knox and Blount. 871 of the fitting lots have no postal address; for these the place fields are blanked by `place()`, because the district-as-city artifact otherwise reads "Columbus Grove 45830". The full live run (370,613 parcels, 8 balanced streams, 57 history batches) took 25 minutes.
+- **National ranking:** Harris, Dallas and Tarrant TX lead, then Hidalgo, Cook, Jackson MO, Johnson KS and Wake. Knox ranks 96th of 2,183 counties, Franklin OH 29th, Union OH 729th.
+
+**The buy box and the fit:**
+- **Purchases are DEED DATES, not parcels.** A 13-lot deed is one purchase, and a takedown is priced at the deed price divided by its lot count. A deed priced at 3x or more of the parcel's value also carried parcels outside the list, so it gets no lot price (Ball Homes and Mesana had read $1.37M and $1.5M "lots").
+- **Box contents:** lot size is p10-p90 widened 20-25%; price is p25-p75; areas and ZIPs are by count; finished size and resale come from the houses the builder built.
+- **A lot fits a builder** when one of that builder's own lots is within 600 m (acreage 3 km, tracts 5 km) and the lot size is inside their range. A class with only one purchase is an event, not a box.
+- **Offer** = what the fitting builders paid nearby, minus the fee (`--fee`, default $12K). There is no offer when the fee would exceed 60% of the lot price.
+- **Slivers** under 0.06 acres are not lots.
+
+**Deed-chain fix with reach beyond this module:** the jump's exit must be priced like a finished house (at least 40% of today's value deflated to the sale year). Without that, a lot wholesaled at 1.5x before the build is read as the builder's purchase plus the new-home sale, which misattributes the builder and hides the middleman. The Knox niche scripts in `output/niche_buyers/method/` predate this fix.
+
+**National screen, three traps in buyer-stats:**
+- **A purchase is counted by the parcel's CURRENT class.** A builder's lot that became a house therefore leaves `land_residential`, which makes land `FLIP` mean land bought and resold as land. The first ranking built on it put the Florida and Arizona platted-lot sellers on top (Western Land and Ranches, Parcels A Plenty, Lots of Land LLC). The builder signal is now small buyers of single-family parcels with a builder name, matched by wildcards on the keyword `buyer_full_name` in one aggregation (about 8 s). It misses unnamed builders such as Braden, and it counts some house flippers with "Homes" in the name, so it ranks markets and does not size them.
+- **Land `WHOLESALE` is the lot wholesalers** (on Knox: SMP Holdings, the same name the deeds found).
+- **HOAs, POAs, utilities and fire districts** top the raw land counts. They are filtered by name client side (`JUNK`).
+
+**Pull mechanics:**
+- **Equal dataflik_id ranges are lopsided** (one Union stream held most of the rows). Even a 400-bucket histogram is not enough: Franklin OH put 276,000 of its 370,000 parcels in 2 buckets. `id_buckets` re-histograms any bucket holding more than half of one stream's share, up to 3 levels, and `balanced_edges` cuts the streams from the result (8 streams came out at 32,000-50,000 rows each). The edges are saved so a resume keeps them.
+- `--from-dir` imports an earlier pull.
+- Patch scripts containing triple quotes break bash heredocs; write them with the file tool.
+
+## Agents Brain: status change fires the Research agent (build 1.0.59, 2026-11-03)
+
+`src/agents/` is the infrastructure for four autonomous agents (Analysis, Research, Sales Assistant, Operations; see the `project-four-agent-consolidation` memory). One always-on brain per install: FastAPI receives DataSift sequence webhooks, writes a task into a SQLite queue on its own volume, one worker thread runs the owning agent, writes back over the Open API key, posts to Slack. Nothing shared between customers, no Supabase, no password anywhere. Fly app `siftstack-agents` (`fly.agents.toml`, `deploy/Dockerfile.agents`, secrets via `deploy/sync_agents_secrets.py`, which never sends DATASIFT_EMAIL/PASSWORD).
+
+```bash
+python src/agents/cli.py selftest                     # zero network (45 checks; needs the repo .venv for fastapi)
+python src/agents/cli.py run --address "123 Example St"   # run the deep prospect in-process
+python src/agents/cli.py setup-datasift [--commit]    # webhook + sequence, dry by default, read back
+python src/agents/cli.py status
+```
+
+**First workflow: status changed to "Deep Prospecting" -> Research agent deep prospect.** ty+2 already had the sequence "Send to Deep Prospecting" (trigger `property.status.updated` to `deep prospecting`), inactive, creating a card in a DELETED column. `setup-datasift` repairs it in place (plans cap sequence counts): card into "Check Relatives" on the Deep Prospecting board plus a `send-webhook` action, active. The chain is `deep_prospect_record` with Claude as the researcher: records -> smartskip -> merge -> RESEARCH (Claude Opus 5.5 + web search/fetch) -> ANALYSIS -> heirs -> score -> gapfill -> verify -> FINAL ANALYSIS -> build -> writeback. `AGENTS_MODE=dry` (default) pays no vendor and writes nothing to the CRM; live spends inside `AGENTS_RUN_CAP_USD` (5) / `AGENTS_DAILY_CAP_USD` (25), skipping (not failing) any paid phase that would cross a cap. Run folders sit on the volume keyed by address, so a re-run reuses paid SmartSkip orders. Dedupe: one record is not re-run inside `AGENTS_DEDUPE_HOURS` (24).
+
+**Contracts learned building it (all verified live 2026-11-03):**
+- **DataSift webhook action:** `{"action": "send-webhook", "payload": {"webhook_uuid": <uuid>, "label": "send.webhook"}}`, read out of the app bundle (`main.min.js`, unminified, `ACTION_VALIDATORS['send-webhook']` requires `webhook_uuid`; feature flag `isWebhooksUser`). Webhook registry: `POST /api/internal/integration/webhook/` takes only `name` + `url`, so the secret rides in the URL path. The webhook BODY is still unseen: `router.record_uuid` extracts defensively and a body with no record id is logged and posted, never run.
+- **The Open API key reaches every write the chain makes:** property PATCH/message/pin, custom-field update-values, add-lists, owner PATCH (`deceased`), owner upsert-phones, sequence/board/column/webhook create. `datasift_api_upload.Api` uses the key whenever DATASIFT_EMAIL/PASSWORD are absent; `dream100_dp._crm_clients` falls back to `crm_key_client` (key-only ports of the Deal Room CRMClient reads and the dossier helpers) when the Desktop `_api/clients` folder is missing.
+- **Structured outputs reject schemas this size** ("The compiled grammar is too large"). The research and analysis schemas stay the contract, but Claude returns JSON in text and `researcher.conform()` forces the shape (fills empties, drops extras, coerces enums), so every reader can index blindly.
+- **Guards in code, not just the prompt:** a claim whose URL Claude never opened or searched in this run moves to `unresolved`; the owner is marked deceased only when an obituary opened this run backs it AND the decedent shares two name tokens with the owner of record (the spouse-obituary trap); an empty `trace_address` is dropped because `heir_rows` would otherwise override the real street with it and skip the heir; empty CRM fields never write.
+- **`relative_to(ROOT)` crashed every run off the repo** (the Fly volume is `/data`). `dream100_dp.rel()` returns the absolute path there; a stored absolute path still resolves because `ROOT / "/data/x"` is `/data/x`. Writing that helper with a regex also rewrote the helper's own body into infinite recursion: the dry run caught it, a reason to always dry-run before deploying.
+- `load_env()` now returns the process environment too: Fly secrets arrive as env vars and there is no `.env`, and phases read keys off that dict.
+- **No `.dockerignore` existed**, so every Fly build uploaded `output/` (seller data, gigabytes) and `.env` to the builder. Added; every Dockerfile only COPYs `src/`, `deploy/`, `skills/`, `.actor/`, `requirements.txt`.
+- `anthropic==0.86.0` is pinned in the image: it is what the run was verified on. It warns that it does not model the newest web-fetch result blocks; a 2.x upgrade could not be tested locally because the scratchpad path breaks Windows' 260-character limit inside a venv.
+- The `.env` FLY_API_TOKEN is scoped to `siftstack` only and cannot create apps; standing up `siftstack-agents` needs `fly auth login`.
+
+## Single-Record Deep Prospecting (build 1.0.58, 2026-10-27)
+
+`src/deep_prospect_record.py` runs deep-prospecting v5 on ANY one ty+2 record by street line. It reuses every `dream100_dp` phase and adds what an heir case needs. Run folder `output/deep_prospect/<address slug>/`; `research/` and `analysis/` JSON are researcher-written exactly as in the Dream 100 run. First run: an Obituary list record (owner died early 2026, house in his trust, four children traced, 20 numbers written, about $0.80).
+
+```bash
+python src/deep_prospect_record.py --address "123 Example St" --phase records --context "Obituary list record in ty+2"
+# then: smartskip [--subject-address property] > merge > write research + analysis > heirs > merge
+#       > score > gapfill > verify > build > writeback   (--commit to spend or write)
+```
+
+- **`heirs` = a second SmartSkip BULK pass with each decision maker as a subject**, at the street SmartSkip or a county roll gave (never name plus city). Orders accumulate; anyone already matched is not re-billed. A married daughter hides under her maiden-name record at the parents' house; `smartskip_heirs_keys.json` folds her married name back onto the maiden-name record.
+- **Drop obituary middle names on heir traces.** 3 of 4 children came back EMPTY with their obituary middle names and all three matched without. The owner matched WITH his, because the county title carries it.
+- **Query the Knox tax API by street, never the CRM parcel id.** The search is fuzzy: `107gb031` returned 22 unrelated parcels, and `dream100_dp._tax` would have reported the first ("GBC51") as the title owner.
+- **Trestle Real Contact 403s AUTHENTICATION_FAILED on a browser User-Agent**, which reads exactly like a bad key. Send only `x-api-key` and `Accept`.
+- `verify` (Real Contact) says whose number each is: the record's two 626 mobiles belonged to a stranger, and a wife's cell also matched her husband (`also_reaches`). `wrong_party` keeps a stranger's activity-100 number out of the tiers and off the dial sheet. `gapfill` targets a decision maker with no LIVE number, not only none at all (Tracerfy found a daughter's cell when her one landline scored 30).
+- Street View at the record's coordinates can be the neighbor: read the house number before a photo goes on a pack.
+
+## Deal Buyer Match + Buyer Deep Prospect (build 1.0.57, 2026-10-27)
+
+Top N buyers for ONE contracted house, then who signs and which number reaches them. `src/deal_buyer_match.py` (phases `sweep/hydrate/rank`, all free) and `src/deal_buyer_dp.py` (phases `crm/dossier/trace/verify/export`, DRY by default, `--commit` to spend). Output `output/deal_buyers/<slug>/`: `ranked.json`, `dossier.json`, `dial_sheet.csv`, `Buyers_<slug>.xlsx` (Top 10 / Dial Sheet / Local Buys / Comps / Sources). First run: 5123 Odell Rd 37920, contract $90,000, working ask $135,000; total spend $1.05 SmartSkip plus 124 Real Contact queries.
+
+```bash
+python src/deal_buyer_match.py --slug 5123-odell --lat 35.914504 --lon -83.941647 --beds 3 --baths 1 \
+    --sqft 1284 --year 1952 --ask 135000 --contract 90000 --phase all
+python src/deal_buyer_dp.py --slug 5123-odell --phase crm        # then dossier, trace --commit, verify --commit, export
+```
+
+- **The sweep is a SiftMap polygon search around the subject, verified by count delta** (county 10,611 -> 2mi box 383 -> 1mi box 97). Comps = every arm's length SFR sale in `--comp-mi` (default 1.0, 18 months); buyers = every investor transaction type in `--buyer-mi` (3.0, 36 months). Deeds hydrate through the dispo registry's `details.json` cache, re-read when the cached deed predates the window.
+- **Unlabeled flips are found from the deed chain.** SiftMap never called 2416 Alberta Dr a flip, yet Unique Construct LLC bought it at $155,000 and sold it at $362,000, 0.28 mi from the subject. An entity seller who bought within 24 months counts; a person seller also needs a 1.35x resale.
+- **THE REGISTRY PRICES EXITED FLIPPERS AT THEIR EXIT.** `dispo_buyers._observations` records a `flip` row at `last.get("price")`, the deed to the retail buyer, so every flipper's price band is a resale band: GDP Properties read a $307,500 median on a book of real $100K to $200K buys ($189,000 after the fix). `deal_buyer_match._acquisition_lookup` recovers the buy from the deed before the exit. **Not yet fixed in `dispo_buyers.py`**, so `buyer_profiles.json` `box_price` and the dispo blast's band filter still sit on resale prices for every exited flipper.
+- **One slot per OPERATOR.** `groups.json` (research layer, every grouping cited) ties LLCs one family runs; South Knox 12 and 2614 Dexter both file from one Mt Juliet house and took two of ten slots unchecked. The top N also requires `--min-buys` 3 lifetime purchases, because a two-purchase LLC outscores a 23-flip operator on recency alone. Named exclusions plus `NOT_BUYERS` drop lenders' REO vehicles (Groundfloor) and foundations (Aslan) that score high on local volume.
+- **Trestle REAL CONTACT is licensed on this account; Reverse Phone is not (403).** `GET api.trestleiq.com/1.1/real_contact?name=&phone=&add_ons=litigator_checks` returns `phone.name_match`, `phone.contact_grade`, `phone.activity_score`, line type and litigator risk in one call. It turns "a number on the company record" into "the decision maker's number": 121 pairs on the first run, zero errors. A company name never name-matches, so every unattributed company line needs a named person tested against it.
+- **Registry phones on an entity buyer are not the buyer's until a name matches.** All 10 GDP Properties record numbers failed to match its principal. Gateway Properties of TN's only CRM record is a house it SOLD to a homebuyer, and both its numbers name-matched that homebuyer (the record owner is tested as a `FOIL:`). The live CRM status outranks the August snapshot: one Tipton-group number reads WRONG, and 2614 Dexter's number reads CORRECT from the blast.
+- **No name-plus-city person search, ever.** Knox holds several people sharing one principal's common name; a city-anchored search returns whichever ranks first and Real Contact then confirms the number belongs to A person of that name, a false positive verify cannot see. `trace` runs SmartSkip only at a verified HOME street (office, suite and PO box refused; `trace.json` supplies one where research established it). A decision maker without one is verified against company numbers only and falls back to the published company line.
+- **Decision makers come from `research/<slug>.json`, never the module.** The TN SOS search (tncab.tnsos.gov) is behind a Cloudflare check that the permission system will not let an agent get past; the working sources were the Knox tax API (`knox-tn.mygovonline.com/api/v2/parcels/<q>`, which also carries county BUSINESS accounts by address: that is how one principal's consulting LLC tied to his home), KGIS owner cards, TPAD, Bizapedia's embedded SOS JSON, company sites and the BBB. The registry's reverse-address principal was right on all four it was checked on, but spelled one of them wrong (one letter off in the first name), which would have failed every name match.
+
 ## Contractor Research Workflow (build 1.0.47, 2026-08-20)
 
 The team's contractor/sub sourcing method, imported from the Desktop Contractor-Research-Toolkit and registered as two community-safe skills: `skills/vendor-directory-builder/` (research engine: community mining -> public-record verification -> geo sweep + gap analysis + niche gatekeeper layer -> Excel via `scripts/build_directory.py`) and `skills/contractor-call-sheet/` (action layer: printable call sheet via `scripts/build_call_sheet.py` + personalized outreach drafts, never sends). Both tier none (pure openpyxl), category Operations, on the agent map under Deal Analysis (`vendordir`, `callsheet`). Internal SOP with the real Knox+Blount worked example (68 providers): `docs/contractor-research-workflow.md`.
@@ -930,6 +1176,8 @@ Pulls real call recordings from the SmrtPhone web session, transcribes them with
 - **Rubric sources:** DataSift Call Playbook (Cold Caller / Lead Manager / Closer scripts + trainings), LEAD-M_1.MD, playbook research corpus + elite-call transcripts.
 
 ## Two-Way SMS Agent (build 1.0.38, 2026-08)
+
+**SELLER AUTO-CAMPAIGN DISABLED 2026-09-11.** `SMS_AGENT_CAMPAIGN=0` is set as a Fly SECRET on `siftstack` (secrets override `fly.toml [env]`), because the daily scheduler was texting sellers on four consecutive days (touch gap 1) and re-sending touch 1 to 144 phones in 14 days. Inbound stays live at phase 2. Re-enable via the secret only after `SMS_AGENT_TOUCH_GAP_DAYS` is raised and the touch-1 repeat in `campaign.py` is fixed.
 
 `src/sms_agent/` sends outreach, reads replies in real time, classifies them, writes the result back to DataSift (phone status, opt-outs, lead status), and hands positive responses to a prospector in Slack. Full runbook: `src/sms_agent/README.md`.
 
@@ -1367,6 +1615,29 @@ python src/extract_market_finder.py --state "Tennessee" --county "Knox,Blount" -
 
 # Output: JSON file in output/market_finder_{state}_{county}_{timestamp}.json
 ```
+
+## Plugin Marketplace: the install and update channel (build 1.0.54, 2026-09-21)
+
+The skill library installs from THIS repo as a Claude Code / Cowork plugin marketplace. Source of truth is still `skills/` + `plugins/`; everything below is GENERATED by `python tools/build_skills.py --marketplace` (run it BEFORE `--build`, it writes into a tree that gets zipped). `install.py` and `dist/*.skill` remain the fallback for claude.ai chat uploads and plugin-less environments.
+
+```
+/plugin marketplace add DataSift-Ty-Personal/SiftStack
+/plugin install siftstack-all@siftstack        # 27 current packages, one command
+python install.py --plugins                    # same result on a CLI too old for bundles
+```
+
+- **`skills/<name>/` is published AS a plugin with zero restructuring:** `strict: false` + `skills: ["./"]` makes the marketplace entry the whole definition, and SKILL.md at the plugin root is a valid single-skill plugin. Proven by install, not by reading docs.
+- **Bundles live in `marketplace/bundles/`, NOT `plugins/`,** because `build()` / `manifest()` treat every directory under `plugins/` as a package. One bundle per category plus `siftstack-all`; each is a `plugin.json` holding only `dependencies`. `siftstack-core` (doctor + setup skills) rides in every bundle.
+- **NO `version` field anywhere, and the builder refuses one.** A declared version pins the plugin and becomes the only update signal, so one forgotten bump strands every user. Without it the commit SHA is the signal (the cache dir is literally named after the SHA). This is why `version` was stripped from `deal-analyzer` and `sift-operations`.
+- **`dependencies` needs a current CLI.** Ty's terminal CLI was 2.1.38 (the VS Code extension bundles its own, newer one) and rejected the bundle with `Unrecognized key: "dependencies"` AFTER `plugin validate` had passed. Validation is not installation: CI now does the real install on `@latest` via `npx` into a throwaway `CLAUDE_CONFIG_DIR` and asserts every current package landed. `install.py --plugins` installs plugin by plugin, which works on any version.
+- **Auto-update is OFF by default for third-party marketplaces.** Users flip it once (`/plugin` -> Marketplaces -> siftstack -> Enable auto-update). The `setup` skill and the README both say so.
+- **`siftstack-core` gets its own `data/requires.json`, not a manifest copy:** an installed plugin is copied to a cache so `../skills/manifest.json` does not exist, and the manifest carries the sha of the very archive that would contain it.
+- **Secrets stay on the `.env` / env var contract.** Plugin `userConfig` substitutes into skill text (the key lands in the prompt) and is not exposed to Bash-run scripts.
+- **Never `rmtree` a generated dir inside this OneDrive checkout.** It died with WinError 5 mid-delete and left the repo with no bundles. The builder overwrites in place and prunes only stale bundle dirs.
+- **No top-level `bin/` in any plugin** (Cowork refuses it); `check_docs.check_marketplace` gates that, plus every package in `siftstack-all` and in exactly one division bundle. `check_counts` gates the hand-written totals in README / GETTING-STARTED / `.env.skills.example`, which had drifted to four different wrong numbers (24, 22, nine, 21).
+- `.claude/` is gitignored, so `extraKnownMarketplaces` in project settings cannot reach a cloner. Not used.
+
+**Scope honesty:** the marketplace ships the ~22 skill-backed agents of the 73 on the org chart. The `src/` engine (~44 agents, 12 of them hardcoding the Desktop Deal Room path) and the two Fly apps are Phases 3 and 4 of `C:\Users\Tyrus\.claude\plans\i-m-trying-to-find-soft-unicorn.md`; Phase 2 adds install badges to `docs/agents.json`. Unverified until tested live: Cowork VM network egress for API-tier skills, and the GitHub-URL add path (only the local-path add has been exercised, since the branch is unpushed).
 
 ## REI Skill Library (21 Skills)
 

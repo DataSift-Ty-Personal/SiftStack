@@ -612,11 +612,16 @@ def load_comps(subject: dict, args, spec: dict) -> tuple[list, list, dict]:
     if args.sold_json and Path(args.sold_json).exists():
         # Re-use a saved band pull (the 50-80 call partition) instead of paying
         # for it again. Same shape buyer_sweep --sold-json accepts.
-        from zillow_market_api import normalize
+        from zillow_market_api import normalize, split_land
         items = json.load(open(args.sold_json, encoding="utf-8"))
         if isinstance(items, dict):
             items = items.get("sold") or items.get("records") or []
         sold = [normalize(i) for i in items if isinstance(i, dict) and "streetAddress" in i]
+        # LOT-typed sales are the only land signal on disk. They used to be
+        # dropped here, which is why no 37914 deliverable could say what a lot
+        # on the street sells for. Kept separately, never in the ARV set.
+        sold, land = split_land(sold)
+        args._land_comps = _clip(land, args)
         sold = [l for l in sold if l.home_type == "SINGLE_FAMILY" or not l.home_type]
         # Recency is a filter, not a preference. A saved pull spans years, so
         # the lookback has to be enforced here or stale sales quietly set the ARV.
@@ -641,11 +646,19 @@ def load_comps(subject: dict, args, spec: dict) -> tuple[list, list, dict]:
 
     location = f"{subject['city']}, {subject['state']} {subject['zip']}"
     sold = _clip(api.pull_sold(location, months_back=args.months), args)
+    args._land_comps = _clip(getattr(api, "last_land", []) or [], args)
     active = _clip(api.pull_active(location), args)
     logger.info("Boundary-filtered: %d sold, %d active", len(sold), len(active))
     # The ARV is computed in run() AFTER bucket refinement, so demoted investor
     # buys are withheld from it. Computing it here would skip the refinement.
     return sold, active, {}
+
+
+def _revive_land(rows) -> list:
+    """Land comps saved in a pack come back as MarketListing objects."""
+    if not rows:
+        return []
+    return [MarketListing(**r) if isinstance(r, dict) else r for r in rows]
 
 
 def point_in_polygon(lat: float, lon: float, poly: list) -> bool:
@@ -2412,7 +2425,13 @@ def assemble(args, spec: dict, walk: dict) -> dict:
 
     spec_ids = spec.get("arv_comp_ids")
     arv_ids = (arv or {}).get("comp_ids") or (spec_ids if isinstance(spec_ids, list) else [])
+    land = getattr(args, "_land_comps", None)
+    if land is None:
+        land = _revive_land(spec.get("land_comps"))
+    if land:
+        logger.info("Land comps inside the boundary: %d (LOT-typed sales, kept out of the ARV)", len(land))
     return {"subject": subject, "lead": lead, "walk": walk, "sold": sold, "active": active,
+            "land": land, "land_notes": spec.get("land_notes") or {},
             "arv": arv, "rehab": rehab, "exits": exits,
             "buyers": load_buyers(args.buyers), "outreach": load_outreach(args.outreach),
             "deeds": deeds, "buckets": buckets, "max_buyers": args.max_buyers,
@@ -2532,8 +2551,9 @@ def main() -> int:
                 return [_json_safe(v) for v in obj]
             return obj
 
-        serial = {k: v for k, v in pack.items() if k not in ("sold", "active")}
+        serial = {k: v for k, v in pack.items() if k not in ("sold", "active", "land")}
         serial["sold_comps"] = [vars(l) | {"raw": {}} for l in pack["sold"] if isinstance(l, MarketListing)]
+        serial["land_comps"] = [vars(l) | {"raw": {}} for l in (pack.get("land") or []) if isinstance(l, MarketListing)]
         serial["active_comps"] = [vars(l) | {"raw": {}} for l in pack["active"] if isinstance(l, MarketListing)]
         serial["lead"] = {k: v for k, v in pack["lead"].items() if k != "siftmap"}
         Path(args.save_pack).write_text(

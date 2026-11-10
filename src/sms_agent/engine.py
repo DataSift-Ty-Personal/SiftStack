@@ -272,7 +272,16 @@ def _do_opt_out(phone: str, record_uuid: str, matches: Optional[list] = None,
             f"CRM tag {config.TAG_OPT_OUT} on {uuid[:8]}: "
             f"{_report(crm.add_tags(uuid, [config.TAG_OPT_OUT]))}"
         )
+        acts.append(f"list {config.LIST_DNC} on {uuid[:8]}: {_report(crm.add_list(uuid, config.LIST_DNC))}")
         crm.post_note(uuid, f"SMS opt-out received from {phone}. Suppressed from all texting.")
+    # A death inside an opt-out is still a probate lead on the record, just
+    # never by text to this number (Ty, 2026-08-26: dispositioned, not posted).
+    if body and classify._hit(body.lower(), classify.BEREAVEMENT_NOW):
+        for uuid in ([record_uuid] if record_uuid else targets[:1]):
+            crm.post_note(uuid, f'SMS reply from {phone} reports a death: "{body[:220]}". '
+                                "That number asked us to stop texting; work the estate another way.",
+                          pinned=True)
+        acts.append("reported a death: pinned note on the record (number still suppressed)")
     if len(targets) > 1:
         acts.append(f"applied across {len(targets)} records sharing this number")
 
@@ -423,7 +432,8 @@ def _do_answer_who(phone: str, record_uuid: str, context: dict) -> list[str]:
         place=place,
         sender=sender,
     )
-    ok, problems = respond.validate(message, max_questions=1)
+    # A 5-digit house number is not a zip: exempt exactly the street we texted.
+    ok, problems = respond.validate(message, max_questions=1, allowed_address=context.get("street") or "")
     if not ok:
         # Never send unvalidated copy. Fall back to telling a human.
         log.warning("who-reply failed validation (%s); handing to a person", problems)
@@ -442,29 +452,42 @@ def _do_answer_who(phone: str, record_uuid: str, context: dict) -> list[str]:
     return acts
 
 
-def _do_needs_answer(phone: str, record_uuid: str, body: str, result) -> list[str]:
+def _do_needs_answer(phone: str, record_uuid: str, body: str, result,
+                     inbox: str = "smrtPhone", context: Optional[dict] = None,
+                     unsure: bool = False) -> list[str]:
     """Tell a human that someone is waiting on an answer.
 
     Posted once per conversation, because a person asking twice is still one
-    question. The phone is marked CORRECT: whoever replied is reachable, which
-    is true whatever they went on to say.
+    question. A question marks the phone CORRECT: whoever replied is reachable,
+    which is true whatever they went on to say. An `unsure` read does not,
+    because a bare "No" can just as well mean the number is not theirs.
     """
     acts = []
     if config.PHASE < 2:
         return ["question detected (phase 1: no notification)"]
 
+    ctx = context or {}
+    who = " ".join(x for x in (ctx.get("owner_first"), ctx.get("owner_last")) if x)
+    where = ", ".join(x for x in (ctx.get("street"), ctx.get("city")) if x)
+    lines = [f"{escalate._fmt_phone(phone)}" + (f"  {where}" if where else "")
+             + (f"  (texted as {who})" if who else ""),
+             f"> {body[:300]}"]
+    if ctx.get("reply_link"):
+        lines.append(f"<{ctx['reply_link']}|Open the conversation in {inbox}> to answer from the "
+                     "number that texted them.")
+    else:
+        lines.append(f"_Answer from the {inbox} inbox._")
+    lines.append("_The agent has not answered this one._")
     if store.mark_notified(phone, "needs_reply"):
         ok = escalate.alert(
-            f"{config.HANDOFF_NAME}: someone replied with a question",
-            f"> {body[:300]}\n\n_Live thread, no auto-reply is sent at this phase. "
-            f"Answer from the smrtPhone inbox._",
-            record_uuid,
-        )
+            f"{config.HANDOFF_NAME}: "
+            + ("a reply the agent could not read" if unsure else "someone replied with a question"),
+            "\n".join(lines), record_uuid, kind="needs_reply")
         acts.append("posted: awaiting a human answer" if ok else "notify FAILED")
     else:
         acts.append("already flagged as awaiting an answer")
 
-    if record_uuid:
+    if record_uuid and not unsure:
         acts.append(
             f"phone status -> CORRECT: {_report(crm.set_phone_status(record_uuid, phone, 'CORRECT'))}"
         )
@@ -525,6 +548,7 @@ def _do_sensitive(phone: str, record_uuid: str, body: str, result,
                 f"{_report(crm.set_phone_status(uuid, phone, status))}"
             )
             crm.add_tags(uuid, [config.TAG_OPT_OUT])
+            crm.add_list(uuid, config.LIST_DNC)
         crm.post_note(uuid, f'SMS sensitive reply from {phone}: "{body[:220]}"', pinned=bereaved)
 
     if hostile:
@@ -721,7 +745,7 @@ def _do_reply(phone: str, record_uuid: str, body: str, result, context: dict,
     return acts
 
 
-def _close_not_interested(phone: str, record_uuid: str, reason: str) -> str:
+def _close_not_interested(phone: str, record_uuid: str, reason: str, verified: bool = True) -> str:
     """Close the thread out, recording whether it was a soft or a hard no.
 
     The distinction is the whole point. A hard no is done. A soft no is a lead
@@ -743,6 +767,9 @@ def _close_not_interested(phone: str, record_uuid: str, reason: str) -> str:
     # A no is still a verified number. Someone who answers about their own house
     # has proved the line reaches the owner, which is worth more than the single
     # conversation it just ended: this is the number the next campaign dials.
+    # Not for a bare "No" we could not read: that can mean the number is not theirs.
+    if not verified:
+        return f"closed as a {label}, phone left unverified (may be a wrong number)"
     crm.set_phone_status(record_uuid, phone, "CORRECT")
     return f"closed as a {label}, phone marked CORRECT"
 
@@ -985,6 +1012,9 @@ HANDLERS = {
 def process(source: str, payload: dict) -> dict:
     if source == "datasift":
         return handle_datasift(payload)
+    if source == "smartercontact":
+        from . import sc_inbound  # the thread lives in Smarter Contact: never sends
+        return sc_inbound.handle(payload)
     handler = HANDLERS.get(payload.get("event") or "")
     if not handler:
         return {"action": "ignored", "reason": f"no handler for event {payload.get('event')!r}"}

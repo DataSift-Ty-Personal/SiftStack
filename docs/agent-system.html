@@ -249,17 +249,17 @@ footer p { margin:0 0 6px; }
 <div class="mast">
   <div class="wrap mast-in">
     <p class="eyebrow">
-      <span>SiftStack</span><span class="sep">/</span><span>Build 1.0.54</span>
-      <span class="sep">/</span><span>2026-09-21</span>
+      <span>SiftStack</span><span class="sep">/</span><span>Build 1.0.61</span>
+      <span class="sep">/</span><span>2026-11-10</span>
     </p>
     <h1>SiftStack AI Agent Org Chart</h1>
     <p class="lede">Every agent, what triggers it, what it touches, where a human still signs off, and the specific trap each one exists to avoid.</p>
 
     <div class="stats">
-      <div class="stat"><b>82</b><span>agents</span></div>
+      <div class="stat"><b>96</b><span>agents</span></div>
       <div class="stat"><b>9</b><span>divisions</span></div>
-      <div class="stat"><b>75</b><span>live in production</span></div>
-      <div class="stat"><b>55</b><span>with a human gate</span></div>
+      <div class="stat"><b>81</b><span>live in production</span></div>
+      <div class="stat"><b>69</b><span>with a human gate</span></div>
     </div>
 
     <div class="install">
@@ -621,7 +621,7 @@ footer p { margin:0 0 6px; }
   <header class="dept-head">
     <h3>Enrichment &amp; Identity</h3>
     <p class="dept-tag">Who actually owns it and who can legally sign</p>
-    <span class="dept-count"><b>10</b> agents</span>
+    <span class="dept-count"><b>13</b> agents</span>
   </header>
   <div class="grid"><article class="agent" data-dept="enrich" data-status="live" data-phase="1" data-human="yes" data-search="enrichment pipeline ten-plus step chain that takes a bare address to a dialable decision maker. src/enrichment_pipeline.py every step is optional and states its own failure. one dead api must never take the record with it. enrichment_pipeline.py">
   <details>
@@ -791,6 +791,57 @@ footer p { margin:0 0 6px; }
     <div class="agent-body">
       <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">Probate record with a PR and decedent but no property.</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Tier 1: Knox Tax API name search, scored by token overlap, accept at 0.4 or better</li><li>Tier 2: executor family search for transferred family property</li><li>Tier 3: people search for the decedent&#x27;s last known address</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>Confidence score reviewed before the record ships</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Property address, Confidence score</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">Knox Tax API</span><span class="chip">People search</span><span class="chip">Scrapfly</span></div></div>
       <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>Courthouse probate records have decedent and executor names but no property address. Without this three-tier lookup the entire probate niche is unusable.</p></div>
+    </div>
+  </details>
+</article><article class="agent" data-dept="enrich" data-status="gated" data-phase="2" data-human="yes" data-search="research agent deep prospects one record on its own when its status changes to deep prospecting, then writes the decision makers and their numbers back. src/agents/research/deep_prospect.py an obituary on the record does not mean the owner died: it is often the spouse&#x27;s. the owner is marked deceased only when an obituary opened in this run backs it and the decedent shares two name tokens with the owner of record. claude smartskip trestle datasift api fly.io">
+  <details>
+    <summary>
+      <span class="dot dot-gated" aria-hidden="true"></span>
+      <span class="agent-name">Research Agent</span>
+      <span class="agent-meta">
+        <span class="badge badge-gated">Gated</span>
+        <span class="badge badge-gate">Human gate</span>
+      </span>
+      <span class="agent-role">Deep prospects one record on its own when its status changes to Deep Prospecting, then writes the decision makers and their numbers back.</span>
+      <code class="src">src/agents/research/deep_prospect.py</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">DataSift sequence: status changed to Deep Prospecting, webhook to the siftstack-agents box.</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>The webhook queues a task and answers in milliseconds</li><li>Runs the single-record v5 chain with Claude as the researcher, using web search and fetch</li><li>A claim that cites a page Claude never opened in this run moves to unresolved</li><li>Spends only inside a per-run and a daily cap, and skips a paid phase rather than crossing one</li><li>Writes phones, notes and death fields back, then posts the property file to Slack</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>Dry by default: no vendor spend and no CRM write until live mode is switched on</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Property file, CRM write-back, Slack post</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">Claude</span><span class="chip">SmartSkip</span><span class="chip">Trestle</span><span class="chip">DataSift API</span><span class="chip">Fly.io</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>An obituary on the record does not mean the owner died: it is often the spouse&#x27;s. The owner is marked deceased only when an obituary opened in this run backs it AND the decedent shares two name tokens with the owner of record.</p></div>
+    </div>
+  </details>
+</article><article class="agent" data-dept="enrich" data-status="live" data-phase="1" data-human="yes" data-search="single-record deep prospect runs deep prospecting v5 on any one record by its street line, including the heir pass an estate needs. src/deep_prospect_record.py drop obituary middle names on heir traces: three of four children came back empty with them and all three matched without. query the county tax api by street, never by the crm parcel id, because the search is fuzzy and a parcel id returned 22 unrelated parcels. smartskip tracerfy trestle real contact knox county tax api datasift api">
+  <details>
+    <summary>
+      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="agent-name">Single-Record Deep Prospect</span>
+      <span class="agent-meta">
+        <span class="badge badge-live">Live</span>
+        <span class="badge badge-gate">Human gate</span>
+      </span>
+      <span class="agent-role">Runs deep prospecting v5 on any one record by its street line, including the heir pass an estate needs.</span>
+      <code class="src">src/deep_prospect_record.py</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">python src/deep_prospect_record.py --address &quot;&lt;street&gt;&quot; --phase records, then smartskip, heirs, score, verify, build, writeback</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Reuses every Dream 100 deep-prospecting phase</li><li>Heir pass: a second SmartSkip bulk order with each decision maker as the subject, at a street, never name plus city</li><li>Trestle Real Contact says whose number each one really is</li><li>Gap-fills a decision maker with no live number</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>A researcher writes the research and analysis files (the Research agent automates this)</li><li>--commit to spend or write</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Property pack PDF, CRM write-back</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">SmartSkip</span><span class="chip">Tracerfy</span><span class="chip">Trestle Real Contact</span><span class="chip">Knox County Tax API</span><span class="chip">DataSift API</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>Drop obituary middle names on heir traces: three of four children came back empty with them and all three matched without. Query the county tax API by street, never by the CRM parcel id, because the search is fuzzy and a parcel id returned 22 unrelated parcels.</p></div>
+    </div>
+  </details>
+</article><article class="agent" data-dept="enrich" data-status="live" data-phase="1" data-human="yes" data-search="dream 100 deep prospect researches the top of the dream 100 until each record names who must sign and which number reaches them. src/dream100_dp.py every record changed once researched: three of the top five owners were dead and the team had been calling all three by name. audio models also invent speech on short call recordings (660 words from 11 seconds), so a transcript counts only at 3 words a second or less of real audio. smartskip tracerfy trestle openrouter / gemini datasift api">
+  <details>
+    <summary>
+      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="agent-name">Dream 100 Deep Prospect</span>
+      <span class="agent-meta">
+        <span class="badge badge-live">Live</span>
+        <span class="badge badge-gate">Human gate</span>
+      </span>
+      <span class="agent-role">Researches the top of the Dream 100 until each record names who must sign and which number reaches them.</span>
+      <code class="src">src/dream100_dp.py</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">python src/dream100_dp.py --phase records | smartskip | merge | gapfill | score | build | writeback | qa</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Pulls the record, its activity log and the county title</li><li>SmartSkip relatives and phones, then gap-fill and Trestle tiers</li><li>A researcher writes sourced facts; the module never invents a relative</li><li>Builds a pack per property and writes the findings back</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>Every claim in the research layer carries a URL and a verbatim quote</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Pack PDF per property, Workbook plus a redacted demo twin, CRM write-back</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">SmartSkip</span><span class="chip">Tracerfy</span><span class="chip">Trestle</span><span class="chip">OpenRouter / Gemini</span><span class="chip">DataSift API</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>Every record changed once researched: three of the top five owners were dead and the team had been calling all three by name. Audio models also invent speech on short call recordings (660 words from 11 seconds), so a transcript counts only at 3 words a second or less of real audio.</p></div>
     </div>
   </details>
 </article></div>
@@ -1026,7 +1077,7 @@ footer p { margin:0 0 6px; }
   <header class="dept-head">
     <h3>Dispo &amp; Buyers</h3>
     <p class="dept-tag">Deed-verified buyers before you need them</p>
-    <span class="dept-count"><b>8</b> agents</span>
+    <span class="dept-count"><b>10</b> agents</span>
   </header>
   <div class="grid"><article class="agent" data-dept="dispo" data-status="live" data-phase="1" data-human="yes" data-search="deal package generator six-sheet workbook that turns analysis into a dial sheet somebody can work today. src/deal_package.py per-buyer ask prices are tuned to each buyer&#x27;s model, self-performer above landlord above out-of-state. one blast number leaves money on the table and burns credibility. openpyxl buyer_sweep output">
   <details>
@@ -1164,27 +1215,61 @@ footer p { margin:0 0 6px; }
       <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>COUNTER-DRIVEN, NOT TAG-DRIVEN. A preset that gates calling behind a &#x27;texted&#x27; tag shows zero forever and reads as broken. Progression rides sms_attempts and predictivecall_attempts, which the dialer increments itself.</p></div>
     </div>
   </details>
+</article><article class="agent" data-dept="dispo" data-status="live" data-phase="1" data-human="yes" data-search="deal buyer match finds the top ten buyers for one contracted house and the number that reaches each one&#x27;s decision maker. src/deal_buyer_match.py, src/deal_buyer_dp.py the buyer registry prices an exited flipper at the exit, the sale to the retail homebuyer, so its price band is a resale band. one operator read a $307,500 median on a book of $100,000 to $200,000 buys. the match recovers the buy from the deed before the exit. siftmap smartskip trestle real contact">
+  <details>
+    <summary>
+      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="agent-name">Deal Buyer Match</span>
+      <span class="agent-meta">
+        <span class="badge badge-live">Live</span>
+        <span class="badge badge-gate">Human gate</span>
+      </span>
+      <span class="agent-role">Finds the top ten buyers for one contracted house and the number that reaches each one&#x27;s decision maker.</span>
+      <code class="src">src/deal_buyer_match.py, src/deal_buyer_dp.py</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">python src/deal_buyer_match.py --slug &lt;deal&gt; --phase all, then python src/deal_buyer_dp.py --phase crm | dossier | trace | verify | export</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Polygon sweep of comps and investor buys around the subject</li><li>Recovers unlabeled flips from the deed chain</li><li>One slot per operator, and three or more lifetime purchases</li><li>Trestle Real Contact tests each number against a named decision maker</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>Decision makers come from a researched file, never the module</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Buyers workbook, Dial sheet CSV</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">SiftMap</span><span class="chip">SmartSkip</span><span class="chip">Trestle Real Contact</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>The buyer registry prices an exited flipper at the EXIT, the sale to the retail homebuyer, so its price band is a resale band. One operator read a $307,500 median on a book of $100,000 to $200,000 buys. The match recovers the buy from the deed before the exit.</p></div>
+    </div>
+  </details>
+</article><article class="agent" data-dept="dispo" data-status="gated" data-phase="2" data-human="yes" data-search="builder land desk reads each builder&#x27;s buy box off their own deeds, then matches the lots on the ground to the builders who would buy them. src/builder_land.py a lot wholesaled at 1.5 times before the build reads as the builder&#x27;s purchase plus the new-home sale unless the exit is priced like a finished house, which misattributes the builder and hides the middleman. knox and blount came out yes; union county oh no, because its repeat buyers are production builders. opensearch mcp siftmap">
+  <details>
+    <summary>
+      <span class="dot dot-gated" aria-hidden="true"></span>
+      <span class="agent-name">Builder Land Desk</span>
+      <span class="agent-meta">
+        <span class="badge badge-gated">Gated</span>
+        <span class="badge badge-gate">Human gate</span>
+      </span>
+      <span class="agent-role">Reads each builder&#x27;s buy box off their own deeds, then matches the lots on the ground to the builders who would buy them.</span>
+      <code class="src">src/builder_land.py</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">python src/builder_land.py --market &lt;name&gt; --fips &lt;codes&gt; --phase all</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Counts purchases by deed date, so a 13-lot takedown is one purchase</li><li>Buy box: where they buy, lot size, price paid, what they build and sell</li><li>A lot fits a builder when one of their own lots sits nearby at a size inside their range</li><li>Offer is what the fitting builders paid nearby, minus the fee</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>Decides which market to work and calls the builders</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Builder Land Desk workbook, Lot mail list</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">opensearch MCP</span><span class="chip">SiftMap</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>A lot wholesaled at 1.5 times before the build reads as the builder&#x27;s purchase plus the new-home sale unless the exit is priced like a finished house, which misattributes the builder and hides the middleman. Knox and Blount came out yes; Union County OH no, because its repeat buyers are production builders.</p></div>
+    </div>
+  </details>
 </article></div>
 </section><section class="dept" id="dept-outreach" data-dept="outreach">
   <header class="dept-head">
     <h3>Outreach &amp; Marketing</h3>
     <p class="dept-tag">The seller should feel found, not targeted</p>
-    <span class="dept-count"><b>9</b> agents</span>
+    <span class="dept-count"><b>13</b> agents</span>
   </header>
-  <div class="grid"><article class="agent" data-dept="outreach" data-status="gated" data-phase="2" data-human="yes" data-search="two-way sms agent sends outreach, reads replies live, classifies them, writes back to the crm, hands positives to a prospector. src/sms_agent/ datasift webhooks cannot see an inbound text. webhooks shipped as a sequence action, so all ten triggers are crm state changes. smrtphone&#x27;s smsincoming is the only inbound leg. that single constraint shapes the entire architecture. smrtphone api datasift api slack fly.io sqlite">
+  <div class="grid"><article class="agent" data-dept="outreach" data-status="live" data-phase="1" data-human="yes" data-search="two-way sms agent sends outreach, reads replies live on smrtphone and smarter contact, classifies them, writes back to the crm, hands positives to a prospector. src/sms_agent/ datasift webhooks cannot see an inbound text. webhooks shipped as a sequence action, so all ten triggers are crm state changes. smrtphone&#x27;s smsincoming is the only inbound leg. that single constraint shapes the entire architecture. smrtphone api smarter contact datasift api slack fly.io sqlite">
   <details>
     <summary>
-      <span class="dot dot-gated" aria-hidden="true"></span>
+      <span class="dot dot-live" aria-hidden="true"></span>
       <span class="agent-name">Two-Way SMS Agent <span class="lead-tag">lead</span></span>
       <span class="agent-meta">
-        <span class="badge badge-gated">Gated</span>
+        <span class="badge badge-live">Live</span>
         <span class="badge badge-gate">Human gate</span>
       </span>
-      <span class="agent-role">Sends outreach, reads replies live, classifies them, writes back to the CRM, hands positives to a prospector.</span>
+      <span class="agent-role">Sends outreach, reads replies live on smrtPhone and Smarter Contact, classifies them, writes back to the CRM, hands positives to a prospector.</span>
       <code class="src">src/sms_agent/</code>
     </summary>
     <div class="agent-body">
-      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">smrtPhone smsIncoming webhook, or a seeded outreach touch.</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Receiver ingests the webhook into a SQLite event log</li><li>Classifier decides intent, opt-outs decided by regex and never by a model</li><li>Responder drafts inside a hard output validator</li><li>CRM writes phone status, opt-outs, and lead status; Slack gets the handoff</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>Autonomy ladder. Phase 2 delivers the handoff with zero AI-authored text sent.</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Classified replies, CRM writes, Slack handoffs</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">smrtPhone API</span><span class="chip">DataSift API</span><span class="chip">Slack</span><span class="chip">Fly.io</span><span class="chip">SQLite</span></div></div>
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">smrtPhone smsIncoming webhook, the Smarter Contact reply webhook, or a seeded outreach touch.</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Receiver ingests the webhook into a SQLite event log</li><li>Classifier decides intent, opt-outs decided by regex and never by a model</li><li>Responder drafts inside a hard output validator</li><li>CRM writes phone status, opt-outs, and lead status; Slack gets the handoff</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>Runs live at autonomy phase 2: classifies, writes back and hands off. The seller auto-campaign stays switched off.</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Classified replies, CRM writes, Slack handoffs</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">smrtPhone API</span><span class="chip">Smarter Contact</span><span class="chip">DataSift API</span><span class="chip">Slack</span><span class="chip">Fly.io</span><span class="chip">SQLite</span></div></div>
       <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>DataSift webhooks CANNOT see an inbound text. Webhooks shipped as a sequence ACTION, so all ten triggers are CRM state changes. smrtPhone&#x27;s smsIncoming is the only inbound leg. That single constraint shapes the entire architecture.</p></div>
     </div>
   </details>
@@ -1322,6 +1407,74 @@ footer p { margin:0 0 6px; }
     <div class="agent-body">
       <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">After obituary_opportunity ranks the list.</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Pulls the ranked records</li><li>Validates deliverable mailing addresses</li><li>Writes the mail-house export</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>Approves the drop and the spend</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Mail export CSV</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">DataSift API</span><span class="chip">Smarty</span></div></div>
       <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>Every row ships a must-verify note. Whether the person who died is the owner of record is NOT verifiable from CRM data, and the spouse-obituary trap is live on every single row: an obituary on the record does not mean the OWNER died.</p></div>
+    </div>
+  </details>
+</article><article class="agent" data-dept="outreach" data-status="live" data-phase="1" data-human="yes" data-search="smarter contact reply agent reads every smarter contact reply the moment it lands, files the disposition in datasift and answers the who-is-this questions, so a human only takes the interested owners. src/sms_agent/sc_inbound.py smarter contact labels never reach datasift on their own. its integration only sends on a manual export to crm, so 14 of 17 not-interested records read blank until the agent set the status itself. the record comes from the contact&#x27;s own apn field, not the phone map, which pointed somewhere else on 9 of 74 threads. smarter contact datasift api zillow slack fly.io">
+  <details>
+    <summary>
+      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="agent-name">Smarter Contact Reply Agent</span>
+      <span class="agent-meta">
+        <span class="badge badge-live">Live</span>
+        <span class="badge badge-gate">Human gate</span>
+      </span>
+      <span class="agent-role">Reads every Smarter Contact reply the moment it lands, files the disposition in DataSift and answers the who-is-this questions, so a human only takes the interested owners.</span>
+      <code class="src">src/sms_agent/sc_inbound.py</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">Smarter Contact reply webhook to /hooks/smartercontact on the Fly box.</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Checks the bearer token, stores the reply in the event log, then claims it once so a retry is never processed twice</li><li>Opt-outs, insults and a bare no are decided by rules before any model reads the text</li><li>Writes phone status, the DNC list, Do Not Market and lead status on every record carrying the number</li><li>Answers who and how questions from fixed pools, once per thread, then hands off</li><li>An interested owner gets NO reply: Slack tags the prospector with a link that opens the thread</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>Prospector takes every interested owner by phone</li><li>Auto reply and auto label each sit behind their own switch</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">DataSift dispositions, Smarter Contact labels and DNC, Slack handoffs</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">Smarter Contact</span><span class="chip">DataSift API</span><span class="chip">Zillow</span><span class="chip">Slack</span><span class="chip">Fly.io</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>SMARTER CONTACT LABELS NEVER REACH DATASIFT ON THEIR OWN. Its integration only sends on a manual Export to CRM, so 14 of 17 not-interested records read blank until the agent set the status itself. The record comes from the contact&#x27;s own APN field, not the phone map, which pointed somewhere else on 9 of 74 threads.</p></div>
+    </div>
+  </details>
+</article><article class="agent" data-dept="outreach" data-status="live" data-phase="1" data-human="yes" data-search="smarter contact campaign builder builds the templates and groups and schedules each touch in smarter contact, split by time zone and held to the account&#x27;s approved throughput. src/smarter_contact_launch.py a follow-up draft snapshots its recipients into a hidden group nobody can edit, and smarter contact has no call to add a contact to a campaign, so a removal from a sending campaign cannot be undone. touch 2 and 3 are built as plain campaigns on groups the audit has already cleaned. smarter contact">
+  <details>
+    <summary>
+      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="agent-name">Smarter Contact Campaign Builder</span>
+      <span class="agent-meta">
+        <span class="badge badge-live">Live</span>
+        <span class="badge badge-gate">Human gate</span>
+      </span>
+      <span class="agent-role">Builds the templates and groups and schedules each touch in Smarter Contact, split by time zone and held to the account&#x27;s approved throughput.</span>
+      <code class="src">src/smarter_contact_launch.py</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">python src/smarter_contact_launch.py --phase campaign | touch (dry by default; --commit --schedule sends)</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Templates, labels, quick replies and workflows are created and read back by smarter_contact_setup.py</li><li>Groups split by the phone&#x27;s area code, because the send window runs on the account&#x27;s Eastern clock</li><li>Follow-ups go out as standard campaigns on audited groups, never as Smarter Contact follow-up drafts</li><li>Refuses more than 6 texts a minute per campaign</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>Owns the go on every scheduled campaign</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Scheduled Smarter Contact campaigns</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">Smarter Contact</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>A follow-up draft snapshots its recipients into a hidden group nobody can edit, and Smarter Contact has no call to add a contact to a campaign, so a removal from a sending campaign cannot be undone. Touch 2 and 3 are built as plain campaigns on groups the audit has already cleaned.</p></div>
+    </div>
+  </details>
+</article><article class="agent" data-dept="outreach" data-status="live" data-phase="1" data-human="yes" data-search="pre-send audit rebuilds who a touch would text from first principles and drops anyone a do-not source says to leave alone. src/smarter_contact_audit.py the first priority 1 push never filtered sift status or dnc. the touch 2 audit flagged 478 of 1,054 recipients (146 sold, 157 not interested, 102 on the do-not-call registry) and every one of them had already received touch 1. smarter contact datasift api zillow">
+  <details>
+    <summary>
+      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="agent-name">Pre-Send Audit</span>
+      <span class="agent-meta">
+        <span class="badge badge-live">Live</span>
+        <span class="badge badge-gate">Human gate</span>
+      </span>
+      <span class="agent-role">Rebuilds who a touch would text from first principles and drops anyone a do-not source says to leave alone.</span>
+      <code class="src">src/smarter_contact_audit.py</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">python src/smarter_contact_audit.py before every follow-up; smarter_contact_remaining.py before a first touch.</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>The previous touch&#x27;s group minus everyone who replied by text or call</li><li>Checks Smarter Contact suppressions, the agent&#x27;s suppression table, Sift status, the DNC list, the Do Not Market tag and the registry do-not-call flag</li><li>Checks Zillow agent listings, because Sift&#x27;s MLS field lags</li><li>Writes the cleaned group the touch phase reads</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>Reviews the flagged counts before the touch is scheduled</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Audited groups, Flag counts by reason</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">Smarter Contact</span><span class="chip">DataSift API</span><span class="chip">Zillow</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>The first Priority 1 push never filtered Sift status or DNC. The Touch 2 audit flagged 478 of 1,054 recipients (146 sold, 157 not interested, 102 on the do-not-call registry) and every one of them had already received Touch 1.</p></div>
+    </div>
+  </details>
+</article><article class="agent" data-dept="outreach" data-status="live" data-phase="1" data-human="yes" data-search="deliverability readout answers whether the texts actually reached a handset, per pool and per number, from the raw event log. src/sms_agent/deliverability.py sent means handed to the carrier, not delivered. only delivered and undelivered are verdicts, and until the receiver dedupe fix shipped it kept only the first callback per message, so every rate it reports for that period is a floor. sqlite event log smrtphone">
+  <details>
+    <summary>
+      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="agent-name">Deliverability Readout</span>
+      <span class="agent-meta">
+        <span class="badge badge-live">Live</span>
+        <span class="badge badge-gate">Human gate</span>
+      </span>
+      <span class="agent-role">Answers whether the texts actually reached a handset, per pool and per number, from the raw event log.</span>
+      <code class="src">src/sms_agent/deliverability.py</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">python src/sms_agent/cli.py deliverability [--days 30 --full]</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Reads the receiver&#x27;s delivery callbacks, never the send path</li><li>Share of sends that got a final carrier verdict</li><li>What the carrier said when it refused</li><li>Whether replies per send are trending down</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>Decides whether to rest or replace a number</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Verdict by pool and by number</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">SQLite event log</span><span class="chip">smrtPhone</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>Sent means handed to the carrier, not delivered. Only delivered and undelivered are verdicts, and until the receiver dedupe fix shipped it kept only the first callback per message, so every rate it reports for that period is a floor.</p></div>
     </div>
   </details>
 </article></div>
@@ -1489,7 +1642,7 @@ footer p { margin:0 0 6px; }
   <header class="dept-head">
     <h3>Market Intelligence</h3>
     <p class="dept-tag">Where to spend the next marketing dollar</p>
-    <span class="dept-count"><b>4</b> agents</span>
+    <span class="dept-count"><b>9</b> agents</span>
   </header>
   <div class="grid"><article class="agent" data-dept="market" data-status="live" data-phase="1" data-human="yes" data-search="market analyzer six-factor weighted zip scoring with letter grades and budget allocation. src/market_analyzer.py weights are set from measured distribution, not intuition. weighting a near-constant variable produces a ranking with no spread, which looks rigorous and tells you nothing. market_analyzer.py">
   <details>
@@ -1557,6 +1710,91 @@ footer p { margin:0 0 6px; }
     <div class="agent-body">
       <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">python src/obituary_opportunity.py</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Pulls detail and custom fields, applies gates, scores six weighted components</li><li>Gates: under 3 months since death, already sold, dead statuses, upside down, over buy box</li><li>Renders a branded 6-sheet Excel</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>Every row ships a Must Verify note</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Ranked call order workbook</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">DataSift API</span><span class="chip">openpyxl</span></div></div>
       <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>Total Delinquency is liens PLUS taxes. Reading it as the tax figure double counts the lien and inflates exactly the records the model exists to surface. It put a lien-only record at rank 1 before the fix. Also: gate on lead status, not just on sold, or a not_interested record tops your ranking.</p></div>
+    </div>
+  </details>
+</article><article class="agent" data-dept="market" data-status="live" data-phase="1" data-human="yes" data-search="dream 100 ranker ranks the driving-for-dollars top 3,000 by opportunity size and puts the hundred biggest on a crm list. src/dream100.py the biggest finding is the portfolio owners sheet, not the ranking. 194 owners hold two or more of the 3,000 and the top one holds 22. one conversation there is worth more than a dozen single rows, and a per-property score cannot see it. datasift api">
+  <details>
+    <summary>
+      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="agent-name">Dream 100 Ranker</span>
+      <span class="agent-meta">
+        <span class="badge badge-live">Live</span>
+        <span class="badge badge-gate">Human gate</span>
+      </span>
+      <span class="agent-role">Ranks the driving-for-dollars top 3,000 by opportunity size and puts the hundred biggest on a CRM list.</span>
+      <code class="src">src/dream100.py</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">python src/dream100.py --phase pull | build | attach</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Joins the visual distress rank, the full CRM record and the lists the account attached</li><li>Scores deal size 35, condition 20, investor 20, evidence 15, reach 10</li><li>Gates dead statuses, buyers, MLS listings, upside down and anything outside the buy box</li><li>Attaches the Dream 100 list and tag with a read-back</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>Works the list owner by owner</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Workbook with a Portfolio owners sheet, Dream 100 list and tag</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">DataSift API</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>The biggest finding is the Portfolio owners sheet, not the ranking. 194 owners hold two or more of the 3,000 and the top one holds 22. One conversation there is worth more than a dozen single rows, and a per-property score cannot see it.</p></div>
+    </div>
+  </details>
+</article><article class="agent" data-dept="market" data-status="live" data-phase="1" data-human="yes" data-search="d4d call list turns the visual distress ranking into a dialer-ready list: every row a record, skip traced, every number scored and written back. src/d4d_call_list.py pulling a record in by id skip traces it on its own, so the browser skip trace wizard was never needed. it was also broken: its list filter no longer matched, so it would have skip traced the whole account. that run was stopped at the send to menu before it submitted. datasift api siftmap trestle visual distress model">
+  <details>
+    <summary>
+      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="agent-name">D4D Call List</span>
+      <span class="agent-meta">
+        <span class="badge badge-live">Live</span>
+        <span class="badge badge-gate">Human gate</span>
+      </span>
+      <span class="agent-role">Turns the visual distress ranking into a dialer-ready list: every row a record, skip traced, every number scored and written back.</span>
+      <code class="src">src/d4d_call_list.py</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">python src/d4d_call_list.py --phase cohort | pull | skiptrace | harvest | score | writeback | export | qa</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>The top N of the visual distress ranking becomes the cohort</li><li>Pulls missing records in by id, which skip traces them on the unlimited plan</li><li>Trestle scores every unscored number</li><li>Writes tiers onto the CRM phones and exports a callable file and a no-phone file</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>--commit to spend; one record is read back before the rest</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Callable CSV, No-phone CSV, Tiered CRM phones</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">DataSift API</span><span class="chip">SiftMap</span><span class="chip">Trestle</span><span class="chip">Visual distress model</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>Pulling a record in by id skip traces it on its own, so the browser skip trace wizard was never needed. It was also broken: its list filter no longer matched, so it would have skip traced the whole account. That run was stopped at the Send To menu before it submitted.</p></div>
+    </div>
+  </details>
+</article><article class="agent" data-dept="market" data-status="live" data-phase="1" data-human="yes" data-search="doors per deal ladder pull walks a county&#x27;s market share ladder rung by rung and pulls the top n records into an account. src/knox_blount_top15k.py, src/franklin_top30k.py the read-back probe must be a record new to the account. an existing one reads as saved at once, before the async job attaches the list, so it passes whether or not the pull worked. county list playbook siftmap datasift api">
+  <details>
+    <summary>
+      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="agent-name">Doors Per Deal Ladder Pull</span>
+      <span class="agent-meta">
+        <span class="badge badge-live">Live</span>
+        <span class="badge badge-gate">Human gate</span>
+      </span>
+      <span class="agent-role">Walks a county&#x27;s market share ladder rung by rung and pulls the top N records into an account.</span>
+      <code class="src">src/knox_blount_top15k.py, src/franklin_top30k.py</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">python src/knox_blount_top15k.py or python src/franklin_top30k.py</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Reads the County List Playbook ladder in its own work order</li><li>Each rung counts only the records the rungs above did not already reach</li><li>Re-sizes every rung under the buy box and dedupes</li><li>Stops at the target count and pulls by id</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>Picks the account and the target count</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Records in the account, Calling agency export</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">County List Playbook</span><span class="chip">SiftMap</span><span class="chip">DataSift API</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>The read-back probe must be a record NEW to the account. An existing one reads as saved at once, before the async job attaches the list, so it passes whether or not the pull worked.</p></div>
+    </div>
+  </details>
+</article><article class="agent" data-dept="market" data-status="live" data-phase="1" data-human="yes" data-search="agency test pools builds ranked, non-overlapping record pools from the properties index and hands a calling agency one row per owner. src/ai_pools.py, src/pull_by_ids.py, src/agency_call_list.py no trestle and no do-not-call scrub on purpose: the agency scrubs the registry and litigators itself. the opensearch client refuses to start unless the server runs read-only, because its default configuration allows writes to the production cluster. opensearch mcp datasift api">
+  <details>
+    <summary>
+      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="agent-name">Agency Test Pools</span>
+      <span class="agent-meta">
+        <span class="badge badge-live">Live</span>
+        <span class="badge badge-gate">Human gate</span>
+      </span>
+      <span class="agent-role">Builds ranked, non-overlapping record pools from the properties index and hands a calling agency one row per owner.</span>
+      <code class="src">src/ai_pools.py, src/pull_by_ids.py, src/agency_call_list.py</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">python src/ai_pools.py --market &lt;market&gt;, then pull_by_ids.py and agency_call_list.py</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Reads the properties index through the read-only opensearch MCP</li><li>Ranks by realtor or investor AI score under the buy box, with no overlap between pools</li><li>Pulls by id so DataSift&#x27;s own skip trace fills the phones</li><li>Exports callable numbers only, mobiles first</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>Picks the market, the pool size and the account</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Pools in the account, Calling agency call list</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">opensearch MCP</span><span class="chip">DataSift API</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>No Trestle and no do-not-call scrub on purpose: the agency scrubs the registry and litigators itself. The opensearch client refuses to start unless the server runs read-only, because its default configuration allows writes to the production cluster.</p></div>
+    </div>
+  </details>
+</article><article class="agent" data-dept="market" data-status="gated" data-phase="2" data-human="yes" data-search="buildable lot finder finds every vacant lot of 0.20 to 2.00 acres in a county, screens out what cannot carry a house, prices an offer band and writes the mail plan. src/vacant_land.py the county&#x27;s vacant class lags construction. 2,185 vacant-class sales over 36 months had a median of $590,000 at 7.5 times land value: they were new houses. built-on is read from the dwelling year, the sale price against land value, and recent permits. county gis siftmap usgs 3dep">
+  <details>
+    <summary>
+      <span class="dot dot-gated" aria-hidden="true"></span>
+      <span class="agent-name">Buildable Lot Finder</span>
+      <span class="agent-meta">
+        <span class="badge badge-gated">Gated</span>
+        <span class="badge badge-gate">Human gate</span>
+      </span>
+      <span class="agent-role">Finds every vacant lot of 0.20 to 2.00 acres in a county, screens out what cannot carry a house, prices an offer band and writes the mail plan.</span>
+      <code class="src">src/vacant_land.py</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">python src/vacant_land.py --phase all</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>County GIS is the truth for the parcel, SiftMap for the owner</li><li>Screens built-on, landlocked, floodplain, slivers, steep and non-residential lots</li><li>Reads slope from USGS 3DEP lidar</li><li>Prices off real lot sales in the same township and size band</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>The pull into an account stays dry until an account is chosen</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Buildable lots workbook, Mail list CSV</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">County GIS</span><span class="chip">SiftMap</span><span class="chip">USGS 3DEP</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>The county&#x27;s vacant class lags construction. 2,185 vacant-class sales over 36 months had a median of $590,000 at 7.5 times land value: they were new houses. Built-on is read from the dwelling year, the sale price against land value, and recent permits.</p></div>
     </div>
   </details>
 </article></div>
@@ -1709,13 +1947,13 @@ footer p { margin:0 0 6px; }
     <p class="dept-tag">Reverse-search a realtor&#x27;s own contact export into a scored homeowner call list.</p>
     <span class="dept-count"><b>6</b> agents</span>
   </header>
-  <div class="grid"><article class="agent" data-dept="soi" data-status="live" data-phase="2" data-human="yes" data-search="soi pipeline turns name-and-email-only contact exports into confirmed metro homeowners ranked by realtor ai score. src/soi_intake.py first live run: 848 raw rows to 728 unique people to 222 confirmed metro homeowners to 191 scored. the distribution is steep, one at 95+, six in the 80s, so the 95+ bar isolates a real call list rather than a third of the sphere. sqlite enformion siftmap">
+  <div class="grid"><article class="agent" data-dept="soi" data-status="retired" data-phase="2" data-human="yes" data-search="soi pipeline turns name-and-email-only contact exports into confirmed metro homeowners ranked by realtor ai score. src/soi_intake.py first live run: 848 raw rows to 728 unique people to 222 confirmed metro homeowners to 191 scored. the distribution is steep, one at 95+, six in the 80s, so the 95+ bar isolates a real call list rather than a third of the sphere. sqlite enformion siftmap">
   <details>
     <summary>
-      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="dot dot-retired" aria-hidden="true"></span>
       <span class="agent-name">SOI Pipeline <span class="lead-tag">lead</span></span>
       <span class="agent-meta">
-        <span class="badge badge-live">Live</span>
+        <span class="badge badge-retired">Retired</span>
         <span class="badge badge-gate">Human gate</span>
       </span>
       <span class="agent-role">Turns name-and-email-only contact exports into confirmed metro homeowners ranked by Realtor AI score.</span>
@@ -1726,13 +1964,13 @@ footer p { margin:0 0 6px; }
       <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>First live run: 848 raw rows to 728 unique people to 222 confirmed metro homeowners to 191 scored. The distribution is steep, one at 95+, six in the 80s, so the 95+ bar isolates a real call list rather than a third of the sphere.</p></div>
     </div>
   </details>
-</article><article class="agent" data-dept="soi" data-status="live" data-phase="2" data-human="no" data-search="contact intake normalizes and dedupes the raw social exports. src/soi_intake.py 27 contacts on the live run were kw.com, mortgage or title domains. those are referral partners, not homeowner sphere, and scoring them as leads pollutes the call list. stdlib">
+</article><article class="agent" data-dept="soi" data-status="retired" data-phase="2" data-human="no" data-search="contact intake normalizes and dedupes the raw social exports. src/soi_intake.py 27 contacts on the live run were kw.com, mortgage or title domains. those are referral partners, not homeowner sphere, and scoring them as leads pollutes the call list. stdlib">
   <details>
     <summary>
-      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="dot dot-retired" aria-hidden="true"></span>
       <span class="agent-name">Contact Intake</span>
       <span class="agent-meta">
-        <span class="badge badge-live">Live</span>
+        <span class="badge badge-retired">Retired</span>
         
       </span>
       <span class="agent-role">Normalizes and dedupes the raw social exports.</span>
@@ -1743,13 +1981,13 @@ footer p { margin:0 0 6px; }
       <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>27 contacts on the live run were kw.com, mortgage or title domains. Those are referral partners, not homeowner sphere, and scoring them as leads pollutes the call list.</p></div>
     </div>
   </details>
-</article><article class="agent" data-dept="soi" data-status="live" data-phase="2" data-human="no" data-search="county owner pull pulls the owner rolls for the whole metro, free. src/soi_county_pull.py, src/soi_owner_db.py the whole columbus metro is free data and costs $0. two traps: franklin&#x27;s newer-looking tab-delimited appraisal extract has no owner fields at all, and the parcel_csv folder path is stale on purpose, so check the last-modified header rather than the path. the vendor search uis are bot-walled and never needed. arcgis sqlite">
+</article><article class="agent" data-dept="soi" data-status="retired" data-phase="2" data-human="no" data-search="county owner pull pulls the owner rolls for the whole metro, free. src/soi_county_pull.py, src/soi_owner_db.py the whole columbus metro is free data and costs $0. two traps: franklin&#x27;s newer-looking tab-delimited appraisal extract has no owner fields at all, and the parcel_csv folder path is stale on purpose, so check the last-modified header rather than the path. the vendor search uis are bot-walled and never needed. arcgis sqlite">
   <details>
     <summary>
-      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="dot dot-retired" aria-hidden="true"></span>
       <span class="agent-name">County Owner Pull</span>
       <span class="agent-meta">
-        <span class="badge badge-live">Live</span>
+        <span class="badge badge-retired">Retired</span>
         
       </span>
       <span class="agent-role">Pulls the owner rolls for the whole metro, free.</span>
@@ -1760,13 +1998,13 @@ footer p { margin:0 0 6px; }
       <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>The whole Columbus metro is free data and costs $0. Two traps: Franklin&#x27;s newer-looking tab-delimited appraisal extract has NO owner fields at all, and the Parcel_CSV folder path is stale on purpose, so check the Last-Modified header rather than the path. The vendor search UIs are bot-walled and never needed.</p></div>
     </div>
   </details>
-</article><article class="agent" data-dept="soi" data-status="live" data-phase="2" data-human="yes" data-search="owner name join matches roster people to deeds. src/soi_owner_match.py owner_occupied compares mailing address key to situs address key. do not fall back to franklin&#x27;s owner_add1: it sometimes echoes the situs and false-flagged a texas absentee as owner-occupied. owners.db">
+</article><article class="agent" data-dept="soi" data-status="retired" data-phase="2" data-human="yes" data-search="owner name join matches roster people to deeds. src/soi_owner_match.py owner_occupied compares mailing address key to situs address key. do not fall back to franklin&#x27;s owner_add1: it sometimes echoes the situs and false-flagged a texas absentee as owner-occupied. owners.db">
   <details>
     <summary>
-      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="dot dot-retired" aria-hidden="true"></span>
       <span class="agent-name">Owner Name Join</span>
       <span class="agent-meta">
-        <span class="badge badge-live">Live</span>
+        <span class="badge badge-retired">Retired</span>
         <span class="badge badge-gate">Human gate</span>
       </span>
       <span class="agent-role">Matches roster people to deeds.</span>
@@ -1777,13 +2015,13 @@ footer p { margin:0 0 6px; }
       <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>owner_occupied compares mailing address key to situs address key. Do NOT fall back to Franklin&#x27;s OWNER_ADD1: it sometimes echoes the situs and false-flagged a Texas absentee as owner-occupied.</p></div>
     </div>
   </details>
-</article><article class="agent" data-dept="soi" data-status="live" data-phase="2" data-human="yes" data-search="enformion resolver pays to resolve only the roster misses. src/soi_enformion.py email is the verifier. an exact email hit grounds identity with no address needed; name-only matches are kept but flagged. emailaddresses is a list of dicts with .emailaddress inside, not a list of strings. misses are free. enformion person search">
+</article><article class="agent" data-dept="soi" data-status="retired" data-phase="2" data-human="yes" data-search="enformion resolver pays to resolve only the roster misses. src/soi_enformion.py email is the verifier. an exact email hit grounds identity with no address needed; name-only matches are kept but flagged. emailaddresses is a list of dicts with .emailaddress inside, not a list of strings. misses are free. enformion person search">
   <details>
     <summary>
-      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="dot dot-retired" aria-hidden="true"></span>
       <span class="agent-name">Enformion Resolver</span>
       <span class="agent-meta">
-        <span class="badge badge-live">Live</span>
+        <span class="badge badge-retired">Retired</span>
         <span class="badge badge-gate">Human gate</span>
       </span>
       <span class="agent-role">Pays to resolve only the roster misses.</span>
@@ -1794,13 +2032,13 @@ footer p { margin:0 0 6px; }
       <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>EMAIL is the verifier. An exact email hit grounds identity with no address needed; name-only matches are kept but flagged. emailAddresses is a list of DICTS with .emailAddress inside, not a list of strings. Misses are free.</p></div>
     </div>
   </details>
-</article><article class="agent" data-dept="soi" data-status="live" data-phase="2" data-human="yes" data-search="realtor score enrichment attaches the realtor ai score to each confirmed homeowner. src/soi_enrich.py realtor_score off siftmap get_detail is the realtor ai score, and 95+ is a priority call. 8 rows were flagged rather than trusted because the deed owner and siftmap owner did not overlap. renters are kept on their own track as future first-time buyers. siftmap">
+</article><article class="agent" data-dept="soi" data-status="retired" data-phase="2" data-human="yes" data-search="realtor score enrichment attaches the realtor ai score to each confirmed homeowner. src/soi_enrich.py realtor_score off siftmap get_detail is the realtor ai score, and 95+ is a priority call. 8 rows were flagged rather than trusted because the deed owner and siftmap owner did not overlap. renters are kept on their own track as future first-time buyers. siftmap">
   <details>
     <summary>
-      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="dot dot-retired" aria-hidden="true"></span>
       <span class="agent-name">Realtor Score Enrichment</span>
       <span class="agent-meta">
-        <span class="badge badge-live">Live</span>
+        <span class="badge badge-retired">Retired</span>
         <span class="badge badge-gate">Human gate</span>
       </span>
       <span class="agent-role">Attaches the Realtor AI score to each confirmed homeowner.</span>
@@ -1818,7 +2056,7 @@ footer p { margin:0 0 6px; }
 
   <section class="band">
     <h2>What the system depends on</h2>
-    <div class="infra"><div class="infra-g"><h4>County &amp; Public Record</h4><ul><li>tnpublicnotice.com</li><li>Knox County Tax API</li><li>Register of Deeds</li><li>City condemnation agendas</li><li>Eviction court docket</li></ul></div><div class="infra-g"><h4>Property &amp; Market Data</h4><ul><li>SiftMap</li><li>Zillow /search (OpenWeb Ninja)</li><li>Smarty</li><li>Redfin</li><li>BLS / Census / FBI</li></ul></div><div class="infra-g"><h4>Identity &amp; Contact</h4><ul><li>SmartSkip</li><li>Tracerfy</li><li>Enformion BusinessV2</li><li>Trestle IQ</li><li>Obituary sources</li></ul></div><div class="infra-g"><h4>CRM &amp; Comms</h4><ul><li>DataSift (apiv2.reisift.io)</li><li>smrtPhone</li><li>Slack</li><li>Dropbox</li><li>Google Drive</li></ul></div><div class="infra-g"><h4>Runtime &amp; Access</h4><ul><li>Apify Actor</li><li>Fly.io</li><li>Scrapfly</li><li>2Captcha</li><li>Playwright</li><li>SQLite event log</li></ul></div><div class="infra-g"><h4>Models &amp; Knowledge</h4><ul><li>Claude</li><li>OpenRouter / Gemini</li><li>Locked material list</li><li>DataSift Call Playbook</li><li>playbook.md</li></ul></div></div>
+    <div class="infra"><div class="infra-g"><h4>County &amp; Public Record</h4><ul><li>tnpublicnotice.com</li><li>Knox County Tax API</li><li>Register of Deeds</li><li>City condemnation agendas</li><li>Eviction court docket</li></ul></div><div class="infra-g"><h4>Property &amp; Market Data</h4><ul><li>SiftMap</li><li>Zillow /search (OpenWeb Ninja)</li><li>Smarty</li><li>Redfin</li><li>BLS / Census / FBI</li><li>opensearch properties index (MCP, read-only)</li><li>USGS 3DEP lidar</li></ul></div><div class="infra-g"><h4>Identity &amp; Contact</h4><ul><li>SmartSkip</li><li>Tracerfy</li><li>Enformion BusinessV2</li><li>Trestle IQ</li><li>Obituary sources</li></ul></div><div class="infra-g"><h4>CRM &amp; Comms</h4><ul><li>DataSift (apiv2.reisift.io)</li><li>smrtPhone</li><li>Slack</li><li>Dropbox</li><li>Google Drive</li><li>Smarter Contact</li></ul></div><div class="infra-g"><h4>Runtime &amp; Access</h4><ul><li>Apify Actor</li><li>Fly.io</li><li>Scrapfly</li><li>2Captcha</li><li>Playwright</li><li>SQLite event log</li></ul></div><div class="infra-g"><h4>Models &amp; Knowledge</h4><ul><li>Claude</li><li>OpenRouter / Gemini</li><li>Locked material list</li><li>DataSift Call Playbook</li><li>playbook.md</li></ul></div></div>
   </section>
 </main>
 

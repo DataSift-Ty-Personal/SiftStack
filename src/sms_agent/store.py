@@ -35,6 +35,17 @@ CREATE TABLE IF NOT EXISTS events (
 );
 CREATE INDEX IF NOT EXISTS idx_events_unprocessed ON events(processed_at) WHERE processed_at IS NULL;
 
+-- One processor per event. The receiver starts on a webhook the moment it
+-- lands and the inline worker sweeps unprocessed rows every few seconds, so a
+-- slow event (a Smarter Contact reply reads the thread, Sift and the campaign
+-- groups, 10 to 25 seconds) was handled twice: two labels, two pinned notes,
+-- a second reply that superseded the first. A claim older than the TTL is
+-- retaken, so a process that died mid-event does not strand it.
+CREATE TABLE IF NOT EXISTS event_claims (
+    event_id      INTEGER PRIMARY KEY,
+    claimed_at    TEXT NOT NULL
+);
+
 -- phone -> reisift record. Populated when we send (we know who we texted) and
 -- backfillable from a queue CSV. This is how an inbound reply finds its record:
 -- the smsIncoming payload carries no record id.
@@ -122,6 +133,25 @@ CREATE TABLE IF NOT EXISTS suppression (
     reason        TEXT NOT NULL,          -- opt_out | wrong_number | dead | manual
     created_at    TEXT NOT NULL
 );
+
+-- Smarter Contact replies and labels. Kept apart from `outbox` because they
+-- leave through Smarter Contact on the thread's own number: nothing here may
+-- ever be picked up by the smrtPhone sender, its pool or its caps.
+CREATE TABLE IF NOT EXISTS sc_outbox (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    phone         TEXT NOT NULL,
+    contact_id    TEXT,
+    kind          TEXT NOT NULL,                   -- reply | label
+    body          TEXT NOT NULL,                   -- reply text, or label titles joined by |
+    intent        TEXT,
+    status        TEXT NOT NULL DEFAULT 'queued',  -- queued | sent | skipped | failed | cancelled
+    attempts      INTEGER NOT NULL DEFAULT 0,
+    not_before    TEXT,
+    detail        TEXT,
+    created_at    TEXT NOT NULL,
+    done_at       TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_sc_outbox_due ON sc_outbox(status, not_before);
 """
 
 
@@ -195,12 +225,25 @@ def event_exists(dedupe_key: str) -> bool:
     return row is not None
 
 
+def claim_event(event_id: int, ttl_seconds: int = 900) -> bool:
+    """Claim an unprocessed event for this caller. False when it is already
+    processed or another processor holds a live claim on it."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(seconds=ttl_seconds)).isoformat(timespec="seconds")
+    with tx() as c:
+        if c.execute("SELECT processed_at FROM events WHERE id=?", (event_id,)).fetchone()[0]:
+            return False
+        c.execute("DELETE FROM event_claims WHERE event_id=? AND claimed_at<?", (event_id, cutoff))
+        return c.execute("INSERT OR IGNORE INTO event_claims(event_id, claimed_at) VALUES (?,?)",
+                         (event_id, now())).rowcount == 1
+
+
 def finish_event(event_id: int, outcome: str, error: str = "") -> None:
     with tx() as c:
         c.execute(
             "UPDATE events SET processed_at=?, outcome=?, error=? WHERE id=?",
             (now(), outcome, error or None, event_id),
         )
+        c.execute("DELETE FROM event_claims WHERE event_id=?", (event_id,))
 
 
 def pending_events(limit: int = 50) -> list[sqlite3.Row]:
@@ -852,6 +895,11 @@ def due_escalations() -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def escalation_posted(phone: str) -> bool:
+    row = _conn().execute("SELECT posted_at FROM escalations WHERE phone=?", (clean_phone(phone),)).fetchone()
+    return bool(row and row["posted_at"])
+
+
 def mark_escalation_posted(phone: str) -> None:
     with tx() as c:
         c.execute("UPDATE escalations SET posted_at=? WHERE phone=?", (now(), clean_phone(phone)))
@@ -918,4 +966,68 @@ def stats() -> dict:
         "sent": one("SELECT COUNT(*) FROM outbox WHERE status='sent'"),
         "suppressed": one("SELECT COUNT(*) FROM suppression"),
         "mapped_phones": one("SELECT COUNT(*) FROM phone_map"),
+        "smartercontact": sc_counts(),
     }
+
+
+# ------------------------------------------------------------ smarter contact
+
+def sc_queue(phone: str, contact_id: str, kind: str, body: str, intent: str = "",
+             not_before: str = "") -> int:
+    """Queue one Smarter Contact action. A new reply replaces any still waiting:
+    when an owner sends two texts, only an answer to the newest one goes out."""
+    p = clean_phone(phone)
+    with tx() as c:
+        if kind == "reply":
+            c.execute("UPDATE sc_outbox SET status='cancelled', detail='superseded by a newer reply',"
+                      " done_at=? WHERE phone=? AND kind='reply' AND status='queued'", (now(), p))
+        cur = c.execute(
+            "INSERT INTO sc_outbox(phone, contact_id, kind, body, intent, not_before, created_at)"
+            " VALUES (?,?,?,?,?,?,?)",
+            (p, contact_id or "", kind, body, intent, not_before or now(), now()),
+        )
+        return int(cur.lastrowid)
+
+
+def sc_due(at: str = "", limit: int = 20) -> list[dict]:
+    rows = _conn().execute(
+        "SELECT * FROM sc_outbox WHERE status='queued' AND (not_before IS NULL OR not_before<=?)"
+        " ORDER BY id LIMIT ?", (at or now(), limit)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def sc_finish(row_id: int, status: str, detail: str = "", retry_at: str = "") -> None:
+    """Close a row, or (retry_at set) leave it queued for another attempt."""
+    with tx() as c:
+        if retry_at:
+            c.execute("UPDATE sc_outbox SET attempts=attempts+1, detail=?, not_before=? WHERE id=?",
+                      (detail[:500], retry_at, row_id))
+        else:
+            c.execute("UPDATE sc_outbox SET status=?, attempts=attempts+1, detail=?, done_at=? WHERE id=?",
+                      (status, detail[:500], now(), row_id))
+
+
+def sc_cancel(phone: str, reason: str) -> int:
+    with tx() as c:
+        return c.execute("UPDATE sc_outbox SET status='cancelled', detail=?, done_at=?"
+                         " WHERE phone=? AND kind='reply' AND status='queued'",
+                         (reason, now(), clean_phone(phone))).rowcount
+
+
+def sc_replies(phone: str) -> list[dict]:
+    """Auto replies already sent or still waiting on this thread, oldest first."""
+    rows = _conn().execute(
+        "SELECT * FROM sc_outbox WHERE phone=? AND kind='reply' AND status IN ('sent','queued')"
+        " ORDER BY id", (clean_phone(phone),)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def sc_counts() -> dict:
+    rows = _conn().execute("SELECT kind, status, COUNT(*) n FROM sc_outbox GROUP BY kind, status").fetchall()
+    return {f"{r['kind']}_{r['status']}": r["n"] for r in rows}
+
+
+def sc_reschedule(row_id: int, not_before: str) -> None:
+    """Move a row to a later send window without counting it as an attempt."""
+    with tx() as c:
+        c.execute("UPDATE sc_outbox SET not_before=? WHERE id=?", (not_before, row_id))
