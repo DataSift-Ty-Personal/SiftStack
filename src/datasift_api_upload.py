@@ -102,11 +102,15 @@ class ApiError(RuntimeError):
 
 
 class Api:
-    def __init__(self):
+    def __init__(self, api_key: str = ""):
         e = env()
         self.token = ""
         self.minted = 0.0
-        self.api_key = ""
+        # An explicit key targets that key's own account (an agency or test account),
+        # whatever login this box carries.
+        self.api_key = (api_key or "").strip()
+        if self.api_key:
+            return
         if not (e.get("DATASIFT_EMAIL") and e.get("DATASIFT_PASSWORD")):
             # No login on this box (the agents app, a customer install): the Open API key
             # reaches every /api/internal/ route this uploader writes (verified 2026-11-03),

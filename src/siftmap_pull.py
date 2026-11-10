@@ -108,7 +108,8 @@ class Map:
         for attempt in range(5):
             req = urllib.request.Request(
                 base + path, data=data, method="POST",
-                headers={"Authorization": "Bearer " + self.api.token,
+                headers={"Authorization": ("Api-Key " + self.api.api_key) if getattr(self.api, "api_key", "")
+                         else "Bearer " + self.api.token,
                          "Content-Type": "application/json",
                          "accept": "application/json",
                          "origin": "https://beta.reisift.io",
@@ -118,7 +119,7 @@ class Map:
                     t = r.read().decode()
                     return json.loads(t) if t.strip().startswith(("{", "[")) else t
             except urllib.error.HTTPError as e:
-                if e.code == 401 and attempt < 4:
+                if e.code == 401 and attempt < 4 and not getattr(self.api, "api_key", ""):
                     self.api._mint()
                     continue
                 if e.code in (429, 500, 502, 504) and attempt < 4:
