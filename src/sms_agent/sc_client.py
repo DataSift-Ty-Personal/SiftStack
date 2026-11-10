@@ -121,7 +121,14 @@ def thread(contact_id: str, limit: int = 12) -> list[dict]:
     return sorted(rows, key=lambda r: r["created_at"])
 
 
-_apn_field = {"id": ""}
+# The custom field a land contact carries its DataSift record in, once
+# smarter_contact_land.py has moved the real parcel number into APN.
+SIFT_RECORD_FIELD = "Sift Record"
+_record_fields = {"apn": "", "sift": "", "read": False}
+
+
+def _is_uuid(value: str) -> bool:
+    return len(value) == 36 and value.count("-") == 4
 
 
 def contact_record_uuid(contact_id: str) -> str:
@@ -131,16 +138,25 @@ def contact_record_uuid(contact_id: str) -> str:
     field. It is the record that was actually texted, which matters because a
     phone can sit on several records and the phone map holds whichever one an
     older campaign saw first: 9 of the first 74 replies resolved elsewhere.
+    Land contacts are the exception: their APN field holds the real parcel
+    number (the land templates print it), so the uuid moves to the Sift Record
+    custom field and is read from there first.
     """
     if not contact_id:
         return ""
-    if not _apn_field["id"]:
-        fields = gql("query { findFields { id key } }").get("findFields") or []
-        _apn_field["id"] = next((f["id"] for f in fields if f.get("key") == "ASSESSOR_PARCEL_NUMBER"), "")
+    if not _record_fields["read"]:
+        fields = gql("query { findFields { id key name } }").get("findFields") or []
+        _record_fields["apn"] = next((f["id"] for f in fields if f.get("key") == "ASSESSOR_PARCEL_NUMBER"), "")
+        _record_fields["sift"] = next((f["id"] for f in fields
+                                       if (f.get("name") or "").strip().casefold() == SIFT_RECORD_FIELD.casefold()), "")
+        _record_fields["read"] = True
     data = gql("query G($id: String!) { getContact(id: $id) { attrs { fieldId value } } }", {"id": contact_id})
-    attrs = (data.get("getContact") or {}).get("attrs") or []
-    value = next(((a.get("value") or "").strip() for a in attrs if a.get("fieldId") == _apn_field["id"]), "")
-    return value if len(value) == 36 and value.count("-") == 4 else ""
+    values = {a.get("fieldId"): (a.get("value") or "").strip()
+              for a in (data.get("getContact") or {}).get("attrs") or []}
+    for fid in (_record_fields["sift"], _record_fields["apn"]):
+        if fid and _is_uuid(values.get(fid, "")):
+            return values[fid]
+    return ""
 
 
 _pending = {"at": 0.0, "rows": []}
