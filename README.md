@@ -180,7 +180,7 @@ Skills degrade rather than fail: a missing key means that step is skipped and th
 
 ## The agent system
 
-The platform is 82 agents across 9 divisions.
+The platform is 96 agents across 9 divisions (the six Sphere of Influence agents are retired).
 
 - [**The interactive map**](https://learn.datasift.ai/agent-org-chart), searchable and filterable by division, status, and whether a human still signs off.
 - [**docs/AGENT-MAP.md**](docs/AGENT-MAP.md), the same thing as a document you can read in the repo or hand to Claude.

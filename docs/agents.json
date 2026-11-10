@@ -3,8 +3,8 @@
   "title": "SiftStack AI Agent Org Chart",
   "subtitle": "Every agent, what triggers it, what it touches, where a human still signs off, and the specific trap each one exists to avoid",
   "org": "DataSift / DataFlik",
-  "version": "1.0.54",
-  "generated": "2026-09-21"
+  "version": "1.0.61",
+  "generated": "2026-11-10"
  },
  "phases": {
   "1": {
@@ -741,6 +741,100 @@
      "status": "live",
      "source": "src/property_lookup.py",
      "gotcha": "Courthouse probate records have decedent and executor names but no property address. Without this three-tier lookup the entire probate niche is unusable."
+    },
+    {
+     "id": "researchagent",
+     "name": "Research Agent",
+     "role": "Deep prospects one record on its own when its status changes to Deep Prospecting, then writes the decision makers and their numbers back.",
+     "trigger": "DataSift sequence: status changed to Deep Prospecting, webhook to the siftstack-agents box.",
+     "steps": [
+      "The webhook queues a task and answers in milliseconds",
+      "Runs the single-record v5 chain with Claude as the researcher, using web search and fetch",
+      "A claim that cites a page Claude never opened in this run moves to unresolved",
+      "Spends only inside a per-run and a daily cap, and skips a paid phase rather than crossing one",
+      "Writes phones, notes and death fields back, then posts the property file to Slack"
+     ],
+     "human": [
+      "Dry by default: no vendor spend and no CRM write until live mode is switched on"
+     ],
+     "outputs": [
+      "Property file",
+      "CRM write-back",
+      "Slack post"
+     ],
+     "tools": [
+      "Claude",
+      "SmartSkip",
+      "Trestle",
+      "DataSift API",
+      "Fly.io"
+     ],
+     "phase": 2,
+     "status": "gated",
+     "source": "src/agents/research/deep_prospect.py",
+     "gotcha": "An obituary on the record does not mean the owner died: it is often the spouse's. The owner is marked deceased only when an obituary opened in this run backs it AND the decedent shares two name tokens with the owner of record."
+    },
+    {
+     "id": "dprecord",
+     "name": "Single-Record Deep Prospect",
+     "role": "Runs deep prospecting v5 on any one record by its street line, including the heir pass an estate needs.",
+     "trigger": "python src/deep_prospect_record.py --address \"<street>\" --phase records, then smartskip, heirs, score, verify, build, writeback",
+     "steps": [
+      "Reuses every Dream 100 deep-prospecting phase",
+      "Heir pass: a second SmartSkip bulk order with each decision maker as the subject, at a street, never name plus city",
+      "Trestle Real Contact says whose number each one really is",
+      "Gap-fills a decision maker with no live number"
+     ],
+     "human": [
+      "A researcher writes the research and analysis files (the Research agent automates this)",
+      "--commit to spend or write"
+     ],
+     "outputs": [
+      "Property pack PDF",
+      "CRM write-back"
+     ],
+     "tools": [
+      "SmartSkip",
+      "Tracerfy",
+      "Trestle Real Contact",
+      "Knox County Tax API",
+      "DataSift API"
+     ],
+     "phase": 1,
+     "status": "live",
+     "source": "src/deep_prospect_record.py",
+     "gotcha": "Drop obituary middle names on heir traces: three of four children came back empty with them and all three matched without. Query the county tax API by street, never by the CRM parcel id, because the search is fuzzy and a parcel id returned 22 unrelated parcels."
+    },
+    {
+     "id": "dream100dp",
+     "name": "Dream 100 Deep Prospect",
+     "role": "Researches the top of the Dream 100 until each record names who must sign and which number reaches them.",
+     "trigger": "python src/dream100_dp.py --phase records | smartskip | merge | gapfill | score | build | writeback | qa",
+     "steps": [
+      "Pulls the record, its activity log and the county title",
+      "SmartSkip relatives and phones, then gap-fill and Trestle tiers",
+      "A researcher writes sourced facts; the module never invents a relative",
+      "Builds a pack per property and writes the findings back"
+     ],
+     "human": [
+      "Every claim in the research layer carries a URL and a verbatim quote"
+     ],
+     "outputs": [
+      "Pack PDF per property",
+      "Workbook plus a redacted demo twin",
+      "CRM write-back"
+     ],
+     "tools": [
+      "SmartSkip",
+      "Tracerfy",
+      "Trestle",
+      "OpenRouter / Gemini",
+      "DataSift API"
+     ],
+     "phase": 1,
+     "status": "live",
+     "source": "src/dream100_dp.py",
+     "gotcha": "Every record changed once researched: three of the top five owners were dead and the team had been calling all three by name. Audio models also invent speech on short call recordings (660 words from 11 seconds), so a transcript counts only at 3 words a second or less of real audio."
     }
    ]
   },
@@ -1319,6 +1413,61 @@
      "status": "live",
      "source": "src/dispo_flow.py",
      "gotcha": "COUNTER-DRIVEN, NOT TAG-DRIVEN. A preset that gates calling behind a 'texted' tag shows zero forever and reads as broken. Progression rides sms_attempts and predictivecall_attempts, which the dialer increments itself."
+    },
+    {
+     "id": "dealmatch",
+     "name": "Deal Buyer Match",
+     "role": "Finds the top ten buyers for one contracted house and the number that reaches each one's decision maker.",
+     "trigger": "python src/deal_buyer_match.py --slug <deal> --phase all, then python src/deal_buyer_dp.py --phase crm | dossier | trace | verify | export",
+     "steps": [
+      "Polygon sweep of comps and investor buys around the subject",
+      "Recovers unlabeled flips from the deed chain",
+      "One slot per operator, and three or more lifetime purchases",
+      "Trestle Real Contact tests each number against a named decision maker"
+     ],
+     "human": [
+      "Decision makers come from a researched file, never the module"
+     ],
+     "outputs": [
+      "Buyers workbook",
+      "Dial sheet CSV"
+     ],
+     "tools": [
+      "SiftMap",
+      "SmartSkip",
+      "Trestle Real Contact"
+     ],
+     "phase": 1,
+     "status": "live",
+     "source": "src/deal_buyer_match.py, src/deal_buyer_dp.py",
+     "gotcha": "The buyer registry prices an exited flipper at the EXIT, the sale to the retail homebuyer, so its price band is a resale band. One operator read a $307,500 median on a book of $100,000 to $200,000 buys. The match recovers the buy from the deed before the exit."
+    },
+    {
+     "id": "builderland",
+     "name": "Builder Land Desk",
+     "role": "Reads each builder's buy box off their own deeds, then matches the lots on the ground to the builders who would buy them.",
+     "trigger": "python src/builder_land.py --market <name> --fips <codes> --phase all",
+     "steps": [
+      "Counts purchases by deed date, so a 13-lot takedown is one purchase",
+      "Buy box: where they buy, lot size, price paid, what they build and sell",
+      "A lot fits a builder when one of their own lots sits nearby at a size inside their range",
+      "Offer is what the fitting builders paid nearby, minus the fee"
+     ],
+     "human": [
+      "Decides which market to work and calls the builders"
+     ],
+     "outputs": [
+      "Builder Land Desk workbook",
+      "Lot mail list"
+     ],
+     "tools": [
+      "opensearch MCP",
+      "SiftMap"
+     ],
+     "phase": 2,
+     "status": "gated",
+     "source": "src/builder_land.py",
+     "gotcha": "A lot wholesaled at 1.5 times before the build reads as the builder's purchase plus the new-home sale unless the exit is priced like a finished house, which misattributes the builder and hides the middleman. Knox and Blount came out yes; Union County OH no, because its repeat buyers are production builders."
     }
    ]
   },
@@ -1330,8 +1479,8 @@
    "lead": {
     "id": "smsagent",
     "name": "Two-Way SMS Agent",
-    "role": "Sends outreach, reads replies live, classifies them, writes back to the CRM, hands positives to a prospector.",
-    "trigger": "smrtPhone smsIncoming webhook, or a seeded outreach touch.",
+    "role": "Sends outreach, reads replies live on smrtPhone and Smarter Contact, classifies them, writes back to the CRM, hands positives to a prospector.",
+    "trigger": "smrtPhone smsIncoming webhook, the Smarter Contact reply webhook, or a seeded outreach touch.",
     "steps": [
      "Receiver ingests the webhook into a SQLite event log",
      "Classifier decides intent, opt-outs decided by regex and never by a model",
@@ -1339,7 +1488,7 @@
      "CRM writes phone status, opt-outs, and lead status; Slack gets the handoff"
     ],
     "human": [
-     "Autonomy ladder. Phase 2 delivers the handoff with zero AI-authored text sent."
+     "Runs live at autonomy phase 2: classifies, writes back and hands off. The seller auto-campaign stays switched off."
     ],
     "outputs": [
      "Classified replies",
@@ -1348,13 +1497,14 @@
     ],
     "tools": [
      "smrtPhone API",
+     "Smarter Contact",
      "DataSift API",
      "Slack",
      "Fly.io",
      "SQLite"
     ],
-    "phase": 2,
-    "status": "gated",
+    "phase": 1,
+    "status": "live",
     "source": "src/sms_agent/",
     "gotcha": "DataSift webhooks CANNOT see an inbound text. Webhooks shipped as a sequence ACTION, so all ten triggers are CRM state changes. smrtPhone's smsIncoming is the only inbound leg. That single constraint shapes the entire architecture."
    },
@@ -1561,6 +1711,118 @@
      "status": "gated",
      "source": "src/obituary_mail_export.py",
      "gotcha": "Every row ships a must-verify note. Whether the person who died is the owner of record is NOT verifiable from CRM data, and the spouse-obituary trap is live on every single row: an obituary on the record does not mean the OWNER died."
+    },
+    {
+     "id": "scinbound",
+     "name": "Smarter Contact Reply Agent",
+     "role": "Reads every Smarter Contact reply the moment it lands, files the disposition in DataSift and answers the who-is-this questions, so a human only takes the interested owners.",
+     "trigger": "Smarter Contact reply webhook to /hooks/smartercontact on the Fly box.",
+     "steps": [
+      "Checks the bearer token, stores the reply in the event log, then claims it once so a retry is never processed twice",
+      "Opt-outs, insults and a bare no are decided by rules before any model reads the text",
+      "Writes phone status, the DNC list, Do Not Market and lead status on every record carrying the number",
+      "Answers who and how questions from fixed pools, once per thread, then hands off",
+      "An interested owner gets NO reply: Slack tags the prospector with a link that opens the thread"
+     ],
+     "human": [
+      "Prospector takes every interested owner by phone",
+      "Auto reply and auto label each sit behind their own switch"
+     ],
+     "outputs": [
+      "DataSift dispositions",
+      "Smarter Contact labels and DNC",
+      "Slack handoffs"
+     ],
+     "tools": [
+      "Smarter Contact",
+      "DataSift API",
+      "Zillow",
+      "Slack",
+      "Fly.io"
+     ],
+     "phase": 1,
+     "status": "live",
+     "source": "src/sms_agent/sc_inbound.py",
+     "gotcha": "SMARTER CONTACT LABELS NEVER REACH DATASIFT ON THEIR OWN. Its integration only sends on a manual Export to CRM, so 14 of 17 not-interested records read blank until the agent set the status itself. The record comes from the contact's own APN field, not the phone map, which pointed somewhere else on 9 of 74 threads."
+    },
+    {
+     "id": "sccampaign",
+     "name": "Smarter Contact Campaign Builder",
+     "role": "Builds the templates and groups and schedules each touch in Smarter Contact, split by time zone and held to the account's approved throughput.",
+     "trigger": "python src/smarter_contact_launch.py --phase campaign | touch (dry by default; --commit --schedule sends)",
+     "steps": [
+      "Templates, labels, quick replies and workflows are created and read back by smarter_contact_setup.py",
+      "Groups split by the phone's area code, because the send window runs on the account's Eastern clock",
+      "Follow-ups go out as standard campaigns on audited groups, never as Smarter Contact follow-up drafts",
+      "Refuses more than 6 texts a minute per campaign"
+     ],
+     "human": [
+      "Owns the go on every scheduled campaign"
+     ],
+     "outputs": [
+      "Scheduled Smarter Contact campaigns"
+     ],
+     "tools": [
+      "Smarter Contact"
+     ],
+     "phase": 1,
+     "status": "live",
+     "source": "src/smarter_contact_launch.py",
+     "gotcha": "A follow-up draft snapshots its recipients into a hidden group nobody can edit, and Smarter Contact has no call to add a contact to a campaign, so a removal from a sending campaign cannot be undone. Touch 2 and 3 are built as plain campaigns on groups the audit has already cleaned."
+    },
+    {
+     "id": "scaudit",
+     "name": "Pre-Send Audit",
+     "role": "Rebuilds who a touch would text from first principles and drops anyone a do-not source says to leave alone.",
+     "trigger": "python src/smarter_contact_audit.py before every follow-up; smarter_contact_remaining.py before a first touch.",
+     "steps": [
+      "The previous touch's group minus everyone who replied by text or call",
+      "Checks Smarter Contact suppressions, the agent's suppression table, Sift status, the DNC list, the Do Not Market tag and the registry do-not-call flag",
+      "Checks Zillow agent listings, because Sift's MLS field lags",
+      "Writes the cleaned group the touch phase reads"
+     ],
+     "human": [
+      "Reviews the flagged counts before the touch is scheduled"
+     ],
+     "outputs": [
+      "Audited groups",
+      "Flag counts by reason"
+     ],
+     "tools": [
+      "Smarter Contact",
+      "DataSift API",
+      "Zillow"
+     ],
+     "phase": 1,
+     "status": "live",
+     "source": "src/smarter_contact_audit.py",
+     "gotcha": "The first Priority 1 push never filtered Sift status or DNC. The Touch 2 audit flagged 478 of 1,054 recipients (146 sold, 157 not interested, 102 on the do-not-call registry) and every one of them had already received Touch 1."
+    },
+    {
+     "id": "deliver",
+     "name": "Deliverability Readout",
+     "role": "Answers whether the texts actually reached a handset, per pool and per number, from the raw event log.",
+     "trigger": "python src/sms_agent/cli.py deliverability [--days 30 --full]",
+     "steps": [
+      "Reads the receiver's delivery callbacks, never the send path",
+      "Share of sends that got a final carrier verdict",
+      "What the carrier said when it refused",
+      "Whether replies per send are trending down"
+     ],
+     "human": [
+      "Decides whether to rest or replace a number"
+     ],
+     "outputs": [
+      "Verdict by pool and by number"
+     ],
+     "tools": [
+      "SQLite event log",
+      "smrtPhone"
+     ],
+     "phase": 1,
+     "status": "live",
+     "source": "src/sms_agent/deliverability.py",
+     "gotcha": "Sent means handed to the carrier, not delivered. Only delivered and undelivered are verdicts, and until the receiver dedupe fix shipped it kept only the first callback per message, so every rate it reports for that period is a floor."
     }
    ]
   },
@@ -1896,6 +2158,145 @@
      "status": "live",
      "source": "src/obituary_opportunity.py",
      "gotcha": "Total Delinquency is liens PLUS taxes. Reading it as the tax figure double counts the lien and inflates exactly the records the model exists to surface. It put a lien-only record at rank 1 before the fix. Also: gate on lead status, not just on sold, or a not_interested record tops your ranking."
+    },
+    {
+     "id": "dream100",
+     "name": "Dream 100 Ranker",
+     "role": "Ranks the driving-for-dollars top 3,000 by opportunity size and puts the hundred biggest on a CRM list.",
+     "trigger": "python src/dream100.py --phase pull | build | attach",
+     "steps": [
+      "Joins the visual distress rank, the full CRM record and the lists the account attached",
+      "Scores deal size 35, condition 20, investor 20, evidence 15, reach 10",
+      "Gates dead statuses, buyers, MLS listings, upside down and anything outside the buy box",
+      "Attaches the Dream 100 list and tag with a read-back"
+     ],
+     "human": [
+      "Works the list owner by owner"
+     ],
+     "outputs": [
+      "Workbook with a Portfolio owners sheet",
+      "Dream 100 list and tag"
+     ],
+     "tools": [
+      "DataSift API"
+     ],
+     "phase": 1,
+     "status": "live",
+     "source": "src/dream100.py",
+     "gotcha": "The biggest finding is the Portfolio owners sheet, not the ranking. 194 owners hold two or more of the 3,000 and the top one holds 22. One conversation there is worth more than a dozen single rows, and a per-property score cannot see it."
+    },
+    {
+     "id": "d4dcalls",
+     "name": "D4D Call List",
+     "role": "Turns the visual distress ranking into a dialer-ready list: every row a record, skip traced, every number scored and written back.",
+     "trigger": "python src/d4d_call_list.py --phase cohort | pull | skiptrace | harvest | score | writeback | export | qa",
+     "steps": [
+      "The top N of the visual distress ranking becomes the cohort",
+      "Pulls missing records in by id, which skip traces them on the unlimited plan",
+      "Trestle scores every unscored number",
+      "Writes tiers onto the CRM phones and exports a callable file and a no-phone file"
+     ],
+     "human": [
+      "--commit to spend; one record is read back before the rest"
+     ],
+     "outputs": [
+      "Callable CSV",
+      "No-phone CSV",
+      "Tiered CRM phones"
+     ],
+     "tools": [
+      "DataSift API",
+      "SiftMap",
+      "Trestle",
+      "Visual distress model"
+     ],
+     "phase": 1,
+     "status": "live",
+     "source": "src/d4d_call_list.py",
+     "gotcha": "Pulling a record in by id skip traces it on its own, so the browser skip trace wizard was never needed. It was also broken: its list filter no longer matched, so it would have skip traced the whole account. That run was stopped at the Send To menu before it submitted."
+    },
+    {
+     "id": "ladderpull",
+     "name": "Doors Per Deal Ladder Pull",
+     "role": "Walks a county's market share ladder rung by rung and pulls the top N records into an account.",
+     "trigger": "python src/knox_blount_top15k.py or python src/franklin_top30k.py",
+     "steps": [
+      "Reads the County List Playbook ladder in its own work order",
+      "Each rung counts only the records the rungs above did not already reach",
+      "Re-sizes every rung under the buy box and dedupes",
+      "Stops at the target count and pulls by id"
+     ],
+     "human": [
+      "Picks the account and the target count"
+     ],
+     "outputs": [
+      "Records in the account",
+      "Calling agency export"
+     ],
+     "tools": [
+      "County List Playbook",
+      "SiftMap",
+      "DataSift API"
+     ],
+     "phase": 1,
+     "status": "live",
+     "source": "src/knox_blount_top15k.py, src/franklin_top30k.py",
+     "gotcha": "The read-back probe must be a record NEW to the account. An existing one reads as saved at once, before the async job attaches the list, so it passes whether or not the pull worked."
+    },
+    {
+     "id": "aipools",
+     "name": "Agency Test Pools",
+     "role": "Builds ranked, non-overlapping record pools from the properties index and hands a calling agency one row per owner.",
+     "trigger": "python src/ai_pools.py --market <market>, then pull_by_ids.py and agency_call_list.py",
+     "steps": [
+      "Reads the properties index through the read-only opensearch MCP",
+      "Ranks by realtor or investor AI score under the buy box, with no overlap between pools",
+      "Pulls by id so DataSift's own skip trace fills the phones",
+      "Exports callable numbers only, mobiles first"
+     ],
+     "human": [
+      "Picks the market, the pool size and the account"
+     ],
+     "outputs": [
+      "Pools in the account",
+      "Calling agency call list"
+     ],
+     "tools": [
+      "opensearch MCP",
+      "DataSift API"
+     ],
+     "phase": 1,
+     "status": "live",
+     "source": "src/ai_pools.py, src/pull_by_ids.py, src/agency_call_list.py",
+     "gotcha": "No Trestle and no do-not-call scrub on purpose: the agency scrubs the registry and litigators itself. The opensearch client refuses to start unless the server runs read-only, because its default configuration allows writes to the production cluster."
+    },
+    {
+     "id": "vacantland",
+     "name": "Buildable Lot Finder",
+     "role": "Finds every vacant lot of 0.20 to 2.00 acres in a county, screens out what cannot carry a house, prices an offer band and writes the mail plan.",
+     "trigger": "python src/vacant_land.py --phase all",
+     "steps": [
+      "County GIS is the truth for the parcel, SiftMap for the owner",
+      "Screens built-on, landlocked, floodplain, slivers, steep and non-residential lots",
+      "Reads slope from USGS 3DEP lidar",
+      "Prices off real lot sales in the same township and size band"
+     ],
+     "human": [
+      "The pull into an account stays dry until an account is chosen"
+     ],
+     "outputs": [
+      "Buildable lots workbook",
+      "Mail list CSV"
+     ],
+     "tools": [
+      "County GIS",
+      "SiftMap",
+      "USGS 3DEP"
+     ],
+     "phase": 2,
+     "status": "gated",
+     "source": "src/vacant_land.py",
+     "gotcha": "The county's vacant class lags construction. 2,185 vacant-class sales over 36 months had a median of $590,000 at 7.5 times land value: they were new houses. Built-on is read from the dwelling year, the sale price against land value, and recent permits."
     }
    ]
   },
@@ -2151,7 +2552,7 @@
      "SiftMap"
     ],
     "phase": 2,
-    "status": "live",
+    "status": "retired",
     "source": "src/soi_intake.py",
     "gotcha": "First live run: 848 raw rows to 728 unique people to 222 confirmed metro homeowners to 191 scored. The distribution is steep, one at 95+, six in the 80s, so the 95+ bar isolates a real call list rather than a third of the sphere."
    },
@@ -2174,7 +2575,7 @@
       "stdlib"
      ],
      "phase": 2,
-     "status": "live",
+     "status": "retired",
      "source": "src/soi_intake.py",
      "gotcha": "27 contacts on the live run were kw.com, mortgage or title domains. Those are referral partners, not homeowner sphere, and scoring them as leads pollutes the call list."
     },
@@ -2198,7 +2599,7 @@
       "SQLite"
      ],
      "phase": 2,
-     "status": "live",
+     "status": "retired",
      "source": "src/soi_county_pull.py, src/soi_owner_db.py",
      "gotcha": "The whole Columbus metro is free data and costs $0. Two traps: Franklin's newer-looking tab-delimited appraisal extract has NO owner fields at all, and the Parcel_CSV folder path is stale on purpose, so check the Last-Modified header rather than the path. The vendor search UIs are bot-walled and never needed."
     },
@@ -2223,7 +2624,7 @@
       "owners.db"
      ],
      "phase": 2,
-     "status": "live",
+     "status": "retired",
      "source": "src/soi_owner_match.py",
      "gotcha": "owner_occupied compares mailing address key to situs address key. Do NOT fall back to Franklin's OWNER_ADD1: it sometimes echoes the situs and false-flagged a Texas absentee as owner-occupied."
     },
@@ -2247,7 +2648,7 @@
       "Enformion Person Search"
      ],
      "phase": 2,
-     "status": "live",
+     "status": "retired",
      "source": "src/soi_enformion.py",
      "gotcha": "EMAIL is the verifier. An exact email hit grounds identity with no address needed; name-only matches are kept but flagged. emailAddresses is a list of DICTS with .emailAddress inside, not a list of strings. Misses are free."
     },
@@ -2271,7 +2672,7 @@
       "SiftMap"
      ],
      "phase": 2,
-     "status": "live",
+     "status": "retired",
      "source": "src/soi_enrich.py",
      "gotcha": "realtor_score off SiftMap get_detail IS the Realtor AI score, and 95+ is a priority call. 8 rows were flagged rather than trusted because the deed owner and SiftMap owner did not overlap. Renters are kept on their own track as future first-time buyers."
     }
@@ -2296,7 +2697,9 @@
     "Zillow /search (OpenWeb Ninja)",
     "Smarty",
     "Redfin",
-    "BLS / Census / FBI"
+    "BLS / Census / FBI",
+    "opensearch properties index (MCP, read-only)",
+    "USGS 3DEP lidar"
    ]
   },
   {
@@ -2316,7 +2719,8 @@
     "smrtPhone",
     "Slack",
     "Dropbox",
-    "Google Drive"
+    "Google Drive",
+    "Smarter Contact"
    ]
   },
   {
