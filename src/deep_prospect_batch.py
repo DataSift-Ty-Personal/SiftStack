@@ -11,6 +11,7 @@ src/agents/research/open_research.py).
     python src/deep_prospect_batch.py run --list Foreclosure --limit 7            # dry: research only, no vendors, no CRM writes
     python src/deep_prospect_batch.py run --list Foreclosure --limit 7 --commit   # live: skip trace, score, write back
     python src/deep_prospect_batch.py run --addresses "123 Example St;45 Sample Ave" --commit
+    python src/deep_prospect_batch.py run --list Probate --limit 5 --order free_first     # free facts and research before any paid trace
     python src/deep_prospect_batch.py status
 
 Scope rules (cohort): a record is in scope when it sits on the list, is not tagged `recently sold`,
@@ -337,7 +338,9 @@ def one(uuid: str) -> int:
         entry.update(ok=True, live=r.get("live"), slug=r.get("slug"), street=r.get("street"),
                      owner_status=r.get("owner_status"), decision_maker=r.get("decision_maker"),
                      written_back=r.get("written_back"), spent_usd=r.get("spent_usd"),
-                     skipped=r.get("skipped"), pdf=r.get("pdf"), run_dir=r.get("run_dir"))
+                     skipped=r.get("skipped"), pdf=r.get("pdf"), run_dir=r.get("run_dir"),
+                     stopped=r.get("stopped") or "", research_level=r.get("research_level") or 0,
+                     writeback=r.get("writeback") or "")
     except BaseException as exc:  # noqa: BLE001  (the chain's gates raise SystemExit)
         if isinstance(exc, KeyboardInterrupt):
             raise
@@ -386,6 +389,8 @@ def run_batch(args) -> int:
                PYTHONUNBUFFERED="1", PYTHONIOENCODING="utf-8")
     if args.analysis_model:
         env["AGENTS_ANALYSIS_MODEL"] = args.analysis_model
+    if getattr(args, "order", ""):
+        env["AGENTS_DP_ORDER"] = args.order
     if args.daily_cap:
         env["AGENTS_DAILY_CAP_USD"] = str(args.daily_cap)
     py = str(ROOT / ".venv" / "Scripts" / "python.exe")
@@ -423,8 +428,9 @@ def run_batch(args) -> int:
         spent += float(e.get("spent_usd") or 0)
         print("  %-28s %-9s $%5.2f %4ss  %s" % (
             (e.get("street") or row.get("street") or row["uuid"][:8])[:28],
-            (e.get("owner_status") or ("FAILED" if not e.get("ok") else "-")), float(e.get("spent_usd") or 0),
-            e.get("seconds", "-"), (e.get("decision_maker") or e.get("error") or "")[:70]), flush=True)
+            (e.get("owner_status") or ("FAILED" if not e.get("ok") else "STOPPED" if e.get("stopped") else "-")),
+            float(e.get("spent_usd") or 0), e.get("seconds", "-"),
+            (e.get("decision_maker") or e.get("stopped") or e.get("error") or "")[:70]), flush=True)
         return e
 
     with ThreadPoolExecutor(max(1, args.workers)) as ex:
@@ -502,6 +508,9 @@ def main(argv=None) -> int:
     r.add_argument("--commit", action="store_true", help="live: pay vendors and write back to the CRM")
     r.add_argument("--engine", default="open", choices=("open", "claude"))
     r.add_argument("--analysis-model", default="")
+    r.add_argument("--order", default="", choices=("", "trace_first", "free_first"),
+                   help="trace_first is today's order; free_first reads the free facts and researches before any "
+                        "paid trace (unset: whatever AGENTS_DP_ORDER says)")
     r.add_argument("--max-usd", type=float, default=25.0, help="stop starting records once the batch has spent this")
     r.add_argument("--daily-cap", type=float, default=0.0, help="override AGENTS_DAILY_CAP_USD for this batch")
     r.add_argument("--redo", action="store_true", help="run records a batch already finished")

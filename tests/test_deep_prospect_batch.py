@@ -211,6 +211,53 @@ def test_measured_cost_averages_live_runs_only_and_folds_engine_labels():
     assert m["by_phase"] == {"analysis": 0.45, "research": 0.2, "smartskip": 0.15}
 
 
+def _batch_args(**over):
+    from types import SimpleNamespace
+    base = dict(commit=False, uuids="u-1,u-2", addresses="", list=None, limit=0, redo=True, engine="open",
+                analysis_model="", order="", daily_cap=0.0, workers=1, max_usd=5.0, force=True)
+    return SimpleNamespace(**dict(base, **over))
+
+
+def _fake_children(monkeypatch, tmp_path, results):
+    """Stand in for the one-record child processes: nothing is launched, the environment each
+    child would have had is kept."""
+    from types import SimpleNamespace
+    monkeypatch.setattr(b, "OUT", tmp_path)
+    monkeypatch.setattr(b, "LOG", tmp_path / "batch_log.jsonl")
+    seen = []
+
+    def run(cmd, **kw):
+        seen.append(kw["env"])
+        return SimpleNamespace(stdout="RESULT " + json.dumps(results[cmd[-1]]), stderr="", returncode=0)
+
+    monkeypatch.setattr(b.subprocess, "run", run)
+    return seen
+
+
+def test_the_order_of_the_chain_is_passed_to_each_record_only_when_asked(tmp_path, monkeypatch):
+    monkeypatch.delenv("AGENTS_DP_ORDER", raising=False)
+    done = {"u-1": {"uuid": "u-1", "ok": True, "street": "12 Test Ln", "owner_status": "Living", "spent_usd": 1.0},
+            "u-2": {"uuid": "u-2", "ok": True, "street": "14 Test Ln", "owner_status": "Living", "spent_usd": 1.0}}
+    seen = _fake_children(monkeypatch, tmp_path, done)
+    assert b.run_batch(_batch_args(order="free_first")) == 0
+    assert [e["AGENTS_DP_ORDER"] for e in seen] == ["free_first", "free_first"]
+    seen.clear()
+    assert b.run_batch(_batch_args()) == 0
+    assert all("AGENTS_DP_ORDER" not in e for e in seen)          # unset: today's order, or whatever the box says
+
+
+def test_a_record_the_free_look_stopped_is_shown_as_stopped_with_the_reason(tmp_path, monkeypatch, capsys):
+    why = "The deed records show the owner no longer owns this house."
+    seen = _fake_children(monkeypatch, tmp_path, {
+        "u-1": {"uuid": "u-1", "ok": True, "street": "12 Test Ln", "owner_status": "", "stopped": why, "spent_usd": 0.0},
+        "u-2": {"uuid": "u-2", "ok": True, "street": "14 Test Ln", "owner_status": "Living", "decision_maker": "Marla Quillfeather",
+                "spent_usd": 1.2, "written_back": True}})
+    assert b.run_batch(_batch_args(order="free_first")) == 0 and len(seen) == 2
+    out = capsys.readouterr().out
+    assert "STOPPED" in out and why[:60] in out
+    assert "Done: 2 of 2 finished, 1 written back, $1.20 spent" in out
+
+
 def test_the_module_holds_no_long_dash_or_backspace_byte():
     text = (SRC / "deep_prospect_batch.py").read_text(encoding="utf-8")
     assert chr(8212) not in text and chr(8211) not in text and chr(8) not in text

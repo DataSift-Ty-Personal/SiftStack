@@ -2,10 +2,14 @@
 
 python tests/test_dream100_dp.py
 """
+import os
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import dream100_dp as dp  # noqa: E402
+
+for _key in dp.wb.SETTING_NAMES:          # the write-back settings as shipped, whatever this machine's .env carries
+    os.environ.pop(_key, None)
 
 n = 0
 
@@ -38,7 +42,27 @@ d = {"x": {"owner_uuid": "o1"}, "dial": [
 ]}
 plan = dp.writeback_plan(d)
 by = {p["number"]: p for p in plan["phones"]}
-check(set(by) == {"8651110001", "8651110002", "8651110007"}, "only new, dialable, First to Third numbers: %s" % sorted(by))
+check(set(by) == {"8651110001", "8651110002", "8651110007"}, "only new, dialable, top-tier numbers: %s" % sorted(by))
+
+# Decision D12: Dial First and Second go on the record; Dial Third only when there is nothing better.
+third = row("8651110008", "Dial Third", reaches=[KID])
+plan3 = dp.writeback_plan({"x": {"owner_uuid": "o1"}, "dial": d["dial"] + [third]})
+check("8651110008" not in {p["number"] for p in plan3["phones"]}, "a Dial Third number is not written beside a First")
+check([h["number"] for h in plan3["held"]] == ["8651110008"] and "reserve" in plan3["held"][0]["why"],
+      "the held number and the reason ride on the plan: %s" % plan3["held"])
+alone = dp.writeback_plan({"x": {"owner_uuid": "o1"}, "dial": [third, row("8651110004", "Dial Fourth", reaches=[KID])]})
+check([p["number"] for p in alone["phones"]] == ["8651110008"] and alone["phones"][0]["tags"] == ["Daughter", "Dial Third", "SmartSkip"],
+      "a Dial Third number is written when the record has nothing better: %s" % alone["phones"])
+onfile = {"record": {"owner": {"phones": [{"number": "8651110009", "tags": ["Dial Second"], "status": "UNKNOWN"}]}}, "owner_uuid": "o1"}
+check(dp.writeback_plan({"x": onfile, "dial": [third]})["phones"] == [],
+      "a Second number already on the record keeps the Third in reserve, scored this run or not")
+os.environ["AGENTS_DP_THIRD_TIER"] = "always"
+check("8651110008" in {p["number"] for p in dp.writeback_plan({"x": {"owner_uuid": "o1"}, "dial": d["dial"] + [third]})["phones"]},
+      "AGENTS_DP_THIRD_TIER=always is the rule before: First to Third")
+os.environ.pop("AGENTS_DP_THIRD_TIER")
+note_d = {"x": {"row": {"street": "5 Sample Rd"}}, "an": {"headline": "h"}, "dial": d["dial"] + [third]}
+note = dp.build_note(note_d)
+check("...0001" in note and "...0008" not in note, "the note's own call order names First and Second numbers, not a Third in reserve")
 check(by["8651110001"]["tags"] == ["Wife", "Dial First", "SmartSkip"], by["8651110001"]["tags"])
 check(by["8651110002"]["tags"] == ["Dial First", "SmartSkip"], "owner rule: a shared line carries no relationship")
 check(by["8651110007"]["tags"] == ["Dial Second", "Tracerfy"], "the owner's own number carries tier and source")
@@ -102,7 +126,9 @@ check(not ({"Kelly", "Samantha", "Celissa", "Laisa"} & toks), "first names survi
 check(dp._name_tokens("Knox County Chancery Court, Probate Division") == set(), "institutions are not people")
 check("\x08" not in Path(dp.__file__).read_text(encoding="utf-8"), "no backspace byte from a heredoc in the module")
 check(dp._na("6517 Sample Rd") != dp._na("6519 Sample Rd"), "house numbers keep two homes on one road apart")
-check(dp.no_dash("a " + chr(0x2014) + " b " + chr(0x2013) + " c") == "a ,  b - c", dp.no_dash("a — b – c"))
+check(dp.no_dash("a " + chr(0x2014) + " b " + chr(0x2013) + " c") == "a ,  b - c", "long dashes become a comma and a hyphen")
+check(chr(0x2014) not in Path(__file__).read_text(encoding="utf-8") and chr(0x2013) not in Path(__file__).read_text(encoding="utf-8"),
+      "no long dash in this test file either")
 check(dp._short("5619 Sample Grove Pike") == "Sample Grove" and dp._short("122 Elm Ave") == "Elm", "tab names drop the house number")
 
 print("test_dream100_dp: %d checks passed" % n)
