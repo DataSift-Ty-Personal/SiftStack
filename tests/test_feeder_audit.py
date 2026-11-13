@@ -304,6 +304,220 @@ def test_the_report_is_for_the_owner():
     assert quiet.count("Nothing to do: no feeder needs this today.") == 4
 
 
+# ------------------------------------------------------------------ the ladder (build plan 5.3)
+def ladder_file():
+    """An invented county's market share ladder, in the published shape: five Priority 1 rungs."""
+    def rung(label, keys, dpd, priority=1, ai=None, thin=False, size=400):
+        return {"label": label, "plan": "", "keys": keys, "ai": ai, "priority": priority, "thin": thin, "est": False,
+                "list_size": size, "marg_deals": 9, "marg_supply": size, "marg_dpd": dpd, "cum_dpd": dpd}
+    return {"99001": {"fips": "99001", "name": "Alder", "st": "ZZ", "window": "2026-01 .. 2026-06", "variants": {"ai": [
+        rung("Notice of Default", ["is_notice_of_default"], 11.0, thin=True, size=75),
+        rung("Free & Clear + Senior + Vacant", ["preset_free_clear", "is_senior_homeowners", "is_vacant_property"], 19.8),
+        rung("AI Score 90+", [], 22.6, ai=90),
+        rung("Tax Delinquent + Vacant", ["is_recent_deliquent", "is_vacant_property"], 27.5),
+        rung("Tired Landlord", ["is_tired_landlord"], 31.0),
+        rung("AI Score 70+", [], 60.0, priority=2, ai=70),
+        rung("Free & Clear", ["preset_free_clear"], 95.0, priority=2)]}}}
+
+
+def rungs():
+    return fa.ladder_rungs(ladder_file(), "99001")
+
+
+def with_ladder(extra=(), drop=()):
+    rows = [r for r in listing() if r["id"] not in drop] + list(extra)
+    return fa.build_plan(rows, day="2026-11-13", pages=2, read_at="2026-11-12T23:00:00", ladder=rungs(),
+                         ladder_source="ladder.json")
+
+
+def rung_row(plan, n):
+    return next(r for r in plan["ladder"]["rungs"] if r["n"] == n)
+
+
+def test_a_ladder_is_read_from_either_published_file():
+    got = rungs()
+    assert [r["n"] for r in got] == [1, 2, 3, 4, 5, 6, 7] and {r["county"] for r in got} == {"Alder"}
+    assert got[1]["keys"] == ["free and clear", "is_senior_homeowners", "is_vacant_property"] and got[1]["dpd"] == 19.8
+    assert (got[2]["keys"], got[2]["ai"], got[2]["priority"]) == ([], 90, 1) and got[0]["thin"] is True
+    assert fa.ladder_rungs(ladder_file()["99001"]) == got                      # one county, not the whole file
+    assert fa.ladder_rungs(ladder_file(), "99999") == []                       # a county the file does not hold
+    # the standalone table names the same things differently
+    table = {"name": "Birch", "rows": [
+        {"seg": "AI Score 95+", "type": "ai", "keys": ["investor_score"], "dpd": 20.1, "dpd_6mo": 16.8, "priority": 1,
+         "list_size": 1140},
+        {"seg": "Free & Clear + Vacant", "type": "list", "keys": ["is_free_and_clear", "is_vacant_property"], "dpd": 44.0,
+         "priority": 2, "list_size": 900}]}
+    t = fa.ladder_rungs(table)
+    assert (t[0]["label"], t[0]["ai"], t[0]["keys"], t[0]["dpd"], t[0]["dpd_6mo"], t[0]["county"]) == \
+        ("AI Score 95+", 95, [], 20.1, 16.8, "Birch")
+    assert t[1]["keys"] == ["free and clear", "is_vacant_property"] and t[1]["ai"] is None
+    assert fa.ladder_rungs([{"label": "Vacant", "keys": ["is_vacant_property"], "priority": 1, "marg_dpd": 30}], county="Cedar")[0]["county"] == "Cedar"
+
+
+def test_rungs_with_no_feeder_are_named_and_nothing_joins_the_change_list():
+    plain, plan = plan_of(), with_ladder()
+    assert "ladder" not in plain                                               # no ladder handed in: the audit is as it was
+    assert plan["changes"] == plain["changes"] and plan["summary"] == plain["summary"]
+    s = plan["ladder"]["summary"]
+    assert s == {"priority_1_rungs": 5, "covered": 2, "missing": 2, "saved_not_adding": 0, "small_sample": 1,
+                 "covered_with_gaps": 2}
+    assert [(r["n"], r["status"]) for r in plan["ladder"]["rungs"]] == [
+        (1, "small sample"), (2, "covered"), (3, "covered"), (4, "missing"), (5, "missing")]
+    assert rung_row(plan, 3)["feeders"] == [{"id": 20, "title": "Alder - Priority 1 - AI 90+", "auto_add": True}]
+    assert sorted(f["id"] for f in rung_row(plan, 2)["feeders"]) == [30, 31, 32]
+    # a rung that is only saved, with auto-add off, is said differently from one that does not exist
+    saved = with_ladder(extra=[row(80, "Alder - Priority 1 - Tired Landlord", dict(BOX, distressors_include="is_tired_landlord"),
+                                   tags=("Priority 1",), auto=False)])
+    assert rung_row(saved, 5)["status"] == "saved, not adding" and saved["ladder"]["summary"]["saved_not_adding"] == 1
+    # only the first N rungs when asked
+    assert fa.ladder_check(plan["feeders"], rungs(), top=3)["summary"]["priority_1_rungs"] == 3
+    # every word of this is outside what feeder_apply sends
+    assert all(c["group"] in ("retired", "tag", "copies", "obituary") for c in plan["changes"])
+    assert "auto_add_enabled" not in json.dumps(plan["ladder"])
+
+
+def test_a_priority_1_feeder_is_checked_for_its_base_filters_figure_and_second_feeder():
+    plan = with_ladder()
+    assert rung_row(plan, 3)["gaps"] == ["no built-by-2010 filter", "no owned-7-years filter",
+                                         "the description does not carry the doors-per-deal figure (22.6)"]
+    full_filters = dict(BOX, distressors_include="is_recent_deliquent,is_vacant_property", distressors_include_min_match=2,
+                        extra_year_built_max=2010, extra_years_owned_min=7)
+    main = row(81, "Alder - Priority 1 - Tax Delinquent + Vacant", full_filters, tags=("Priority 1",))
+    main["description"] = "Priority 1 rung 4. 27.5 doors per deal."
+    mate = row(82, "Alder - Priority 1 - Tax Delinquent + Vacant - No Sale Date",
+               dict(BOX, distressors_include="is_vacant_property,is_recent_deliquent", distressors_include_min_match=2,
+                    extra_year_built_max=2010, extra_last_sale_date_unknown=True, extra_equity_percent_min=30),
+               tags=("Priority 1",))
+    both = with_ladder(extra=[main, mate])
+    r4 = rung_row(both, 4)
+    assert r4["status"] == "covered" and r4["gaps"] == [] and [f["id"] for f in r4["feeders"]] == [81]
+    assert both["ladder"]["notes"] == plan["ladder"]["notes"]                   # the second feeder is not an odd one out
+    # the seven-year filter without the second feeder silently drops every record with no sale date
+    alone = rung_row(with_ladder(extra=[main]), 4)
+    assert alone["gaps"] == ["no second feeder for the records with no known sale date (30% equity floor)"]
+    # a second feeder that is switched off, or has no equity floor, does not count
+    for bad in (dict(mate, auto_add_enabled=False),
+                row(83, "x", dict(full_filters, extra_last_sale_date_unknown=True), tags=("Priority 1",))):
+        assert rung_row(with_ladder(extra=[main, bad]), 4)["gaps"] == [
+            "no second feeder for the records with no known sale date (30% equity floor)"], bad["id"]
+    # two flags that only have to match one of them pull more than the rung, which needs both
+    wide = row(87, "Alder - Priority 1 - Tax Delinquent + Vacant", dict(full_filters, distressors_include_min_match=1),
+               tags=("Priority 1",))
+    wide["description"] = "27.5 doors per deal"
+    assert rung_row(with_ladder(extra=[wide, mate]), 4)["gaps"] == ["asks for any 1 of its 2 flags, so it pulls more than the rung"]
+    # the year under the key SiftMap ignores is not a year filter, and the audit says which key it found
+    alias = row(84, "Alder - Priority 1 - Tired Landlord", dict(BOX, distressors_include="is_tired_landlord",
+                                                               year_built_max=2010, extra_years_owned_min=5),
+                tags=("Priority 1",))
+    alias["description"] = "about 31 per deal"
+    gaps = rung_row(with_ladder(extra=[alias]), 5)["gaps"]
+    assert gaps[0] == "no built-by-2010 filter (it carries year_built_max, a key measured as ignored)"
+    assert gaps[1] == "no owned-7-years filter" and "doors-per-deal figure (31.0)" in gaps[2]
+    # a figure restated at a six-month rate is still the figure
+    r = dict(rungs()[4], dpd_6mo=25.8)
+    f = fa.facts(row(85, "Alder - Priority 1 - Tired Landlord", dict(full_filters, distressors_include="is_tired_landlord"),
+                     tags=("Priority 1",)))
+    f["description"] = "25.8 doors per deal at a six-month rate"
+    assert fa._gaps(f, r, companions=[{}]) == []
+    # a feeder that pulls the list but is not named or tagged for it
+    g = fa.facts(row(86, "Alder Tired Landlords", dict(full_filters, distressors_include="is_tired_landlord")))
+    assert fa._gaps(g, r, companions=[{}])[0] == "is not named or tagged Priority 1"
+
+
+def test_priority_names_that_do_not_match_the_ladder_are_said():
+    free_clear = {"value_max": 700000, "value_min": 100000, "type_single_family": True, "extra_equity_percent_min": 100}
+    extra = [
+        row(90, "Alder - Priority 1 - Free & Clear", dict(free_clear), tags=("Priority 1",)),
+        row(91, "Birch - Priority 1 - Low Income", dict(BOX, distressors_include="is_low_income"), tags=("Priority 1",),
+            county="Birch"),
+        row(92, "Alder - Priority 1 - AI 70+", dict(BOX, investor_off_market_score_min=70), tags=("Priority 1",)),
+        row(93, "Alder - Priority 1 - Low Income", dict(BOX, distressors_include="is_low_income"), tags=("Priority 1",)),
+        row(94, "Alder - Priority 2 - Tired Landlord", dict(BOX, distressors_include="is_tired_landlord"), tags=("Priority 2",)),
+    ]
+    notes = "\n".join(with_ladder(extra=extra)["ladder"]["notes"])
+    assert "[90] Alder - Priority 1 - Free & Clear: free and clear alone is a Priority 2 list" in notes
+    assert "[91]" not in notes                                                  # another county's feeder is not judged on this ladder
+    assert "[92] Alder - Priority 1 - AI 70+: named Priority 1, and on this ladder it is rung 6, Priority 2." in notes
+    # the stack the lessons call Priority 1, saved under a Priority 2 name, on a ladder that has no such rung
+    stack = fa.facts(row(98, "Alder - Priority 2 - Free & Clear + Senior + Vacant",
+                         dict(free_clear, distressors_include="is_senior_homeowners,is_vacant_property"), tags=("Priority 2",)))
+    stack["kind"] = fa.kind_of(stack)
+    said = fa.ladder_check([stack], [r for r in rungs() if r["n"] != 2])["notes"]
+    assert said == ["[98] Alder - Priority 2 - Free & Clear + Senior + Vacant: free and clear with senior and vacant is a "
+                    "Priority 1 list, and this feeder is named Priority 2."]
+    # where the ladder does have that rung, the rung is covered and the wrong name is said on the rung
+    both = fa.ladder_check([stack], rungs())
+    assert both["notes"] == [] and both["rungs"][1]["gaps"][0] == "is named Priority 2, and this rung is Priority 1"
+    assert "[93] Alder - Priority 1 - Low Income: named Priority 1, and no rung on this ladder is that list." in notes
+    assert "[20]" not in notes and "[31]" not in notes                          # a feeder on its own rung is not an odd one out
+    # a feeder named Priority 2 that pulls a Priority 1 rung: the rung is covered (records are being added),
+    # and the wrong name is the first thing said about it
+    r5 = rung_row(with_ladder(extra=extra), 5)
+    assert r5["status"] == "covered" and r5["gaps"][0] == "is named Priority 2, and this rung is Priority 1"
+    assert "[94]" not in notes
+
+
+def test_a_feeder_in_another_county_or_on_another_list_does_not_cover_a_rung():
+    f = fa.facts(row(95, "Birch - Priority 1 - AI 90+", dict(BOX, investor_off_market_score_min=90), tags=("Priority 1",),
+                     county="Birch"))
+    ai90 = rungs()[2]
+    assert fa.covers(f, ai90) is False and fa.covers(dict(f, counties=["Alder"]), ai90) is True
+    assert fa.covers(dict(f, counties=["Alder"]), dict(ai90, ai=95)) is False                  # another score floor
+    vac = fa.facts(row(96, "Alder - Vacant", dict(BOX, distressors_include="is_vacant_property")))
+    assert fa.covers(vac, rungs()[3]) is False                                                 # one flag of a two-flag rung
+    assert fa.feeder_keys(fa.facts(listing()[7])) == (["free and clear", "is_senior_homeowners", "is_vacant_property"], None)
+    # the absentee switch and the absentee flag are different groups, so they are different lists
+    sw = fa.facts(row(97, "Alder - Absentee", dict(BOX, preset_absentee_owners=True)))
+    assert fa.feeder_keys(sw)[0] == ["preset_absentee_owners"]
+    assert fa.covers(sw, {"county": "Alder", "keys": ["is_absentee_owners"], "ai": None}) is False
+
+
+def test_the_ladder_section_of_the_report():
+    plan = with_ladder()
+    md = fa.render_md(plan)
+    for want in ("## The ladder: Priority 1 rungs against the feeders", "Nothing in this section is in the change list.",
+                 "Ladder read from ladder.json.",
+                 "Priority 1 rungs on the ladder: 5. A feeder adds records for 2 of them; 2 have none; 0 are saved with "
+                 "auto-add off; 1 are small sample.",
+                 "- Rung 4: Tax Delinquent + Vacant (Alder), 27.5 doors per deal. NO FEEDER.",
+                 "- Rung 1: Notice of Default (Alder), 11.0 doors per deal. Small sample on the ladder and no feeder: "
+                 "county records are the source.",
+                 "Rung 3: AI Score 90+ (Alder), 22.6 doors per deal. Fed by [20] Alder - Priority 1 - AI 90+. Lacks: "
+                 "no built-by-2010 filter; no owned-7-years filter;",
+                 "It does not create or edit a feeder"):
+        assert want in md, want
+    assert md.index("## Worth a look") < md.index("## The ladder") < md.index("## What this audit did not do")
+    assert md.count("\n| ") == 1 + 15                                           # still one table: the feeders
+    assert "## The ladder" not in fa.render_md(plan_of())
+    assert chr(8212) not in md and chr(8211) not in md
+    said = fa.ladder_lines(plan["ladder"])
+    assert said[0] == ("5 Priority 1 rung(s) on the ladder: 2 with a feeder adding records, 2 with none, 0 saved but "
+                       "not adding, 1 small sample (county records are the source).")
+    assert "No feeder for rung 4: Tax Delinquent + Vacant (Alder), 27.5 doors per deal." in said
+    assert len(fa.ladder_lines(plan["ladder"], limit=1)) == 3 and fa.ladder_lines(plan["ladder"], limit=1)[2].startswith("and ")
+
+
+def test_the_command_line_takes_a_ladder_file_from_disk():
+    import contextlib
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        cache, lad, empty = tmp / "listing.json", tmp / "ladder.json", tmp / "empty.json"
+        cache.write_text(json.dumps({"rows": listing(), "pages": 2, "at": "2026-11-12T23:00:00"}), encoding="utf-8")
+        lad.write_text(json.dumps(ladder_file()), encoding="utf-8")
+        empty.write_text(json.dumps({"99001": {"name": "Alder", "variants": {"ai": []}}}), encoding="utf-8")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = fa.main(["plan", "--cache", str(cache), "--out-dir", str(tmp), "--date", "2026-11-13",
+                            "--ladder", str(lad), "--fips", "99001", "--rungs", "4"])
+        assert code == 0 and "4 Priority 1 rung(s) on the ladder" in out.getvalue()
+        saved = json.loads((tmp / "plan_2026-11-13.json").read_text(encoding="utf-8"))
+        assert saved["ladder"]["summary"]["priority_1_rungs"] == 4 and saved["ladder"]["source"] == "ladder.json"
+        assert "## The ladder" in (tmp / "plan_2026-11-13.md").read_text(encoding="utf-8")
+        with contextlib.redirect_stdout(io.StringIO()) as said:
+            assert fa.main(["plan", "--cache", str(cache), "--out-dir", str(tmp), "--ladder", str(empty), "--fips", "99001"]) == 5
+        assert "no rungs could be read" in said.getvalue()
+
+
 def test_the_module_holds_no_long_dash_or_backspace_byte():
     for name in ("src/agents/autopilot/feeder_audit.py", "tests/test_feeder_audit.py"):
         text = (ROOT / name).read_text(encoding="utf-8")

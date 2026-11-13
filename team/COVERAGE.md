@@ -20,6 +20,8 @@ Every agent on docs/agents.json (the public org chart), the team workflow that r
 | ftm_assign | autopilot stage | none: not on the org chart yet |
 | ftm_auction | autopilot stage | none: not on the org chart yet |
 | ftm_reactivate | autopilot stage | none: not on the org chart yet |
+| ladder_check | autopilot stage | none: not on the org chart yet |
+| conventions_check | autopilot stage | none: not on the org chart yet |
 
 ## Diggs (Research)
 

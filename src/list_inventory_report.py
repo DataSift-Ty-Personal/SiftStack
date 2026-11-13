@@ -15,6 +15,8 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
+import shard_guard
+
 NAVY, BLUE, GREEN, GOLD, RED = "0A1130", "316AFF", "1B9E5A", "B8860B", "C00000"
 GREY, LINE = "5B6480", "D8DCE6"
 
@@ -29,6 +31,16 @@ def band(ws, row, text, width):
     c.fill = PatternFill("solid", fgColor=NAVY)
     c.alignment = Alignment(vertical="center", indent=1)
     ws.row_dimensions[row].height = 22
+    return row + 1
+
+
+def note(ws, row, text, width):
+    """A caveat under a band, in the caveat colour: what the reader must know before the numbers."""
+    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=width)
+    c = ws.cell(row=row, column=1, value=text)
+    c.font = Font(size=10, color=GOLD)
+    c.alignment = Alignment(vertical="center", wrap_text=True, indent=1)
+    ws.row_dimensions[row].height = 30
     return row + 1
 
 
@@ -110,9 +122,14 @@ def main() -> int:
     for cty, data in (("Knox", knox), ("Blount", blount)):
         ws = wb.create_sheet("%s framework" % cty)
         b = data["county"]["baseline"]
+        # An inventory written since the window guard carries the window it stood behind
+        # (shard_guard.py): the data's own "6 complete months" label counted an unrecorded month.
+        window = data["county"].get("window_used") or data["county"]["window"]
         r = band(ws, 1, "%s County, TN  |  %s  |  %s investor deals  |  county baseline "
-                        "%s doors per deal" % (cty, data["county"]["window"],
+                        "%s doors per deal" % (cty, window,
                                                data["county"]["deals"], b["dpd"]), 7)
+        for ln in shard_guard.lines(data["county"]):
+            r = note(ws, r, ln, 7)
         r += 1
         for pr, label in ((1, "Priority 1  (3x or better than county baseline)"),
                           (2, "Priority 2  (1.5x to 3x, volume at fair cost)")):

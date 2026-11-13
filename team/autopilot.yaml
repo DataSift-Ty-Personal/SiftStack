@@ -464,3 +464,41 @@ stages:
       - FTM - Mail 01 Handwritten Letter
       - Hot Auction + Buy Box
       - "03 Exhausted Call -> DP"
+
+  # ------------------------------------------------------------------ Phase 5: data, lists and hygiene
+  # Both stages read and report. Neither changes a record, a list, a preset or a feeder.
+  ladder_check:
+    kind: laddercheck
+    owner: analysis
+    mode: "plan"
+    schedule: "1st 03:10"       # the night list, once a month
+    summary: The lists checked against real investor sales once a month, and the Priority 1 feeders against the ladder.
+    counties:
+      - {fips: "47093", name: Knox, state: TN}
+      - {fips: "47009", name: Blount, state: TN}
+    months: 6
+    lag_months: 1               # deeds reach the data four to eight weeks after a closing
+    max_searches: 60            # SiftMap searches a run (its own request counter; about 7 a county)
+    max_rows: 5000
+    max_lists: 10
+    min_deals: 5                # fewer sales than this on a list and no rate is read from it
+    skip_lists: ["Dispo - "]    # buyer lists hold every investor purchase by construction
+    reached_preset: ""          # a saved preset that holds reached records; empty leaves reach unmeasured
+    feeders: true               # compare the Priority 1 rungs with the SiftMap feeders
+    layers: []                  # optional standing counts
+
+  conventions_check:
+    kind: conventions
+    owner: analysis
+    mode: "plan"
+    schedule: "Sun 03:40"       # the night list, once a week
+    summary: The account's naming rules checked once a week; what breaks one is listed and nothing is changed.
+    caller_folders: ["05. FTM - CALL", "20. CALLER QUEUES"]   # matched on letters and digits
+    starred_field: quick_filter
+    inbound_field: Inbound Source
+    mail_tag: "Mailed {yyyy}-{mm}"
+    mail_days: 35
+    zombie: {names: [Zombie], vacant: Vacant, foreclosure: Foreclosure}
+    known_lists: [DNC, Dream 100]
+    known_prefixes: ["Dispo - "]
+    settings: {auto_update: true}

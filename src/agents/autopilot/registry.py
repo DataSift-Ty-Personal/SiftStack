@@ -15,6 +15,9 @@ from __future__ import annotations
 import importlib
 
 EXTRA: dict[str, tuple[str, str, str, bool, bool]] = {
+    # data, lists and hygiene (plan phase 5)
+    "laddercheck": ("laddercheck", "run_laddercheck", "free", False, True),
+    "conventions": ("conventions", "run_conventions", "free", False, True),
 }
 
 

@@ -17,7 +17,14 @@ That is what this builds, in phases, each resumable and DRY by default:
     skipinput   project the registry into a SmartSkip upload        (free)
     phones      join the SmartSkip return back onto buyer_key         (free)
     score       Trestle dial tiers (--source registry|preset)         (BILLED)
+    rules       what the taught deed rules would change               (free, writes nothing)
     qa          the gate table
+
+How a deed is read is a named ruleset (see RULESETS below). `today` is the default and reads
+every deed as this file always has; `--rules taught` adds the rules from the buyer lessons
+(institutions by count, a flip within 18 months, back-to-back companies, a loan standing in
+for a missing price, new construction left out of flips). `--phase rules` shows the before
+and after from the cache without writing anything.
 
 The order of the two principal phases is the whole cost story: an LLC's mailing
 address is usually a person's house, so reversing it through the map we already
@@ -106,6 +113,140 @@ STREET_WORD_RX = re.compile(
     r"CT|CIRCLE|CIR|PIKE|PKWY|PARKWAY|WAY|TRAIL|TRL|PLACE|PL)\b")
 
 
+# ---------------------------------------------------------------- rules ----
+# How a deed is read, by name (build plan 5.6). "today" is the registry as it has always been
+# built. "taught" adds the rules from the buyer lessons:
+#
+#   institution_buys_6mo  a buyer with this many purchases in six months is an institution whatever
+#                         its name says. The name lists catch Opendoor; they cannot catch a fund
+#                         that buys through "Maple 14 LLC". 0 switches the rule off.
+#   flip_months           a flip is a purchase resold within this many months. A house an entity
+#                         held for eight years and then sold is a landlord's sale, and counting it
+#                         as a flip puts a 2016 purchase price in a flipper's buy box.
+#   double_close_days     two entities back to back on the deeds, this many days apart or fewer,
+#                         are a wholesaler and then the buyer. The first never held the house.
+#   loan_as_price         where the deed carries no price, the buyer's loan recorded with it stands
+#                         in (it is close to the truth and often includes the rehab), and says so.
+#   flip_built_by         a "flip" of a house built after this year is a builder selling new
+#                         construction, so it is not read as a flip.
+#
+# Nothing here is on by default: each rule moves buyers between types on a list the deal blast
+# already runs on, so it is switched on by name (--rules taught, or DISPO_BUYER_RULES=taught) once
+# the before and after has been read (--phase rules prints it and writes nothing).
+RULESETS = {
+    "today": {"institution_buys_6mo": 0, "flip_months": 0, "double_close_days": 0,
+              "loan_as_price": False, "flip_built_by": 0},
+    "taught": {"institution_buys_6mo": 100, "flip_months": 18, "double_close_days": 30,
+               "loan_as_price": True, "flip_built_by": 2010},
+}
+DEFAULT_RULES = "today"
+RULES_ENV = "DISPO_BUYER_RULES"
+SIX_MONTHS_DAYS = 182
+LOAN_MATCH_DAYS = 45           # a purchase loan is recorded with its deed, give or take the clerk
+LOAN_LOOKBACK_DAYS = 730       # with no purchase deed in the history, how far back a flipper's loan may sit
+_ACTIVE = {"name": ""}         # set from --rules; empty means the environment, then the default
+
+
+def rules_name(name: str | None = None) -> str:
+    chosen = (name or _ACTIVE["name"] or os.environ.get(RULES_ENV) or DEFAULT_RULES).strip().lower()
+    if chosen not in RULESETS:
+        raise ValueError("unknown ruleset %r (use %s)" % (chosen, " or ".join(sorted(RULESETS))))
+    return chosen
+
+
+def rules_for(name: str | None = None) -> dict:
+    """The named ruleset as its own dict, with its name on it."""
+    return dict(RULESETS[rules_name(name)], name=rules_name(name))
+
+
+def _day(value):
+    """A date from 'YYYY-MM-DD...' or None. A deed date that cannot be read is unknown, never today."""
+    from datetime import date
+    try:
+        return date.fromisoformat(str(value)[:10])
+    except (TypeError, ValueError):
+        return None
+
+
+def _days_between(first, second):
+    a, b = _day(first), _day(second)
+    return (b - a).days if a and b else None
+
+
+def six_month_buys(obs: list, today=None, days: int = SIX_MONTHS_DAYS) -> int:
+    """Purchases dated inside the last six months. A holder bought on the deed that made them the
+    owner; an exited flipper bought on the deed before the exit, and a resale date is not a
+    purchase. An observation with no readable purchase date is not counted."""
+    from datetime import date, timedelta
+    cut = (today or date.today()) - timedelta(days=days)
+    n = 0
+    for o in obs:
+        when = _day(o.get("date") if o.get("role") == "holder" else o.get("buy_date"))
+        if when and when >= cut:
+            n += 1
+    return n
+
+
+def is_flip(buy_date, exit_date, months: int):
+    """True when the resale came within `months` of the purchase, False when it came later, None
+    when either date is missing (the label is then all there is to go on)."""
+    held = _days_between(buy_date, exit_date)
+    if held is None or held < 0:
+        return None
+    return held <= months * 30.44
+
+
+def _same_party(a: str, b: str) -> bool:
+    return bool(a and b) and norm_name(a) == norm_name(b)
+
+
+def _loan_near(mortgages: list, borrower: str, when, days: int = LOAN_MATCH_DAYS):
+    """The borrower's loan recorded within `days` of a deed: the one closest in time."""
+    best = None
+    for m in mortgages or []:
+        gap = _days_between(when, m.get("date"))
+        amount = m.get("amount")
+        if gap is None or abs(gap) > days or not isinstance(amount, (int, float)) or amount <= 0:
+            continue
+        if not _same_party(m.get("borrower") or "", borrower):
+            continue
+        if best is None or abs(gap) < best[0]:
+            best = (abs(gap), m)
+    return best[1] if best else None
+
+
+def _first_loan_before(mortgages: list, borrower: str, before, lookback: int = LOAN_LOOKBACK_DAYS):
+    """With no purchase deed in the history: the borrower's earliest loan on this house in the
+    `lookback` days before they sold it. That is the loan they bought it with, or close to it."""
+    found = []
+    for m in mortgages or []:
+        gap = _days_between(m.get("date"), before)
+        amount = m.get("amount")
+        if gap is None or gap < 0 or gap > lookback or not isinstance(amount, (int, float)) or amount <= 0:
+            continue
+        if _same_party(m.get("borrower") or "", borrower):
+            found.append((str(m.get("date")), m))
+    return sorted(found, key=lambda x: x[0])[0][1] if found else None
+
+
+def _middleman(sh: list, at: int, days: int):
+    """The deed pair that makes a double closing, or None. `sh[at]` is the deed the observed buyer
+    bought on; if its seller bought the house on the deed before it, `days` or fewer earlier, and
+    both are companies, the seller only passed the contract along."""
+    if not days or at + 1 >= len(sh):
+        return None
+    buy, prior = sh[at], sh[at + 1]
+    seller, buyer = (buy.get("seller") or "").strip(), (buy.get("buyer") or "").strip()
+    if not seller or not buyer or not _same_party(prior.get("buyer") or "", seller):
+        return None
+    if _same_party(seller, buyer) or not (_is_entity(seller) and _is_entity(buyer)):
+        return None
+    gap = _days_between(prior.get("date"), buy.get("date"))
+    if gap is None or gap < 0 or gap > days:
+        return None
+    return {"name": seller, "bought": prior, "sold": buy, "days": gap}
+
+
 # ---------------------------------------------------------------- state ----
 
 def _load(p: Path, default):
@@ -145,7 +286,7 @@ def gate(ok: bool, msg: str) -> None:
 # ---------------------------------------------------------------- sweep ----
 
 def _body(fips: str, name: str, state_ab: str, txn: str, page: int,
-          collapse: bool, since: str = "") -> dict:
+          collapse: bool, since: str = "", built_by: int = 0) -> dict:
     filters = {
         "type_single_family": True,
         K_TXN: [txn],
@@ -153,6 +294,13 @@ def _body(fips: str, name: str, state_ab: str, txn: str, page: int,
         "extra_last_sale_value_min": 1000,
         "extra_is_last_sale_interfamily": False,
     }
+    if built_by and txn in EXIT_TYPES:
+        # A flip search with no age floor returns builders selling new houses (the lesson asks for
+        # built 2010 or older). The key is in the published filter reference; the plain
+        # year_built_max spelling measured as ignored on saved filters (2026-09). The sweep proves
+        # the key with a count before it trusts it, and each property's own year built is checked
+        # again when the deed is read.
+        filters["extra_year_built_max"] = int(built_by)
     if since:
         # Verified by count delta 2026-08-28: Knox 6,912 unbounded drops to
         # 1,151 at 12 months, while a deliberately bogus key returns the
@@ -171,11 +319,29 @@ def _body(fips: str, name: str, state_ab: str, txn: str, page: int,
     }
 
 
+def _year_filter_proven(sc, fips: str, name: str, st: str, txn: str, collapse: bool, since: str,
+                        built_by: int) -> bool:
+    """One extra count, with the year key and without it. SiftMap ignores a key it does not know
+    and answers as if it were not there, so the only proof a filter works is a count that moves."""
+    if not built_by or txn not in EXIT_TYPES:
+        return True
+    with_key = sc.search(_body(fips, name, st, txn, 1, collapse, since, built_by)).get("total_results") or 0
+    without = sc.search(_body(fips, name, st, txn, 1, collapse, since)).get("total_results") or 0
+    if without and with_key >= without:
+        log.warning("%s:%s the built-by-%s filter did not change the count (%s both ways); it may be "
+                    "ignored. Each property's own year built is still checked.", name, txn, built_by, without)
+        return False
+    log.info("%s:%s built by %s: %s of %s", name, txn, built_by, with_key, without)
+    return True
+
+
 def phase_sweep(args) -> None:
     sc = SearchClient(min_interval=args.min_interval)
     rows_path = OUT / "rows.json"
     store = _load(rows_path, {})
     counts: dict = {}
+    built_by = rules_for()["flip_built_by"]
+    each = bool(getattr(args, "each_purchase", False))
 
     for fips, name, st in COUNTIES:
         for txn in ALL_TYPES:
@@ -187,12 +353,15 @@ def phase_sweep(args) -> None:
             # Hold types collapse to one row per owner, which is exactly the
             # aggregation. Exit types must NOT collapse: we need each sale so
             # the seller (the flipper) can be read off its history.
-            collapse = txn in HOLD_TYPES
+            # --each-purchase keeps one row per purchase for the hold types too, which is what
+            # counting a buyer's purchases needs (and costs that many more detail reads).
+            collapse = txn in HOLD_TYPES and not each
+            _year_filter_proven(sc, fips, name, st, txn, collapse, "", built_by)
             seen: dict = {}
             page = 1
             total = None
             while True:
-                r = sc.search(_body(fips, name, st, txn, page, collapse))
+                r = sc.search(_body(fips, name, st, txn, page, collapse, built_by=built_by))
                 if total is None:
                     total = r.get("total_results") or 0
                     log.info("%s: %s total%s", key, total,
@@ -246,7 +415,8 @@ def phase_sweep(args) -> None:
     total_rows = sum(counts.values())
     uniq = len({r["id"] for v in store.values() for r in v})
     gate(total_rows > 0, "sweep returned zero rows across both counties")
-    mark_done("sweep", per_segment=counts, rows=total_rows, unique_ids=uniq)
+    mark_done("sweep", per_segment=counts, rows=total_rows, unique_ids=uniq,
+              **({"each_purchase": True} if each else {}))
     print(json.dumps(counts, indent=1))
     print("sweep: " + str(total_rows) + " rows, " + str(uniq) + " unique properties")
 
@@ -274,13 +444,15 @@ def phase_recent(args) -> None:
     store: dict = {}
     log.info("qualifying window: last sale on or after %s", since)
 
+    built_by = rules_for()["flip_built_by"]
+    each = bool(getattr(args, "each_purchase", False))
     for fips, name, st in COUNTIES:
         for txn in ALL_TYPES:
-            collapse = txn in HOLD_TYPES
+            collapse = txn in HOLD_TYPES and not each
             seen: dict = {}
             page, total = 1, None
             while True:
-                r = sc.search(_body(fips, name, st, txn, page, collapse, since))
+                r = sc.search(_body(fips, name, st, txn, page, collapse, since, built_by))
                 if total is None:
                     total = r.get("total_results") or 0
                 batch = r.get("data") or []
@@ -391,6 +563,14 @@ def _hydrate_one(smc: SiftMapClient, rid: str) -> dict:
                           "buyer": s.get("buyer_name"),
                           "seller": s.get("seller_name"),
                           "cash": s.get("is_cash_sale")} for s in sh[:4]],
+        # Two more things the same read already returns, kept so the taught rules can use them
+        # without a second request: the loans recorded against the house (a loan stands in for a
+        # deed price that is missing) and the year it was built (new construction is not a flip).
+        # Nothing reads either unless a ruleset asks for it.
+        "mortgages": [{"date": m.get("record_date"), "amount": m.get("amount"),
+                       "borrower": m.get("grantee_name"), "lender": m.get("lender_name")}
+                      for m in (d.get("mortgage_history") or [])[:8] if isinstance(m, dict)],
+        "year_built": d.get("years_built"),
     }
 
 
@@ -410,6 +590,13 @@ def phase_hydrate(args) -> None:
             for r in seg_rows:
                 if r["id"] not in details:
                     todo.append(r["id"])
+    if getattr(args, "reread_unpriced", False):
+        # A detail read before the loans were kept cannot fill a missing price. Read again only
+        # the properties whose purchase has no deed price and whose cached read carries no loans.
+        seen_rules = dict(RULESETS["taught"], name="taught", loan_as_price=False)
+        for o in _observations(rows, details, seen_rules):
+            if o.get("id") and not _priced(o.get("price")) and "mortgages" not in (details.get(o["id"]) or {}):
+                todo.append(o["id"])
     todo = sorted(set(todo))
     if args.limit:
         todo = todo[:args.limit]
@@ -543,7 +730,32 @@ def _phys(row: dict) -> dict:
     return {k: row.get(k) for k in PHYS_FIELDS}
 
 
-def _observations(rows: dict, details: dict) -> list:
+def _priced(price) -> bool:
+    return isinstance(price, (int, float)) and not isinstance(price, bool) and price > 0
+
+
+def _wholesale_obs(mid: dict, county: str, r: dict) -> dict:
+    """The company in the middle of a double closing, as its own observation: what it paid, what
+    it was paid the same week, and who it sold the contract to."""
+    return {
+        "name": mid["name"], "mail": "", "county": county, "txn": "wholesale", "role": "wholesaler",
+        "prop": r.get("address"), "id": r.get("id"), "date": mid["sold"].get("date"),
+        "buy_date": mid["bought"].get("date"), "price": mid["bought"].get("price"),
+        "exit_price": mid["sold"].get("price"), "sold_to": (mid["sold"].get("buyer") or "").strip(),
+        "days_held": mid["days"], "cash": mid["bought"].get("cash"), "portfolio_n": None,
+        "portfolio_value": None, "saved_uuid": None, "secondary": [], **_phys(r),
+    }
+
+
+def _observations(rows: dict, details: dict, rules: dict | None = None, stats: dict | None = None) -> list:
+    """One observation per purchase the deeds show. `rules` is a ruleset (rules_for); with none
+    given the active one is used, which is today's unless --rules or the environment says so.
+    `stats`, when handed in, is filled with what each rule did, so a phase can say it out loud."""
+    rules = rules or rules_for()
+    taught = any(rules.get(k) for k in ("flip_months", "double_close_days", "loan_as_price", "flip_built_by"))
+    stats = stats if stats is not None else {}
+    for k in ("long_holds", "wholesalers", "loan_priced", "new_builds", "year_unknown", "flips_checked"):
+        stats.setdefault(k, 0)
     obs = []
     for key, seg_rows in rows.items():
         county, txn = key.split(":", 1)
@@ -553,9 +765,10 @@ def _observations(rows: dict, details: dict) -> list:
                 continue
             sh = d.get("sale_history") or []
             last = sh[0] if sh else {}
+            loans = d.get("mortgages") or []
             if txn in HOLD_TYPES:
                 # The investor still holds it: the current owner is the buyer.
-                obs.append({
+                o = {
                     "name": d["owner_name"], "mail": d.get("owner_mail") or "",
                     "county": county, "txn": txn, "role": "holder",
                     "prop": r.get("address"), "date": last.get("date"),
@@ -565,7 +778,20 @@ def _observations(rows: dict, details: dict) -> list:
                     "saved_uuid": r.get("saved_uuid"),
                     "secondary": d.get("secondary_owners") or [],
                     **_phys(r),
-                })
+                }
+                if taught:
+                    o["id"] = r.get("id")
+                    if rules["loan_as_price"] and not _priced(o["price"]):
+                        loan = _loan_near(loans, o["name"], o["date"])
+                        if loan:
+                            o["price"], o["price_source"] = loan["amount"], "loan"
+                            stats["loan_priced"] += 1
+                    mid = _middleman(sh, 0, rules["double_close_days"])
+                    if mid:
+                        o["via"] = mid["name"]
+                        obs.append(_wholesale_obs(mid, county, r))
+                        stats["wholesalers"] += 1
+                obs.append(o)
             else:
                 # The flip already exited: the current owner is the RETAIL
                 # buyer. The investor is the SELLER on that last sale, and this
@@ -573,13 +799,24 @@ def _observations(rows: dict, details: dict) -> list:
                 seller = (last.get("seller") or "").strip()
                 if not seller:
                     continue
+                if rules["flip_built_by"]:
+                    # A house built after the cutoff and sold by a company is new construction:
+                    # the seller is a builder, and their "purchase" was a lot. Read as a flip it
+                    # puts a lot price in a flipper's buy box. An unknown year is kept, and counted.
+                    year = d.get("year_built")
+                    if isinstance(year, (int, float)) and not isinstance(year, bool) and year > rules["flip_built_by"]:
+                        stats["new_builds"] += 1
+                        continue
+                    if not year:
+                        stats["year_unknown"] += 1
                 # What the flipper PAID is the deed before the exit, where they are the buyer.
                 # The exit deed's price is what a homebuyer paid them, and pricing a flipper at it
                 # turned a book of $100K-$200K purchases into a $307,500 "buy box" (found
                 # 2026-10-27 on a real buyer). When the earlier deed is not in the history the
                 # purchase price is unknown, and unknown is what gets recorded.
-                buy = next((s for s in sh[1:] if norm_name(s.get("buyer") or "") == norm_name(seller)), None)
-                obs.append({
+                at = next((i for i, s in enumerate(sh) if i and norm_name(s.get("buyer") or "") == norm_name(seller)), None)
+                buy = sh[at] if at is not None else None
+                o = {
                     "name": seller, "mail": "", "county": county, "txn": txn,
                     "role": "exited", "prop": r.get("address"),
                     "date": last.get("date"), "price": buy.get("price") if buy else None,
@@ -588,8 +825,36 @@ def _observations(rows: dict, details: dict) -> list:
                     "cash": buy.get("cash") if buy else None, "portfolio_n": None,
                     "portfolio_value": None, "saved_uuid": None, "secondary": [],
                     **_phys(r),
-                })
+                }
+                if taught:
+                    o["id"] = r.get("id")
+                    if rules["loan_as_price"] and not _priced(o["price"]):
+                        loan = (_loan_near(loans, seller, o["buy_date"]) if buy
+                                else _first_loan_before(loans, seller, o["date"]))
+                        if loan:
+                            o["price"], o["price_source"] = loan["amount"], "loan"
+                            o["buy_date"] = o["buy_date"] or loan.get("date")
+                            stats["loan_priced"] += 1
+                    if rules["flip_months"]:
+                        stats["flips_checked"] += 1
+                        o["days_held"] = _days_between(o["buy_date"], o["date"])
+                        if is_flip(o["buy_date"], o["date"], rules["flip_months"]) is False:
+                            # Held longer than a flip, then sold: a landlord or an owner selling.
+                            # It is still a purchase this buyer made, so it stays, under its own name.
+                            o["role"] = "long_hold"
+                            stats["long_holds"] += 1
+                    if buy and o["role"] == "exited":
+                        mid = _middleman(sh, at, rules["double_close_days"])
+                        if mid:
+                            o["via"] = mid["name"]
+                            obs.append(_wholesale_obs(mid, county, r))
+                            stats["wholesalers"] += 1
+                obs.append(o)
     return obs
+
+
+def _rules_on(rules: dict) -> bool:
+    return any(rules.get(k) for k in RULESETS["taught"])
 
 
 def phase_aggregate(args) -> None:
@@ -597,7 +862,9 @@ def phase_aggregate(args) -> None:
     rows = _load(OUT / "rows.json", {})
     details = _load(OUT / "details.json", {})
 
-    obs = _observations(rows, details)
+    rules = rules_for()
+    rule_stats: dict = {}
+    obs = _observations(rows, details, rules, rule_stats)
     gate(len(obs) > 0, "aggregate produced no observations")
 
     # Pass 1: exact normalized name. Pass 2: mailing-address cluster, guarded
@@ -638,13 +905,33 @@ def phase_aggregate(args) -> None:
     groups = [g for g in groups if id(g) not in dropped]
 
     registry = []
+    by_count = []
     for g in groups:
         o_all = g["obs"]
         raw = Counter(o["name"] for o in o_all).most_common(1)[0][0]
         prices = sorted(o["price"] for o in o_all
-                        if isinstance(o.get("price"), (int, float)) and o["price"])
+                        if isinstance(o.get("price"), (int, float)) and o["price"]
+                        and o["role"] != "long_hold")
         holders = [o for o in o_all if o["role"] == "holder"]
         tier, reason, _conf = local_tier(norm_name(raw), len(o_all))
+        n_exited = len(o_all) - len(holders)
+        extra: dict = {}
+        if _rules_on(rules):
+            # Only a ruleset that was asked for adds these, so today's registry reads as it always has.
+            n_exited = sum(1 for o in o_all if o["role"] == "exited")
+            n6 = six_month_buys(o_all)
+            extra = {"rules": rules["name"], "buys_6mo": n6,
+                     "n_wholesaled": sum(1 for o in o_all if o["role"] == "wholesaler"),
+                     "n_long_holds": sum(1 for o in o_all if o["role"] == "long_hold"),
+                     "n_via_wholesaler": sum(1 for o in o_all if o.get("via")),
+                     "loan_priced": sum(1 for o in o_all if o.get("price_source") == "loan")}
+            floor = rules["institution_buys_6mo"]
+            if floor and n6 >= floor and tier != "EXCLUDE":
+                # By count, whatever the name says. A local builder with nine purchases is nowhere
+                # near this line, which is the point: the name rules must not be what catches a
+                # fund, because a name rule strict enough to do it also drops the builders.
+                tier, reason = "EXCLUDE", "institution by count: %d purchases in six months" % n6
+                by_count.append(raw)
         registry.append({
             "buyer_key": norm_name(raw),
             "name": raw,
@@ -655,7 +942,7 @@ def phase_aggregate(args) -> None:
             "txn_types": sorted({o["txn"] for o in o_all}),
             "n_buys": len(o_all),
             "n_held": len(holders),
-            "n_exited": len(o_all) - len(holders),
+            "n_exited": n_exited,
             "cash_n": sum(1 for o in o_all if o.get("cash")),
             "price_min": prices[0] if prices else None,
             "price_med": prices[len(prices) // 2] if prices else None,
@@ -672,6 +959,7 @@ def phase_aggregate(args) -> None:
                       "county": o["county"], "txn": o["txn"], "role": o["role"]}
                      for o in sorted(o_all, key=lambda x: str(x.get("date") or ""),
                                      reverse=True)[:25]],
+            **extra,
         })
 
     # ---- join the recency layer ------------------------------------------
@@ -731,10 +1019,12 @@ def phase_aggregate(args) -> None:
 
     act = sum(1 for b in registry if b.get("active_365d"))
     hot = sum(1 for b in registry if b.get("active_182d"))
+    on = _rules_on(rules)
     mark_done("aggregate", buyers=len(registry), observations=len(obs),
               merges=len(merges), refused=len(refused),
               no_mailing_address=len(no_mail), excluded=len(excluded),
-              active_365d=act, active_182d=hot, recent_only_added=added)
+              active_365d=act, active_182d=hot, recent_only_added=added,
+              **({"rules": rules["name"], "rule_stats": rule_stats, "institutions_by_count": len(by_count)} if on else {}))
     print("aggregate: " + str(len(obs)) + " observations -> "
           + str(len(registry)) + " unique buyers")
     print("  merged by mailing address : " + str(len(merges)))
@@ -744,6 +1034,32 @@ def phase_aggregate(args) -> None:
     print("  active in the last 365d   : " + str(act) + " ("
           + str(hot) + " within 182d)")
     print("  added from the recency sweep only: " + str(added))
+    if on:
+        for line in rule_lines(rules, rule_stats, by_count, bool(state().get("sweep", {}).get("each_purchase"))):
+            print("  " + line)
+
+
+def rule_lines(rules: dict, stats: dict, by_count: list, each_purchase: bool) -> list:
+    """What the named rules did to this build, one plain line each."""
+    out = ["rules: %s" % rules["name"]]
+    if rules["institution_buys_6mo"]:
+        out.append("dropped as institutions by count (%d or more purchases in six months): %d%s" % (
+            rules["institution_buys_6mo"], len(by_count), (" (" + ", ".join(by_count[:4]) + ")") if by_count else ""))
+        if not each_purchase:
+            out.append("  holders were swept one row per owner, so a holder's count is a floor; "
+                       "sweep with --each-purchase to count every purchase")
+    if rules["flip_months"]:
+        out.append("flips checked against the %d-month rule: %d, of which %d were held longer and read as long holds" % (
+            rules["flip_months"], stats.get("flips_checked", 0), stats.get("long_holds", 0)))
+    if rules["double_close_days"]:
+        out.append("back-to-back company deeds within %d days: %d wholesalers recorded" % (
+            rules["double_close_days"], stats.get("wholesalers", 0)))
+    if rules["loan_as_price"]:
+        out.append("purchases with no deed price, priced at the buyer's loan: %d" % stats.get("loan_priced", 0))
+    if rules["flip_built_by"]:
+        out.append("flip sales of houses built after %d left out as new construction: %d (year built unknown on %d, kept)" % (
+            rules["flip_built_by"], stats.get("new_builds", 0), stats.get("year_unknown", 0)))
+    return out
 
 
 # --------------------------------------------------------------- unmask ----
@@ -1380,6 +1696,10 @@ def _real_prices(obs: list) -> tuple:
     """(prices worth banding, how many nominal transfers were dropped)."""
     keep, dropped = [], 0
     for o in obs:
+        if o.get("role") == "long_hold":
+            # Only the taught flip rule makes these: a house held for years and then sold. Its
+            # purchase is real and stays in the count, but its price is from another market.
+            continue
         p = o.get("price")
         if not isinstance(p, (int, float)) or p <= 0:
             continue
@@ -1407,6 +1727,12 @@ def buyer_type(b: dict) -> tuple:
         return "self-performer", "name says construction or building trade"
     txns = set(b.get("txn_types") or [])
     held, exited = b.get("n_held", 0), b.get("n_exited", 0)
+    # These two counts exist only on a registry built with the taught rules.
+    wholesaled, long_holds = b.get("n_wholesaled", 0), b.get("n_long_holds", 0)
+    if wholesaled and wholesaled > held and wholesaled >= exited:
+        return "wholesaler", "sold to another company back to back on the deeds"
+    if long_holds and long_holds > max(held, exited, wholesaled):
+        return "long-term holder", "sold houses it had held longer than a flip"
     if exited > held:
         return "exited flipper", "more exits than current holdings"
     # THE RENTAL LABEL LAGS BY OVER A YEAR. Measured 2026-08-28: `rental`
@@ -1510,7 +1836,14 @@ def phase_profiles(args) -> None:
     scores = _load(OUT / "phone_scores.json", {})
     rows = _load(OUT / "rows.json", {})
     details = _load(OUT / "details.json", {})
-    obs = _observations(rows, details)
+    rules = rules_for()
+    built_on = next((b.get("rules") for b in reg if b.get("rules")), DEFAULT_RULES)
+    if built_on != rules["name"]:
+        # The registry says who is which type; the observations here set each price band. Read on
+        # two different rulesets they describe two different buyers under one name.
+        raise SystemExit("the registry was built on the %s rules and this run asks for %s; run "
+                         "--phase aggregate --rules %s first" % (built_on, rules["name"], rules["name"]))
+    obs = _observations(rows, details, rules)
 
     by_key: dict = defaultdict(list)
     for o in obs:
@@ -1643,6 +1976,11 @@ def phase_profiles(args) -> None:
         p["principal_is_agent"] = bool(
             pr.get("principal")
             and pr.get("principal_confidence") == "low")
+        if _rules_on(rules):
+            for k in ("rules", "buys_6mo", "n_wholesaled", "n_long_holds", "n_via_wholesaler"):
+                p[k] = b.get(k)
+            # A band that leans on loan amounts runs high: a purchase loan often carries the rehab.
+            p["loan_priced"] = sum(1 for o in mine if o.get("price_source") == "loan")
         p["buyer_type"], p["buyer_type_rule"] = buyer_type(b)
         p["narrative"] = _narrative(p)
         profiles.append(p)
@@ -1905,6 +2243,19 @@ def write_profiles_xlsx(profiles: list, path: Path) -> None:
         ["Caution", "The buy box is inferred, never asked. Treat it as where "
                     "this buyer has been active, not a commitment"],
     ]
+    named = next((p.get("rules") for p in profiles if p.get("rules")), "")
+    if named:
+        r = RULESETS.get(named, {})
+        loans = sum(p.get("loan_priced") or 0 for p in profiles)
+        srows.append(["Rules", "Deeds were read on the %s rules: a flip is a purchase resold within %s months "
+                               "(a longer hold is a long-term holder's sale and its price is kept out of the "
+                               "band); two companies back to back within %s days are a wholesaler and then the "
+                               "buyer; %s or more purchases in six months is an institution whatever the name; "
+                               "a flip sale of a house built after %s is new construction and is left out. "
+                               "%d price(s) are loan amounts standing in for a deed with no price, and a loan "
+                               "often includes the rehab"
+                      % (named, r.get("flip_months"), r.get("double_close_days"), r.get("institution_buys_6mo"),
+                         r.get("flip_built_by"), loans)])
     sheet("Sources and Caveats", sh, srows, [22, 104],
           title="How to read this, and what not to trust")
 
@@ -2513,13 +2864,68 @@ def phase_qa(args) -> None:
 
 # ----------------------------------------------------------------- main ----
 
+def rules_preview(rows: dict, details: dict, buyer: str = "", today=None) -> dict:
+    """What the taught rules would change, read from the cached sweep. Nothing is written and
+    nothing is fetched: this is the before and after to read before switching the rules on."""
+    now, then = rules_for("today"), rules_for("taught")
+    stats: dict = {}
+    before = _observations(rows, details, now)
+    after = _observations(rows, details, then, stats)
+
+    def groups(obs):
+        out: dict = defaultdict(list)
+        for o in obs:
+            out[norm_name(o["name"])].append(o)
+        return out
+
+    g0, g1 = groups(before), groups(after)
+    by_count = sorted(k for k, v in g1.items() if six_month_buys(v, today) >= then["institution_buys_6mo"])
+    out = {"observations": {"today": len(before), "taught": len(after)},
+           "buyers": {"today": len(g0), "taught": len(g1)},
+           "new_buyers": sorted(set(g1) - set(g0))[:25], "institutions_by_count": by_count, "stats": stats}
+    if buyer:
+        key = norm_name(buyer)
+        out["buyer"] = {"name": buyer,
+                        "today": {"purchases": len(g0.get(key, [])), "band": _price_band(g0.get(key, []))[0]},
+                        "taught": {"purchases": len(g1.get(key, [])), "band": _price_band(g1.get(key, []))[0],
+                                   "long_holds": sum(1 for o in g1.get(key, []) if o["role"] == "long_hold"),
+                                   "loan_priced": sum(1 for o in g1.get(key, []) if o.get("price_source") == "loan")}}
+    return out
+
+
+def phase_rules(args) -> None:
+    rows = _load(OUT / "rows.json", {})
+    details = _load(OUT / "details.json", {})
+    gate(bool(rows) and bool(details), "no cached sweep to read; run sweep and hydrate first")
+    got = rules_preview(rows, details, getattr(args, "buyer", "") or "")
+    then = rules_for("taught")
+    print("rules preview: nothing was written")
+    print("  observations: %d today, %d on the taught rules" % (got["observations"]["today"], got["observations"]["taught"]))
+    print("  buyers      : %d today, %d on the taught rules (%d appear only as wholesalers)" % (
+        got["buyers"]["today"], got["buyers"]["taught"], got["buyers"]["taught"] - got["buyers"]["today"]))
+    for line in rule_lines(then, got["stats"], got["institutions_by_count"],
+                           bool(state().get("sweep", {}).get("each_purchase")))[1:]:
+        print("  " + line)
+    with_loans = sum(1 for d in details.values() if "mortgages" in d)
+    if with_loans < len(details):
+        print("  %d of %d cached properties were read before loans were kept, so the loan rule cannot see them; "
+              "--phase hydrate --reread-unpriced reads again only the ones with no deed price"
+              % (len(details) - with_loans, len(details)))
+    b = got.get("buyer")
+    if b:
+        for name in ("today", "taught"):
+            band = b[name]["band"]
+            print("  %s, %s rules: %d purchases, price band %s to %s on %d priced sale(s)" % (
+                b["name"], name, b[name]["purchases"], _money(band["lo"]) or "none", _money(band["hi"]) or "none", band["n"]))
+
+
 PHASES = {"sweep": phase_sweep, "recent": phase_recent,
           "hydrate": phase_hydrate,
           "aggregate": phase_aggregate, "unmask": phase_unmask,
           "principals": phase_principals, "skipinput": phase_skipinput,
           "phones": phase_phones, "crm-phones": phase_crm_phones,
           "profiles": phase_profiles, "writeback": phase_writeback,
-          "score": phase_score,
+          "score": phase_score, "rules": phase_rules,
           "qa": phase_qa}
 
 
@@ -2562,12 +2968,25 @@ def main() -> int:
                     help="score phase: CRM preset cohort, or the registry's own phones")
     ap.add_argument("--include-dnc", action="store_true",
                     help="also score numbers flagged do-not-call")
+    ap.add_argument("--rules", choices=sorted(RULESETS), default=None,
+                    help="how deeds are read (default: today's, or DISPO_BUYER_RULES); "
+                         "--phase rules previews the taught set without writing")
+    ap.add_argument("--each-purchase", action="store_true",
+                    help="sweep/recent: one row per purchase for held houses too, so a "
+                         "buyer's purchases can be counted (more rows to hydrate)")
+    ap.add_argument("--reread-unpriced", action="store_true",
+                    help="hydrate: read again the cached properties whose purchase has no "
+                         "deed price, to pick up the loans recorded with them")
+    ap.add_argument("--buyer", default="",
+                    help="rules: also print this buyer's price band before and after")
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args()
 
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s %(levelname)s %(message)s", datefmt="%H:%M:%S")
+    _ACTIVE["name"] = args.rules or ""
+    rules_name()                     # an unknown name in the environment stops here, before any phase
     OUT.mkdir(parents=True, exist_ok=True)
     PHASES[args.phase](args)
     return 0

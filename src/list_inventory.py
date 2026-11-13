@@ -29,6 +29,7 @@ import urllib.error
 import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import shard_guard  # noqa: E402
 from datasift_api_upload import Api, BASE  # noqa: E402
 
 PLAYBOOK = "https://learn.datasift.ai/county-data/%s.json"
@@ -66,13 +67,23 @@ KEY_TO_LIST = {
 }
 
 
+def guarded(shard: dict, fips: str) -> dict:
+    """This county out of a state file, with the window guard's findings added.
+
+    The file labels itself "6 complete months" from a fixed window, and a month whose deeds had not
+    been recorded when it was built reads zero (every county, 2026-08-31). The guard drops such a
+    month and says so; the published figures stay as they are, with each list's doors per deal at a
+    six-month rate beside them (SHARD_GUARD_RESTATE=1 swaps them in). See shard_guard.py."""
+    if fips not in shard:
+        raise SystemExit("no playbook data for FIPS %s" % fips)
+    return shard_guard.county_from(shard, fips)
+
+
 def fetch_shard(fips: str) -> dict:
     url = PLAYBOOK % fips[:2]
     with urllib.request.urlopen(url, timeout=60) as r:
         shard = json.loads(r.read())
-    if fips not in shard:
-        raise SystemExit("no playbook data for FIPS %s" % fips)
-    return shard[fips]
+    return guarded(shard, fips)
 
 
 def search_count(api: Api, must: dict) -> int:
@@ -115,6 +126,8 @@ def main() -> int:
     print("County: %s %s  |  %s  |  %s deals, baseline %s doors/deal"
           % (county["name"], county["state"], county["window"],
              county["deals"], county["baseline"]["dpd"]))
+    for ln in shard_guard.lines(county):
+        print("  " + ln)
     print()
 
     # Count every list once, then reuse across rows (a segment can appear in
@@ -140,6 +153,10 @@ def main() -> int:
             "deals": r["deals"], "list_size": r["list_size"],
             "share": r.get("share"), "plan": r.get("plan"),
             "conf": r.get("conf"), "caveats": r.get("caveats") or [],
+            # from the window guard: the same list at a six-month rate, and whether its median
+            # spread rests on enough sales (15) to be trusted
+            "dpd_6mo": r.get("dpd_6mo"), "deals_6mo": r.get("deals_6mo"),
+            "median_trusted": r.get("median_trusted"),
             "lists": titles,
             "counts": {t: counts.get(t, 0) for t in titles},
             "covered": bool(titles) and not missing,

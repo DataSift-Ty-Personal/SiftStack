@@ -88,6 +88,7 @@ def _webhook_signer(check):
 
 
 EXTRA_SECTIONS: list[tuple[str, str]] = [
+    ("data, lists and hygiene", "selftest_data"),
 ]
 
 

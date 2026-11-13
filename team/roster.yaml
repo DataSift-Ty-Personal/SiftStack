@@ -120,7 +120,7 @@ workflows:
     status: planned
     spend: free
     triggers: [slack]
-    manual: python src/extract_market_finder.py then the county report generator.
+    manual: "python src/extract_market_finder.py then the county report generator. python src/market_analyzer.py --compare --market-finder <json> prints the top ZIPs on today's weights and on the taught ones."
     sources: [extract_market_finder, market_analyzer]
     covers: [finder, report]
   list_pull:
@@ -138,7 +138,7 @@ workflows:
     status: planned
     spend: free
     triggers: [schedule:Mon 07:00 America/New_York, slack]
-    manual: python src/dream100.py and src/obituary_opportunity.py (per-list today).
+    manual: "python src/dream100.py and src/obituary_opportunity.py (per-list today). dream100 --phase compare prints both weight sets side by side; --weights taught builds on the taught set in its own folder."
     sources: [dream100, obituary_opportunity, d4d_call_list]
     covers: [obitrank, dream100, d4dcalls]
   sold_cleanup:
@@ -222,7 +222,7 @@ workflows:
     status: planned
     spend: paid
     triggers: [schedule:1st 07:00 America/New_York, slack]
-    manual: python src/dispo_buyers.py --phase sweep ... score.
+    manual: "python src/dispo_buyers.py --phase sweep ... score. --phase rules previews the taught deed rules from the cache; --rules taught applies them."
     sources: [dispo_buyers, dispo_skiptrace, buyer_sweep]
     covers: [sweep, dispobuyers, disposkip, prospector]
   vendor_directory:

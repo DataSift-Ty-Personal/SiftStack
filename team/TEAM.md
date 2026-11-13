@@ -33,6 +33,8 @@ The whole team also listens in #ai-team.
 | ftm_assign | New first-to-market records handed to a caller within 30 minutes of landing, balanced by open workload. | schedule (every 30 min 08:00-18:00 Mon-Fri), ask in Slack | free | live |
 | ftm_auction | Auction Soon kept true on every courthouse foreclosure, so the Hot Auction preset is the real hot list. | schedule (07:45 daily), ask in Slack | free | live |
 | ftm_reactivate | Not-interested first-to-market records whose wait is over handed back to a caller. | schedule (Mon 08:15), ask in Slack | free | live |
+| ladder_check | The lists checked against real investor sales once a month, and the Priority 1 feeders against the ladder. | schedule (1st 03:10), ask in Slack | free | live |
+| conventions_check | The account's naming rules checked once a week; what breaks one is listed and nothing is changed. | schedule (Sun 03:40), ask in Slack | free | live |
 
 ### Diggs (Research)
 

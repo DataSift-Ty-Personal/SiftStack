@@ -19,8 +19,17 @@ The three filters that handed out the "recently sold" tag every night are listed
 They were switched off on 2026-11-12 because the rule behind them marked 25,715 records sold on the
 owner's own purchase; switching one back on re-tags every restored lead the same night.
 
+THE LADDER (build plan 5.3). Handed a county's doors-per-deal ladder, the audit also says how the
+Priority 1 feeders line up with it: which rungs have no feeder adding records, and which feeders
+lack the base filters (built 2010 or older, owned seven years), the doors-per-deal figure in their
+description, or the second feeder for the records the seven-year filter drops. This part only ever
+NAMES things. It lives outside the change list on purpose: `feeder_apply` sends the change list,
+and a feeder that starts adding records spends the record allowance the same night, so a missing
+rung is something a person creates after reading this, never something a tool does.
+
     python src/agents/autopilot/feeder_audit.py plan
     python src/agents/autopilot/feeder_audit.py plan --date 2026-11-13 --cache <file>
+    python src/agents/autopilot/feeder_audit.py plan --ladder <ladder.json> --fips 47093,47009
 """
 from __future__ import annotations
 
@@ -85,6 +94,20 @@ KEY_NOTES = {
     "year_built_min": "carries a year key SiftMap ignores (measured 2026-09); the working key starts with extra_",
     "year_built_max": "carries a year key SiftMap ignores (measured 2026-09); the working key starts with extra_",
 }
+
+# The ladder check: what a Priority 1 feeder should carry (lessons 3-03 and the Challenge).
+LADDER_PRIORITY = 1
+BUILT_BY = 2010                    # built this year or earlier: new construction stays out
+YEARS_OWNED = 7                    # owned at least this long, in place of an equity filter
+UNKNOWN_SALE_EQUITY_FLOOR = 30     # the second feeder, for records with no known sale date
+YEAR_KEY, ALIAS_YEAR_KEY = "extra_year_built_max", "year_built_max"
+OWNED_KEY, UNKNOWN_SALE_KEY = "extra_years_owned_min", "extra_last_sale_date_unknown"
+AI_KEY = "investor_off_market_score_min"
+# The same list under the names the two ladder files and the feeders use for it.
+FREE_CLEAR = "free and clear"
+SAME_KEY = {"is_free_and_clear": FREE_CLEAR, "preset_free_and_clear": FREE_CLEAR, "preset_free_clear": FREE_CLEAR}
+AI_MARKS = ("investor_score", "investor_off_market_score", "ai_score")
+SENIOR_VACANT = {"is_senior_homeowners", "is_vacant_property"}
 
 # ==================================================================================================
 # End of the table.
@@ -190,6 +213,7 @@ def facts(row: dict) -> dict:
              "distressors_include_min_match", "distressors_method", "type_single_family")
     return {
         "id": row.get("id"), "title": str(row.get("name") or "").strip(), "scope": row.get("scope") or "",
+        "description": " ".join(str(row.get("description") or "").split()),
         "account_filter": row.get("scope") != "default",       # "default" rows are SiftMap's own built-in filters
         "active": row.get("is_active") is not False, "auto_add": bool(row.get("auto_add_enabled")),
         "replace_owners": bool(row.get("replace_owners_enabled")),
@@ -345,8 +369,180 @@ def observations(feeders: list[dict]) -> list[str]:
     return notes
 
 
+# ------------------------------------------------------------------------------------------ ladder
+def _number_in(text: str):
+    digits = "".join(ch if ch.isdigit() else " " for ch in str(text or "")).split()
+    return int(digits[0]) if digits else None
+
+
+def ladder_rungs(source, fips: str = "", variant: str = "ai", county: str = "") -> list[dict]:
+    """A county's doors-per-deal ladder as plain rungs, in ladder order.
+
+    Both published files are read: the market share ladder (variants -> ai, each rung with a label,
+    its keys, an AI score floor and its marginal doors per deal) and the standalone table (rows,
+    each with a segment name, its keys and its own doors per deal). `source` may be a whole state
+    file keyed by county code, one county, or a list of rungs."""
+    if isinstance(source, dict) and fips and isinstance(source.get(fips), dict):
+        source = source[fips]
+    name = county
+    if isinstance(source, dict):
+        name = name or str(source.get("name") or "")
+        variants = source.get("variants")
+        raw = (variants.get(variant) or variants.get("lists") or []) if isinstance(variants, dict) else source.get("rows") or []
+    else:
+        raw = source or []
+    out = []
+    for i, r in enumerate(raw, 1):
+        if not isinstance(r, dict):
+            continue
+        label = str(r.get("label") or r.get("seg") or "").strip()
+        keys = [str(k) for k in (r.get("keys") or [])]
+        ai = r.get("ai")
+        if not isinstance(ai, (int, float)) or isinstance(ai, bool):
+            ai = _number_in(label) if (r.get("type") == "ai" or set(keys) & set(AI_MARKS)) else None
+        dpd = r.get("marg_dpd") if r.get("marg_dpd") is not None else r.get("dpd")
+        out.append({"n": i, "label": label or "+".join(keys), "county": name, "priority": r.get("priority"),
+                    "keys": sorted({SAME_KEY.get(k, k) for k in keys if k not in AI_MARKS}),
+                    "ai": int(ai) if ai is not None else None,
+                    "dpd": dpd if isinstance(dpd, (int, float)) and not isinstance(dpd, bool) else None,
+                    "dpd_6mo": r.get("dpd_6mo") if isinstance(r.get("dpd_6mo"), (int, float)) else None,
+                    "size": r.get("marg_supply") if r.get("marg_supply") is not None else r.get("list_size"),
+                    "thin": bool(r.get("thin") or r.get("est"))})
+    return out
+
+
+def feeder_keys(f: dict) -> tuple[list, int | None]:
+    """(the lists a feeder pulls, its AI score floor). A 100% equity floor is free and clear."""
+    keys = {SAME_KEY.get(k, k) for k in f["distress"]}
+    keys |= {SAME_KEY.get(k, k) for k, v in f["other"].items() if k.startswith("preset_") and v is True}
+    if f["equity_min"] is not None and float(f["equity_min"]) >= 100:
+        keys.add(FREE_CLEAR)
+    ai = f["other"].get(AI_KEY)
+    return sorted(keys), (int(ai) if isinstance(ai, (int, float)) and not isinstance(ai, bool) else None)
+
+
+def _same_county(f: dict, rung: dict) -> bool:
+    want = (rung.get("county") or "").strip().lower()
+    return not want or want in [c.strip().lower() for c in f["counties"]]
+
+
+def covers(f: dict, rung: dict) -> bool:
+    keys, ai = feeder_keys(f)
+    return _same_county(f, rung) and keys == rung["keys"] and ai == rung["ai"]
+
+
+def _is_priority(f: dict, n: int) -> bool:
+    word = "priority %d" % n
+    return word in f["title"].lower().replace("prioity", "priority") or word in [t.lower() for t in f["tags"]]
+
+
+def _figures(rung: dict) -> list[str]:
+    out = []
+    for v in (rung.get("dpd"), rung.get("dpd_6mo")):
+        if v is not None:
+            for s in ("%.1f" % v, "%g" % round(v, 1)):
+                if s not in out:
+                    out.append(s)
+    return out
+
+
+def _gaps(f: dict, rung: dict, companions: list[dict]) -> list[str]:
+    """What one Priority 1 feeder lacks, in the order a person would fix it."""
+    gaps = []
+    if not _is_priority(f, LADDER_PRIORITY):
+        other = next((n for n in (LADDER_PRIORITY + 1, LADDER_PRIORITY + 2) if _is_priority(f, n)), 0)
+        gaps.append("is named Priority %d, and this rung is Priority %d" % (other, LADDER_PRIORITY) if other
+                    else "is not named or tagged Priority %d" % LADDER_PRIORITY)
+    need = f["distress_min"]
+    if len(f["distress"]) > 1 and isinstance(need, (int, float)) and not isinstance(need, bool) and need < len(f["distress"]):
+        gaps.append("asks for any %d of its %d flags, so it pulls more than the rung" % (need, len(f["distress"])))
+    year = f["year_max"]
+    if year is None or float(year) > BUILT_BY:
+        how = (" (it carries %s, a key measured as ignored)" % ALIAS_YEAR_KEY) if ALIAS_YEAR_KEY in f["other"] else ""
+        gaps.append("no built-by-%d filter%s" % (BUILT_BY, how))
+    owned = f["other"].get(OWNED_KEY)
+    if not isinstance(owned, (int, float)) or isinstance(owned, bool) or owned < YEARS_OWNED:
+        gaps.append("no owned-%d-years filter" % YEARS_OWNED)
+    elif not companions:
+        # The years-owned filter drops every record with no known sale date, which can be as many
+        # records as the list itself. They are pulled by a second feeder with an equity floor.
+        gaps.append("no second feeder for the records with no known sale date (%d%% equity floor)" % UNKNOWN_SALE_EQUITY_FLOOR)
+    figs = _figures(rung)
+    said = f.get("description") or ""
+    if figs and not ("door" in said.lower() and any(x in said for x in figs)):
+        gaps.append("the description does not carry the doors-per-deal figure (%s)" % figs[0])
+    return gaps
+
+
+def _is_companion(f: dict) -> bool:
+    """The second feeder of a pair: the records with no known sale date, behind an equity floor,
+    and without the years-owned filter that would drop every one of them."""
+    eq = f["equity_min"]
+    return (f["other"].get(UNKNOWN_SALE_KEY) is True and eq is not None and float(eq) >= UNKNOWN_SALE_EQUITY_FLOOR
+            and not f["other"].get(OWNED_KEY))
+
+
+def ladder_check(feeders: list[dict], rungs: list[dict], top: int = 0) -> dict:
+    """The Priority 1 rungs of a ladder against the feeders that should mirror them.
+
+    A rung is covered when a live feeder with auto-add on pulls exactly that list in that county.
+    Nothing here becomes a change: the result names what is missing and stops."""
+    live = [f for f in feeders if f["active"] and f.get("kind") != "sold_tagging"]
+    p1 = [r for r in rungs if r.get("priority") == LADDER_PRIORITY]
+    if top:
+        p1 = p1[:top]
+    rows, used = [], set()
+    for r in p1:
+        match = [f for f in live if covers(f, r)]
+        mates = [f for f in live if _is_companion(f) and _same_county(f, r)
+                 and (sorted(set(feeder_keys(f)[0]) - {FREE_CLEAR}), feeder_keys(f)[1]) == (sorted(set(r["keys"]) - {FREE_CLEAR}), r["ai"])]
+        main = [f for f in match if f not in mates] or match
+        # When several feeders pull the same rung, the one named for it speaks for the rung.
+        adding = sorted((f for f in main if f["auto_add"]), key=lambda f: not _is_priority(f, LADDER_PRIORITY))
+        used |= {f["id"] for f in main + mates}
+        row = {"n": r["n"], "label": r["label"], "county": r["county"], "dpd": r["dpd"], "dpd_6mo": r["dpd_6mo"],
+               "thin": r["thin"], "feeders": [{"id": f["id"], "title": f["title"], "auto_add": f["auto_add"]} for f in main],
+               "gaps": []}
+        if adding:
+            row["status"] = "covered"
+            row["gaps"] = _gaps(adding[0], r, [f for f in mates if f["auto_add"]])
+        elif main:
+            row["status"] = "saved, not adding"
+        else:
+            row["status"] = "small sample" if r["thin"] else "missing"
+        rows.append(row)
+    notes = []
+    p2 = [r for r in rungs if r.get("priority") == LADDER_PRIORITY + 1]
+    here = {(r.get("county") or "").strip().lower() for r in rungs} - {""}
+    for f in live:
+        if not f["auto_add"] or f["id"] in used or _is_companion(f):
+            continue
+        if here and not here & {c.strip().lower() for c in f["counties"]}:
+            continue        # a feeder for another county is not judged against this county's ladder
+        keys, ai = feeder_keys(f)
+        named1, named2 = _is_priority(f, LADDER_PRIORITY), _is_priority(f, LADDER_PRIORITY + 1)
+        if named1 and keys == [FREE_CLEAR] and ai is None:
+            notes.append("[%s] %s: free and clear alone is a Priority %d list. Stacked with senior and vacant it is Priority %d."
+                         % (f["id"], f["title"], LADDER_PRIORITY + 1, LADDER_PRIORITY))
+        elif named2 and set(keys) == {FREE_CLEAR} | SENIOR_VACANT and ai is None:
+            notes.append("[%s] %s: free and clear with senior and vacant is a Priority %d list, and this feeder is named Priority %d."
+                         % (f["id"], f["title"], LADDER_PRIORITY, LADDER_PRIORITY + 1))
+        elif named1 and any(covers(f, r) for r in p2):
+            r = next(r for r in p2 if covers(f, r))
+            notes.append("[%s] %s: named Priority %d, and on this ladder it is rung %d, Priority %d."
+                         % (f["id"], f["title"], LADDER_PRIORITY, r["n"], LADDER_PRIORITY + 1))
+        elif named1 and rungs and not any(covers(f, r) for r in rungs):
+            notes.append("[%s] %s: named Priority %d, and no rung on this ladder is that list." % (f["id"], f["title"], LADDER_PRIORITY))
+    count = lambda s: sum(1 for x in rows if x["status"] == s)  # noqa: E731
+    return {"rungs": rows, "notes": notes,
+            "summary": {"priority_1_rungs": len(rows), "covered": count("covered"), "missing": count("missing"),
+                        "saved_not_adding": count("saved, not adding"), "small_sample": count("small sample"),
+                        "covered_with_gaps": sum(1 for x in rows if x["status"] == "covered" and x["gaps"])}}
+
+
 # -------------------------------------------------------------------------------------------- plan
-def build_plan(rows: list[dict], *, day: str = "", pages: int = 0, read_at: str = "") -> dict:
+def build_plan(rows: list[dict], *, day: str = "", pages: int = 0, read_at: str = "", ladder: list | None = None,
+               ladder_source: str = "", ladder_top: int = 0) -> dict:
     every = [facts(r) for r in rows]
     feeders = [f for f in every if f["account_filter"]]
     for f in feeders:
@@ -362,6 +558,18 @@ def build_plan(rows: list[dict], *, day: str = "", pages: int = 0, read_at: str 
         else:
             f["plan"] = "No change" if f["active"] else "Deleted; nothing to do"
     live = [f for f in feeders if f["active"]]
+    extra = {}
+    if ladder is not None:
+        # Named, never proposed: this block is not in `changes`, which is the only thing
+        # feeder_apply sends. Creating a feeder is a person's decision and spends the allowance.
+        extra["ladder"] = dict(ladder_check(feeders, ladder, top=ladder_top), source=ladder_source,
+                               limits=["The audit names what is missing and stops. It does not create or edit a feeder: "
+                                       "a new feeder starts adding records, and every add spends the record allowance.",
+                                       "The base filters are %s, %s and, for the second feeder, %s with an equity floor. All "
+                                       "three are in the published SiftMap reference; prove each with a count that moves "
+                                       "before saving a feeder on it." % (YEAR_KEY, OWNED_KEY, UNKNOWN_SALE_KEY),
+                                       "A rung marked small sample has too few sales in the data to rank on. County "
+                                       "records are the source for those lists, not a SiftMap feeder."])
     return {
         "tool": "feeder_audit", "plan_date": day or date.today().isoformat(),
         "generated_at": datetime.now().isoformat(timespec="seconds"), "read_at": read_at, "requests": pages,
@@ -386,7 +594,27 @@ def build_plan(rows: list[dict], *, day: str = "", pages: int = 0, read_at: str 
                    "edit is applied.",
                    "Switching auto-add off deletes nothing: the saved filter stays and can be opened in the app.",
                    "Taking a tag off a feeder changes what it stamps from now on. Records already tagged keep the tag."],
+        **extra,
     }
+
+
+def ladder_lines(ladder: dict, limit: int = 8) -> list[str]:
+    """The ladder check as plain lines, shortest first: what a monthly report posts."""
+    s = ladder["summary"]
+    out = ["%d Priority %d rung(s) on the ladder: %d with a feeder adding records, %d with none, %d saved but not adding"
+           % (s["priority_1_rungs"], LADDER_PRIORITY, s["covered"], s["missing"], s["saved_not_adding"])
+           + (", %d small sample (county records are the source)" % s["small_sample"] if s["small_sample"] else "") + "."]
+    for r in ladder["rungs"]:
+        where = (" (%s)" % r["county"]) if r["county"] else ""
+        fig = (", %s doors per deal" % _figures(r)[0]) if _figures(r) else ""
+        if r["status"] == "missing":
+            out.append("No feeder for rung %d: %s%s%s." % (r["n"], r["label"], where, fig))
+        elif r["status"] == "saved, not adding":
+            out.append("Rung %d, %s%s: saved as [%s] %s, with auto-add off." % (
+                r["n"], r["label"], where, r["feeders"][0]["id"], r["feeders"][0]["title"]))
+        elif r["status"] == "covered" and r["gaps"]:
+            out.append("Rung %d, [%s] %s: %s." % (r["n"], r["feeders"][0]["id"], r["feeders"][0]["title"], "; ".join(r["gaps"])))
+    return out[:1] + out[1:1 + limit] + (["and %d more" % (len(out) - 1 - limit)] if len(out) - 1 > limit else []) + ladder["notes"][:limit]
 
 
 # ------------------------------------------------------------------------------------------ report
@@ -490,6 +718,45 @@ def render_md(plan: dict) -> str:
         w("")
         for o in plan["observations"]:
             w("- %s" % o)
+    ladder = plan.get("ladder")
+    if ladder:
+        ls = ladder["summary"]
+        w("")
+        w("## The ladder: Priority %d rungs against the feeders" % LADDER_PRIORITY)
+        w("")
+        w("Nothing in this section is in the change list. It names what is missing; a person creates a feeder.")
+        if ladder.get("source"):
+            w("Ladder read from %s." % ladder["source"])
+        w("")
+        w("- Priority %d rungs on the ladder: %d. A feeder adds records for %d of them; %d have none; %d are saved "
+          "with auto-add off; %d are small sample." % (LADDER_PRIORITY, ls["priority_1_rungs"], ls["covered"], ls["missing"],
+                                                     ls["saved_not_adding"], ls["small_sample"]))
+        w("- Of the %d with a feeder, %d lack a base filter, the second feeder or the figure in the description."
+          % (ls["covered"], ls["covered_with_gaps"]))
+        w("")
+        for r in ladder["rungs"]:
+            fig = (", %s doors per deal" % _figures(r)[0]) if _figures(r) else ""
+            where = (" (%s)" % r["county"]) if r["county"] else ""
+            head = "Rung %d: %s%s%s" % (r["n"], r["label"], where, fig)
+            if r["status"] == "missing":
+                w("- %s. NO FEEDER." % head)
+            elif r["status"] == "small sample":
+                w("- %s. Small sample on the ladder and no feeder: county records are the source." % head)
+            elif r["status"] == "saved, not adding":
+                w("- %s. Saved as %s, with auto-add off." % (head, ", ".join("[%s] %s" % (f["id"], f["title"]) for f in r["feeders"])))
+            else:
+                first = r["feeders"][0]
+                w("- %s. Fed by [%s] %s.%s" % (head, first["id"], first["title"],
+                                               " Lacks: " + "; ".join(r["gaps"]) + "." if r["gaps"] else " Nothing missing."))
+        if ladder["notes"]:
+            w("")
+            w("Priority names that do not match the ladder:")
+            w("")
+            for n in ladder["notes"]:
+                w("- %s" % n)
+        w("")
+        for line in ladder["limits"]:
+            w("- %s" % line)
     w("")
     w("## What this audit did not do")
     w("")
@@ -526,6 +793,10 @@ def main(argv: list[str] | None = None) -> int:
     pl.add_argument("--out-dir", default=str(OUT_DIR))
     pl.add_argument("--cache", default="", help="a file that keeps the listing, so a re-run does not re-read")
     pl.add_argument("--gap", type=float, default=2.0, help="seconds between page reads")
+    pl.add_argument("--ladder", default="", help="a doors-per-deal ladder file already on disk (a state file or one "
+                                                 "county); the audit then names the Priority 1 rungs with no feeder")
+    pl.add_argument("--fips", default="", help="with --ladder: the county codes to read from a state file, comma separated")
+    pl.add_argument("--rungs", type=int, default=0, help="with --ladder: only the first N Priority 1 rungs of each county")
     raw = list(sys.argv[1:] if argv is None else argv)
     if not raw or raw[0] not in ("plan", "-h", "--help"):
         raw = ["plan"] + raw
@@ -544,11 +815,28 @@ def main(argv: list[str] | None = None) -> int:
         if cache:
             cache.parent.mkdir(parents=True, exist_ok=True)
             cache.write_text(json.dumps(got, indent=1), encoding="utf-8")
-    plan = build_plan(got["rows"], day=args.date, pages=got["pages"], read_at=got.get("at") or "")
+    ladder = None
+    if args.ladder:
+        source = json.loads(Path(args.ladder).read_text(encoding="utf-8"))
+        codes = [c.strip() for c in args.fips.split(",") if c.strip()] or [""]
+        ladder = []
+        for code in codes:
+            rungs = ladder_rungs(source, code)
+            p1 = [r for r in rungs if r.get("priority") == LADDER_PRIORITY]
+            keep = {r["n"] for r in (p1[:args.rungs] if args.rungs else p1)}
+            ladder += [r for r in rungs if r.get("priority") != LADDER_PRIORITY or r["n"] in keep]
+        if not ladder:
+            print("STOPPED: no rungs could be read from %s (check --fips)" % args.ladder)
+            return 5
+    plan = build_plan(got["rows"], day=args.date, pages=got["pages"], read_at=got.get("at") or "", ladder=ladder,
+                      ladder_source=Path(args.ladder).name if args.ladder else "")
     j, m = write_plan(plan, args.out_dir)
     s = plan["summary"]
     print("%d feeders (%d live, %d auto-add on); %d changes proposed; %d read requests in this run"
           % (s["feeders"], s["active"], s["auto_add_on"], s["changes"], read_now))
+    if ladder is not None:
+        for line in ladder_lines(plan["ladder"]):
+            print(line)
     print(j)
     print(m)
     return 0
