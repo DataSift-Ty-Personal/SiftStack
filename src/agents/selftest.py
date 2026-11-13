@@ -86,11 +86,25 @@ def _webhook_signer(check):
     return sign
 
 
+class NoNetwork:
+    """Stands where `requests` stands until a section installs its own fake. This machine's .env can
+    hold a real Slack app; a selftest that reached for it would post in a real channel."""
+
+    def post(self, *a, **k):
+        raise AssertionError("the selftest tried to reach Slack")
+
+    get = post
+
+
 def main() -> int:
     tmp = Path(tempfile.mkdtemp(prefix="agents_selftest_"))
     config.DB_PATH, config.RUNS_DIR = tmp / "agents.db", tmp / "runs"
     config.WEBHOOK_SECRET, config.PUBLIC_URL = "test-secret", "https://agents.example.test"
     config.SLACK_WEBHOOK, config.INLINE_WORKER = "", False
+    # Every Slack setting this machine's own .env may carry is blanked, and the door is shut.
+    config.SLACK_BOT_TOKEN = config.SLACK_SIGNING_SECRET = config.SLACK_APP_TOKEN = config.SLACK_CHANNEL = ""
+    from . import slack_app, slack_socket
+    slack_app._http = slack_socket._http = NoNetwork()
     config.RUN_CAP_USD, config.DAILY_CAP_USD, config.MODE = 5.0, 25.0, "dry"
     from . import router, slack, store
     from .research import deep_prospect, researcher

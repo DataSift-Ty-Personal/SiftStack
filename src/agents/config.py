@@ -71,6 +71,10 @@ WORKSPACES_DIR = Path(os.environ.get("AGENTS_WORKSPACES_DIR")
 # to SLACK_WEBHOOK: it can still report, but it cannot thread, speak as each employee, or hear.
 SLACK_BOT_TOKEN = os.environ.get("SLACK_BOT_TOKEN", "")
 SLACK_SIGNING_SECRET = os.environ.get("SLACK_SIGNING_SECRET", "")
+# Socket Mode: an app-level token (xapp-..., scope connections:write). Slack pushes events over a
+# connection the brain opens, so no Request URL has to be verified and no signing secret is needed.
+# Either way in works; with both set, an event that arrives twice is dropped by its id.
+SLACK_APP_TOKEN = os.environ.get("SLACK_APP_TOKEN", "")
 # One channel for the whole team: a channel ID (C0...). Set, every post that belongs to no thread
 # goes there whoever on the team is speaking, and the per-employee channel names in the roster are
 # not needed. Unset, each employee posts in its own channel and the team shares one.

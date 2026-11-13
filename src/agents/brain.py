@@ -24,7 +24,7 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
 
-from . import config, hello, intake, router, slack, slack_app, store, team, worker
+from . import config, hello, intake, router, slack, slack_app, slack_socket, store, team, worker
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("agents.brain")
@@ -45,11 +45,20 @@ def _startup() -> None:
         from . import scheduler
         _worker["clock"], _worker["clock_stop"] = scheduler.start_thread(_roster_or_none)
         log.info("scheduler on: live workflows with a schedule trigger fire at business-local time")
-    if not first_hello() and hello_pending():
+    if config.SLACK_APP_TOKEN:
+        _worker["socket"], _worker["socket_stop"] = slack_socket.start_thread(_slack_body)
+        log.info("slack socket mode on: events arrive over a connection the brain opens")
+    first_hello()
+    if slack_app.mode() == "bot" and not store.kv_get(DEAF_KEY):
+        # Until the hello has landed AND Slack has been heard from, something is still to check.
         _worker["hello_stop"] = threading.Event()
-        _worker["hello"] = threading.Thread(target=hello_until_landed, args=(_worker["hello_stop"],),
-                                            name="first-hello", daemon=True)
+        _worker["hello"] = threading.Thread(target=slack_watch, args=(_worker["hello_stop"],),
+                                            name="slack-watch", daemon=True)
         _worker["hello"].start()
+
+
+def _slack_body(body: dict, retry: bool) -> dict:
+    return intake.handle_body(body, retry, _roster_or_none)
 
 
 FIRST_HELLO_KEY = "slack:first_hello"
@@ -60,18 +69,75 @@ def hello_pending() -> bool:
     return slack_app.mode() == "bot" and not store.kv_get(FIRST_HELLO_KEY)
 
 
-def hello_until_landed(stop, every_s: float = 300.0, tries: int = 288) -> int:
-    """Keep trying the first hello, every five minutes for a day. Two real cases: the channel is
-    private and the app is invited a few minutes after its keys were pasted, or Slack was not
-    reachable when the brain started. Stops the moment it lands. Returns the tries it used."""
+def hello_until_landed(stop, every_s: float | None = None, tries: int = 300) -> int:
+    """Keep trying the first hello: every minute for half an hour, then every five minutes for a
+    day. Two real cases: the channel is private and the app is invited a few minutes after its keys
+    were pasted, or Slack was not reachable when the brain started. Stops the moment it lands.
+    Returns the tries it used."""
     used = 0
     while used < tries and hello_pending():
-        if stop.wait(every_s):
+        if stop.wait(every_s if every_s is not None else (60.0 if used < 30 else 300.0)):
             break
         used += 1
         if first_hello():
             break
     return used
+
+
+DEAF_KEY = "slack:hearing_checked"
+HEARING_GRACE_S = 180.0
+
+
+def hearing_notice(now: datetime | None = None) -> str:
+    """Can the app hear? Everything the team posts in a channel comes back to the app as an event,
+    so once the hello has landed Slack must have delivered something. If nothing has arrived a few
+    minutes later, the app can speak and cannot hear, which looks fine until somebody talks to it.
+    Say so once, in the channel, with the one setting that fixes it. Returns "" while it is too
+    early to tell, "heard" when events are arriving, or the notice that was posted."""
+    said = store.kv_get(FIRST_HELLO_KEY)
+    if not said or store.kv_get(DEAF_KEY):
+        return ""
+    try:
+        hello_at = datetime.fromisoformat(said)
+    except ValueError:
+        return ""
+    now = now or datetime.now(timezone.utc)
+    if (now - hello_at).total_seconds() < HEARING_GRACE_S:
+        return ""
+    heard = store.kv_get(intake.HEARD_KEY)
+    try:
+        if heard and datetime.fromisoformat(heard) >= hello_at:
+            store.kv_set(DEAF_KEY, "heard %s" % heard)
+            return "heard"
+    except ValueError:
+        pass
+    if config.SLACK_APP_TOKEN:
+        fix = ("Switch on Socket Mode for this app: api.slack.com/apps, open the app, Socket Mode, "
+               "Enable Socket Mode. Nothing else is needed.")
+    elif config.SLACK_SIGNING_SECRET:
+        fix = ("Verify the Request URL for this app: api.slack.com/apps, open the app, Event Subscriptions, "
+               "and select Retry next to the Request URL.")
+    else:
+        fix = ("Give the brain a way to listen: SLACK_APP_TOKEN (Socket Mode) or SLACK_SIGNING_SECRET "
+               "(the Request URL).")
+    text = (":warning: I can post here, but Slack is not sending me what people write, so nobody on the team "
+            "will hear a reply yet. %s" % fix)
+    slack_app.notice(text, _roster_or_none())
+    store.kv_set(DEAF_KEY, "notice %s" % store.now())
+    log.warning("slack: the app can post but hears nothing; the fix was posted in the channel")
+    return text
+
+
+def slack_watch(stop, every_s: float | None = None, checks: int = 40) -> str:
+    """The one-time start-up watch: get the hello to land, then make sure the app can hear."""
+    hello_until_landed(stop, every_s)
+    for _ in range(checks):
+        out = hearing_notice()
+        if out or not store.kv_get(FIRST_HELLO_KEY):
+            return out
+        if stop.wait(every_s if every_s is not None else 30.0):
+            break
+    return ""
 
 
 def first_hello() -> int:
@@ -90,7 +156,7 @@ def first_hello() -> int:
             store.kv_set(FIRST_HELLO_KEY, store.now())
             log.info("slack is connected: the team is introducing itself (task %s)", tid)
         else:
-            log.warning("slack app keys are set but the first message did not land; trying again next boot")
+            log.warning("slack app keys are set but the first message did not land (a private channel needs the app invited); trying again shortly")
         return tid
     except Exception as exc:  # noqa: BLE001  (a greeting must never stop the brain from starting)
         log.warning("first hello failed: %s", exc)
@@ -113,6 +179,8 @@ def health() -> dict:
             "spent_today_usd": round(store.spent(day=day), 2), "daily_cap_usd": config.DAILY_CAP_USD,
             "run_cap_usd": config.RUN_CAP_USD, "slack": slack_app.mode(), "claude": config.USE_LLM,
             "slack_one_channel": bool(config.SLACK_CHANNEL), "slack_first_hello": store.kv_get(FIRST_HELLO_KEY),
+            "slack_socket": slack_socket.status() if config.SLACK_APP_TOKEN else {"state": "off"},
+            "slack_heard": store.kv_get(intake.HEARD_KEY), "slack_hearing": store.kv_get(DEAF_KEY),
             "team": {e.id: e.display_name for e in roster.employees.values()} if roster else None,
             "live_workflows": sorted(w.name for w in roster.workflows.values() if w.live) if roster else [],
             "worker_alive": bool(_worker.get("thread") and _worker["thread"].is_alive()),
@@ -183,19 +251,8 @@ async def slack_events(request: Request) -> dict:
         raise HTTPException(status_code=400) from None
     if body.get("type") == "url_verification":
         return {"challenge": body.get("challenge", "")}
-    if headers.get("x-slack-retry-num"):
-        return {"ok": True, "retry": True}     # the first delivery was acked; a retry is a duplicate
-    event = body.get("event") or {}
-    if body.get("event_id") and not store.seen_once("slack:%s" % body["event_id"]):
-        return {"ok": True, "duplicate": True}
-    if event.get("bot_id") or event.get("subtype"):
-        return {"ok": True, "ignored": True}   # our own posts, edits, joins
-    roster = _roster_or_none()
-    if not roster:
-        return {"ok": False, "error": "roster"}
-    store.log_event("slack", event.get("type", ""), {"channel": event.get("channel"), "ts": event.get("ts"),
-                                                     "thread_ts": event.get("thread_ts")})
-    return {"ok": True, **intake.slack_event(event, roster)}
+    # The first delivery was acknowledged, so Slack's retry of it is a duplicate.
+    return _slack_body(body, bool(headers.get("x-slack-retry-num")))
 
 
 @app.post("/team/hello/{secret}")

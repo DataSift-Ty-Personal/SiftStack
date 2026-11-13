@@ -59,6 +59,9 @@ class FakeSlack:
         self.calls.append((method, dict(json or {})))
         if self.down:
             return _Resp({"ok": False, "error": "invalid_auth"})
+        if method == "apps.connections.open":
+            self.opened = getattr(self, "opened", 0) + 1
+            return _Resp({"ok": True, "url": "wss://socket.example.test/link/%d" % self.opened})
         if method == "conversations.join":
             if ch in self.private:
                 return _Resp({"ok": False, "error": "method_not_supported_for_channel_type"})
@@ -141,13 +144,14 @@ def run(check, tmp: Path) -> None:
     default_ws = config.WORKSPACES_DIR
     config.DB_PATH, config.WORKSPACES_DIR = tmp / "team.db", tmp / "workspaces"
     config.SLACK_BOT_TOKEN, config.SLACK_SIGNING_SECRET, config.USE_LLM = "", "", False
-    config.SLACK_CHANNEL = ""       # this machine's own env may name one channel; the checks set their own
+    config.SLACK_CHANNEL = config.SLACK_APP_TOKEN = ""   # this machine's own env may carry both; the checks set their own
     config.DAILY_CAP_USD, config.AGENT_BUDGET_USD, config.MAX_HOPS = 25.0, 2.0, 6
-    from . import bus, hello, intake, router, runner, slack_app, store, team, tools, worker
+    from . import bus, hello, intake, router, runner, slack_app, slack_socket, store, team, tools, worker
     store.init()
     tools.CRM = FakeCRM()
     fake_slack = FakeSlack()
-    slack_app._http = fake_slack
+    door_shut = slack_app._http     # whatever stood there on the way in goes back on the way out
+    slack_app._http = slack_socket._http = fake_slack
     slack_app._CHANNEL_NAMES.clear()
     real_dp = worker.HANDLERS["deep_prospect"]
     worker.HANDLERS["deep_prospect"] = (lambda t: {"street": "123 Main St", "headline": "daughter signs"},
@@ -541,10 +545,127 @@ def run(check, tmp: Path) -> None:
         check(used == 2 and store.kv_get(brain.FIRST_HELLO_KEY) and not brain.hello_pending(),
               "a hello that could not land at boot keeps trying and stops the moment it lands")
         check(brain.hello_until_landed(_Stop(), every_s=0, tries=10) == 0, "once it has landed nothing more is tried")
+
+        print("team: socket mode")
+        import json as _json
+        heard = []
+
+        def on_body(body, retry):
+            heard.append((body.get("event_id"), retry))
+            return intake.handle_body(body, retry, lambda: roster)
+
+        acks = []
+        order = []
+        ask = {"type": "event_callback", "event_id": "EvS1",
+               "event": {"type": "message", "channel": "CONE", "ts": "1800.10", "text": "Roma, quick screen 9 Elm St",
+                         "user": "U1", "channel_type": "group"}}
+        frame = _json.dumps({"envelope_id": "env-1", "type": "events_api", "payload": ask, "retry_attempt": 0})
+        what = slack_socket.handle_frame(frame, lambda t: (acks.append(t), order.append("ack")),
+                                         lambda b, r: (order.append("handle"), on_body(b, r)))
+        check(what == "event" and order == ["ack", "handle"] and _json.loads(acks[0]) == {"envelope_id": "env-1"},
+              "an event over the socket is acknowledged first, then handled")
+        qt = store.on_slack_thread("CONE", "1800.10")
+        check(len(qt) == 1 and qt[0]["agent"] == "sales" and store.kv_get(intake.HEARD_KEY),
+              "it is queued for the employee it names, exactly as an event over the Request URL is")
+        slack_socket.handle_frame(frame, acks.append, on_body)
+        check(len(store.on_slack_thread("CONE", "1800.10")) == 1 and len(acks) == 2,
+              "the same event delivered again is acknowledged and not queued twice")
+        check(slack_socket.handle_frame('{"type":"hello","num_connections":1}', acks.append, on_body) == "hello"
+              and slack_socket.handle_frame('{"type":"disconnect","reason":"refresh_requested"}', acks.append, on_body)
+              == "disconnect:refresh_requested", "hello and disconnect frames are read for what they are")
+        n_acks, n_heard = len(acks), len(heard)
+        check(slack_socket.handle_frame('{"envelope_id":"env-9","type":"slash_commands","payload":{}}', acks.append, on_body)
+              == "other" and len(acks) == n_acks + 1 and len(heard) == n_heard,
+              "an envelope that is not an event is acknowledged and nothing is run")
+        check(slack_socket.handle_frame("not json", acks.append, on_body) == "bad" and
+              slack_socket.handle_frame("[1]", acks.append, on_body) == "bad", "a frame that is not an envelope is dropped")
+
+        class FakeConn:
+            def __init__(self, frames):
+                self.frames, self.sent, self.closed = list(frames), [], False
+
+            def recv(self, timeout=None):
+                if not self.frames:
+                    raise ConnectionError("closed by the far end")
+                f = self.frames.pop(0)
+                if f is TimeoutError:
+                    raise TimeoutError()
+                return f
+
+            def send(self, text):
+                self.sent.append(text)
+
+            def close(self):
+                self.closed = True
+
+        class Stop:
+            def __init__(self):
+                self.flag, self.pauses = False, []
+
+            def is_set(self):
+                return self.flag
+
+            def wait(self, seconds):
+                self.pauses.append(seconds)
+                self.flag = True          # the first pause is where the brain is told to stop
+                return True
+
+        ask2 = dict(ask, event_id="EvS2", event=dict(ask["event"], ts="1800.20", text="Diggs, who owns 9 Elm St"))
+        conns = [FakeConn(['{"type":"hello"}', TimeoutError,
+                           _json.dumps({"envelope_id": "env-2", "type": "events_api", "payload": ask2}),
+                           '{"type":"disconnect","reason":"refresh_requested"}']),
+                 FakeConn(['{"type":"hello"}'])]
+        urls = []
+        config.SLACK_APP_TOKEN = "xapp-test"
+        slack_socket.STATE.update(state="off", since="", error="", events=0, connects=0)
+        stop = Stop()
+        slack_socket.run(stop, on_body, connect=lambda url: (urls.append(url), conns[len(urls) - 1])[1], sleep=stop.wait)
+        check(len(urls) == 2 and urls[0] != urls[1] and all(c.closed for c in conns),
+              "when Slack asks for a fresh connection one is opened at once, on a new address, and the old one is closed")
+        check(_json.loads(conns[0].sent[0]) == {"envelope_id": "env-2"} and store.on_slack_thread("CONE", "1800.20")[0]["agent"] == "research",
+              "an event read off a live connection is acknowledged and queued")
+        check(stop.pauses == [slack_socket.PAUSE_MIN_S] and slack_socket.status()["state"] == "off",
+              "a connection that drops is retried after a pause, and a stopped brain leaves the loop")
+        fake_slack.down = True
+        stop2 = Stop()
+        slack_socket.run(stop2, on_body, connect=lambda url: check(False, "no connection without an address"), sleep=stop2.wait)
+        fake_slack.down = False
+        check(stop2.pauses == [slack_socket.PAUSE_MIN_S], "Slack refusing the connection is paused on, never spun on")
+        config.SLACK_APP_TOKEN = ""
+        check(slack_socket.open_url() == ("", "no app-level token"), "without an app-level token nothing is opened")
+
+        print("team: can the app hear")
+        from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+        t_hello = _dt(2026, 1, 5, 15, 0, 0, tzinfo=_tz.utc)
+        store.kv_set(brain.DEAF_KEY, "")
+        store.kv_set(brain.FIRST_HELLO_KEY, "")
+        check(brain.hearing_notice(t_hello) == "", "before the team has said hello there is nothing to check")
+        store.kv_set(brain.FIRST_HELLO_KEY, t_hello.isoformat(timespec="seconds"))
+        store.kv_set(intake.HEARD_KEY, (t_hello - _td(seconds=30)).isoformat(timespec="seconds"))
+        check(brain.hearing_notice(t_hello + _td(seconds=60)) == "", "one minute after the hello is too early to tell")
+        config.SLACK_APP_TOKEN = "xapp-test"
+        n0 = len(fake_slack.posts())
+        said = brain.hearing_notice(t_hello + _td(seconds=200))
+        check("Socket Mode" in said and len(fake_slack.posts()) == n0 + 1 and fake_slack.posts()[-1]["channel"] == "CONE",
+              "nothing heard three minutes after the hello: the channel is told once, with the setting that fixes it")
+        check(brain.hearing_notice(t_hello + _td(seconds=400)) == "" and len(fake_slack.posts()) == n0 + 1,
+              "it is said once")
+        store.kv_set(brain.DEAF_KEY, "")
+        config.SLACK_APP_TOKEN, config.SLACK_SIGNING_SECRET = "", "sign-secret"
+        check("Request URL" in brain.hearing_notice(t_hello + _td(seconds=200)),
+              "with the Request URL as the way in, the fix named is the Request URL")
+        store.kv_set(brain.DEAF_KEY, "")
+        store.kv_set(intake.HEARD_KEY, (t_hello + _td(seconds=4)).isoformat(timespec="seconds"))
+        n0 = len(fake_slack.posts())
+        check(brain.hearing_notice(t_hello + _td(seconds=200)) == "heard" and len(fake_slack.posts()) == n0
+              and store.kv_get(brain.DEAF_KEY).startswith("heard"),
+              "an event after the hello means the app can hear, and nothing is posted")
+        config.SLACK_SIGNING_SECRET = ""
     finally:
-        config.SLACK_CHANNEL = ""
+        config.SLACK_CHANNEL = config.SLACK_APP_TOKEN = ""
+        slack_socket._http = door_shut
         worker.HANDLERS["deep_prospect"] = real_dp
         runner._SDK = None
         tools.CRM = None
-        slack_app._http = __import__("requests")
+        slack_app._http = door_shut
         config.SLACK_BOT_TOKEN = config.SLACK_SIGNING_SECRET = ""

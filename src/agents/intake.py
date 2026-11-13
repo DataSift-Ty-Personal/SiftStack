@@ -15,6 +15,28 @@ from __future__ import annotations
 
 from . import bus, hello, slack_app, store, team
 
+HEARD_KEY = "slack:last_event"      # when Slack last delivered anything, by either way in
+
+
+def handle_body(body: dict, retry: bool, roster_fn) -> dict:
+    """One Slack event body, however it arrived: the Request URL (after its signature was checked)
+    or the Socket Mode connection. `retry` is Slack saying the first delivery was not acknowledged
+    in time; it was, so a retry over the Request URL is acknowledged and not run again."""
+    store.kv_set(HEARD_KEY, store.now())
+    if retry:
+        return {"ok": True, "retry": True}
+    event = body.get("event") or {}
+    if body.get("event_id") and not store.seen_once("slack:%s" % body["event_id"]):
+        return {"ok": True, "duplicate": True}
+    if event.get("bot_id") or event.get("subtype"):
+        return {"ok": True, "ignored": True}   # our own posts, edits, joins
+    roster = roster_fn()
+    if not roster:
+        return {"ok": False, "error": "roster"}
+    store.log_event("slack", event.get("type", ""), {"channel": event.get("channel"), "ts": event.get("ts"),
+                                                     "thread_ts": event.get("thread_ts")})
+    return {"ok": True, **slack_event(event, roster)}
+
 
 def slack_event(event: dict, roster) -> dict:
     channel, ts = event.get("channel") or "", event.get("ts") or ""

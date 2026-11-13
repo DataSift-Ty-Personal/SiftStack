@@ -18,3 +18,4 @@ pillow>=10.0
 openpyxl>=3.1
 gender-guesser>=0.4.0
 scrapfly-sdk>=0.8
+websockets>=15.0    # Slack Socket Mode (src/agents/slack_socket.py); the brain starts without it

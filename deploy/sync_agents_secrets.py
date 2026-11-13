@@ -62,6 +62,7 @@ OPTIONAL = [
     ("SLACK_BOT_TOKEN", "the team's Slack app: post as each employee, in threads"),
     ("SLACK_SIGNING_SECRET", "the team's Slack app: verify what Slack sends in (no secret, no listener)"),
     ("AGENTS_SLACK_CHANNEL", "one Slack channel (its ID, C0...) for the whole team instead of one per employee"),
+    ("SLACK_APP_TOKEN", "the team's Slack app, Socket Mode (xapp-...): hear replies with no signing secret or URL check"),
     ("AGENTS_SLACK_WEBHOOK", "the agents' Slack channel (post-only fallback without the app)"),
     ("SLACK_WEBHOOK_URL", "fallback Slack channel"),
 ]
