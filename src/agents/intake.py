@@ -13,7 +13,7 @@ The operator's message gets an :eyes: reaction when it is picked up, rather than
 """
 from __future__ import annotations
 
-from . import bus, hello, slack_app, store, team
+from . import bus, hello, release, slack_app, store, team
 
 HEARD_KEY = "slack:last_event"      # when Slack last delivered anything, by either way in
 
@@ -46,6 +46,11 @@ def slack_event(event: dict, roster) -> dict:
     # A mention arrives twice (app_mention and message): one ask, not two.
     if not store.seen_once("msg:%s:%s" % (channel, ts)):
         return {"duplicate": True}
+
+    # A release is read by a pattern, before any employee sees the message: a model never releases.
+    cmd = release.parse(team.clean(text))
+    if cmd:
+        return release.slack_command(cmd, user, channel, thread or ts)
 
     if thread:
         waiting = store.waiting_on(channel, thread)

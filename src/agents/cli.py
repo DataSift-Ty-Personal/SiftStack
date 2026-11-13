@@ -302,12 +302,8 @@ def cmd_autopilot(a) -> int:
         if not a.stages:
             print("name the batch id")
             return 2
-        b = ledger.batch(int(a.stages[0]))
-        if b and b["kind"] == "attempts":
-            from agents.autopilot import attempts
-            print(json.dumps(attempts.release(int(a.stages[0]), commit=a.commit), indent=1, default=str))
-            return 0
-        print(json.dumps(mail.release(int(a.stages[0]), commit=a.commit, uploaded=a.uploaded), indent=1, default=str))
+        from agents import release
+        print(json.dumps(release.run(int(a.stages[0]), commit=a.commit, uploaded=a.uploaded), indent=1, default=str))
         return 0
     if a.action == "runs":
         for r in ledger.runs(int(a.stages[0]) if a.stages else 20):

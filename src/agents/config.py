@@ -75,6 +75,9 @@ SLACK_SIGNING_SECRET = os.environ.get("SLACK_SIGNING_SECRET", "")
 # connection the brain opens, so no Request URL has to be verified and no signing secret is needed.
 # Either way in works; with both set, an event that arrives twice is dropped by its id.
 SLACK_APP_TOKEN = os.environ.get("SLACK_APP_TOKEN", "")
+# Slack user ids (U0...) allowed to release a staged batch from the channel (agents/release.py).
+# Empty, nobody can: a batch is then released from the command line only.
+RELEASERS = os.environ.get("AGENTS_RELEASERS", "")
 # One channel for the whole team: a channel ID (C0...). Set, every post that belongs to no thread
 # goes there whoever on the team is speaking, and the per-employee channel names in the roster are
 # not needed. Unset, each employee posts in its own channel and the team shares one.
