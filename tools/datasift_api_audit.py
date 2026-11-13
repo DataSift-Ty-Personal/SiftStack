@@ -124,6 +124,10 @@ MAP_SQ = re.compile(r"'(/(?:properties|filters)/[^'\n]*)'")
 # Verdicts a person checked against the code, where the static scan under-reads a dependency
 # (usually the main write path living behind a function-scope import). Each says what to change.
 REVIEWED = {
+    "run_script": ("ready on the key", "commands.py names Desktop paths and SiftMap autocomplete only as the "
+                   "patterns it refuses or stages; the scripts run in a subprocess this audit cannot follow, the box "
+                   "carries no DataSift password, and the catalog refuses browser and local scripts and stages "
+                   "writes, paid vendors and SiftMap detail reads for a named person"),
     "quick_screen": ("ready on the key", "siftmap_standalone keeps autocomplete() for other modules; this workflow calls only POST /properties/search/ and capped /properties/detail/"),
     "deal_buyers": ("ready on the key", "siftmap_standalone keeps autocomplete() for other modules; this workflow calls only POST /properties/search/ and capped /properties/detail/"),
     "list_pull": ("needs work", "the pull itself (workflows/list_pull, pull_by_ids) runs on published routes and the key; "

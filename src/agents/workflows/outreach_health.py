@@ -178,6 +178,8 @@ def batches_section(now: datetime, tz: str) -> list[dict]:
     today = now.astimezone(ZoneInfo(tz)).date().isoformat()
     out = []
     for b in ledger.batches(status="staged"):
+        if b.get("kind") == "command":
+            continue                   # a script waiting for release reaches no homeowner
         stale = ""
         if b["kind"] in ("text", "heir_text"):
             full = ledger.batch(b["id"]) or {}

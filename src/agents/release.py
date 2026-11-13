@@ -42,13 +42,15 @@ RELEASE: dict[str, tuple[str, str]] = {
     "heir_text": ("autopilot.heirlane", "release"),
     "obituary_mail": ("autopilot.obituary", "release"),
     "probate": ("autopilot.probate", "release"),
+    "command": ("workflows.run_script", "release"),     # a script command line that writes or pays (run_script)
 }
 # Kinds whose release has two steps because a person uploads a file between them: the second step
 # (after the upload) is the confirm with "uploaded".
 FILE_KINDS = ("heir_mail", "heir_text", "obituary_mail")
 LABELS = {"mail": "mail piece(s)", "attempts": "call counter correction(s)", "text": "owner text(s)",
           "leadclock": "card move(s)", "drip": "text(s) and email(s)", "heir_mail": "heir letter(s)",
-          "heir_text": "heir text(s)", "obituary_mail": "obituary letter(s)", "probate": "probate change(s)"}
+          "heir_text": "heir text(s)", "obituary_mail": "obituary letter(s)", "probate": "probate change(s)",
+          "command": "command(s)"}
 
 
 def label(kind: str) -> str:
@@ -140,6 +142,8 @@ def slack_command(cmd: tuple[str, int, bool], user: str, channel: str, thread: s
     if action == "release":
         store.kv_set(_key(user, batch_id), now.isoformat(timespec="seconds"))
         extra = ""
+        if b["kind"] == "command" and b.get("items"):
+            extra = " Command: `%s`." % (b["items"][0].get("command") or "")
         if b["kind"] == "mail" and _export_only(b):
             extra = (" It is a file for the mail house: upload it there first, then reply `confirm %d uploaded`."
                      % batch_id)

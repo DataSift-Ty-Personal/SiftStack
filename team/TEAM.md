@@ -96,6 +96,7 @@ The whole team also listens in #ai-team.
 | call_coaching | The calls the coaching picks chose, transcribed with tonality notes and graded on the team's rubrics; the notes go to the owner first. | after coaching_picks, ask in Slack | paid, inside the caps | live |
 | sop_writer | SOPs, step guides and training manuals from a narrated video or notes. | ask in Slack | free | by hand today |
 | outreach_health | What the brain can see of outreach health (limits broken, the touch audit, caller ID lines to rest, the registry scrub, batches waiting), and where to read what only the texting side sees. | schedule (08:05 Mon-Fri America/New_York), ask in Slack | free | live |
+| run_script | Any SiftStack command-line script (src/<script>.py) run on the brain the way the owner types it in Claude Code, checked against team/commands.json; a run that writes or pays is staged as a batch a named person releases. | ask in Slack | free | live |
 | ftm_attempts | The call counter written from the account's own call log, so a record moves on whichever dialer made the call. | schedule (every 60 min 09:00-19:00 Mon-Fri), ask in Slack | free | live |
 | owner_lanes | Each owner placed in one lane across all of their records; an owner sitting in two lanes is listed. | schedule (02:30 daily), ask in Slack | free | live |
 | sequence_watchdog | Yesterday's sequence triggers checked against what each sequence should have produced; only failures are posted. | schedule (07:20 daily), ask in Slack | free | live |

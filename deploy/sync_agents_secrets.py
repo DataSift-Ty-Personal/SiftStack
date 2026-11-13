@@ -65,6 +65,13 @@ OPTIONAL = [
     ("SLACK_APP_TOKEN", "the team's Slack app, Socket Mode (xapp-...): hear replies with no signing secret or URL check"),
     ("AGENTS_RELEASERS", "Slack user ids allowed to release a staged batch from the channel (empty: command line only)"),
     ("AGENTS_SLACK_WEBHOOK", "the agents' Slack channel (post-only fallback without the app)"),
+    # Scripts from Slack (src/agents/commands.py, workflows/run_script.py)
+    ("AGENTS_SCRIPT_TOOLS", "0 takes script_catalog and run_script off every employee (default on)"),
+    ("AGENTS_SCRIPT_TIMEOUT_MIN", "run_script: one script's time limit; the brain's one worker waits on it (default 20)"),
+    ("AGENTS_SCRIPT_SLACK_CHARS", "run_script: characters of output posted in the thread (default 2500)"),
+    ("AGENTS_SCRIPT_LOG_MB", "run_script: full log kept per run, head and tail (default 5)"),
+    ("AGENTS_SCRIPT_MAX_FILES", "run_script: files copied from output/ into the run folder (default 20)"),
+    ("AGENTS_SCRIPT_FILE_MB", "run_script: largest file copied (default 25)"),
     # The query tools every employee carries (src/agents/query.py)
     ("AGENTS_QUERY_TOOLS", "0 takes the four read-only query tools off every employee (default on)"),
     ("AGENTS_QUERY_USERS", "teammates by first name for the assignee filter: Name=<user uuid>, comma separated"),

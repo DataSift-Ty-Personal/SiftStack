@@ -30,6 +30,8 @@ import importlib
 REGISTRY: dict[str, str] = {
     "book_appointment": "book_appointment",
     "release_batch": "release_batch",    # queued only by a named person's confirm in Slack (agents/release.py)
+    # Scripts from Slack (2026-11-13)
+    "run_script": "run_script",  # any src/*.py command line: run here, or staged for a named person (commands.py)
     # Roma, Sales Assistant (wave 4, 2026-11-13)
     "quick_screen": "quick_screen",      # a lead screened: comps inside a pasted boundary or a radius, a go or no-go
     "underwrite": "underwrite",          # the walkthrough package; photos and no comps = the rehab on its own

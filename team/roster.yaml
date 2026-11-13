@@ -390,3 +390,14 @@ workflows:
     manual: Ask Quinn in Slack. Delivery and carrier refusals live on the texting side, python src/sms_agent/cli.py deliverability on the siftstack app.
     sources: [agents.workflows.outreach_health]
     covers: [deliver, callerrep]
+  run_script:
+    owner: ops
+    summary: Any SiftStack command-line script (src/<script>.py) run on the brain the way the owner types it in Claude Code, checked against team/commands.json; a run that writes or pays is staged as a batch a named person releases.
+    status: live
+    spend: free
+    triggers: [slack]
+    inputs:
+      script: "The script's name as in src/<name>.py (dream100, sold_guard); script_catalog lists them with their options"
+      args: "The arguments as separate words; a file must be a path under output/; empty for none"
+    manual: "python src/<script>.py <args> on the workstation. team/commands.json holds every script's class and options; python src/agents/commands.py --show <script> prints one."
+    sources: [agents.workflows.run_script, agents.commands]

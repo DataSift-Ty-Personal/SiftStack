@@ -83,6 +83,7 @@ Every agent on docs/agents.json (the public org chart), the team workflow that r
 | call_coaching | live | Transcription & Triage (transcribe), Cold Call Coach (coldcoach), Lead Manager Coach (lmcoach), Closer Coach (closercoach) |
 | sop_writer | by hand today | Playbook Creator (playbookgen) |
 | outreach_health | live | Deliverability Readout (deliver), Caller Reputation Monitor (callerrep) |
+| run_script | live | none: not on the org chart yet |
 | ftm_attempts | autopilot stage | none: not on the org chart yet |
 | owner_lanes | autopilot stage | none: not on the org chart yet |
 | sequence_watchdog | autopilot stage | none: not on the org chart yet |

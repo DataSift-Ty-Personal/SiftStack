@@ -445,9 +445,13 @@ def run(task: dict) -> dict:
         if b["status"] != "staged":
             out["problems"].append("batch %s is %s, so there is nothing waiting to check" % (want, b["status"]))
             return out
+        if b.get("kind") == "command":
+            out["problems"].append("batch %s is a command batch: it reaches no homeowner, and it is checked "
+                                   "against the script catalog when it is released" % want)
+            return out
         todo = [b]
     elif want == "all":
-        todo = [ledger.batch(x["id"]) for x in ledger.batches(status="staged")]
+        todo = [ledger.batch(x["id"]) for x in ledger.batches(status="staged") if x.get("kind") != "command"]
     else:
         out["problems"].append("%r is not a batch number; ask for a number from the digest, or all" % want)
         return out

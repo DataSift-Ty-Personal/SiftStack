@@ -77,6 +77,9 @@ def open_url() -> tuple[str, str]:
     return (url, "") if url.startswith("wss://") else ("", "no socket address in the answer")
 
 
+APP_ID_KEY = "slack:app_id"          # Slack sends the app id in the hello frame of every connection
+
+
 def handle_frame(raw, send, handler) -> str:
     """One frame from Slack. Returns what it was: hello, disconnect:<reason>, event, other or bad.
     An envelope is acknowledged BEFORE its event is handled: Slack allows three seconds, and an
@@ -89,6 +92,13 @@ def handle_frame(raw, send, handler) -> str:
         return "bad"
     kind = msg.get("type")
     if kind == "hello":
+        app = str(((msg.get("connection_info") or {}).get("app_id")) or "")
+        if app:
+            try:
+                from . import store
+                store.kv_set(APP_ID_KEY, app)   # a settings link can then go straight to this app
+            except Exception as exc:  # noqa: BLE001  (a link is a convenience, the connection is not)
+                log.info("slack socket: app id not saved: %s", exc)
         return "hello"
     if kind == "disconnect":
         return "disconnect:%s" % (msg.get("reason") or "")

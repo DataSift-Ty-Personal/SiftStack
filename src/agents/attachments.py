@@ -162,8 +162,11 @@ def unreadable_notice(channel: str, thread_ts: str, n: int) -> bool:
         return False
     if not store.seen_once("files:noscope:%s:%s" % (channel, thread_ts)):
         return False
-    slack_app.post(channel, SCOPE_NOTICE % (n, "" if n == 1 else "s", "it" if n == 1 else "them"),
-                   thread_ts=thread_ts)
+    text = SCOPE_NOTICE % (n, "" if n == 1 else "s", "it" if n == 1 else "them")
+    app = store.kv_get("slack:app_id")
+    if app:
+        text += " Straight to the page: https://api.slack.com/apps/%s/oauth" % app
+    slack_app.post(channel, text, thread_ts=thread_ts)
     return True
 
 

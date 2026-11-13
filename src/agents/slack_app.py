@@ -49,7 +49,7 @@ def verify(headers: dict, raw: bytes, now: float | None = None) -> bool:
     return hmac.compare_digest(want, sig)
 
 
-_DASH_SPACED = re.compile(r"\s+[—–]\s+")
+_DASH_SPACED = re.compile(r"\s+[" + chr(0x2014) + chr(0x2013) + r"]\s+")
 _MD_BOLD = re.compile(r"\*\*(.+?)\*\*")
 
 
@@ -58,7 +58,7 @@ def clean_text(text: str) -> str:
     spaced dash becomes a comma, a bare en dash in a range a hyphen), and Markdown **bold** becomes
     Slack's *bold*, which Slack would otherwise print with the asterisks showing."""
     t = _DASH_SPACED.sub(", ", text or "")
-    t = t.replace("—", ", ").replace("–", "-")
+    t = t.replace(chr(0x2014), ", ").replace(chr(0x2013), "-")
     return _MD_BOLD.sub(r"*\1*", t)
 
 

@@ -8,7 +8,9 @@ SDK, so the selftest drives the handlers directly. Four kinds:
                    paid for, from the brain's own ledger: every employee), and the four query
                    tools in query.py (records_query, siftmap_count, activity_query, team_query:
                    read-only counts over the account and the brain's own tables, every employee,
-                   AGENTS_QUERY_TOOLS=0 removes them),
+                   AGENTS_QUERY_TOOLS=0 removes them), and script_catalog plus run_script
+                   (commands.py: any src/*.py command line, checked against the catalog and queued;
+                   a write or a paid run is staged for a person; AGENTS_SCRIPT_TOOLS=0 removes them),
   * workflow tools one per workflow the employee OWNS in roster.yaml. A teammate's workflow is
                    never exposed: that work is a handoff, which is how ownership is enforced.
 
@@ -242,6 +244,38 @@ def query_tools(ctx: RunContext) -> list[Tool]:
             for t in query.tools()]
 
 
+# ------------------------------------------------------------------------------- script tools
+
+def script_tools(ctx: RunContext) -> list[Tool]:
+    """script_catalog and run_script (commands.py): any SiftStack command-line script, asked for in
+    Slack the way the owner types it in Claude Code. The catalog decides what each script may do; a
+    run is queued on this thread (never inside the turn), and a write or a paid run is staged for a
+    named person to release. AGENTS_SCRIPT_TOOLS=0 removes both."""
+    from . import commands
+    if not commands.enabled():
+        return []
+
+    async def catalog(args: dict) -> dict:
+        try:
+            res = await asyncio.to_thread(commands.catalog_answer, dict(args or {}))
+        except Exception as exc:  # noqa: BLE001  (a source file that will not parse must not crash the turn)
+            return _text("The script catalog failed: %s" % str(exc)[:300], error=True)
+        return _text(json.dumps(res, default=str, separators=(",", ":")))
+
+    async def run_script(args: dict) -> dict:
+        try:
+            said, refused, tid = await asyncio.to_thread(commands.queue_ask, ctx.task, ctx.employee, ctx.roster,
+                                                         dict(args or {}))
+        except Exception as exc:  # noqa: BLE001
+            return _text("The script could not be queued: %s" % str(exc)[:300], error=True)
+        if tid:
+            ctx.tickets.append(tid)
+        return _text(said, error=refused)
+
+    return [Tool("script_catalog", commands.CATALOG_HELP, _obj(commands.CATALOG_SCHEMA, []), catalog, read_only=True),
+            Tool("run_script", commands.run_help(), _obj(commands.RUN_SCHEMA, ["script"]), run_script)]
+
+
 # ------------------------------------------------------------------------------- workflow tools
 
 def workflow_tool(ctx: RunContext, wf) -> Tool:
@@ -300,5 +334,9 @@ def build(ctx: RunContext) -> list[Tool]:
         tools.append(record_lookup_tool(ctx))
     tools.append(spend_report_tool(ctx))
     tools += query_tools(ctx)
-    tools += [workflow_tool(ctx, wf) for wf in ctx.roster.owned(ctx.employee.id)]
+    tools += script_tools(ctx)
+    # A tool name is used once: the roster's run_script entry is reached through the run_script tool
+    # above, and two tools with one name would break the employee's whole tool list.
+    taken = {t.name for t in tools}
+    tools += [workflow_tool(ctx, wf) for wf in ctx.roster.owned(ctx.employee.id) if wf.name not in taken]
     return tools
