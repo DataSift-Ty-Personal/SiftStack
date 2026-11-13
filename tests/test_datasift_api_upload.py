@@ -106,6 +106,69 @@ def test_owner_change_is_patched():
     assert patch and patch[0][2] == {"owner": body["owner"]}
 
 
+def _attach(rec, body):
+    uuid = "11111111-2222-3333-4444-555555555555"
+    api = Stub({("POST", U.CREATE_ROUTE): err(400, U.CREATE_ROUTE, DUP),
+                ("GET", "/api/internal/property/%s/" % uuid): rec})
+    U.create_property(api, body)
+    patches = [c[2] for c in api.calls if c[0] == "PATCH"]
+    notes = [c[2]["notes"] for c in api.calls if c[1].endswith("/add-notes/")]
+    return patches, notes
+
+
+def test_a_researched_record_keeps_its_owner():
+    # Research put a verified heir in the owner slot. A republished notice names the dead borrower again.
+    rec = {"tags": ["FTM", "Deep Prospected"], "owner": {"first_name": "Dana", "last_name": "Heir"}}
+    body = {"address": {"street": "1 A St"}, "owner": {"first_name": "Morgan", "last_name": "Borrower"}, "tags": ["FTM"]}
+    patches, notes = _attach(rec, body)
+    assert not any("owner" in p for p in patches), patches
+    assert notes and "Morgan Borrower" in notes[0] and "kept" in notes[0], notes
+
+
+def test_a_deceased_owner_is_not_replaced_by_a_notice():
+    rec = {"tags": [], "owner": {"first_name": "Morgan", "last_name": "Borrower", "deceased": True}}
+    body = {"address": {"street": "1 A St"}, "owner": {"first_name": "Riley", "last_name": "Guess"}}
+    patches, notes = _attach(rec, body)
+    assert not any("owner" in p for p in patches) and notes, (patches, notes)
+
+
+def test_a_probate_notice_still_names_the_personal_representative():
+    # The court named this person: the one case where an upload replaces a deceased owner, with a note.
+    rec = {"tags": ["Heir Identified"], "owner": {"first_name": "Morgan", "last_name": "Borrower", "deceased": True}}
+    body = {"address": {"street": "1 A St"}, "owner": {"first_name": "Casey", "last_name": "Executor"}, "lists": "Probate"}
+    patches, notes = _attach(rec, body)
+    assert any(p.get("owner") == body["owner"] for p in patches), patches
+    assert notes and "personal representative" in notes[0] and "Morgan Borrower" in notes[0], notes
+
+
+def test_an_ordinary_record_is_patched_without_a_note():
+    rec = {"tags": ["FTM"], "owner": {"first_name": "Wrong", "last_name": "Person"}}
+    body = {"address": {"street": "1 A St"}, "owner": {"first_name": "Right", "last_name": "Person"}}
+    patches, notes = _attach(rec, body)
+    assert any(p.get("owner") == body["owner"] for p in patches) and not notes, (patches, notes)
+
+
+def test_first_upload_owner_slot_is_switchable():
+    # Off by default: the enricher's decision maker goes in the owner slot, as it always has.
+    # With the switch on, a deceased owner of record stays, except on a probate notice.
+    import importlib
+    import datasift_formatter as F
+    from notice_parser import NoticeData
+    n = NoticeData()
+    n.owner_name, n.owner_deceased, n.decision_maker_name = "Morgan Borrower", "yes", "Riley Guess"
+    n.address, n.city, n.state, n.zip, n.notice_type = "1 A St", "Knoxville", "TN", "37917", "foreclosure"
+    os.environ.pop("UPLOAD_KEEP_OWNER_OF_RECORD", None)
+    assert F._get_contact_info(n)["first"] == "Riley"
+    os.environ["UPLOAD_KEEP_OWNER_OF_RECORD"] = "1"
+    try:
+        assert F._get_contact_info(n)["first"] == "Morgan", F._get_contact_info(n)
+        n.notice_type = "probate"
+        assert F._get_contact_info(n)["first"] == "Riley"
+    finally:
+        os.environ.pop("UPLOAD_KEEP_OWNER_OF_RECORD", None)
+    assert importlib  # noqa
+
+
 def test_address_only_body_is_a_lookup():
     uuid = "aaaa"
     api = Stub({

@@ -380,6 +380,23 @@ def _build_tags(notice: NoticeData) -> str:
     return ",".join(tags)
 
 
+def _keep_owner_of_record(notice: NoticeData) -> bool:
+    """Should a deceased owner stay in the owner slot at first upload (build plan 0.16)?
+
+    The decision maker the enricher found is UNVERIFIED: it comes from an obituary's survivor list,
+    read by a model that has invented whole heir maps before. Putting that name in the owner slot
+    makes DataSift trace it, callers ask for it and mail go to it. With UPLOAD_KEEP_OWNER_OF_RECORD=1
+    the owner of record stays (tagged deceased, so the gate holds the record for research) and the
+    decision maker rides in the Decision Maker fields and the notes, where research can check it.
+    A probate notice is the exception: its personal representative was named by the court.
+
+    Off by default, so a deploy of the pull does not change who it uploads until the owner says so."""
+    import os
+    if os.environ.get("UPLOAD_KEEP_OWNER_OF_RECORD", "").strip() != "1":
+        return False
+    return (notice.notice_type or "").strip().lower() != "probate"
+
+
 def _get_contact_info(notice: NoticeData) -> dict:
     """Determine the contact person and mailing address.
 
@@ -390,7 +407,7 @@ def _get_contact_info(notice: NoticeData) -> dict:
     Mailing address always falls back to property address to avoid DataSift
     marking records as incomplete.
     """
-    if notice.owner_deceased == "yes" and notice.decision_maker_name:
+    if notice.owner_deceased == "yes" and notice.decision_maker_name and not _keep_owner_of_record(notice):
         first, last = _split_name(notice.decision_maker_name)
         # Fall back to property address when DM has no mailing address
         street = notice.decision_maker_street or notice.address

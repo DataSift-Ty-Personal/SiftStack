@@ -284,6 +284,32 @@ def find_property(api: "Api", address: dict) -> str:
     return ""
 
 
+# A record carrying one of these tags has been researched: its owner slot holds the person research
+# verified (a living heir, an executor), not whoever the latest notice happens to name.
+RESEARCHED_TAGS = {"deep prospected", "heir identified"}
+
+
+def owner_guard(rec: dict) -> str:
+    """Why a re-upload must NOT replace this record's owner, or "" when it may (build plan 0.16).
+
+    The uploader used to rewrite the owner whenever a notice named someone different. A republished
+    foreclosure notice, a later probate filing or the county stage's daily re-send therefore put a
+    researched record back to the dead borrower, and the next caller asked for a dead man by name.
+    A researched record, and a record whose owner is marked deceased, keep the owner they have.
+    The one exception is decided by the caller: a probate notice names the personal representative
+    the court appointed, and that person does replace the owner (with a note saying so)."""
+    tags = {t.lower() for t in _names(rec.get("tags"))}
+    if tags & RESEARCHED_TAGS:
+        return "the record has been researched"
+    if (rec.get("owner") or {}).get("deceased"):
+        return "the owner is marked deceased and research has not named a living person yet"
+    return ""
+
+
+def _owner_label(o: dict) -> str:
+    return " ".join(str(o.get(k) or "").strip() for k in ("first_name", "last_name")).strip() or str(o.get("company") or "").strip()
+
+
 def attach_to_record(api: "Api", uuid: str, body: dict) -> None:
     """Apply a create payload to a record that already exists.
 
@@ -294,6 +320,9 @@ def attach_to_record(api: "Api", uuid: str, body: dict) -> None:
     The owner is PATCHed only when the payload carries one that differs
     from what the record holds, which is what the retired Open API upsert
     did (repair_pr_owners relied on it); an omitted owner is left alone.
+    A researched record or one with a deceased owner keeps its owner unless
+    the upload is a probate notice (owner_guard); either way a note says
+    what the notice named.
     """
     lists = body.get("lists") or []
     if isinstance(lists, str):
@@ -311,13 +340,27 @@ def attach_to_record(api: "Api", uuid: str, body: dict) -> None:
         merged = current + [t for t in want if t not in current]
         if merged != current:
             patch["tags"] = merged
+    note = ""
     if owner:
         have = rec.get("owner") or {}
         keys = ("first_name", "last_name", "company")
         if any(_norm(owner.get(k)) != _norm(have.get(k)) for k in keys if k in owner):
-            patch["owner"] = owner
+            why = owner_guard(rec)
+            probate = "probate" in {str(x).strip().lower() for x in lists}
+            before = _owner_label(have)
+            if why and not probate:
+                # Keep the owner research put there. The notice's name is not lost: it goes in a note.
+                note = ("A new notice names %s as the owner. The owner on this record was kept because %s."
+                        % (_owner_label(owner) or "someone else", why))
+            else:
+                patch["owner"] = owner
+                if why:
+                    note = ("Owner changed to the personal representative named in a probate notice (%s). Before: %s."
+                            % (_owner_label(owner) or "unnamed", before or "none"))
     if patch:
         api.call("/api/internal/property/%s/" % uuid, "PATCH", patch)
+    if note:
+        api.call("/api/internal/property/%s/add-notes/" % uuid, "POST", {"notes": note})
 
 
 _attach_existing = attach_to_record  # older name
