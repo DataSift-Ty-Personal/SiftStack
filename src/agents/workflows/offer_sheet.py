@@ -23,7 +23,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .quick_screen import file_line, files_dir, find_file, inputs_of, json_input, money, read_json, safe_text, usd
+from .quick_screen import (file_line, files_dir, find_file, inputs_of, json_input, money, normalize_walk, read_json,
+                           safe_text, usd)
 
 NAME = "offer_sheet"
 
@@ -70,6 +71,7 @@ def run(task: dict) -> dict:
         if walk is None:
             out["why"] = why
             return out
+        walk, out["walk_fixes"] = normalize_walk(walk)
     else:
         beside = sorted(pack_path.parent.glob("*_walk.json"))   # an underwrite run keeps its walk with its pack
         found = read_json(beside[0])[0] if beside else None

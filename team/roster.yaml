@@ -277,7 +277,7 @@ workflows:
     triggers: [slack]
     inputs:
       address: "The record uuid or the street line; a house not in DataSift yet works for the rehab when the notes give its square footage"
-      walk: "The walkthrough: inline JSON, a file in your workspace (inbox/<thread>/walk.json) or 'task N', or empty for pre-walk numbers. Shape: post_walkthrough's walk (single_scenario, target_config, work_done, still_open, flags with costs, gates) plus photo_notes, one entry per photo or room: {file, room, finding, condition, scope_line, quote}. The photos stay in the inbox; only this JSON is read"
+      walk: "The walkthrough: inline JSON, a file in your workspace (inbox/<thread>/walk.json) or 'task N', or empty for pre-walk numbers. Shapes: target_config {beds, baths} (leave it out to keep the house's own layout); single_scenario {key, label, tier 1-3, scope, gut true or false, beds, baths}, or leave it out for the engine's one plan; work_done [{item, detail, credit in dollars}]; still_open [{item, detail}]; flags [{item, cost in dollars, note}], and a flag with no price goes in still_open instead; gates [text]; photo_notes [{file, room, finding, condition, scope_line, quote}], one per photo or room. The photos stay in the inbox; only this JSON is read"
       boundary: "Comps: empty with a walk means the rehab on its own; 'radius' or 'radius 0.75', a box lat_min,lat_max,lon_min,lon_max, lat,lon points, or a Google My Maps KML or GeoJSON pulls comps and builds the offer"
       streets: "Optional street filter, names apart by |; empty for none"
       notes: "Free text: county card facts (3 bed 2 bath 1,400 sf 1962) beat the record and the photos; a stated repair is carried into the workbook as the operator's word; empty for none"

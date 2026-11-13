@@ -34,7 +34,7 @@ from pathlib import Path
 from .. import store
 from .quick_screen import (Budget, MissingKey, apply_notes, area_inputs, area_line, arv_of, build_pack, comps_asked,
                            comps_for, file_line, files_dir, inputs_of, json_input, lead_for, locate, materials_line,
-                           notes_beat_walk, pinned_walk, rehab_pick, safe_text, setting, subject_of, usd, zillow_line)
+                           normalize_walk, notes_beat_walk, pinned_walk, rehab_pick, safe_text, setting, subject_of, usd, zillow_line)
 
 NAME = "underwrite"
 
@@ -94,13 +94,14 @@ def run(task: dict) -> dict:
     out["in_datasift"] = bool(rec)
     notes = area["notes"]
     out["from_notes"] = apply_notes(subj, notes)
-    out["context"] = notes.get("context") or ""
+    out["context"] = notes.get("said") or notes.get("context") or ""
     walk_in = None
     if str(inputs.get("walk") or "").strip():
         walk_in, out["walk_from"], why = json_input(inputs["walk"], "walk", task)
         if walk_in is None:
             out["why"] = why
             return out
+        walk_in, out["walk_fixes"] = normalize_walk(walk_in)
     if not subj["sqft"]:
         out["why"] = ("there is no square footage for this house; put it in the notes "
                       "(for example 3 bed 1 bath 1,400 sqft built 1950)")
@@ -109,7 +110,7 @@ def run(task: dict) -> dict:
     walk, beat = notes_beat_walk(walk, notes)
     if out["context"] and not walk.get("note"):
         walk["note"] = "Operator notes (these beat the photos): " + out["context"]
-    notes_lines = ([held] if held else []) + beat
+    notes_lines = ([held] if held else []) + beat + list(out.get("walk_fixes") or [])
     out.update(held=held, beat=beat, region=walk.get("region"))
     stem = safe_name(subj["street"] or "Deal", "")
 

@@ -4,7 +4,8 @@ The runner wraps these into the Claude Agent SDK's in-process MCP server; nothin
 SDK, so the selftest drives the handlers directly. Four kinds:
 
   * team tools     handoff, ask_operator, thread_history (every employee),
-  * shared tools   record_lookup (free, read-only, every employee),
+  * shared tools   record_lookup (free, read-only, every employee), spend_report (what the team
+                   paid for, from the brain's own ledger: every employee),
   * workflow tools one per workflow the employee OWNS in roster.yaml. A teammate's workflow is
                    never exposed: that work is a handoff, which is how ownership is enforced.
 
@@ -169,6 +170,46 @@ def team_tools(ctx: RunContext) -> list[Tool]:
     ]
 
 
+def spend_report_tool(ctx: RunContext) -> Tool:
+    """What something cost, read from the ledger the caps are checked against, never estimated."""
+    from datetime import date, timedelta
+
+    from . import config
+
+    async def handler(args: dict) -> dict:
+        scope = str(args.get("scope") or "thread").strip().lower()
+        if scope == "thread":
+            rows = store.spend_detail(thread_id=ctx.task.get("thread_id") or "")
+        elif scope == "today":
+            rows = store.spend_detail(since_day=store.today())
+        elif scope == "week":
+            rows = store.spend_detail(since_day=(date.today() - timedelta(days=6)).isoformat())
+        else:
+            return _text("scope is thread, today or week.", error=True)
+        by: dict = {}
+        for r in rows:
+            k = str(r.get("what") or "unlabelled")
+            v = by.setdefault(k, {"what": k, "usd": 0.0, "times": 0})
+            v["usd"] += float(r.get("usd") or 0)
+            v["times"] += 1
+        items = sorted(by.values(), key=lambda x: -x["usd"])
+        for v in items:
+            v["usd"] = round(v["usd"], 4)
+        return _text(json.dumps({
+            "scope": scope, "total_usd": round(sum(float(r.get("usd") or 0) for r in rows), 4),
+            "tasks": len({r.get("task_id") for r in rows}), "items": items,
+            "note": "Read from the brain's ledger. Your own turn right now is added when it ends. Caps: "
+                    "$%.2f a turn ($%.2f with files), $%.0f a run, $%.0f a day." % (
+                        config.AGENT_BUDGET_USD, max(config.AGENT_BUDGET_USD, config.FILE_TURN_USD),
+                        config.RUN_CAP_USD, config.DAILY_CAP_USD)}, default=str))
+
+    return Tool("spend_report", "What the team has spent, read from the brain's own ledger: each Claude turn by model "
+                "and every paid vendor call (skip trace, phone scores, Zillow, research). scope: thread (this job, "
+                "the default), today, or week. Use it whenever the operator asks what something cost.",
+                _obj({"scope": {"type": "string", "enum": ["thread", "today", "week"],
+                                "description": "thread (this job), today, or week"}}, []), handler, read_only=True)
+
+
 # ------------------------------------------------------------------------------- workflow tools
 
 def workflow_tool(ctx: RunContext, wf) -> Tool:
@@ -225,5 +266,6 @@ def build(ctx: RunContext) -> list[Tool]:
     tools = team_tools(ctx)
     if "record_lookup" in ctx.roster.shared_tools:
         tools.append(record_lookup_tool(ctx))
+    tools.append(spend_report_tool(ctx))
     tools += [workflow_tool(ctx, wf) for wf in ctx.roster.owned(ctx.employee.id)]
     return tools

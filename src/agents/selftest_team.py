@@ -324,6 +324,16 @@ def run(check, tmp: Path) -> None:
         names = [t.name for t in tools.build(ctx_s)]
         check(names[:4] == ["handoff", "ask_operator", "thread_history", "record_lookup"], "team and shared tools first")
         check("quick_screen" in names and "deep_prospect" not in names, "an employee gets only the workflows it owns")
+        by0 = {t.name: t for t in tools.build(ctx_s)}
+        store.add_spend(ta["id"], 0.12, "claude claude-opus-5-5")
+        store.add_spend(ta["id"], 0.03, "claude claude-opus-5-5")
+        store.add_spend(ta["id"], 0.45, "zillow sold pull")
+        rep = json.loads(_text_of(asyncio.run(by0["spend_report"].handler({"scope": "thread"}))))
+        check(rep["total_usd"] == 0.6 and rep["items"][0] == {"what": "zillow sold pull", "usd": 0.45, "times": 1}
+              and {"what": "claude claude-opus-5-5", "usd": 0.15, "times": 2} in rep["items"] and "Caps:" in rep["note"],
+              "spend report reads the thread's real spend from the ledger, by model and by vendor, with the caps")
+        bad = asyncio.run(by0["spend_report"].handler({"scope": "forever"}))
+        check(bad.get("is_error"), "spend report refuses a scope it does not know")
         by = {t.name: t for t in tools.build(ctx_s)}
         out = asyncio.run(by["record_lookup"].handler({"record": "123 Main St"}))
         txt = _text_of(out)

@@ -272,6 +272,7 @@ def _run(check, tmp, qs, dbm, dbp) -> None:
     for key in ("deals:zillow_usd:%s" % store.today(), "deals:siftmap_reads:%s" % store.today()):
         store.kv_set(key, "0")
     _parsers(check, cp, qs)
+    _model_walk(check, qs)
     _siftmap_client(check)
     fake_map = FakeMap()
     crm = FakeCRM([_record(), _record(U_NOMAP, "14 Testwood Dr", lat=0, lon=0), _record(U_PLAIN, "16 Testwood Dr")],
@@ -288,6 +289,38 @@ def _run(check, tmp, qs, dbm, dbp) -> None:
 
 
 # ------------------------------------------------------------------------------- parsers
+
+def _model_walk(check, qs) -> None:
+    """A walk in the shapes a model actually wrote on a measured 20-photo turn (2026-11-13), with invented
+    content: the underwrite crashed on it before normalize_walk existed."""
+    print("  deals: a walk the model wrote")
+    raw = {"single_scenario": True, "target_config": "existing layout, 3 bed 1 bath, comp-matched finish",
+           "work_done": ["bath vanity looks recent (photo 05)"],
+           "still_open": ["furnace age unknown (photo 09)"],
+           "flags": [{"flag": "staining on the attic boards", "photo": "14", "cost": None},
+                     {"flag": "new water heater", "photo": "12", "cost": "$1,450"}],
+           "gates": ["no added beds or baths", {"gate": "finish matched to the comps"}],
+           "photo_notes": [{"file": "01-a.jpg", "room": "kitchen", "finding": "dated cabinets"}, "carpet stained"],
+           "contract_price": "95k"}
+    w, said = qs.normalize_walk(raw)
+    check("single_scenario" not in w and w["target_config"] == {"beds": 3, "baths": 1.0},
+          "a single plan written as true is dropped for the engine's plan, and a layout sentence is read as beds and baths")
+    check(w["work_done"][0]["item"].startswith("bath vanity") and all(isinstance(x, dict) for x in w["still_open"]),
+          "sentences in work done and still open become line items")
+    check([f["item"] for f in w["flags"]] == ["new water heater"] and w["flags"][0]["cost"] == 1450.0
+          and "(photo 12)" in w["flags"][0]["detail"],
+          "a priced flag keeps its price, read from $1,450, and names its photo")
+    check(any("staining on the attic boards" in x["item"] and "not priced" in x["detail"] for x in w["still_open"]),
+          "a flag with no price is listed as an open item, never priced at $0")
+    check(w["gates"] == ["no added beds or baths", "finish matched to the comps"] and w["contract_price"] == 95000.0
+          and w["photo_notes"][1] == {"finding": "carpet stained"},
+          "gates become text, money is read from 95k, and a bare photo note keeps its finding")
+    check(any("rather than priced at $0" in x for x in said) and any("target layout" in x for x in said),
+          "every change made to the walk is said, so the workbook shows what was read and how")
+    same, none = qs.normalize_walk({"target_config": {"beds": 2, "baths": 1}, "flags": [{"item": "roof", "cost": 9000}]})
+    check(same["target_config"] == {"beds": 2, "baths": 1} and same["flags"][0]["cost"] == 9000.0 and not none,
+          "a walk already in the engine's shapes passes through unchanged, with nothing said")
+
 
 def _parsers(check, cp, qs) -> None:
     print("  pasted inputs")
@@ -526,8 +559,8 @@ def _quick_screen(check, qs, crm, fake_map) -> None:
           "no Zillow key on the box is said in one line, and the free comps still screen")
     qs.ZILLOW = zillow
     r6 = qs.run(_task("quick_screen", U_SUBJ, {"record": U_SUBJ, "notes": "3/1, 1,500 sqft, built 1955, seller is relocating"}))
-    check("1,500 sqft" in r6["from_notes"] and r6["context"] == "seller is relocating",
-          "card facts in the notes beat the record, and the rest is carried as context")
+    check("1,500 sqft" in r6["from_notes"] and r6["context"] == "3/1, 1,500 sqft, built 1955, seller is relocating",
+          "card facts in the notes beat the record, and the notes are carried as the operator wrote them")
     r7 = qs.run(_task("quick_screen", U_SUBJ, {"record": U_SUBJ, "boundary": "the area by the school"}))
     check(not r7["ok"] and r7["why"].startswith("I could not read that boundary"), "an unreadable boundary stops the screen with the sentence")
     r8 = qs.run(_task("quick_screen", U_NOMAP, {"record": U_NOMAP}))

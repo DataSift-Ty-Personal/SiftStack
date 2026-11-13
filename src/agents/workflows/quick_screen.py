@@ -309,6 +309,7 @@ def area_inputs(inputs: dict, details: str = "") -> dict:
         text, src = details.strip(), "the request"
     if text:
         out["notes"], out["notes_from"] = cp.parse_card_notes(text), src
+        out["notes"]["said"] = text    # shown as written: the remainder after the card facts reads as fragments
         m = ASK_RX.search(text)
         out["ask"] = money(m.group(1)) if m else 0.0
     return out
@@ -356,6 +357,115 @@ def notes_beat_walk(walk: dict, notes: dict) -> tuple[dict, list[str]]:
                 "target" if key == "target_config" else "plan", _layout(*before),
                 _layout(part.get("beds"), part.get("baths"))))
         w[key] = part
+    return w, said
+
+
+# ------------------------------------------------------------------------------- a walk a model wrote
+
+_LAYOUT_RX = re.compile(r"(\d+(?:\.\d+)?)\s*(?:bed|br|bd)\w*\D{0,15}?(\d+(?:\.\d+)?)\s*(?:bath|ba)\w*", re.I)
+_SLASH_RX = re.compile(r"\b(\d)\s*/\s*(\d(?:\.\d)?)\b")
+_ITEM_KEYS = ("item", "flag", "name", "title", "what", "issue", "finding", "gate")
+_DETAIL_KEYS = ("detail", "note", "notes", "description", "why")
+_WALK_MONEY = ("as_is_value", "arv_override", "contract_price", "assignment_price", "monthly_rent")
+
+
+def _layout_text(text) -> dict:
+    t = str(text or "")
+    m = _LAYOUT_RX.search(t) or _SLASH_RX.search(t)
+    return {"beds": int(float(m.group(1))), "baths": float(m.group(2))} if m else {}
+
+
+def _walk_money(v):
+    """A dollar figure however it was written ($1,500, 1500, 1.5k); None when there is none."""
+    if isinstance(v, bool) or v is None:
+        return None
+    if isinstance(v, (int, float)):
+        return float(v) if v > 0 else None
+    s = str(v).strip().lower().replace(",", "").replace("$", "").strip()
+    mult = 1000.0 if s.endswith("k") else 1.0
+    try:
+        n = float(s.rstrip("k").strip()) * mult
+    except ValueError:
+        return None
+    return n if n > 0 else None
+
+
+def _walk_entry(x, money_key: str = "") -> dict:
+    if not isinstance(x, dict):
+        e = {"item": str(x).strip(), "detail": ""}
+    else:
+        e = dict(x)
+        e["item"] = str(e.get("item") or next((x[k] for k in _ITEM_KEYS if x.get(k)), "")).strip()
+        det = e.get("detail") or next((x[k] for k in _DETAIL_KEYS if x.get(k) and x[k] != e["item"]), "")
+        photo = x.get("photo") or x.get("photos") or x.get("file")
+        if photo and "photo" not in str(det).lower():
+            det = ("%s (photo %s)" % (det or "", ", ".join(map(str, photo)) if isinstance(photo, list) else photo)).strip()
+        e["detail"] = str(det or "").strip()
+    if money_key:
+        e[money_key] = _walk_money(e.get(money_key)) if isinstance(x, dict) else None
+    return e
+
+
+def normalize_walk(walk) -> tuple[dict, list[str]]:
+    """(walk, what was changed). A walk an employee writes from photos comes in whatever shape the model
+    chose, and the rehab engine (post_walkthrough) reads fixed shapes: target_config and single_scenario
+    are objects, work_done / still_open / flags are lists of {item, detail, ...}, money is a number.
+    Measured 2026-11-13 on a real 20-photo turn: single_scenario came as true, target_config as a
+    sentence, work_done and still_open as plain sentences, and flags keyed "flag" with no cost, and the
+    underwrite crashed on the first of them. Every change is said in the result. A flag with no price is
+    listed as an open item, never priced at $0, so the priced total stays honest."""
+    w, said = dict(walk or {}), []
+    ss = w.get("single_scenario")
+    if ss is not None and not isinstance(ss, dict):
+        w.pop("single_scenario")
+        if ss not in (True, False, "", None):
+            said.append("the walk's single plan was %r, not a plan, so the engine's one plan is used" % str(ss)[:60])
+    tc = w.get("target_config")
+    if tc is not None and not isinstance(tc, dict):
+        lay = _layout_text(tc)
+        if lay:
+            w["target_config"] = lay
+            said.append("read the walk's target layout %r as %d bed %g bath" % (str(tc)[:60], lay["beds"], lay["baths"]))
+        else:
+            w.pop("target_config")
+            said.append("the walk's target layout %r names no beds and baths, so the house's own layout is used" % str(tc)[:60])
+    lists = {k: (w.get(k) if isinstance(w.get(k), list) else [w[k]]) for k in
+             ("work_done", "still_open", "flags", "gates", "photo_notes") if w.get(k) not in (None, "", [])}
+    reshaped = [k for k in ("work_done", "still_open", "flags") if any(not isinstance(x, dict) or "item" not in x
+                                                                        for x in lists.get(k, []))]
+    if "work_done" in lists:
+        w["work_done"] = [_walk_entry(x, "credit") for x in lists["work_done"]]
+    open_items = [_walk_entry(x) for x in lists.get("still_open", [])]
+    if "flags" in lists:
+        priced, unpriced = [], []
+        for x in lists["flags"]:
+            e = _walk_entry(x, "cost")
+            if e.get("cost"):
+                if not e.get("note"):
+                    e["note"] = e.get("detail", "")
+                priced.append(e)
+            else:
+                unpriced.append({"item": e["item"], "detail": ("%s; flagged on the walk, not priced" % e["detail"]).strip("; ")})
+        w["flags"] = priced
+        open_items += unpriced
+        if unpriced:
+            said.append("%d flag(s) had no price, so they are listed as open items rather than priced at $0" % len(unpriced))
+    if "still_open" in lists or open_items:
+        w["still_open"] = open_items
+    if "gates" in lists:
+        w["gates"] = [str(g.get("item") or g.get("gate") or g.get("detail") or "") if isinstance(g, dict) else str(g)
+                      for g in lists["gates"]]
+    if "photo_notes" in lists:
+        w["photo_notes"] = [x if isinstance(x, dict) else {"finding": str(x)} for x in lists["photo_notes"]]
+    for k in _WALK_MONEY:
+        if k in w and not (isinstance(w[k], (int, float)) and not isinstance(w[k], bool)):
+            n = _walk_money(w[k])
+            if n is None:
+                w.pop(k)
+            else:
+                w[k] = n
+    if reshaped:
+        said.append("read %s from plain sentences into line items" % ", ".join(k.replace("_", " ") for k in reshaped))
     return w, said
 
 
@@ -844,7 +954,7 @@ def run(task: dict) -> dict:
     out.update(street=subj["street"] or rec["uuid"], uuid=subj["uuid"])
     notes = area["notes"]
     out["from_notes"] = apply_notes(subj, notes)
-    out["context"] = notes.get("context") or ""
+    out["context"] = notes.get("said") or notes.get("context") or ""
     if not (subj["lat"] and subj["lon"]):
         out["why"] = "the record has no map point, so there is no area to pull comps from"
         return out

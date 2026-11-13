@@ -352,6 +352,20 @@ def spent(task_id: int | None = None, day: str | None = None, research: bool | N
         return float(c.execute(q, args).fetchone()[0])
 
 
+def spend_detail(thread_id: str = "", since_day: str = "") -> list[dict]:
+    """Every spend row with the task it belongs to (its workflow and employee): what the team paid for,
+    on one job thread or since a day. Claude turns are recorded as "claude <model>", vendors by name."""
+    q = ("SELECT s.day, s.usd, s.what, s.task_id, t.workflow, t.agent FROM spend s "
+         "LEFT JOIN tasks t ON t.id = s.task_id WHERE 1=1")
+    args: list = []
+    if thread_id:
+        q, args = q + " AND t.thread_id=?", args + [thread_id]
+    if since_day:
+        q, args = q + " AND s.day>=?", args + [since_day]
+    with _LOCK, _db() as c:
+        return [dict(r) for r in c.execute(q + " ORDER BY s.id", args).fetchall()]
+
+
 def today() -> str:
     return datetime.now(timezone.utc).isoformat()[:10]
 
