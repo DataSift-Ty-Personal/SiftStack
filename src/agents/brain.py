@@ -127,8 +127,10 @@ def hearing_notice(now: datetime | None = None) -> str:
     else:
         fix = ("Give the brain a way to listen: SLACK_APP_TOKEN (Socket Mode) or SLACK_SIGNING_SECRET "
                "(the Request URL).")
+    # The confirmation needs an event to arrive, and after the fix nothing does until somebody
+    # writes. So the note asks for that: found live, where the switch was flipped and both sides waited.
     text = (":warning: I can post here, but Slack is not sending me what people write, so nobody on the team "
-            "will hear a reply yet. %s" % fix)
+            "will hear a reply yet. %s Then write anything in this channel and I will answer the moment I can hear." % fix)
     slack_app.notice(text, _roster_or_none())
     store.kv_set(DEAF_KEY, "notice %s" % store.now())
     log.warning("slack: the app can post but hears nothing; the fix was posted in the channel")
