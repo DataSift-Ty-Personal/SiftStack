@@ -17,6 +17,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg \
 WORKDIR /app
 COPY deploy/requirements-agents.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
+# The code sandbox (src/agents/sandbox.py): an employee's Python runs as this user, with no home and no shell.
+RUN useradd --system --user-group --no-create-home --shell /usr/sbin/nologin sandbox
 
 COPY src/ ./src/
 # The team (roster, briefs, generated TEAM.md) and the skill library the employees carry.

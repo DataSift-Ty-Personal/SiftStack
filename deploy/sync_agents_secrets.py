@@ -65,6 +65,18 @@ OPTIONAL = [
     ("SLACK_APP_TOKEN", "the team's Slack app, Socket Mode (xapp-...): hear replies with no signing secret or URL check"),
     ("AGENTS_RELEASERS", "Slack user ids allowed to release a staged batch from the channel (empty: command line only)"),
     ("AGENTS_SLACK_WEBHOOK", "the agents' Slack channel (post-only fallback without the app)"),
+    # The code sandbox (src/agents/sandbox.py)
+    ("AGENTS_SANDBOX", "0 takes run_python and export_data off every employee (default on)"),
+    ("AGENTS_SANDBOX_CPU_S", "code sandbox: CPU seconds one run may use (default 120)"),
+    ("AGENTS_SANDBOX_WALL_S", "code sandbox: wall clock for one run, seconds (default 180)"),
+    ("AGENTS_SANDBOX_MEM_MB", "code sandbox: memory for one run, MB (default 2048 = the whole machine)"),
+    ("AGENTS_SANDBOX_FILE_MB", "code sandbox: largest file one run may write, MB (default 200)"),
+    ("AGENTS_SANDBOX_PROCS", "code sandbox: processes one run may hold (default 64)"),
+    ("AGENTS_SANDBOX_WORK_MB", "code sandbox: what one run may write in all, MB (default 1024)"),
+    ("AGENTS_SANDBOX_OUT_FILES", "code sandbox: files kept from one run (default 20)"),
+    ("AGENTS_SANDBOX_OUT_MB", "code sandbox: MB kept from one run (default 50)"),
+    ("AGENTS_EXPORT_MAX_ROWS", "export_data: records written by one export (default 2000)"),
+    ("AGENTS_EXPORT_DETAIL_MAX", "export_data: records whose list and tag titles one export reads (default 100)"),
     # Scripts from Slack (src/agents/commands.py, workflows/run_script.py)
     ("AGENTS_SCRIPT_TOOLS", "0 takes script_catalog and run_script off every employee (default on)"),
     ("AGENTS_SCRIPT_TIMEOUT_MIN", "run_script: one script's time limit; the brain's one worker waits on it (default 20)"),

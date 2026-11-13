@@ -121,6 +121,8 @@ def _agent(task: dict, roster) -> dict | None:
         return None
     result = {"text": turn.text, "session_id": turn.session_id, "cost_usd": round(turn.cost_usd, 4),
               "turns": turn.turns, "handoffs": ctx.handoffs, "tickets": ctx.tickets, "stub": turn.stub}
+    from . import sandbox
+    result.update(sandbox.turn_result(task))   # the code sandbox's files: /files finds them through run_dir
     if ctx.asked:
         store.wait_for_operator(task["id"], ctx.asked, turn.session_id, result)
         _post(task, ctx.asked, emp, roster)

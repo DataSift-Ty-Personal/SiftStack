@@ -35,6 +35,9 @@ _worker = {}
 
 @app.on_event("startup")
 def _startup() -> None:
+    from . import sandbox
+    for said in sandbox.harden():   # /data to 0700 root, so the code sandbox's user cannot list or read the volume
+        log.info(said)
     store.init()
     n = store.requeue_stale()
     if n:

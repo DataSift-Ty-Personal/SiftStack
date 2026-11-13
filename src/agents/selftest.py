@@ -103,6 +103,7 @@ EXTRA_SECTIONS: list[tuple[str, str]] = [
     ("roma's deal workflows", "selftest_wf_deals"),
     ("query tools", "selftest_query"),
     ("scripts from slack", "selftest_cmd"),
+    ("code sandbox", "selftest_sandbox"),
 ]
 
 

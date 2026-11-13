@@ -21,7 +21,7 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import attachments, bus, config, store, team
+from . import attachments, bus, config, sandbox, store, team
 from . import tools as team_tools
 
 log = logging.getLogger(__name__)
@@ -138,7 +138,9 @@ def options(sdk_mod, ctx, tool_list: list, ws: Path, model: str, budget: float, 
               mcp_servers={SERVER: server}, strict_mcp_config=True, model=model,
               max_turns=config.AGENT_MAX_TURNS, max_budget_usd=budget,
               hooks={"PreToolUse": [sdk_mod.HookMatcher(matcher=None, hooks=[make_guard(set(allowed), ws)])]},
-              env={"CLAUDE_AGENT_SDK_CLIENT_APP": "siftstack-agents", "ENABLE_TOOL_SEARCH": "false"})
+              env={"CLAUDE_AGENT_SDK_CLIENT_APP": "siftstack-agents", "ENABLE_TOOL_SEARCH": "false",
+                   # a run_python call holds its tool call for the sandbox's whole wall clock
+                   "MCP_TOOL_TIMEOUT": str(int((sandbox.Limits.from_env().wall_s + 60) * 1000))})
     if ctx.employee.skills:
         kw["skills"] = "all"
     if ctx.employee.effort:

@@ -2,10 +2,10 @@
  "about": "GENERATED from src/*.py by python src/agents/commands.py --write. Do not edit by hand.",
  "counts": {
   "browser": 24,
-  "package": 3,
+  "package": 1,
   "paid": 12,
   "retired": 32,
-  "runnable": 51,
+  "runnable": 53,
   "wired": 28,
   "writes": 21
  },
@@ -2711,14 +2711,10 @@
   },
   "export_full_demo": {
    "args": [],
-   "class": "package",
+   "class": "runnable",
    "cli": "none",
    "complete": true,
-   "needs": [
-    "pandas"
-   ],
    "summary": "Export ALL scraped records from master CSV to a presentation-ready Excel workbook.",
-   "why": "imports pandas, which the brain image does not install",
    "writes": ""
   },
   "export_tax_delinquency": {
@@ -2755,14 +2751,10 @@
   },
   "export_tax_sale_demo": {
    "args": [],
-   "class": "package",
+   "class": "runnable",
    "cli": "none",
    "complete": true,
-   "needs": [
-    "pandas"
-   ],
    "summary": "Export tax sale records from master CSV to a cleaned, presentation-ready Excel file.",
-   "why": "imports pandas, which the brain image does not install",
    "writes": ""
   },
   "extract_market_finder": {

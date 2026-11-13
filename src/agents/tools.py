@@ -335,6 +335,8 @@ def build(ctx: RunContext) -> list[Tool]:
     tools.append(spend_report_tool(ctx))
     tools += query_tools(ctx)
     tools += script_tools(ctx)
+    from . import sandbox                 # run_python and export_data (the locked code sandbox)
+    tools += sandbox.sandbox_tools(ctx)
     # A tool name is used once: the roster's run_script entry is reached through the run_script tool
     # above, and two tools with one name would break the employee's whole tool list.
     taken = {t.name for t in tools}
