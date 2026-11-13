@@ -22,9 +22,10 @@ from collections import Counter
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from sms_agent import config, crm, sc_client as C, store  # noqa: E402
+from sms_agent import config, crm, gate_rules, sc_client as C, store  # noqa: E402
 from mls_listings import ActiveListings  # noqa: E402
-from smarter_contact_audit import OPEN_STATUSES, SKIP_PHONE, OUT, _names, _status, suppressions  # noqa: E402
+from smarter_contact_audit import (OPEN_STATUSES, SKIP_PHONE, OUT, _names, _status, gate_extra,  # noqa: E402,F401
+                                   suppressions)
 
 SOURCE_GROUP = "Priority 1- Attempt 1"
 TEXTED_GROUPS = ("P1 Wave 1 East", "P1 Wave 1 Other TZ", "P1 No Name East", "P1 No Name Other TZ")
@@ -71,6 +72,7 @@ def main() -> int:
     listings = ActiveListings()
     details: dict[str, dict] = {}
     reasons, clean, per_reason = Counter(), [], {}
+    gate_would = Counter()      # report mode: what the suppression gate would also exclude
     for i, ct in enumerate(remaining, 1):
         phone = store.clean_phone(ct["phone"])
         record = next((x["value"] for x in ct.get("attrs") or [] if x["fieldId"] == apn), "")
@@ -98,13 +100,20 @@ def main() -> int:
                 obj = next((p for p in ((rec.get("owner") or {}).get("phones") or [])
                             if store.clean_phone(p.get("number")) == phone), None)
                 pst = ((obj or {}).get("status") or "").upper()
-                if pst in SKIP_PHONE:
+                # One rule decides whether a phone may be texted (sms_agent/gate_rules.do_not_text):
+                # the phone's own status here, the do-not-call registry flag below.
+                if gate_rules.do_not_text({"status": pst}):
                     why.append(f"sift_phone:{pst}")
                 addr = rec.get("address") or {}
                 if listings.lookup(addr.get("street") or "", addr.get("postal_code") or ""):
                     why.append("mls_listed")
+                says = gate_extra(rec)          # '' unless SMS_AGENT_GATE is on
+                if says and config.GATE_MODE == "enforce":
+                    why.append(f"gate:{says}")
+                elif says:
+                    gate_would[says] += 1
             rp, _ = rep.get(record, ({}, ""))
-            if store.clean_phone(rp.get("number")) == phone and rp.get("doNotCall"):
+            if store.clean_phone(rp.get("number")) == phone and gate_rules.do_not_text(rp) == gate_rules.REGISTRY:
                 why.append("registry_dnc")
         if why:
             first = why[0].split(":")[0] if not why[0].startswith("sift_status") else why[0]
@@ -120,6 +129,10 @@ def main() -> int:
           f"CLEAN {len(clean)} phones on {clean_records} properties")
     for k, n in reasons.most_common():
         print(f"  {n:5}  {k}")
+    if gate_would:
+        print("the suppression gate would also exclude (report mode, nobody was excluded):")
+        for k, n in gate_would.most_common():
+            print(f"  {n:5}  {k}")
     OUT.mkdir(parents=True, exist_ok=True)
     path = OUT / f"remaining_{store.now()[:19].replace(':', '')}.json"
     path.write_text(json.dumps({"source": len(source), "texted": len(texted), "remaining": len(remaining),

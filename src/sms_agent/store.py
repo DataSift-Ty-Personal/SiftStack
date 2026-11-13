@@ -694,6 +694,22 @@ def phones_for_record(record_uuid: str) -> list[str]:
     return [r["phone"] for r in rows if r["phone"]]
 
 
+def phones_for_owner(owner_uuid: str) -> list[str]:
+    """Every number we have mapped to one OWNER, across all of that owner's records.
+
+    A phone maps to one record here, and an owner with a rental and a home has two. So "every
+    number on this record" misses the owner's numbers that were mapped under the other house,
+    and a stop on one of them would leave a text queued to the rest (build plan 0.17: the check
+    is by owner, not by phone). The owner id is only stored once owner-wide revocation is on,
+    so an older row simply is not found and the record lookup above still covers it.
+    """
+    if not owner_uuid:
+        return []
+    rows = _conn().execute(
+        "SELECT phone FROM phone_map WHERE owner_uuid=?", (owner_uuid,)).fetchall()
+    return [r["phone"] for r in rows if r["phone"]]
+
+
 def outbox_status(row_id: int) -> str:
     row = _conn().execute("SELECT status FROM outbox WHERE id=?", (row_id,)).fetchone()
     return row["status"] if row else ""
@@ -973,18 +989,24 @@ def stats() -> dict:
 # ------------------------------------------------------------ smarter contact
 
 def sc_queue(phone: str, contact_id: str, kind: str, body: str, intent: str = "",
-             not_before: str = "") -> int:
+             not_before: str = "", status: str = "queued") -> int:
     """Queue one Smarter Contact action. A new reply replaces any still waiting:
-    when an owner sends two texts, only an answer to the newest one goes out."""
+    when an owner sends two texts, only an answer to the newest one goes out.
+
+    `status="held"` stages a reply that a person must release before it can send (the drain only
+    ever picks up 'queued'). Every caller that predates the speed-to-lead text passes nothing and
+    gets 'queued', exactly as before.
+    """
     p = clean_phone(phone)
     with tx() as c:
         if kind == "reply":
             c.execute("UPDATE sc_outbox SET status='cancelled', detail='superseded by a newer reply',"
-                      " done_at=? WHERE phone=? AND kind='reply' AND status='queued'", (now(), p))
+                      " done_at=? WHERE phone=? AND kind='reply' AND status IN ('queued','held')", (now(), p))
         cur = c.execute(
-            "INSERT INTO sc_outbox(phone, contact_id, kind, body, intent, not_before, created_at)"
-            " VALUES (?,?,?,?,?,?,?)",
-            (p, contact_id or "", kind, body, intent, not_before or now(), now()),
+            "INSERT INTO sc_outbox(phone, contact_id, kind, body, intent, status, not_before, created_at)"
+            " VALUES (?,?,?,?,?,?,?,?)",
+            (p, contact_id or "", kind, body, intent, status if status in ("queued", "held") else "queued",
+             not_before or now(), now()),
         )
         return int(cur.lastrowid)
 
@@ -1008,10 +1030,19 @@ def sc_finish(row_id: int, status: str, detail: str = "", retry_at: str = "") ->
 
 
 def sc_cancel(phone: str, reason: str) -> int:
+    # 'held' is a reply staged for a person to release (the speed-to-lead text). Nothing wrote
+    # that status before it existed, so for every older row this is the same statement.
     with tx() as c:
         return c.execute("UPDATE sc_outbox SET status='cancelled', detail=?, done_at=?"
-                         " WHERE phone=? AND kind='reply' AND status='queued'",
+                         " WHERE phone=? AND kind='reply' AND status IN ('queued','held')",
                          (reason, now(), clean_phone(phone))).rowcount
+
+
+def sc_release(phone: str) -> int:
+    """Release the Smarter Contact reply staged for this number. Returns how many were released."""
+    with tx() as c:
+        return c.execute("UPDATE sc_outbox SET status='queued' WHERE phone=? AND kind='reply' AND status='held'",
+                         (clean_phone(phone),)).rowcount
 
 
 def sc_replies(phone: str) -> list[dict]:

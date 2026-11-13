@@ -48,6 +48,12 @@ POOL = "output/dp/ftm_heir_sms_pool.json"
 SPECIFIC = {"Son", "Daughter", "Child", "Mother", "Father", "Parent",
             "Brother", "Sister", "Sibling", "Wife", "Husband", "Spouse"}
 
+# What this campaign may lift at the suppression gate (build plan 0.1). The gate holds every
+# record whose owner has died, which is every record here. "heir" lifts that, and only on a
+# record that research tagged with a verified heir: a death nobody has researched still holds.
+# It is read only when SMS_AGENT_GATE is on; with the gate off nothing here changes.
+GATE_ALLOW = ("heir",)
+
 
 def rows_from_pool(limit: int = 0) -> list[dict]:
     pool = json.load(io.open(POOL, encoding="utf-8"))
@@ -163,7 +169,7 @@ def main() -> int:
 
     rows = rows_from_pool(a.limit)
     print("heir pool rows: %d" % len(rows))
-    cands = seed.build(rows, touch=a.touch)
+    cands = seed.build(rows, touch=a.touch, gate_allow=GATE_ALLOW)
 
     ready = [c for c in cands if c.status == "ready"]
     held = [c for c in cands if c.status != "ready"]
@@ -188,7 +194,7 @@ def main() -> int:
             print("  -> %s  %s" % (c.phone, c.message))
 
     if a.queue and kept:
-        res = seed.queue(kept, touch=a.touch)
+        res = seed.queue(kept, touch=a.touch, gate_allow=GATE_ALLOW)
         print("\nstaged as HELD: %s" % res)
         notify_staged(kept, a.touch)
         print("nothing has been sent. Release with:")

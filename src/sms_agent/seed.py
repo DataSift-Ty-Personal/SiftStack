@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable, Optional
 
-from . import config, crm, respond, sender_pool, store
+from . import config, crm, gate_rules, respond, sender_pool, store
 from .knowledge import touches
 
 log = logging.getLogger(__name__)
@@ -57,6 +57,9 @@ class Candidate:
     status: str = "ready"
     touch: int = 0
     reasons: list[str] = field(default_factory=list)
+    # What the suppression gate said about this record ("" = nothing, or the gate is off). In
+    # `report` mode it is set and the candidate is NOT held, so a batch shows what would change.
+    gate: str = ""
 
     def hold(self, reason: str) -> "Candidate":
         self.status = "hold"
@@ -88,8 +91,11 @@ def from_csv(path: Path) -> list[dict]:
         return rows
 
 
-# Phone dispositions that mean "never text this number again".
-SKIP_PHONE_STATUSES = {"DNC", "CORRECT_DNC", "WRONG_DNC", "WRONG", "DEAD"}
+# Phone dispositions that mean "never text this number again". The set itself is the gate's
+# (gate_rules.BAD_PHONE); the name stays because other modules import it from here. Whether one
+# phone may be texted is asked in one place now, `gate_rules.do_not_text`, which reads this
+# status and the do-not-call registry flag together (build plan 0.22).
+SKIP_PHONE_STATUSES = gate_rules.BAD_PHONE
 
 # Only the two tiers Trestle scored as most likely to reach the owner.
 ALLOWED_DIAL_TIERS = {"Dial First", "Dial Second"}
@@ -171,7 +177,12 @@ def from_preset(title: str, limit: int = 0, keep_unresolved: bool = False,
         # with the field absent, not false (verified live 2026-08-28). So this
         # is the one place it can be seen, and the caller needs the number even
         # when the row is kept for a deeper look.
-        if phone.get("doNotCall"):
+        #
+        # Whether one phone may be texted is one rule now (gate_rules.do_not_text,
+        # decision D32): the registry flag, then the phone's own status. It
+        # answers this row exactly as the two separate tests here used to.
+        refused = gate_rules.do_not_text(phone)
+        if refused == gate_rules.REGISTRY:
             if number:
                 counts.setdefault("_dnc_numbers", set()).add(number)
             drop("phone flagged do-not-call")
@@ -194,7 +205,7 @@ def from_preset(title: str, limit: int = 0, keep_unresolved: bool = False,
         # it here is what makes that stick across every future campaign,
         # including ones this code did not build. WRONG and DEAD are excluded
         # for the same reason: someone already established the line is no good.
-        if (phone.get("status") or "").upper() in SKIP_PHONE_STATUSES:
+        if refused:
             deferred = deferred or "phone status DNC/WRONG/DEAD"
 
         ok, why = textable_line(phone.get("type"), "Dial First" if row_tier else "")
@@ -227,6 +238,13 @@ def from_preset(title: str, limit: int = 0, keep_unresolved: bool = False,
 
         counts["kept"] = counts.get("kept", 0) + 1
         rows.append(row)
+    if config.GATE_MODE != "off" and counts.get("_dnc_numbers"):
+        # The flag is visible only on a sweep like this one. With the gate on, the numbers are
+        # kept, so the same number is still refused the day it turns up as some other record's
+        # second phone, where no row shows its flag (build plan 0.22).
+        from . import gatekeeper
+
+        gatekeeper.remember_flagged(counts["_dnc_numbers"])
     return rows, matched
 
 
@@ -257,6 +275,12 @@ def resolve_best_phone(row: dict, dnc_numbers: set) -> tuple[Optional[dict], str
 
     owner = rec.get("owner") if isinstance(rec.get("owner"), dict) else {}
     best = None
+    seen_flagged = dnc_numbers
+    if config.GATE_MODE == "enforce":
+        # With the gate enforced, a number seen flagged in ANY earlier sweep is refused too.
+        from . import gatekeeper
+
+        seen_flagged = set(dnc_numbers) | gatekeeper.flagged()
     for p in owner.get("phones") or []:
         if not isinstance(p, dict):
             continue
@@ -264,10 +288,9 @@ def resolve_best_phone(row: dict, dnc_numbers: set) -> tuple[Optional[dict], str
         if len(number) != 10:
             continue
         # The DNC flag is absent from the full record, so the only place it can
-        # be known is the search rows collected across every swept preset.
-        if number in dnc_numbers:
-            continue
-        if (p.get("status") or "").upper() in SKIP_PHONE_STATUSES:
+        # be known is the search rows collected across every swept preset. The
+        # flag and the phone's own status are one rule (gate_rules.do_not_text).
+        if gate_rules.do_not_text(p, seen_flagged):
             continue
         tier = ""
         for tag in (p.get("tags") or []):
@@ -302,6 +325,10 @@ def resolve_best_phone(row: dict, dnc_numbers: set) -> tuple[Optional[dict], str
     # already refused above. This governs the registry scrub alone.
     flagged = crm.phone_is_dnc(best[1])
     if flagged:
+        if config.GATE_MODE != "off":
+            from . import gatekeeper
+
+            gatekeeper.remember_flagged([best[1]])
         return None, "best phone is flagged do-not-call"
     if flagged is None and config.REQUIRE_VISIBLE_DNC:
         return None, "could not verify do-not-call status"
@@ -313,9 +340,33 @@ def resolve_best_phone(row: dict, dnc_numbers: set) -> tuple[Optional[dict], str
     return out, ""
 
 
+def _is_buyer_run(new_deal: bool) -> bool:
+    """Is this batch a deal blast to buyers? The dispo campaign is the only caller that passes
+    `new_deal`, and it pins the Dispo pool before it builds."""
+    return bool(new_deal) or (sender_pool.forced_pool() or "").strip().lower() in sender_pool.BUYER_POOLS
+
+
+def _gate_reason(cand: Candidate, row: dict, gate_allow, new_deal: bool) -> str:
+    """Why the suppression gate holds this candidate, "" when it does not (build plan 0.1).
+
+    Asked of the same record the dial-tier check just read, so it costs no request of its own.
+    A buyer on a deal blast is judged on the person-level rules only: a buyer's own record
+    reading sold or buyer_found is what makes them a buyer, not a reason to hold them.
+    """
+    from . import gatekeeper
+
+    return gatekeeper.hold_reason(cand.record_uuid, cand.phone, row=row.get("_search_row"),
+                                  allow=gate_allow, program="buyer" if _is_buyer_run(new_deal) else "seller")
+
+
 def build(rows: Iterable[dict], touch: int, sender_fallback: str = "",
-          new_deal: bool = False) -> list[Candidate]:
-    """Turn export rows into vetted, rendered candidates. Sends nothing."""
+          new_deal: bool = False, gate_allow=()) -> list[Candidate]:
+    """Turn export rows into vetted, rendered candidates. Sends nothing.
+
+    `gate_allow` names the gate rules this batch may lift (the heir campaign passes "heir": it
+    exists to reach the family of a dead owner, which the gate otherwise holds). It is read only
+    when SMS_AGENT_GATE is on.
+    """
     out: list[Candidate] = []
     # One human, one text. Owners routinely hold several properties in the same
     # preset, and the live Hottest pull had one phone attached to six records.
@@ -365,6 +416,24 @@ def build(rows: Iterable[dict], touch: int, sender_fallback: str = "",
             if tier not in ALLOWED_DIAL_TIERS:
                 out.append(cand.hold(f"dial tier {tier or 'untagged'}, not first or second"))
                 continue
+
+            # The suppression gate (build plan 0.1): owner deceased from every place it is
+            # recorded, Do Not Market, a litigator, the DNC list, a lead or dead status, sold,
+            # listed, and the do-not-call registry flag. Off by default. In `report` it only
+            # notes what it would hold, so the effect can be read before anything changes.
+            if config.GATE_MODE != "off":
+                why = _gate_reason(cand, row, gate_allow, new_deal)
+                if why:
+                    cand.gate = why
+                    if config.GATE_MODE == "enforce":
+                        out.append(cand.hold(why))
+                        continue
+        elif config.GATE_MODE == "enforce":
+            # With the gate enforced, a number with no record behind it (a bare CSV row), or a
+            # record nobody can read right now, has nothing to be checked against. No answer is
+            # not a yes.
+            out.append(cand.hold("the record could not be read" if cand.record_uuid else NO_RECORD))
+            continue
 
         if phone in already_queued_this_run:
             out.append(cand.hold("same phone already has a touch in this batch"))
@@ -496,7 +565,13 @@ def schedule(candidates: list[Candidate]) -> list[tuple[Candidate, str, str]]:
         if existing in numbers:
             from_number = existing
         else:
-            from_number = min(numbers, key=lambda n: (ready_at(n), last_used.get(n, now)))
+            # A new conversation never starts on a resting number (build plan 4.7). A thread
+            # that already has one keeps it, above, and the worker holds it until the rest ends.
+            # With SMS_AGENT_REST_FLAGGED off this is the same list.
+            from . import numberhealth
+
+            fresh = numberhealth.usable(numbers)
+            from_number = min(fresh, key=lambda n: (ready_at(n), last_used.get(n, now)))
         sticky[cand.phone] = from_number
 
         slot = max(cursor, ready_at(from_number))
@@ -629,8 +704,11 @@ def schedule_summary(plan: list[tuple[Candidate, str, str]]) -> dict:
     }
 
 
-def queue(candidates: list[Candidate], touch: int, new_deal: bool = False) -> dict:
+def queue(candidates: list[Candidate], touch: int, new_deal: bool = False, gate_allow=()) -> dict:
     """Register the mappings and queue the ready candidates.
+
+    `gate_allow` is remembered with each number, so the gate asks the same question, with the
+    same allowances, when the batch is released and again when each text is about to leave.
 
     Queued as `held` so nothing leaves without `--commit`, which is the same
     gate a drafted reply passes through.
@@ -678,6 +756,8 @@ def queue(candidates: list[Candidate], touch: int, new_deal: bool = False) -> di
             "county": cand.county,
             "assigned_name": cand.sender,
         }
+        if gate_allow:
+            context["gate_allow"] = [str(a) for a in gate_allow]
         ctx = {k: v for k, v in context.items() if v}
         store.map_phone(
             cand.phone,
@@ -720,20 +800,68 @@ def queue(candidates: list[Candidate], touch: int, new_deal: bool = False) -> di
             "held_back": sum(1 for c in candidates if c.status != "ready")}
 
 
+# What the last release did, for the CLI to print: how many went, and what the gate held back.
+LAST_RELEASE: dict = {}
+# A number with no record behind it has nothing the gate can be asked about.
+NO_RECORD = "no record to check against the gate"
+
+
+def _gate_at_release(row: dict) -> str:
+    """Why the gate holds one staged text at the moment it is released ("" = it may go).
+
+    The gate runs twice on purpose (build plan 0.1): when a record is picked up, and again when
+    the staged batch is released, because an owner who opts out on Tuesday must not get the text
+    that was staged on Monday. The allowances are the ones the batch was built with.
+    """
+    from . import gatekeeper
+
+    phone = row["phone"]
+    mapped = store.lookup_phone(phone) or {}
+    record_uuid = (store.get_conversation(phone) or {}).get("record_uuid") or mapped.get("record_uuid") or ""
+    if not record_uuid:
+        # The same answer the build step gives a bare number: no answer is not a yes.
+        return NO_RECORD
+    return gatekeeper.hold_reason(record_uuid, phone, allow=(mapped.get("context") or {}).get("gate_allow") or (),
+                                  program=sender_pool.program_for(row.get("from_number") or ""))
+
+
 def release(touch: int, limit: int = 0) -> int:
-    """Move held seed touches into the send queue. The deliberate go/no-go."""
+    """Move held seed touches into the send queue. The deliberate go/no-go.
+
+    With SMS_AGENT_GATE on, each staged text is asked about once more before it goes. In
+    `enforce` a held one is cancelled with the gate's reason, except a record that could not be
+    read (or a number with no record at all), which simply stays staged for the next release.
+    `LAST_RELEASE` says what happened.
+    """
     intent = f"seed_touch_{touch}"
-    rows = list(
-        store._conn().execute(
-            "SELECT id FROM outbox WHERE status='held' AND intent=? ORDER BY id"
-            + (" LIMIT ?" if limit else ""),
-            (intent, limit) if limit else (intent,),
-        )
-    )
+    rows = [dict(r) for r in store._conn().execute(
+        "SELECT id, phone, from_number FROM outbox WHERE status='held' AND intent=? ORDER BY id"
+        + (" LIMIT ?" if limit else ""),
+        (intent, limit) if limit else (intent,),
+    )]
+    go, cancel, held_back, unread = [], [], {}, 0
+    for row in rows:
+        why = _gate_at_release(row) if config.GATE_MODE != "off" else ""
+        if why:
+            key = reason_key(why)
+            held_back[key] = held_back.get(key, 0) + 1
+            if config.GATE_MODE == "enforce":
+                if why in (gate_rules.words("unreadable"), NO_RECORD):
+                    # Nothing to judge it by today. It stays staged; it is not cancelled.
+                    unread += 1
+                else:
+                    cancel.append((f"held at release: {why}", row["id"]))
+                continue
+        go.append(row["id"])
     with store.tx() as c:
-        for row in rows:
-            c.execute("UPDATE outbox SET status='queued' WHERE id=?", (row["id"],))
-    return len(rows)
+        for row_id in go:
+            c.execute("UPDATE outbox SET status='queued' WHERE id=?", (row_id,))
+        for why, row_id in cancel:
+            c.execute("UPDATE outbox SET status='cancelled', error=? WHERE id=?", (why, row_id))
+    LAST_RELEASE.clear()
+    LAST_RELEASE.update({"touch": touch, "released": len(go), "gate": config.GATE_MODE,
+                         "held_by_gate": held_back, "cancelled": len(cancel), "left_staged": unread})
+    return len(go)
 
 
 def reason_key(reason: str) -> str:
@@ -753,10 +881,20 @@ def summary(candidates: list[Candidate]) -> dict:
         for reason in cand.reasons:
             key = reason_key(reason)
             reasons[key] = reasons.get(key, 0) + 1
-    return {
+    out = {
         "total": len(candidates),
         "ready": len(ready),
         "held": len(candidates) - len(ready),
         "held_reasons": dict(sorted(reasons.items(), key=lambda kv: -kv[1])),
         "capacity": sender_pool.capacity_today(),
     }
+    if config.GATE_MODE != "off":
+        # What the suppression gate said, by reason. In `report` these were NOT held: the count
+        # is what enforcing it would take out of this batch.
+        said: dict[str, int] = {}
+        for cand in candidates:
+            if cand.gate:
+                key = reason_key(cand.gate)
+                said[key] = said.get(key, 0) + 1
+        out["gate"] = {"mode": config.GATE_MODE, "reasons": dict(sorted(said.items(), key=lambda kv: -kv[1]))}
+    return out

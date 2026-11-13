@@ -37,7 +37,8 @@ from typing import Optional
 
 import requests
 
-from . import classify, config, crm, engine, escalate, respond, sc_client, sender_pool, store
+from . import (classify, config, crm, dispositions, engine, escalate, respond, sc_client,
+               sender_pool, store)
 from .knowledge import sc_replies, touches
 
 log = logging.getLogger(__name__)
@@ -275,7 +276,14 @@ def handle(payload: dict) -> dict:
     if closing:
         why_not = ""
 
-    if intent == "OPT_OUT":
+    # One table for every no (build plan 0.4). Off by default. On, a stop, a wrong number, a
+    # sensitive reply and every kind of no are dispositioned by the same table the smrtPhone
+    # path uses; a question or a hand raise goes down the chain below exactly as before.
+    took = config.DISPOSITION_TABLE and _table_disposition(
+        outcome, phone, record_uuid, contact_id, body, result, context, matches, why_not, unsure)
+    if took:
+        pass
+    elif intent == "OPT_OUT":
         # Smarter Contact suppresses STOP itself; this keeps DataSift and the
         # smrtPhone do-not-text list in step without anyone exporting.
         outcome["actions"] += engine._do_opt_out(phone, record_uuid, matches, body)
@@ -305,9 +313,10 @@ def handle(payload: dict) -> dict:
         outcome["actions"] += _sc_dnc(phone, contact_id, intent)
         outcome["action"] = "escalated"
     elif intent == "INTERESTED" and not _person_in_thread(phone, sc_thread) \
-            and (not_worth := _not_worth_pushing(record_uuid, body)):
-        outcome["actions"] += _drop_lead(phone, record_uuid, contact_id, body, context, not_worth)
-        outcome["action"] = "not_interested"
+            and (verdict := push_verdict(record_uuid, body))[0]:
+        category, not_worth = verdict
+        outcome["actions"] += _drop_lead(phone, record_uuid, contact_id, body, context, not_worth, category)
+        outcome["action"] = _dropped_as(category)
     elif intent == "INTERESTED":
         outcome["actions"] += engine._do_hot_lead(phone, record_uuid, body, result, context, thread)
         store.pause_conversation(phone, f"handed to {config.HANDOFF_NAME} ({REPLY_IN})")
@@ -335,6 +344,9 @@ def handle(payload: dict) -> dict:
             # "Yes, it's mine" is the most verified a number gets (Ty, 2026-10-28).
             res = crm.set_phone_status(record_uuid, phone, "CORRECT")
             outcome["actions"].append(f"owner confirmed; phone CORRECT: {engine._report(res)}")
+            if config.SC_EXTRA_LABELS:
+                # The Correct Number label (build plan 0.4), so the inbox shows what Sift shows.
+                outcome["actions"] += _label(phone, contact_id, intent, title=config.SC_LABEL_CORRECT)
         acts = _reply(phone, contact_id, intent, body, context, why_not, closing=closing, unsure=unsure)
         outcome["actions"] += acts
         if unsure and not _queued(acts):
@@ -391,8 +403,10 @@ def _not_interested(phone: str, record_uuid: str, contact_id: str, body: str, co
     return acts + [_set_ni_status(record_uuid)] + _label(phone, contact_id, "NOT_INTERESTED")
 
 
-# Only the whole message: "No" alone, never "no, but call me next year".
-BARE_NO = re.compile(r"^\s*(?:no+|nope|nah|naw|negative|no\s+(?:sir|ma'?am))\s*[.!]*\s*$", re.I)
+# Only the whole message: "No" alone, never "no, but call me next year". The pattern itself now
+# lives beside the table that uses it on both texting paths (dispositions.py); this name stays
+# because the catch-up tool and the handler below read it.
+BARE_NO = dispositions.BARE_NO
 
 # Money in a reply: "650000", "155k", "$1.2 million", "2 million", "$500,000.00".
 _MONEY = re.compile(r"(?<![\d.,])(\$\s*)?(\d{1,3}(?:,\d{3})+|\d+(?:\.\d+)?)\s*"
@@ -420,21 +434,30 @@ def asking_price(text: str) -> int:
     return int(best)
 
 
-def _not_worth_pushing(record_uuid: str, body: str) -> str:
-    """Why an interested reply is not worth Adriana's call, '' when it is.
+def push_verdict(record_uuid: str, body: str) -> tuple[str, str]:
+    """(category, why) when an interested reply is not worth Adriana's call, ("", "") when it is.
 
     Listed on the MLS, or a price above SC_PRICE_CEILING times Sift's value
-    (Ty, 2026-10-30). No price, or no value to compare against, is pushed."""
+    (Ty, 2026-10-30). No price, or no value to compare against, is pushed.
+
+    The category ("listed" or "over_value") exists because the two are no longer bound to the
+    same outcome: decision D14 may pass an ask over value as a Cold lead while a listed house
+    goes to nurture. The words are exactly what `_not_worth_pushing` has always returned."""
     rec = crm.get_record(record_uuid) or {}
     if str(rec.get("mls") or "").strip().lower() in config.SC_LISTED_MLS:
-        return f"listed on the MLS ({rec.get('mls')})"
+        return "listed", f"listed on the MLS ({rec.get('mls')})"
     listed = listing_status(rec)
     if listed:
-        return f"active on Zillow ({listed})"
+        return "listed", f"active on Zillow ({listed})"
     ask, value = asking_price(body), float(rec.get("estimate_value") or 0)
     if ask and value and ask > value * config.SC_PRICE_CEILING:
-        return f"asked ${ask:,} against a Sift value of ${value:,.0f} ({ask / value:.1f}x)"
-    return ""
+        return "over_value", f"asked ${ask:,} against a Sift value of ${value:,.0f} ({ask / value:.1f}x)"
+    return "", ""
+
+
+def _not_worth_pushing(record_uuid: str, body: str) -> str:
+    """Why an interested reply is not worth Adriana's call, '' when it is."""
+    return push_verdict(record_uuid, body)[1]
 
 
 ZILLOW_URL = "https://api.openwebninja.com/realtime-zillow-data/property-details-address"
@@ -467,13 +490,53 @@ def listing_status(rec: dict) -> str:
                                  f"{d['daysOnZillow']} days" if d.get("daysOnZillow") is not None else "") if x)
 
 
-def _drop_lead(phone: str, record_uuid: str, contact_id: str, body: str, context: dict,
+def _switched(category: str) -> str:
+    """The table kind an unpushed lead goes to when a setting says it is not a plain no ("" when
+    today's rule applies). Decision D14 (not made) may pass an ask over value as a Cold lead;
+    SMS_AGENT_LISTED_STATUS may send a listed house to nurture."""
+    if category == "over_value" and config.OVER_VALUE == "cold_lead":
+        return "ask_over_value"
+    if category == "listed" and config.LISTED_STATUS:
+        return "listed"
+    return ""
+
+
+def _dropped_as(category: str) -> str:
+    kind = _switched(category)
+    if kind == "ask_over_value":
+        return "cold_lead"
+    if kind == "listed":
+        return "nurture" if config.LISTED_STATUS.strip().lower() != config.SC_NI_STATUS else "not_interested"
+    return "not_interested"
+
+
+def _pass_lead(kind: str, phone: str, record_uuid: str, contact_id: str, body: str, context: dict,
                why: str) -> list[str]:
+    """An interested reply that is not worth the call today but is not a no either.
+
+    The owner is real and the number is confirmed, so the record keeps a status somebody works
+    (a Cold lead gets its 45-day task from the account's own sequence) instead of being closed
+    as Not Interested. Nothing is texted back and nobody is paged."""
+    env = dispositions.Env(phone=phone, record_uuid=record_uuid, body=body, context=context, program="seller",
+                           inbox=REPLY_IN, reason=f"not pushed: {why}")
+    done = dispositions.apply(kind, env)
+    acts = dispositions.skip_notice(phone, record_uuid, body, context, why, done.action) + done.actions
+    if kind == "listed" and config.SC_EXTRA_LABELS:
+        acts += _label(phone, contact_id, "INTERESTED", title=config.SC_LABEL_NURTURE)
+    store.sc_cancel(phone, "not worth pushing")
+    return [f"not pushed: {why}"] + acts
+
+
+def _drop_lead(phone: str, record_uuid: str, contact_id: str, body: str, context: dict,
+               why: str, category: str = "") -> list[str]:
     """Disposition an interested reply as Not Interested instead of pushing it.
 
     A burst still in its debounce never posts. When the "yes" was already
     posted and the number arrives after it, the channel gets one line so
     Adriana does not spend the call."""
+    kind = _switched(category)
+    if kind:
+        return _pass_lead(kind, phone, record_uuid, contact_id, body, context, why)
     acts = []
     if store.escalation_posted(phone):
         where = context.get("street") or escalate._fmt_phone(phone)
@@ -527,8 +590,51 @@ def _after_last_reply(phone: str) -> str:
     return (datetime.fromisoformat(max(waiting)) + timedelta(minutes=2)).isoformat(timespec="seconds")
 
 
-def _label(phone: str, contact_id: str, intent: str) -> list[str]:
-    title = sc_replies.LABELS.get(intent)
+def _table_disposition(outcome: dict, phone: str, record_uuid: str, contact_id: str, body: str, result,
+                       context: dict, matches: list, why_not: str, unsure: bool) -> bool:
+    """Disposition one Smarter Contact reply by the shared table (dispositions.py).
+
+    True when the table took the reply. False for a question, small talk or a hand raise, which
+    go down the chain in `handle` as they always have. Only reached with
+    SMS_AGENT_DISPOSITION_TABLE on.
+
+    The table says what is written to Sift and to this app's store; that half is the same call
+    the smrtPhone path makes. What follows it here is Smarter Contact's own half of the same
+    row: the label, the contact's do-not-contact, the one approved text back.
+    """
+    kind = dispositions.decide(result.intent, body, "seller")
+    if not kind or kind == "hand_raise":
+        return False
+    row = dispositions.TABLE[kind]
+    env = dispositions.Env(phone=phone, record_uuid=record_uuid, body=body, result=result, context=context,
+                           matches=matches, program="seller", inbox=REPLY_IN)
+    done = dispositions.apply(kind, env)
+    outcome["actions"] += done.actions
+    if row.sc_reply == "apology":
+        # The apology queues FIRST and the DNC after it: Smarter Contact refuses any text to a
+        # contact on its DNC, apology included (10 lost 2026-10-29).
+        outcome["actions"] += _reply(phone, contact_id, "WRONG_NUMBER", body, context,
+                                     why_not or (f"unsure of the read ({result.confidence:.2f})" if unsure else ""))
+    else:
+        # A no stops what is already in motion: an answer queued a minute ago does not go out
+        # after the owner has said no.
+        store.sc_cancel(phone, kind.replace("_", " "))
+    title = dispositions.sc_label(kind)
+    if title:
+        outcome["actions"] += _label(phone, contact_id, result.intent, title=title)
+    if row.sc_dnc or kind in dispositions.SENSITIVE:
+        # A sensitive reply reaches Smarter Contact's list only when the handler suppressed the
+        # number, which `_sc_dnc` reads for itself. A stop or a wrong number always does.
+        intent = result.intent if kind in dispositions.SENSITIVE else (
+            "WRONG_NUMBER" if kind == "wrong_number" else "OPT_OUT")
+        outcome["actions"] += _sc_dnc(phone, contact_id, intent)
+    outcome["action"] = done.action
+    outcome["disposition"] = kind
+    return True
+
+
+def _label(phone: str, contact_id: str, intent: str, title: str = "") -> list[str]:
+    title = title or sc_replies.LABELS.get(intent)
     if not (title and config.SC_AUTO_LABEL):
         return []
     if not contact_id:
@@ -643,12 +749,34 @@ def _send_reply(row: dict) -> str:
 
     if not config.SC_AUTO_REPLY:
         return skip("auto reply was switched off before it went out")
-    state = (store.get_conversation(phone) or {}).get("state")
-    if state in ("paused", "opted_out"):
+    conv = store.get_conversation(phone) or {}
+    state = conv.get("state")
+    # The call-is-coming text (build plan 2.2) is the one reply that goes out on a thread paused
+    # for the handoff, because the handoff is what it is about. Any other pause (a person typed,
+    # a person called) still stops it, and no other row carries this intent.
+    lead_text = (row["intent"] == "SPEED_TO_LEAD" and state == "paused"
+                 and str(conv.get("paused_reason") or "").startswith("handed to"))
+    if state in ("paused", "opted_out") and not lead_text:
         return skip(f"thread {state} after this was queued")
+    if row["intent"] == "SPEED_TO_LEAD":
+        from . import speedtolead
+
+        if speedtolead.expired(phone):
+            return skip(speedtolead.TOO_LATE)
     supp = store.is_suppressed(phone)
     if supp and not (supp == "wrong_number" and row["intent"] == "WRONG_NUMBER"):
         return skip(f"suppressed: {supp}")
+    if config.SEND_RECHECK != "off":
+        # The last look (build plan 0.17): the owner may have said stop on another number, or
+        # the record may have changed, since this was queued.
+        from . import revocation
+
+        verdict, why = revocation.send_block({"phone": phone, "intent": row["intent"] or ""}, conv)
+        if verdict == "cancel":
+            return skip(why)
+        if verdict == "hold":
+            store.sc_reschedule(row["id"], revocation.hold_until())
+            return "retry"
     if not sender_pool.within_quiet_hours(phone):
         store.sc_reschedule(row["id"], sender_pool.next_send_window(phone).isoformat(timespec="seconds"))
         return "retry"

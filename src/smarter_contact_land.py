@@ -388,10 +388,17 @@ def digits10(n) -> str:
 def pick_phones(phones: list, blocked: set) -> list:
     """Up to MAX_PHONES textable numbers, best first: a Trestle Dial First/Second tag, then a number someone
     already answered or a dialer reached, then the rest. A Drop-tier number is never texted."""
+    from sms_agent import gate_rules
     cands = []
     for p in phones or []:
         n = digits10(p.get("number"))
         if not n or n in blocked:
+            continue
+        # The one do-not-text rule (sms_agent/gate_rules.py, decision D32): a phone whose status says wrong,
+        # dead or do-not-call, or that carries the do-not-call registry flag, is never texted. The seeder and
+        # every loader ask the same function. The registry numbers collected off the search rows arrive in
+        # `blocked`, as they always have.
+        if gate_rules.do_not_text(p):
             continue
         if (p.get("type") or "UNKNOWN").upper() not in PHONE_TYPES:
             continue
@@ -426,7 +433,23 @@ def record_skip(rec: dict) -> str:
     st = (st.get("slug") or st.get("title")) if isinstance(st, dict) else st
     if str(st or "").strip().lower() not in ("", "prospecting", "new", "none"):
         return f"status {st}"
+    if config.GATE_MODE == "enforce":
+        # The suppression gate (build plan 0.1), behind SMS_AGENT_GATE. It adds what the four checks above do
+        # not read: a death recorded as a tag or on the Obituary list, a litigator, a sold tag, a listed
+        # house, Mail Only, Not Single Family. With the switch off this function is exactly what it was.
+        return gate_note(rec)
     return ""
+
+
+def gate_note(rec: dict) -> str:
+    """What the suppression gate says about this record ('' when it may be texted, or the gate is off).
+    In `report` mode the caller counts these without holding anyone, so the effect can be read first."""
+    from sms_agent import config
+    if config.GATE_MODE == "off":
+        return ""
+    from sms_agent import gatekeeper
+    found = gatekeeper.reasons(rec, program="seller")
+    return found[0] if found else ""
 
 
 def contact_input(rec: dict, row: dict, phone: str, keys: dict) -> dict:
@@ -481,11 +504,14 @@ def phase_create(args) -> int:
         raise SystemExit("run --phase field --commit first")
     rows = land_rows()
     state = json.loads(STATE.read_text(encoding="utf-8")) if STATE.exists() else {"contacts": {}}
+    from sms_agent import config as agent_config, gate_rules
     blocked = {digits10(r["number"]) for r in _sc_pages(sc, Q_SUPP, "findSuppressions", {})}
     existing = {digits10(r["phone"]) for r in _sc_pages(sc, Q_ALL, "findContacts", {"f": {"status": "ACTIVE"}})}
     print(f"Smarter Contact: {len(existing)} contacts already there (never re-texted from here), "
           f"{len(blocked)} suppressed numbers")
     plan, why = [], collections.Counter()
+    gate_would = collections.Counter()      # report mode: what the gate would hold, counted, not held
+    all_dnc = set()                         # every registry-flagged number seen across the lanes
     for lane in args.lanes.split(","):
         st = json.loads((PULL_STATE / LANE_STATE[lane] / "state.json").read_text(encoding="utf-8"))
         uuids = dict(st.get("new_uuids") or {}, **(st.get("existing") or {}))
@@ -495,10 +521,11 @@ def phase_create(args) -> int:
             r = api.call("/api/internal/property/", "POST", {"limit": 100, "offset": off,
                          "query": {"must": {"any_lists": [lu]}}}, headers={"x-http-method-override": "GET"})
             got = r.get("results") or []
-            dnc |= {digits10((x.get("phone") or {}).get("number")) for x in got if (x.get("phone") or {}).get("doNotCall")}
+            dnc |= gate_rules.flagged_numbers(got)      # the one registry rule, shared with the seeder
             off += len(got)
             if not got or off >= r.get("count", 0):
                 break
+        all_dnc |= dnc
         todo = list(uuids.items())[: args.limit or None]
         for n, (did, uuid) in enumerate(todo, 1):
             row = rows.get(str(did))
@@ -514,6 +541,10 @@ def phase_create(args) -> int:
             if skip:
                 why[skip] += 1
                 continue
+            if agent_config.GATE_MODE == "report":
+                note = gate_note(rec)
+                if note:
+                    gate_would[note] += 1
             phones = pick_phones((rec.get("owner") or {}).get("phones"), blocked | existing | dnc)
             if not phones:
                 why["no textable number"] += 1
@@ -538,6 +569,12 @@ def phase_create(args) -> int:
     groups = collections.Counter(x["group"] for x in uniq)
     print(f"plan: {len(uniq)} contacts from {len({x['record'] for x in uniq})} records; skipped " +
           ", ".join(f"{v} {k}" for k, v in why.most_common()))
+    if gate_would:
+        print("the suppression gate would also hold (report mode, nobody was held): " +
+              ", ".join(f"{v} {k}" for k, v in gate_would.most_common()))
+    if agent_config.GATE_MODE != "off" and all_dnc:
+        from sms_agent import gatekeeper
+        gatekeeper.remember_flagged(all_dnc)    # so the same number is refused wherever it turns up next
     for g, v in sorted(groups.items()):
         print(f"  {g}: {v}")
     if not args.commit:

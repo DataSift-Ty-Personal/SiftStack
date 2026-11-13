@@ -213,12 +213,16 @@ Name hygiene is applied here: "C Eugene Suthard" becomes "Hi Eugene", while
 ## Testing without sending anything
 
 ```bash
-python src/sms_agent/cli.py selftest              # 57 assertions, zero network
+python src/sms_agent/cli.py selftest              # over 600 checks, zero network
 ```
 
 `selftest` runs the whole pipeline against a throwaway database with every
 outbound edge stubbed, and **asserts** rather than prints. It is safe to run at
-any time with production credentials loaded. It covers deterministic
+any time with production credentials loaded: since 2026-11-13 the CRM client and
+the network socket are both replaced for the run, and the last check asserts
+that nothing reached the network. (Before that the CRM writes were stubbed but a
+dozen record READS were not, and each run sent them to the live account as
+404s on invented ids.) It covers deterministic
 classification, opt-out on all four surfaces, wrong-number and dead-number
 writes, hot-lead escalation, human takeover, the output validator, timezone
 resolution, sticky senders, outreach copy, seeding guards, and the worker's
@@ -349,6 +353,76 @@ conversation that went cold in June is noise, not a lead.
   is a **buyer**, not a seller. The model read it as OTHER at 0.55 confidence
   and it falls under the floor, so it drafts for a human instead of being
   treated as a lead. That is the case worth protecting against.
+
+## Build plan switches (2026-11-13)
+
+Nine build-plan packages landed in this app (0.1, 0.4, 0.14, 0.17, 0.22, 0.23,
+2.2, 2.3, 4.7). Every one of them sits behind a setting that defaults to what
+the app did the day before, so a deploy that sets none of them behaves exactly
+as the last one did. `cli.py switches` prints the list and what each is set to.
+Fly secrets override `fly.toml`, so ask the running app, not the file.
+
+| Setting | Default | What turning it on changes |
+|---|---|---|
+| `SMS_AGENT_RATE_BUDGET` | `off` | `count`: every DataSift request is counted and reported, nothing is delayed. `on`: the count is also the limit, 10 a minute (`SMS_AGENT_RATE_PER_MIN`), shared by every process on this database. Reply work goes first and is delayed, never dropped. |
+| `SMS_AGENT_GATE` | `off` | `report`: the suppression gate (`gate_rules.py`) says what it would hold in each batch and at release. `enforce`: it holds them. |
+| `SMS_AGENT_GATE_READ_FIELDS` | `0` | The gate also reads the Owner Deceased custom field (one more request a record). |
+| `SMS_AGENT_OWNER_REVOKE` | `0` | A stop, a no, a hand raise or a reported death on one number pulls the queued and held texts to every other number of that owner, and takes them out of pending Smarter Contact campaigns. |
+| `SMS_AGENT_SEND_RECHECK` | `off` | `local`: right before each send, ask again whether the owner stopped on another number (no network). `full`: also read the record and run the gate (one read a send). |
+| `SMS_AGENT_DISPOSITION_TABLE` | `0` | Both texting paths disposition a reply from one table (`dispositions.py`). A smrtPhone "not interested" sets Not Interested and marks the number Correct; "not now" goes to Follow Up; a relative is kept, not marked wrong. |
+| `SMARTERCONTACT_EXTRA_LABELS` | `0` | Adds the labels Correct Number, Wrong DNC, Relative and Nurture. Create them in Smarter Contact first (`cli.py labels-check`). |
+| `SMS_AGENT_HAND_RAISE_NEW_LEAD` | `0` | An interested reply sets New Lead, never over a status that already means lead. |
+| `SMS_AGENT_OVER_VALUE` | `not_interested` | `cold_lead`: a reply asking well over value is passed as a Cold lead with an Ask Over Value tag (decision D14, not made). |
+| `SMS_AGENT_LISTED_STATUS` | empty | A status name (`follow_up`) sends an interested reply on a listed house to nurture. |
+| `SMS_AGENT_SPEED_TO_LEAD` | `off` | `held`: a call-is-coming text is staged about three minutes after a hand raise, for a person to release. `auto`: it sends on its own. |
+| `SMS_AGENT_TOUCH_FEED` | `0` | `GET /hooks/<secret>/touches?day=YYYY-MM-DD` returns the day's sent texts for the touch audit: record id, last four digits, time, system. Never a message and never a whole number. |
+| `SMS_AGENT_REST_FLAGGED` | `0` | A number on the rest list takes no new conversation and sends no outreach until its rest ends. |
+
+The order to turn them on, each step readable before the next:
+
+1. `SMS_AGENT_RATE_BUDGET=count`. Nothing changes but the counting. After a
+   week the digest says how many requests this app really makes and how many a
+   limit of 10 a minute would have delayed.
+2. `SMS_AGENT_GATE=report`. Each batch, each release and each loader run prints
+   what the gate would hold. Nobody is held.
+3. `SMS_AGENT_OWNER_REVOKE=1` and `SMS_AGENT_SEND_RECHECK=local`. No network,
+   and the only effect is fewer texts: the owner's other numbers stop when one
+   of them says stop. The digest counts what was pulled.
+4. `SMS_AGENT_GATE=enforce`, then `SMS_AGENT_SEND_RECHECK=full` (one record
+   read for each send).
+5. `SMS_AGENT_DISPOSITION_TABLE=1`, after reading `cli.py dispositions`. This
+   is the one that changes what a reply writes to Sift.
+6. `SMARTERCONTACT_EXTRA_LABELS=1`, once `cli.py labels-check` finds all four.
+7. `SMS_AGENT_SPEED_TO_LEAD=held`, then `auto` once the staged texts read right.
+8. `SMS_AGENT_HAND_RAISE_NEW_LEAD=1` only when the handoff alert and the New
+   Lead sequence name the same person. It was switched off on 2026-08-11
+   because they did not.
+9. `SMS_AGENT_RATE_BUDGET=on` once the share is known. `SMS_AGENT_TOUCH_FEED`
+   and `SMS_AGENT_REST_FLAGGED` can go on whenever something reads the one or
+   rests on the other. `SMS_AGENT_OVER_VALUE` and `SMS_AGENT_LISTED_STATUS`
+   wait on a decision.
+
+```bash
+python src/sms_agent/cli.py switches                       # every switch and what it is set to
+python src/sms_agent/cli.py dispositions --text "not right now"
+python src/sms_agent/cli.py gate --record <uuid> --phone <number>   # reads DataSift, writes nothing
+python src/sms_agent/cli.py touches --day 2026-11-12       # the day's sent texts, no network
+python src/sms_agent/cli.py budget                         # this app's use of the DataSift share
+python src/sms_agent/cli.py number-health                  # who to rest, the rest list, today's line check
+python src/sms_agent/cli.py number-health --rest <number> --reason "carrier flagged"
+python src/sms_agent/cli.py number-health --canary --to <our own handset>   # stages HELD
+python src/sms_agent/cli.py lead-text --record <uuid>      # or --release <phone>
+python src/sms_agent/cli.py labels-check                   # reads Smarter Contact, writes nothing
+```
+
+What each piece is, in one line: `gate_rules.py` is the suppression gate, a
+copy of the brain's (`src/agents/autopilot/gate.py`) with no dependencies, held
+to it rule by rule by `tests/test_sms_gate_parity.py`. `gatekeeper.py` is how
+this app asks it. `dispositions.py` is the one table for every no.
+`revocation.py` is the owner-wide stop and the last look before a send.
+`ratebudget.py` is the request budget. `speedtolead.py` and
+`knowledge/lead_texts.py` are the call-is-coming text. `numberhealth.py` is the
+rest list and the canary. `touchlog.py` is the touch feed.
 
 ## Known gaps
 

@@ -89,6 +89,46 @@ def run(live_model: bool = False) -> int:
     stub = _Stub()
     r = Results()
 
+    # ---- nothing in this run may reach the network ----------------------
+    # The CRM WRITES below were always stubbed. The READS were not: until 2026-11-13 an unmapped
+    # number or an invented record id went out to the live account as a real search or a real
+    # GET, a dozen times a run (each a 404), from a suite whose first line says it is offline.
+    # Two fixes. The CRM client is replaced by one that answers every unstubbed read the way the
+    # account answered an invented id, with nothing. And the socket itself refuses anything but
+    # this machine, so a path nobody thought of fails here instead of quietly calling out; the
+    # last check of the run asserts that never happened.
+    import socket as _socket
+
+    stub.crm_reads, stub.network = [], []
+
+    class _OfflineCRM:
+        def _request(self, path, *a, **k):
+            stub.crm_reads.append(str(path))
+            raise RuntimeError("selftest: no such record (DataSift is never reached from a test)")
+
+        def get_record(self, uuid):
+            return self._request(f"/api/internal/property/{uuid}/")
+
+        def __getattr__(self, name):
+            def _nothing(*a, **k):
+                return self._request(f"<{name}>")
+            return _nothing
+
+    stub.offline_crm = _OfflineCRM()
+    crm.client = lambda: stub.offline_crm
+    _real_connect = _socket.socket.connect
+
+    def _local_only(sock, address, *a, **k):
+        host = address[0] if isinstance(address, tuple) else str(address)
+        if str(host) not in ("127.0.0.1", "::1", "localhost"):
+            stub.network.append(str(host))
+            raise OSError(f"selftest: the network is off, and something tried {host}")
+        return _real_connect(sock, address, *a, **k)
+
+    if not live_model:
+        # --live-model is the one mode that is meant to call out (to Claude, for a few cents).
+        _socket.socket.connect = _local_only
+
     # ---- stub every outbound edge -------------------------------------
     transport.send = lambda to, body, frm="": (
         stub.sent.append((to, body, frm)) or smrtphone.SendResult(True, sms_id="stub")
@@ -2135,6 +2175,21 @@ def run(live_model: bool = False) -> int:
             config.ALLOWED_IPS = []
     except ImportError as exc:
         r.check("fastapi TestClient available", False, str(exc))
+
+    # ---- 13. the build plan's texting packages (2026-11-13) ---------------
+    # The gate, the one table for every no, owner-wide revocation, the request budget, the
+    # touch feed, a hand raise becoming a New Lead, the call-is-coming text and number health.
+    # Each sits behind a switch that is off by default, so this section turns one on at a time
+    # and puts it back. It lives in its own module to keep this file readable.
+    from . import selftest_texting
+
+    selftest_texting.run(r, stub)
+
+    if not live_model:
+        print("\nno network")
+        r.check("nothing in this run reached the network", not stub.network,
+                f"tried: {sorted(set(stub.network))[:5]}")
+    _socket.socket.connect = _real_connect
 
     print()
     return r.report()
