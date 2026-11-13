@@ -513,7 +513,8 @@ def free_comps(subj: dict, area: dict | None = None, *, cap: int | None = None) 
     res = comp_package.siftmap_sold(subj, siftmap(), radius_mi=radius_of(area), months=months,
                                     detail_cap=min(want, left), cache=cache,
                                     polygon=comp_package.boundary_ring(b) if b else None,
-                                    max_rows=int(setting("AGENTS_COMPS_SEARCH_ROWS", 300)))
+                                    max_rows=int(setting("AGENTS_COMPS_SEARCH_ROWS", 300)),
+                                    streets=(area or {}).get("streets") or None)   # reads go to the streets asked for
     count_reads(res["read"])
     _save_json(_cache_path(), cache)
     res["cap"] = min(want, left)

@@ -110,6 +110,23 @@ def test_deed_comps_cap_cache_and_no_double_count():
     assert r2["cached"] == 3 and r2["read"] == 3
 
 
+@case
+def test_deed_reads_go_to_the_streets_asked_for():
+    # The closest houses sit on another street. With the street list applied only after the reads, the
+    # whole cap went to them and the clip then dropped every one: a busy pocket with no comps.
+    m = Map()
+    for i, r in enumerate(m.rows):
+        if i >= 4:
+            r["address"] = r["address"].replace("Sampleton Ave", "Testwood Ln")
+            r["latitude"] = 35.99
+    subj = {"lat": 35.96, "lon": -83.92, "beds": 3, "sqft": 1300}
+    r = cp.siftmap_sold(subj, m, detail_cap=2, cache={}, page_size=10, max_rows=10, streets="testwood")
+    assert r["read"] == 2 and r["off_streets"] == 4 and len(r["sold"]) == 2
+    assert all("Testwood" in c.address for c in r["sold"])
+    none = cp.siftmap_sold(subj, m, detail_cap=2, cache={}, page_size=10, max_rows=10, streets="nowhere st")
+    assert none["read"] == 0 and not none["sold"] and "none on the streets asked for" in none["why"]
+
+
 def main() -> int:
     failed = 0
     for fn in TESTS:

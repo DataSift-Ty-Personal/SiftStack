@@ -221,7 +221,7 @@ def newest_deed(detail: dict) -> dict:
 def siftmap_sold(subject: dict, client, *, radius_mi: float = 1.0, months: int = 12,
                  detail_cap: int = 12, page_size: int = 100, cache: dict | None = None,
                  today: date | None = None, polygon: list[dict] | None = None,
-                 max_rows: int | None = None) -> dict:
+                 max_rows: int | None = None, streets=None) -> dict:
     """Sold single-family comps around the subject, priced off the deed.
 
     One search finds every single-family sale in the area inside the window (the
@@ -234,14 +234,19 @@ def siftmap_sold(subject: dict, client, *, radius_mi: float = 1.0, months: int =
     SiftMap detail pulls in volume without adding the records, so the cap is
     the point, not a tuning knob. `cache` (id -> {"deed", "at"}) is reused and
     filled in place; a cached deed older than the window is read again, because
-    the house is only in the window now if it sold again since.
+    the house is only in the window now if it sold again since. `streets` (the
+    pasted street list, a pattern searched in the street line, as the clip does)
+    decides which rows may be read at all: applied after the reads, the cap went
+    to the closest houses in the box, the clip then dropped every one of them for
+    sitting on another street, and a busy pocket came back with no comps.
 
     Returns {"sold": [MarketListing], "records": [deed rows in the buyer sweep
-    shape], "found", "read", "cached", "not_read", "dropped": {reason: n},
-    "why": "" or the plain reason nothing usable came back}.
+    shape], "found", "read", "cached", "not_read", "off_streets", "dropped":
+    {reason: n}, "why": "" or the plain reason nothing usable came back}.
     """
-    out = {"sold": [], "records": [], "found": 0, "read": 0, "cached": 0, "not_read": 0,
+    out = {"sold": [], "records": [], "found": 0, "read": 0, "cached": 0, "not_read": 0, "off_streets": 0,
            "dropped": {}, "why": "", "radius_mi": radius_mi, "months": months}
+    pat = re.compile(streets, re.I) if isinstance(streets, str) and streets.strip() else (streets or None)
     lat, lon = subject.get("lat"), subject.get("lon")
     if not lat or not lon:
         out["why"] = "the record has no map point, so there is no area to search"
@@ -280,6 +285,9 @@ def siftmap_sold(subject: dict, client, *, radius_mi: float = 1.0, months: int =
         if not rid or rid in seen or (me_id and rid == me_id) or (me_street and _street_key(street) == me_street):
             continue
         seen.add(rid)
+        if pat is not None and not pat.search(street or ""):
+            out["off_streets"] += 1
+            continue
         d = miles_between(float(lat), float(lon), r.get("latitude"), r.get("longitude"))
         ratio = (float(r.get("squareFeet") or 0) / sq) if sq else 1.0
         near = READ_FIRST_SIZE[0] <= ratio <= READ_FIRST_SIZE[1] and abs(int(r.get("bedrooms") or 0) - beds) <= 1
@@ -331,6 +339,8 @@ def siftmap_sold(subject: dict, client, *, radius_mi: float = 1.0, months: int =
     elif not out["found"]:
         out["why"] = "no single-family sale %s in the last %d months" % (
             "inside the boundary" if polygon else "within %.2f mi" % radius_mi, months)
+    elif pat is not None and out["off_streets"] and not cands:
+        out["why"] = "%d sale(s) in the area, none on the streets asked for" % out["found"]
     elif not out["sold"]:
         out["why"] = "%d sale(s) found but none with a usable deed price" % out["found"]
     return out
