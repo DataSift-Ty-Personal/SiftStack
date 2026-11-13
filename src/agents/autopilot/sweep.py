@@ -132,6 +132,19 @@ def plan_repeat(task: dict, result: dict, now: datetime | None = None) -> bool:
     if mode == "digest" and kind not in REPORT_KINDS and not (result.get("problems") or []):
         return True                   # a plan with nothing wrong is read in the morning digest
     stage = result.get("stage") or task.get("workflow") or ""
+    if mode == "digest" and kind not in REPORT_KINDS:
+        # Say a problem when it is new, not every day: a decision still pending ("the heir caller is
+        # not named") would otherwise post every morning until it is made. Counts inside a problem
+        # change daily, so they are left out of the comparison.
+        import hashlib
+        import re
+        shape = sorted({re.sub(r"\d+", "#", str(p)) for p in (result.get("problems") or [])})
+        digest = hashlib.sha256("\n".join(shape).encode("utf-8")).hexdigest()[:16]
+        key = "autopilot:plan_problems:%s" % stage
+        if store.kv_get(key) == digest:
+            return True
+        store.kv_set(key, digest)
+        return False
     try:
         tz = ZoneInfo(policy_mod.load().tz)
     except Exception:  # noqa: BLE001  (no playbook, or a zone the box does not know)

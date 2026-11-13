@@ -699,6 +699,12 @@ def run(check, tmp: Path) -> None:
           "by default a stage in plan mode posts nothing on its own: what it would do is read in the morning digest")
     check(sweep.slack_text(sched, dict(would, problems=["the scorer refused the key"]), now=T0 + timedelta(days=39, hours=15)) != "",
           "but a problem in a plan-mode stage is still posted the day it appears")
+    check(sweep.slack_text(sched, dict(would, problems=["the scorer refused the key"]), now=T0 + timedelta(days=40, hours=15)) == ""
+          and sweep.slack_text(sched, dict(would, problems=["12 records wait on the heir caller (D19)"]),
+                               now=T0 + timedelta(days=40, hours=16)) != ""
+          and sweep.slack_text(sched, dict(would, problems=["14 records wait on the heir caller (D19)"]),
+                               now=T0 + timedelta(days=41, hours=16)) == "",
+          "a standing problem is said once, not every morning, and a count inside it changing is not a new problem")
     check(sweep.slack_text({"workflow": "r_digest", "source": "schedule"},
                            {"kind": "digest", "stage": "r_digest", "acted": 0, "problems": [], "head": "Last 24h"},
                            now=T0 + timedelta(days=39, hours=8)) != "", "and the digest itself always posts")
