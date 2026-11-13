@@ -153,6 +153,52 @@ def test_build_property_contract():
     assert U.build_property(row2)["owner"]["first_name"] == "Clyde"
 
 
+
+
+IDX = {"Notice Type": {"uuid": "f-type", "field_type": "select", "options": {"foreclosure": "opt-fc"}},
+       "County": {"uuid": "f-county", "field_type": "select", "options": {"Knox": "opt-knox"}},
+       "Foreclosure Date": {"uuid": "f-sale", "field_type": "date", "options": {}}}
+
+
+def test_sale_date_is_mapped_and_iso():
+    """The 2026-11-11 find: the sale date was not in FIELD_MAP, so no foreclosure uploaded since
+    2026-08-14 carried one. The formatter writes M/D/YYYY; DataSift stores YYYY-MM-DD."""
+    warn = set()
+    pairs = U.field_pairs({"Notice Type": "foreclosure", "County": "Knox", "Foreclosure Date": "11/24/2026"}, IDX, warn)
+    assert {"field_uuid": "f-sale", "value": "2026-11-24"} in pairs, pairs
+    assert not warn, warn
+
+
+def test_unreadable_date_is_skipped_not_guessed():
+    warn = set()
+    pairs = U.field_pairs({"Notice Type": "foreclosure", "Foreclosure Date": "sometime in May"}, IDX, warn)
+    assert [p["field_uuid"] for p in pairs] == ["f-type"], pairs
+    assert any("Foreclosure Date" in w for w in warn), warn
+
+
+def test_a_refused_batch_is_retried_field_by_field():
+    path = "/api/internal/property/u1/custom-field/update-values/"
+
+    class Picky:
+        def __init__(self):
+            self.calls = []
+
+        def call(self, p, method="GET", body=None, headers=None):
+            self.calls.append(body)
+            if any(x["field_uuid"] == "f-sale" for x in body):
+                raise U.ApiError(400, method, p, '{"value":["bad date"]}')
+            return {}
+
+    api, warn = Picky(), set()
+    pairs = [{"field_uuid": "f-type", "value": "opt-fc"}, {"field_uuid": "f-county", "value": "opt-knox"},
+             {"field_uuid": "f-sale", "value": "2026-11-24"}]
+    landed = U.write_fields(api, "u1", pairs, warn)
+    assert landed == 2, landed
+    assert [len(b) for b in api.calls] == [3, 1, 1, 1], api.calls
+    assert any("refused" in w for w in warn), warn
+    assert path
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:

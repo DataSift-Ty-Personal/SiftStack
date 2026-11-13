@@ -11,6 +11,8 @@ seen_ids.json
 # is read as one literal pattern and silently matches nothing, which is how
 # this file leaked into `git status` as untracked for a week.
 ftm_runs.jsonl
+# Rotating proxy-session counter written by ftm_runner (on the volume in production).
+proxy_session.json
 captcha_failed_ids.json
 .ancestry_page_loads.json
 cookies.json

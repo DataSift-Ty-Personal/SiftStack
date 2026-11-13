@@ -46,6 +46,8 @@ OPTIONAL = [
     ("TRESTLE_API_KEY", "phone scoring"),
     ("SCRAPFLY_KEY", "alternate scraping backend"),
     ("REISIFT_API_KEY", "SiftMap detail lookups for the county buy-box enrichment"),
+    ("PAXSUB_USERNAME", "Knox Register of Deeds login; the liens stage skips without it"),
+    ("PAXSUB_PASSWORD", "Knox Register of Deeds login (a PAID subscription that can lapse)"),
 ]
 
 

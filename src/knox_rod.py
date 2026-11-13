@@ -76,6 +76,38 @@ DOC_TYPES = {"FTL": 4, "LEN": 5, "STL": 6, "REL": 13, "RFTL": 14, "RESL": 15,
              "RFTL*": 114, "RSTL*": 116}
 
 
+SUBSCRIPTION_WARN_DAYS = 14
+# What the last login saw: {"state": "active" | "expired" | "unknown", "days": int | None}.
+# Read by the daily lien stage so the days-left figure can ride in the run report.
+SUBSCRIPTION: dict = {}
+
+
+class RodSubscriptionExpired(RuntimeError):
+    """The paid Register of Deeds subscription has lapsed.
+
+    Login still works on a lapsed account and the search page still renders,
+    but the search button fires no request at all: the site answers with a
+    browser alert instead. For 11 weeks (2026-08-26 on) that read as "no
+    v2Search request was captured; the page layout changed". No retry or code
+    change fixes it; the account has to be renewed on the Subscription tab.
+    """
+
+
+def subscription_state(timer_text: str) -> tuple[str, int | None]:
+    """Read the header timer ("DAYS UNTIL SUBSCRIPTION EXPIRES: 23").
+
+    Returns ("expired", None), ("active", days) or ("unknown", None). Unknown
+    is not treated as expired: the search itself is the second check.
+    """
+    tail = (timer_text or "").split(":")[-1].strip().lower()
+    if "expired" in tail:
+        return "expired", None
+    digits = "".join(c for c in tail if c.isdigit())
+    if digits:
+        return "active", int(digits)
+    return "unknown", None
+
+
 def _month_windows(months: int, end: date | None = None) -> list[tuple[str, str]]:
     """Calendar months, oldest first, as (MM/DD/YYYY, MM/DD/YYYY)."""
     end = end or date.today()
@@ -98,11 +130,22 @@ async def capture_request() -> tuple[dict, dict]:
     """
     from playwright.async_api import async_playwright
 
+    import asyncio
+
     caps: list[dict] = []
     tree: list = []
+    alerts: list[str] = []
+
+    def _on_dialog(d) -> None:
+        # The site reports a lapsed subscription ONLY through a browser alert.
+        # Unhandled, Playwright dismisses it silently and nothing is left to see.
+        alerts.append(d.message or "")
+        asyncio.ensure_future(d.accept())
+
     async with async_playwright() as p:
         b = await p.chromium.launch(headless=True)
         page = await (await b.new_context()).new_page()
+        page.on("dialog", _on_dialog)
         page.on("request", lambda r: caps.append(
             {"headers": dict(r.headers), "post": r.post_data})
             if "v2Search" in r.url else None)
@@ -119,6 +162,24 @@ async def capture_request() -> tuple[dict, dict]:
             raise RuntimeError(
                 "paxsub login failed. A logged-out page still renders a plausible "
                 "grid, so this asserts on the Log off link rather than trusting the URL.")
+
+        timer = await page.evaluate(
+            "() => { const e = document.getElementById('subscriptionTimer');"
+            " return e ? (e.value || e.innerText || '') : ''; }")
+        state, days = subscription_state(timer)
+        SUBSCRIPTION.clear()
+        SUBSCRIPTION.update(state=state, days=days)
+        if state == "expired":
+            await b.close()
+            raise RodSubscriptionExpired(
+                "Register of Deeds subscription has EXPIRED. Renew it at "
+                + BASE + "/views/subscription (Renew Subscription); nothing "
+                "else will make the search return rows.")
+        if state == "active":
+            print("  Register of Deeds subscription: %d day(s) left" % days)
+            if days <= SUBSCRIPTION_WARN_DAYS:
+                print("  WARNING: the Register of Deeds subscription expires in "
+                      "%d day(s). Renew it before the next pull." % days)
 
         await page.goto(BASE + "/views/search", wait_until="domcontentloaded")
         await page.wait_for_timeout(4500)
@@ -165,7 +226,12 @@ async def capture_request() -> tuple[dict, dict]:
         print("  live doc-type tree (%d types) -> output/knox/rod_doctypes.json" % len(tree))
 
     if not caps:
-        raise RuntimeError("no v2Search request was captured; the page layout changed")
+        said = "; ".join(a for a in alerts if a)
+        if "expired" in said.lower() or "subscription" in said.lower():
+            raise RodSubscriptionExpired("Register of Deeds refused the search: " + said)
+        raise RuntimeError(
+            "no v2Search request was captured"
+            + ((". The site said: " + said) if said else "; the page layout changed"))
     c = caps[0]
     fields = dict(urllib.parse.parse_qsl(c["post"], keep_blank_values=True))
     headers = {k: v for k, v in c["headers"].items()
@@ -277,7 +343,13 @@ def main() -> int:
           f"({windows[0][0]} .. {windows[-1][1]})")
 
     print("capturing a live search request (browser, once)...")
-    fields, headers = asyncio.run(capture_request())
+    try:
+        fields, headers = asyncio.run(capture_request())
+    except RodSubscriptionExpired as exc:
+        # Exit 4, distinct from "no rows" (1) and "no credentials" (2): a lapsed
+        # subscription is not a quiet month and no retry fixes it.
+        print("SUBSCRIPTION EXPIRED: %s" % exc)
+        return 4
     print(f"  session {fields.get('SessionId','')[:8]} captured")
 
     allrec, counts = [], {}

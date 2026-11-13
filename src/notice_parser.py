@@ -358,6 +358,12 @@ EXECUTED_BY_RE = re.compile(
     r"|\s+granting\b"
     r"|\s+transferring\b"
     r"|\s+for\s+the\s+benefit\b"
+    # "a Note executed by JOHN DOE payable to the order of XYZ FUNDING, LLC":
+    # without this stop the lender rode along in the owner name, and the
+    # entity-owner filter then threw a person's foreclosure away as an LLC's.
+    r"|\s*,?\s+payable\s+to\b"
+    r"|\s*,?\s+in\s+favor\s+of\b"
+    r"|\s*,?\s+to\s+secure\b"
     r"|\s+to\s+[\w\s,]+?(?:trustee|trust\b)"
     r"|\s*\("
     r"|\.\s+(?:The|Said|This|Such)"
@@ -372,6 +378,9 @@ MADE_BY_RE = re.compile(
     r"(?:\s*,\s*(?:dated|to\s|conveying|a\s|an\s|as\s|her\s|his\s|who\s|wife|husband|"
     r"being|unmarried|single|granting|transferring|said|the\s)"
     r"|\s+(?:dated|to\s+[\w\s,]+?(?:trustee|trust\b))"
+    r"|\s*,?\s+payable\s+to\b"
+    r"|\s*,?\s+in\s+favor\s+of\b"
+    r"|\s*,?\s+to\s+secure\b"
     r"|\s*\("
     r"|\.\s+(?:The|Said|This|Such))",
     re.IGNORECASE,
@@ -1237,9 +1246,40 @@ def _clean_city(raw: str) -> str:
 # ── Name extraction ──────────────────────────────────────────────────
 
 
+_LINE_WRAP_RE = re.compile(r"([A-Za-z])-[ \t]*\r?\n[ \t]*([A-Za-z])")
+_NAME_WRAP_RE = re.compile(r"([A-Za-z])-\s+([A-Za-z])")
+
+
+def _rejoin_wrap(m: "re.Match") -> str:
+    """Decide what a hyphen at a line end was.
+
+    A narrow newspaper column breaks words with a hyphen: "de-" / "ceased",
+    "Strick-" / "land". That hyphen is typesetting and goes. The one case that
+    keeps it is a real hyphenated surname broken at its own hyphen, which reads
+    lower-case then upper-case: "Smith-" / "Jones".
+    """
+    before, after = m.group(1), m.group(2)
+    if before.islower() and after.isupper():
+        return f"{before}-{after}"
+    return before + after
+
+
+def _join_line_wraps(text: str) -> str:
+    """Rejoin words that the published notice broke across two lines.
+
+    Blount County notices arrive as PDF text set in a narrow column, so the
+    decedent's name and the word "deceased" are regularly split mid-word. Left
+    alone, "Estate of <NAME>, de-\\nceased, who died" never matches the
+    "Deceased" anchor and the capture runs on, producing a decedent called
+    "<Name> De- Ceased". That name was then searched at the assessor and
+    matched a stranger's house (see property_lookup's owner-of-record guard).
+    """
+    return _LINE_WRAP_RE.sub(_rejoin_wrap, text)
+
+
 def _parse_name(notice: NoticeData) -> None:
     """Extract owner/party name based on notice type."""
-    text = notice.raw_text.replace("\xa0", " ")
+    text = _join_line_wraps(notice.raw_text.replace("\xa0", " "))
 
     if notice.notice_type == "probate":
         # Extract decedent name, first pattern that yields a real name wins.
@@ -1338,6 +1378,10 @@ _NAME_LEAD_STOPWORDS = {
 def _clean_name(raw: str) -> str:
     """Normalize a name: trim, title-case, remove leading/trailing filler."""
     name = re.sub(r"\s+", " ", raw).strip()
+    # A name token never legitimately ends in a hyphen followed by a space:
+    # that is a line wrap that survived to here ("Strick- land", "de- ceased").
+    # Covers any caller that did not come through _join_line_wraps.
+    name = _NAME_WRAP_RE.sub(_rejoin_wrap, name)
     # Remove trailing "And" / "and" (word-level, don't strip from "Bolland" etc.)
     name = re.sub(r"\s+,?\s*(?:AND|and)\s*$", "", name)
     # Remove trailing commas, periods

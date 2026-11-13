@@ -1,7 +1,15 @@
 """Enrich notices with tax delinquency data from county property tax APIs.
 
-Knox County: https://knox-tn.mygovonline.com/api/v2
-Blount County: TBD (placeholder)
+Knox County:   https://knox-tn.mygovonline.com/api/v2
+Blount County: https://blount-tn.mygovonline.com/api/v2
+
+Both Trustees run the same vendor, so one contract covers both (verified live
+2026-11-11): `/parcels/<query>` searches by street, owner or parcel and
+`/due/PPT/<account>` returns that account's bills. Blount sat as a placeholder
+here until then, so no Blount record ever carried a tax figure.
+
+COUNTY tax only. City of Knoxville, Maryville and Alcoa bill their own property
+tax separately; a parcel inside a city can owe there and read clean here.
 """
 
 import logging
@@ -17,6 +25,8 @@ from notice_parser import NoticeData
 logger = logging.getLogger(__name__)
 
 KNOX_API_BASE = "https://knox-tn.mygovonline.com/api/v2"
+BLOUNT_API_BASE = "https://blount-tn.mygovonline.com/api/v2"
+TAX_API_BY_COUNTY = {"knox": KNOX_API_BASE, "blount": BLOUNT_API_BASE}
 REQUEST_DELAY_MIN = 1.0
 REQUEST_DELAY_MAX = 2.0
 REQUEST_TIMEOUT = 15
@@ -83,17 +93,19 @@ def _normalize_parcel_id(raw: str) -> str:
     return raw
 
 
-def _knox_lookup_by_parcel(parcel_id: str) -> dict | None:
-    """Fetch tax bills for a Knox County parcel by account number.
+def _knox_lookup_by_parcel(parcel_id: str, base: str = KNOX_API_BASE) -> dict | None:
+    """Fetch tax bills for one county tax account.
 
     Returns dict with 'delinquent_amount', 'delinquent_years',
-    'latitude', 'longitude', or None on failure.
+    'latitude', 'longitude', or None on failure. The Knox account is the
+    parcel id with a dash; a Blount account is its own short number, so it is
+    passed through untouched.
     """
-    normalized = _normalize_parcel_id(parcel_id)
+    normalized = _normalize_parcel_id(parcel_id) if base == KNOX_API_BASE else str(parcel_id or "").strip()
     if not normalized:
         return None
 
-    url = f"{KNOX_API_BASE}/due/PPT/{quote(normalized)}?detail_level=public"
+    url = f"{base}/due/PPT/{quote(normalized)}?detail_level=public"
     try:
         resp = requests.get(url, timeout=REQUEST_TIMEOUT)
         if resp.status_code == 404:
@@ -125,47 +137,101 @@ def _knox_lookup_by_parcel(parcel_id: str) -> dict | None:
         return None
 
 
-def _knox_lookup_by_address(address: str) -> dict | None:
-    """Search Knox County tax records by address, then fetch bills.
+def _street_queries(address: str) -> list[str]:
+    """The street line as written, then the way the county writes it.
+
+    The county search is literal about the suffix: "100 Example Street" finds
+    nothing while "100 EXAMPLE ST" finds the parcel. Measured 2026-11-11 on 51
+    Knox foreclosure addresses: 22 matched as written, 50 once the suffix and
+    any direction were abbreviated. Only the TRAILING token is treated as a
+    suffix, so a street named "Ridge Road" is searched as "RIDGE RD", never
+    "RDG RD". The last form drops the suffix for a notice that got it wrong.
+    """
+    from address_fallback import _DIRECTION, _SUFFIX, _UNIT_RE
+
+    line = (address or "").split(",")[0]
+    line = _UNIT_RE.sub("", line.strip())
+    parts = re.sub(r"[^A-Za-z0-9\s]", " ", line).split()
+    queries = [(address or "").strip()]
+    if len(parts) >= 2:
+        body = [_DIRECTION.get(t.lower(), t) for t in parts[1:]]
+        suffixed = body[:-1] + [_SUFFIX.get(body[-1].lower(), body[-1])]
+        queries.append(" ".join([parts[0]] + suffixed).upper())
+        if body[-1].lower() in _SUFFIX and len(body) >= 2:
+            queries.append(" ".join([parts[0]] + body[:-1]).upper())
+        # Some rolls print the house number LAST ("EXAMPLE DR 100").
+        queries.append(" ".join(suffixed + [parts[0]]).upper())
+    seen, out = set(), []
+    for q in queries:
+        if q and q.upper() not in seen:
+            seen.add(q.upper())
+            out.append(q)
+    return out
+
+
+def _roll_street_key(parcel_address: str) -> tuple[str, frozenset]:
+    """street_key for an address as a county roll prints it.
+
+    Tolerates the house number printed last ("EXAMPLE DR 100"), which Blount
+    does on part of its roll.
+    """
+    from address_fallback import street_key
+
+    key = street_key(parcel_address)
+    if key[0]:
+        return key
+    parts = (parcel_address or "").split()
+    if len(parts) >= 2 and parts[-1].isdigit():
+        return street_key(" ".join(parts[-1:] + parts[:-1]))
+    return key
+
+
+def _knox_lookup_by_address(address: str, base: str = KNOX_API_BASE) -> dict | None:
+    """Search a county's tax records by address, then fetch bills.
 
     Returns dict with 'delinquent_amount', 'delinquent_years', and
-    'account_number', or None on failure.
+    'account_number', or None when no parcel AT THIS ADDRESS is found.
+
+    The county search is fuzzy and relevance-ranked, so the first result is
+    often a different house. This used to take it anyway, which writes one
+    property's tax debt onto another (3 of 51 on the 2026-11-11 measurement
+    would have). A parcel now counts only when its own address has the same
+    house number and street as the one asked for.
     """
+    from address_fallback import street_key
+
     if not address or not address.strip():
         return None
+    want = street_key(address.split(",")[0])
+    if not want[0]:
+        return None   # no house number, so nothing to verify a result against
 
-    search_url = f"{KNOX_API_BASE}/parcels/{quote(address)}?detail_level=public&start=0&length=5"
-    try:
-        resp = requests.get(search_url, timeout=REQUEST_TIMEOUT)
-        if resp.status_code == 404:
-            return None
-        resp.raise_for_status()
-    except requests.RequestException as e:
-        logger.debug("Tax API address search failed for '%s': %s", address, e)
-        return None
+    for query in _street_queries(address):
+        search_url = f"{base}/parcels/{quote(query)}?detail_level=public&start=0&length=10"
+        try:
+            resp = requests.get(search_url, timeout=REQUEST_TIMEOUT)
+            if resp.status_code == 404:
+                continue
+            resp.raise_for_status()
+            parcels = resp.json().get("parcels", []) or []
+        except (requests.RequestException, ValueError) as e:
+            logger.debug("Tax API address search failed for '%s': %s", query, e)
+            continue
 
-    try:
-        data = resp.json()
-        parcels = data.get("parcels", [])
-        if not parcels:
-            logger.debug("Tax API: no parcels found for '%s'", address)
-            return None
+        for parcel in parcels:
+            account = parcel.get("account_number", "")
+            if not account or _roll_street_key(parcel.get("parcel_address") or "") != want:
+                continue
+            # Small delay before the bill lookup
+            time.sleep(random.uniform(0.5, 1.0))
+            result = _knox_lookup_by_parcel(str(account), base)
+            if result:
+                result["account_number"] = account
+                return result
+        time.sleep(random.uniform(0.3, 0.6))
 
-        # Take the best match (first result, highest score)
-        best = parcels[0]
-        account = best.get("account_number", "")
-        if not account:
-            return None
-
-        # Small delay before the bill lookup
-        time.sleep(random.uniform(0.5, 1.0))
-        result = _knox_lookup_by_parcel(account)
-        if result:
-            result["account_number"] = account
-        return result
-    except (ValueError, KeyError) as e:
-        logger.debug("Tax API parse error for address '%s': %s", address, e)
-        return None
+    logger.debug("Tax API: no parcel at '%s'", address)
+    return None
 
 
 def _parse_delinquency(bills: list[dict]) -> dict:
@@ -175,6 +241,7 @@ def _parse_delinquency(bills: list[dict]) -> dict:
     """
     delinquent_amount = 0.0
     delinquent_years = 0
+    year_list: list[str] = []
 
     for bill in bills:
         is_delinquent = bill.get("delinquent", False)
@@ -184,10 +251,17 @@ def _parse_delinquency(bills: list[dict]) -> dict:
         if is_delinquent and not is_paid and due > 0:
             delinquent_amount += due
             delinquent_years += 1
+            year = str(bill.get("taxYear") or "").strip()
+            if year:
+                year_list.append(year)
 
     return {
         "delinquent_amount": round(delinquent_amount, 2),
         "delinquent_years": delinquent_years,
+        # WHICH years, oldest first. The current year's bill is unpaid for most
+        # owners from October to February and is not delinquent, so it never
+        # appears here.
+        "delinquent_year_list": sorted(set(year_list)),
     }
 
 
@@ -307,18 +381,21 @@ def enrich_tax_delinquency(notices: list[NoticeData]) -> None:
     Updates notices in-place, setting tax_delinquent_amount and
     tax_delinquent_years fields.
 
-    Currently supports Knox County only. Blount County is a placeholder.
+    Knox and Blount. A record the county has no parcel for at that address is
+    counted as failed and left blank: blank means "not checked", never "owes
+    nothing".
     """
     knox_notices = [
         n for n in notices
-        if n.county.lower() == "knox" and (n.parcel_id.strip() or n.address.strip())
+        if (n.county or "").lower() in TAX_API_BY_COUNTY
+        and ((n.parcel_id or "").strip() or (n.address or "").strip())
     ]
 
     if not knox_notices:
-        logger.info("No Knox County notices with addresses/parcels to enrich")
+        logger.info("No Knox or Blount notices with addresses/parcels to enrich")
         return
 
-    logger.info("Enriching tax delinquency for %d Knox County notices...", len(knox_notices))
+    logger.info("Enriching tax delinquency for %d Knox/Blount notices...", len(knox_notices))
 
     enriched = 0
     failed = 0
@@ -326,16 +403,21 @@ def enrich_tax_delinquency(notices: list[NoticeData]) -> None:
 
     for i, notice in enumerate(knox_notices, 1):
         result = None
+        county = notice.county.lower()
+        base = TAX_API_BY_COUNTY[county]
+        parcel_id = (notice.parcel_id or "").strip()
+        address = (notice.address or "").strip()
 
-        # Prefer parcel_id lookup (faster, more precise)
-        if notice.parcel_id.strip():
-            result = _knox_lookup_by_parcel(notice.parcel_id)
+        # Prefer parcel_id lookup (faster, more precise). Knox only: a Knox
+        # account IS the parcel id, a Blount account is a separate number.
+        if county == "knox" and parcel_id:
+            result = _knox_lookup_by_parcel(parcel_id)
 
         # Fallback to address search
-        if result is None and notice.address.strip():
-            result = _knox_lookup_by_address(notice.address)
+        if result is None and address:
+            result = _knox_lookup_by_address(address, base)
             # Store the discovered parcel_id if we didn't have one
-            if result and not notice.parcel_id.strip() and result.get("account_number"):
+            if county == "knox" and result and not parcel_id and result.get("account_number"):
                 notice.parcel_id = result["account_number"]
 
         if result:
@@ -365,10 +447,7 @@ def enrich_tax_delinquency(notices: list[NoticeData]) -> None:
         # Rate limit
         time.sleep(random.uniform(REQUEST_DELAY_MIN, REQUEST_DELAY_MAX))
 
-    blount_count = sum(1 for n in notices if n.county.lower() == "blount")
-    if blount_count:
-        logger.info("Skipped %d Blount County notices (tax API not yet implemented)", blount_count)
-        skipped = blount_count
+    skipped = len(notices) - len(knox_notices)
 
     logger.info(
         "Tax delinquency enrichment complete: %d enriched, %d failed, %d skipped",
@@ -498,87 +577,120 @@ def _people_search_property(name: str, city: str = "Knoxville", state: str = "TN
     return None
 
 
+def _usable_parcels(results: list[tuple[float, dict]], decedent: str) -> list[tuple[float, dict]]:
+    """Keep only parcels that can stand in for the estate's property.
+
+    Two requirements, each from a live failure (2026-11-11):
+
+    A STREET ADDRESS. The county API also returns business and personal
+    property accounts, whose parcel_address is null. One of those was applied
+    to a notice as address=None, and every later step that calls .strip() on
+    an address then crashed, taking a 103-notice run down with it.
+
+    THE DECEDENT ON THE TITLE. A token-overlap score of 0.4 is a surname-only
+    match on a two-word name, and the old executor tier accepted any parcel
+    whose owner string contained the decedent's surname. When the executor is
+    a child with the same surname, that is the executor's own house. Every
+    executor-tier match in the September 2026 Knox run was one of those.
+    """
+    from property_lookup import _owner_matches_decedent
+
+    kept = []
+    for score, parcel in results:
+        if not (parcel.get("parcel_address") or "").strip():
+            continue
+        if not _owner_matches_decedent(decedent, parcel.get("owner") or ""):
+            continue
+        kept.append((score, parcel))
+    return kept
+
+
 def _probate_property_lookup(notices: list[NoticeData]) -> None:
     """Multi-tier property lookup for probate records without addresses.
 
     Tier 1: Knox Tax API by decedent name (multiple search variations)
-    Tier 2: Knox Tax API by executor last name (family property)
+    Tier 2: Knox Tax API by executor name, for a parcel the decedent co-owns
     Tier 3: People search for decedent's last known address
+
+    One record that raises is logged and skipped; it never stops the rest.
     """
     for notice in notices:
-        if notice.address.strip():
-            continue
-        if not notice.decedent_name.strip():
-            continue
+        try:
+            _probate_property_lookup_one(notice)
+        except Exception as e:
+            logger.warning("  Property lookup failed for one probate record: %s", e)
 
-        decedent = notice.decedent_name.strip()
-        executor = notice.owner_name.strip()
-        logger.info("  Looking up property for decedent: %s", decedent)
 
-        # ── Tier 1: Knox Tax API by decedent name variations ──
-        search_names = _clean_name_for_search(decedent)
-        best_match = None
+def _probate_property_lookup_one(notice: NoticeData) -> None:
+    if (notice.address or "").strip():
+        return
+    decedent = (notice.decedent_name or "").strip()
+    if not decedent:
+        return
+    executor = (notice.owner_name or "").strip()
+    logger.info("  Looking up property for decedent: %s", decedent)
 
-        for search_name in search_names:
+    # ── Tier 1: Knox Tax API by decedent name variations ──
+    best_match = None
+    rejected = 0
+    for search_name in _clean_name_for_search(decedent):
+        time.sleep(random.uniform(REQUEST_DELAY_MIN, REQUEST_DELAY_MAX))
+        raw = _knox_name_search(search_name, min_score=0.4)
+        results = _usable_parcels(raw, decedent)
+        rejected += len(raw) - len(results)
+        if results:
+            if not best_match or results[0][0] > best_match[0]:
+                best_match = results[0]
+            if results[0][0] >= 0.6:
+                break  # good enough, stop searching
+
+    if best_match:
+        score, parcel = best_match
+        logger.info(
+            "  Tier 1 (Tax API): %s (owner: %s, score: %.2f)",
+            parcel.get("parcel_address", ""), parcel.get("owner", ""), score,
+        )
+        _apply_parcel_to_notice(notice, parcel)
+        return
+
+    # ── Tier 2: Knox Tax API by executor name ──
+    # Finds a parcel the decedent holds jointly with the executor when the
+    # decedent-name search missed it. The executor's own home is not the
+    # estate's property, so the decedent must be on the title here too.
+    if executor:
+        for search_name in _clean_name_for_search(executor)[:3]:
             time.sleep(random.uniform(REQUEST_DELAY_MIN, REQUEST_DELAY_MAX))
-            results = _knox_name_search(search_name, min_score=0.4)
+            raw = _knox_name_search(search_name, min_score=0.4)
+            results = _usable_parcels(raw, decedent)
+            rejected += len(raw) - len(results)
             if results:
-                # Take best overall
-                if not best_match or results[0][0] > best_match[0]:
-                    best_match = results[0]
-                if results[0][0] >= 0.6:
-                    break  # good enough, stop searching
+                score, parcel = results[0]
+                logger.info(
+                    "  Tier 2 (Executor, decedent on title): %s (owner: %s, score: %.2f)",
+                    parcel.get("parcel_address", ""), parcel.get("owner", ""), score,
+                )
+                _apply_parcel_to_notice(notice, parcel)
+                return
 
-        if best_match and best_match[0] >= 0.4:
-            score, parcel = best_match
-            logger.info(
-                "  Tier 1 (Tax API): %s (owner: %s, score: %.2f)",
-                parcel.get("parcel_address", ""), parcel.get("owner", ""), score,
-            )
-            _apply_parcel_to_notice(notice, parcel)
-            continue
+    # ── Tier 3: People search for decedent's property address ──
+    logger.info("  Tier 3: People search for %s", decedent)
+    people_addr = _people_search_property(decedent, city="Knoxville")
+    if people_addr:
+        logger.info("  Tier 3 (People Search): %s", people_addr)
+        notice.address = people_addr
+        notice.city = "Knoxville"
+        notice.state = "TN"
+        return
 
-        # ── Tier 2: Knox Tax API by executor name (family property) ──
-        if executor:
-            executor_searches = _clean_name_for_search(executor)
-            for search_name in executor_searches[:3]:
-                time.sleep(random.uniform(REQUEST_DELAY_MIN, REQUEST_DELAY_MAX))
-                results = _knox_name_search(search_name, min_score=0.4)
-                # Look for properties NOT at the executor's known address
-                # (the executor's own home is not the decedent's property)
-                for score, parcel in results:
-                    addr = parcel.get("parcel_address", "")
-                    owner = parcel.get("owner", "")
-                    # Check if decedent's last name appears in the owner field
-                    dec_last = decedent.split()[-1].upper() if decedent.split() else ""
-                    if dec_last and dec_last in owner.upper():
-                        logger.info(
-                            "  Tier 2 (Executor family): %s (owner: %s, score: %.2f)",
-                            addr, owner, score,
-                        )
-                        _apply_parcel_to_notice(notice, parcel)
-                        break
-                if notice.address.strip():
-                    break
-            if notice.address.strip():
-                continue
-
-        # ── Tier 3: People search for decedent's property address ──
-        logger.info("  Tier 3: People search for %s", decedent)
-        people_addr = _people_search_property(decedent, city="Knoxville")
-        if people_addr:
-            logger.info("  Tier 3 (People Search): %s", people_addr)
-            notice.address = people_addr
-            notice.city = "Knoxville"
-            notice.state = "TN"
-            continue
-
-        logger.warning("  No property found for decedent: %s (all tiers exhausted)", decedent)
+    logger.warning(
+        "  No property found for decedent: %s (all tiers exhausted, "
+        "%d county results not owned by the decedent)", decedent, rejected,
+    )
 
 
 def _apply_parcel_to_notice(notice: NoticeData, parcel: dict) -> None:
     """Apply parcel data from Knox Tax API to a notice."""
-    notice.address = parcel.get("parcel_address", "")
+    notice.address = (parcel.get("parcel_address") or "").strip()
     notice.city = "Knoxville"
     notice.state = "TN"
     account = parcel.get("account_number", "")

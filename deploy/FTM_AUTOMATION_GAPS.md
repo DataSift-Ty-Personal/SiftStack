@@ -90,7 +90,7 @@ the last has no fetch code anywhere.
 
 | Source | Fetcher | Time sensitivity | State |
 |---|---|---|---|
-| Knox Register of Deeds (liens, state tax, federal tax) | **`knox_rod.py`** exists. `paxsub /api/v2Search`, per the `reference_knox_rod_api` memory: replay the page's own request, bare int doc ids, 5000-result cap needs monthly chunking | 12-month archive, recoverable | built, **run by hand** |
+| Knox Register of Deeds (liens, state tax, federal tax) | **`knox_rod.py`** exists. `paxsub /api/v2Search`, per the `reference_knox_rod_api` memory: replay the page's own request, bare int doc ids, 5000-result cap needs monthly chunking | 12-month archive, recoverable | **automated daily since 2026-11-11** as the `liens` stage (`knox_liens_daily.py`), which stages new debtors for `county` to upload. The paid paxsub subscription had expired 2026-08-26 and nothing came in for 11 weeks; a lapse now fails the stage by name |
 | Trustee deeds (TRS) | same fetcher | 12 months | **RETIRED 2026-08-25**, duplicates the foreclosure scrape |
 | Eviction docket | **`knox_evictions.py`** exists | **ONE WEEK ONLY.** The court keeps only the current week; ~86 back-dated URLs all 404 | **RETIRED 2026-08-25.** Module kept; re-wiring is restoring one block in `_stage_capture` |
 | Condemnation agendas (BBB + Public Officer) | **`knox_condemnations.py`** exists, prose PDFs, `_condemnation_money()` parses the dollar figures | **ONE CYCLE ONLY.** The city overwrites its agenda PDFs | **automated daily** in the `capture` stage |

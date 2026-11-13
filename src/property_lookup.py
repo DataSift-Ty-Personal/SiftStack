@@ -352,6 +352,12 @@ def _format_name_for_search(name: str) -> str:
     if not name:
         return ""
 
+    # Search on the primary name only. "<FIRST> <LAST> AKA <NICKNAME> <LAST>"
+    # used to be sent to the assessor whole, which matches nothing.
+    aliases = _split_aliases(name)
+    if aliases:
+        name = aliases[0]
+
     # Remove common suffixes
     clean = re.sub(r"\b(?:JR|SR|II|III|IV|M\.?D\.?)\b\.?", "", name, flags=re.IGNORECASE).strip()
 
@@ -401,6 +407,10 @@ def _maiden_name_variant(decedent_name: str) -> str | None:
     if not decedent_name:
         return None
 
+    aliases = _split_aliases(decedent_name)
+    if aliases:
+        decedent_name = aliases[0]
+
     # Work from the original decedent name (before _format_name_for_search)
     clean = re.sub(r"\b(?:JR|SR|II|III|IV)\b\.?", "", decedent_name, flags=re.IGNORECASE).strip()
     clean = re.sub(r"[.,'']", "", clean).strip()
@@ -412,6 +422,117 @@ def _maiden_name_variant(decedent_name: str) -> str | None:
     first = parts[0]
     maiden = parts[-2]  # Penultimate = maiden name
     return f"{maiden} {first}".upper()
+
+
+# ── Owner-of-record guard ─────────────────────────────────────────────
+#
+# THE BUG THIS CLOSES. The lookup used to take whatever the assessor search
+# returned and keep the first residential row, with no check that the owner of
+# record was the decedent. Both TPAD and KGIS match loosely, so a query built
+# from a damaged name returned a stranger's house and it was uploaded as the
+# estate's property. Measured on live Blount notices, 2026-11-11: a decedent
+# whose name had been parsed with a line-wrap fragment in it ("<FIRST> <LAST>
+# DE- CEASED") was searched as "DE- <FIRST>", and the assessor answered with a
+# living couple whose surname merely began with "DE" and whose first name
+# matched. Three of the four addresses "found" in that run were wrong houses.
+#
+# A missed lookup costs one lead. A wrong one sends a probate letter and a
+# caller to an unrelated family. So a result is kept only when the owner of
+# record carries the decedent's surname AND first name.
+
+_ALIAS_SPLIT_RE = re.compile(
+    r"\s+(?:A[./]?K[./]?A\.?|F[./]?K[./]?A\.?|N[./]?K[./]?A\.?"
+    r"|ALSO\s+KNOWN\s+AS|FORMERLY\s+KNOWN\s+AS|NOW\s+KNOWN\s+AS)\s+",
+    re.IGNORECASE,
+)
+_NAME_SUFFIX_TOKENS = {"JR", "SR", "II", "III", "IV"}
+_FIRST_NAME_PREFIX_MIN = 4   # "JACK" covers "JACKY"; "ANN" must not cover "ANNETTE"
+
+
+def _split_aliases(name: str) -> list[str]:
+    """['ROBERTA ANN HALE', 'BOBBIE HALE'] from '... AKA ...'. Primary first."""
+    return [p.strip(" ,") for p in _ALIAS_SPLIT_RE.split(name or "") if p.strip(" ,")]
+
+
+def _person_tokens(name: str) -> list[str]:
+    """Upper-case name tokens, punctuation and generational suffixes removed."""
+    clean = re.sub(r"[^A-Za-z\s\-]", " ", name or "").upper().replace("-", " ")
+    return [t for t in clean.split() if t not in _NAME_SUFFIX_TOKENS]
+
+
+def _first_name_matches(first: str, owner_tokens: set) -> bool:
+    for tok in owner_tokens:
+        if tok == first:
+            return True
+        short, long_ = (first, tok) if len(first) <= len(tok) else (tok, first)
+        if len(short) >= _FIRST_NAME_PREFIX_MIN and long_.startswith(short):
+            return True
+    return False
+
+
+def _owner_matches_decedent(decedent_name: str, owner: str) -> bool:
+    """True when the owner of record is plausibly the decedent.
+
+    Surname: the decedent's last name, the maiden name of a four-part name, or
+    the last name of any alias. First name: the decedent's, or any alias's.
+    Both must appear among the owner's tokens.
+    """
+    names = _split_aliases(decedent_name)
+    if not names:
+        return False
+    primary = _person_tokens(names[0])
+    if len(primary) < 2:
+        return False
+    surnames = {primary[-1]}
+    if len(primary) >= 4:
+        surnames.add(primary[-2])
+    firsts = {primary[0]}
+    for alias in names[1:]:
+        toks = _person_tokens(alias)
+        if len(toks) >= 2:
+            firsts.add(toks[0])
+            surnames.add(toks[-1])
+
+    owner_tokens = set(_person_tokens(owner))
+    if not (surnames & owner_tokens):
+        return False
+    return any(_first_name_matches(f, owner_tokens) for f in firsts)
+
+
+def _keep_owner_matches(results: list[dict], decedent_name: str) -> list[dict]:
+    """Drop every result whose owner of record is not the decedent."""
+    kept = [r for r in results if _owner_matches_decedent(decedent_name, r.get("owner", ""))]
+    if results and not kept:
+        logger.info(
+            "  Rejected %d result(s): owner of record is not the decedent (first was %s)",
+            len(results), (results[0].get("owner") or "?").strip(),
+        )
+    return kept
+
+
+def _search_variants(decedent_name: str) -> list[tuple[str, str]]:
+    """Ordered (label, query) pairs to try against the assessor, deduplicated.
+
+    Full name, then without middle names, then the maiden name, then the same
+    for each alias. The label is empty for the first attempt.
+    """
+    out: list[tuple[str, str]] = []
+    seen: set[str] = set()
+
+    def add(label: str, query: str | None) -> None:
+        if query and query not in seen:
+            seen.add(query)
+            out.append((label, query))
+
+    full = _format_name_for_search(decedent_name)
+    add("", full)
+    add("shorter name", _shorten_search_name(full) if full else None)
+    add("maiden name", _maiden_name_variant(decedent_name))
+    for alias in _split_aliases(decedent_name)[1:]:
+        alias_full = _format_name_for_search(alias)
+        add("alias", alias_full)
+        add("alias, shorter", _shorten_search_name(alias_full) if alias_full else None)
+    return out
 
 
 # ── TPAD address normalization ────────────────────────────────────────
@@ -500,22 +621,20 @@ async def _lookup_loop(notices: list, _kgis) -> None:
         )
 
         try:
+            # Every variant goes through the owner-of-record guard, and a
+            # variant whose results are all rejected falls through to the next
+            # one, exactly as an empty result set does.
+            variants = _search_variants(notice.decedent_name)
+            results: list[dict] = []
             if notice.county.lower() == "knox":
-                results = await _kgis(search_name)
-                # Retry with shorter name (drop middle name) if full name fails
-                if not results:
-                    short_name = _shorten_search_name(search_name)
-                    if short_name:
-                        logger.info("  Retrying with shorter name: %s", short_name)
+                for n_try, (label, query) in enumerate(variants):
+                    if label:
+                        logger.info("  Retrying with %s: %s", label, query)
+                    if n_try:
                         await asyncio.sleep(random.uniform(1.5, 2.5))
-                        results = await _kgis(short_name)
-                # Retry with maiden name for "FIRST MIDDLE MAIDEN MARRIED" patterns
-                if not results:
-                    maiden = _maiden_name_variant(notice.decedent_name)
-                    if maiden:
-                        logger.info("  Retrying with maiden name: %s", maiden)
-                        await asyncio.sleep(random.uniform(1.5, 2.5))
-                        results = await _kgis(maiden)
+                    results = _keep_owner_matches(await _kgis(query), notice.decedent_name)
+                    if results:
+                        break
                 # KGIS doesn't include classification in search results.
                 # For single results, just take it. For multiple, check details.
                 if len(results) > 1:
@@ -524,19 +643,12 @@ async def _lookup_loop(notices: list, _kgis) -> None:
                         addr_type = await _kgis_get_address_type(r["parcel_id"])
                         r["classification"] = addr_type
             elif notice.county.lower() == "blount":
-                results = _tpad_lookup(search_name)
-                # Retry with shorter name if full name fails
-                if not results:
-                    short_name = _shorten_search_name(search_name)
-                    if short_name:
-                        logger.info("  Retrying with shorter name: %s", short_name)
-                        results = _tpad_lookup(short_name)
-                # Retry with maiden name
-                if not results:
-                    maiden = _maiden_name_variant(notice.decedent_name)
-                    if maiden:
-                        logger.info("  Retrying with maiden name: %s", maiden)
-                        results = _tpad_lookup(maiden)
+                for label, query in variants:
+                    if label:
+                        logger.info("  Retrying with %s: %s", label, query)
+                    results = _keep_owner_matches(_tpad_lookup(query), notice.decedent_name)
+                    if results:
+                        break
             else:
                 logger.debug("Unsupported county for property lookup: %s", notice.county)
                 skipped += 1

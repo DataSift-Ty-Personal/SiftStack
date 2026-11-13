@@ -50,7 +50,10 @@ from captcha_solver import NoticeAccessBlocked  # noqa: E402
 
 logger = logging.getLogger("ftm_runner")
 
-ALL_STAGES = ("notices", "capture", "county")
+# Order matters when several are named: `liens` stages what `county` uploads, and
+# `sold` runs last so a lead uploaded this run onto an old Sold record is revived
+# in the same run instead of sitting dead until tomorrow.
+ALL_STAGES = ("notices", "capture", "liens", "county", "sold")
 # "capture" is in the default set even though it uploads nothing. The Knox City
 # condemnation agendas are OVERWRITTEN at the source: a cycle that is not
 # pulled while it is live cannot be recovered later, unlike foreclosure and
@@ -97,6 +100,41 @@ class RunResult:
 
 
 # ── stage: tnpublicnotice scrape ──────────────────────────────────────
+
+
+# How many different proxy sessions a run may try when the login page itself
+# cannot be reached. Each attempt costs up to ~4 minutes of timeouts.
+LOGIN_EGRESS_ATTEMPTS = 3
+# Zero survivors out of this many scraped notices (or more) is treated as a
+# broken enrichment step. Fewer is an ordinary quiet day.
+ALL_DROPPED_SUSPECT = int(os.environ.get("FTM_ALL_DROPPED_SUSPECT", "5") or 5)
+
+# Start warning this many days before the site subscription runs out. The
+# account has been on both a 365-day and a 30-day product, so the window has to
+# be short enough to mean something on the monthly one.
+# The account is on the 30 Day product set to auto-renew (Ty, 2026-11-11), so a
+# 14-day window would warn on half of all days and stop meaning anything. Three
+# days is late enough that a renewal which has NOT happened is worth a line.
+SUBSCRIPTION_WARN_DAYS = int(os.environ.get("SUBSCRIPTION_WARN_DAYS", "3") or 3)
+
+
+def _subscription_warning(res, today: datetime | None = None) -> None:
+    """Add a run warning when the Smart Search subscription is close to lapsing."""
+    import scraper
+
+    expires = (scraper.SUBSCRIPTION or {}).get("expires") or ""
+    if not expires:
+        return
+    try:
+        left = (datetime.strptime(expires, "%Y-%m-%d").date()
+                - (today or datetime.now()).date()).days
+    except ValueError:
+        return
+    if left <= SUBSCRIPTION_WARN_DAYS:
+        res.warnings.append(
+            f"The tnpublicnotice subscription expires {expires} ({left} days left). "
+            "Renew it before then or the scrape stops."
+        )
 
 
 def _next_proxy_session_suffix() -> str:
@@ -162,10 +200,7 @@ def _stage_notices(args) -> StageResult:
     # every later month failed instantly against that same dead IP. Each run
     # now takes the next session id, so consecutive jobs land on different
     # upstream addresses instead of grinding one into the ground.
-    session_suffix = "" if args.no_proxy else _next_proxy_session_suffix()
-    proxy_url = None if args.no_proxy else resolve_proxy_url(session_suffix=session_suffix)
-    logger.info("Egress: %s", "DIRECT (--no-proxy)" if args.no_proxy
-                else describe_proxy(session_suffix))
+    from scraper import LoginFailed, SubscriptionExpired
 
     # seen_ids is NOT persisted by the scrape. It marks a notice as "already
     # handled", but the upload happens after the whole scrape finishes, so
@@ -176,26 +211,69 @@ def _stage_notices(args) -> StageResult:
     seen_ids = load_seen_ids()
     before_seen = set(seen_ids)
 
-    try:
-        notices = asyncio.run(scrape_all(
-            mode=args.mode,
-            searches=searches,
-            proxy_url=proxy_url,
-            llm_api_key=config.ANTHROPIC_API_KEY or None,
-            since_date_override=args.since,
-            max_notices=args.max_notices,
-            backfill_months=args.backfill_months,
-            backfill_offset=args.backfill_offset,
-            seen_ids=seen_ids,
-            persist_state=False,
-        ))
-    except NoticeAccessBlocked as exc:
-        res.status = "failed"
-        res.detail = f"EGRESS BLOCKED: {exc}"
-        res.seconds = round(time.time() - t0, 1)
-        # Roll the cache back so nothing scraped-but-unsent is marked done.
-        _revert_seen(seen_ids, before_seen)
-        raise _Blocked(res) from exc
+    # A LOGIN THAT TIMES OUT IS A DEAD PROXY IP, NOT AN EMPTY FEED. The scraper
+    # retries the login page three times on the SAME upstream address, which
+    # cannot help when that address is the problem, and then returned [] so the
+    # run was reported as "0 notices scraped, check the saved searches". Seen
+    # live 2026-11-11: one session timed out for 255.9s while the sessions on
+    # either side of it logged in within 10 seconds, and that morning's
+    # scheduled run had "found nothing" in 255.8s. So a failed login rotates to
+    # the next session and tries again, and only after every attempt fails is
+    # it reported, as what it is.
+    login_attempts = 1 if args.no_proxy else LOGIN_EGRESS_ATTEMPTS
+    notices = None
+    for attempt in range(1, login_attempts + 1):
+        session_suffix = "" if args.no_proxy else _next_proxy_session_suffix()
+        proxy_url = None if args.no_proxy else resolve_proxy_url(session_suffix=session_suffix)
+        logger.info("Egress: %s", "DIRECT (--no-proxy)" if args.no_proxy
+                    else describe_proxy(session_suffix))
+        try:
+            notices = asyncio.run(scrape_all(
+                mode=args.mode,
+                searches=searches,
+                proxy_url=proxy_url,
+                llm_api_key=config.ANTHROPIC_API_KEY or None,
+                since_date_override=args.since,
+                max_notices=args.max_notices,
+                backfill_months=args.backfill_months,
+                backfill_offset=args.backfill_offset,
+                seen_ids=seen_ids,
+                persist_state=False,
+                raise_on_login_failure=True,
+            ))
+            break
+        except SubscriptionExpired as exc:
+            # Not an egress problem and not an empty feed: say exactly what it
+            # is. Reported as EMPTY, this cost 39 days in October 2026.
+            _revert_seen(seen_ids, before_seen)
+            res.status = "failed"
+            res.detail = f"SUBSCRIPTION EXPIRED: {exc}."
+            res.seconds = round(time.time() - t0, 1)
+            return res
+        except LoginFailed as exc:
+            _revert_seen(seen_ids, before_seen)
+            if attempt < login_attempts:
+                logger.warning(
+                    "Login unreachable through this egress IP (attempt %d/%d): %s. "
+                    "Rotating to a new proxy session.", attempt, login_attempts, exc)
+                continue
+            res.status = "failed"
+            res.detail = (
+                f"LOGIN UNREACHABLE through {login_attempts} different egress IPs: {exc}. "
+                "Nothing was scraped. Check the proxy pool and the site login, "
+                "not the saved searches."
+            )
+            res.seconds = round(time.time() - t0, 1)
+            return res
+        except NoticeAccessBlocked as exc:
+            res.status = "failed"
+            res.detail = f"EGRESS BLOCKED: {exc}"
+            res.seconds = round(time.time() - t0, 1)
+            # Roll the cache back so nothing scraped-but-unsent is marked done.
+            _revert_seen(seen_ids, before_seen)
+            raise _Blocked(res) from exc
+
+    _subscription_warning(res)
 
     if not notices:
         # Deliberately a failure. Foreclosure and probate notices publish
@@ -212,6 +290,7 @@ def _stage_notices(args) -> StageResult:
         return res
 
     logger.info("Scraped %d notices", len(notices))
+    scraped = len(notices)
 
     # Probate notices carry no property address; resolve it before enrichment.
     probate = [n for n in notices
@@ -257,6 +336,27 @@ def _stage_notices(args) -> StageResult:
     if not args.commit:
         res.status = "ok"
         res.detail = f"{res.records} records ready (dry run, nothing uploaded)"
+        _revert_seen(seen_ids, before_seen)
+    elif res.records == 0 and scraped < ALL_DROPPED_SUSPECT:
+        # A quiet day whose one or two notices were filtered out (an LLC owner,
+        # a vacant lot, a probate with no property found). Nothing failed and
+        # there was nothing to send, so this is not an upload failure: the first
+        # unattended run after the November catch-up scraped ONE notice, the
+        # filter dropped it, and the whole run read red. The notices are marked
+        # handled exactly as a dropped notice is on a day when others survive.
+        res.status = "ok"
+        res.detail = f"{scraped} notice(s) scraped, none passed the filters, nothing to upload"
+        save_seen_ids(seen_ids)
+        if args.mode == "daily" and not args.backfill_months:
+            from scraper import save_last_run_date
+            save_last_run_date()
+    elif res.records == 0:
+        # Many notices and not one survivor is a broken enrichment step, not a
+        # property of the notices (the Smarty lapse dropped every probate this
+        # way). Fail and keep them unhandled so the fixed run picks them up.
+        res.status = "failed"
+        res.detail = (f"{scraped} notices scraped and every one was filtered out: "
+                      "read the enrichment log before trusting this")
         _revert_seen(seen_ids, before_seen)
     elif up["created"] == 0:
         res.status = "failed"
@@ -342,6 +442,10 @@ def _stage_county(args) -> StageResult:
     if args.no_upload or not rows:
         res.status = "ok"
         res.detail = f"{len(rows)} records written, upload skipped"
+        # Nothing passed the buy box, so there is nothing to send and the
+        # staged liens are settled. (--no-upload settles nothing.)
+        if args.commit and not args.no_upload:
+            _mark_liens_uploaded()
         res.seconds = round(time.time() - t0, 1)
         return res
 
@@ -351,8 +455,119 @@ def _stage_county(args) -> StageResult:
     res.uploaded = up["created"]
     res.status = "ok" if (not args.commit or up["created"]) else "failed"
     res.detail = f"{len(rows)} records, {up['created']} into DataSift"
+    # Only after a committed upload that landed. A dry run or a failed upload
+    # leaves the staged liens to be sent tomorrow.
+    if args.commit and res.status == "ok":
+        _mark_liens_uploaded(str(out))
     res.seconds = round(time.time() - t0, 1)
     return res
+
+
+def _stage_liens(args) -> StageResult:
+    """Knox Register of Deeds liens: pull, then stage the debtors that are new.
+
+    Uploads nothing itself. It leaves `knox_lien_parcels.json` in the scratch
+    folder for the county stage, which applies the buy box and uploads, and
+    which marks the liens handled only once that upload has succeeded. So this
+    stage belongs BEFORE `county` in --stages.
+
+    The recorder is a PAID subscription. It lapsed on 2026-08-26, the search
+    answered with a browser alert nobody was listening for, and no lien reached
+    DataSift for 11 weeks while every run stayed green. A lapse now fails this
+    stage by name.
+    """
+    res = StageResult(name="liens")
+    t0 = time.time()
+    if not (config.PAXSUB_USERNAME and config.PAXSUB_PASSWORD):
+        res.status = "skipped"
+        res.detail = "PAXSUB_USERNAME / PAXSUB_PASSWORD not set (Knox Register of Deeds login)"
+        return res
+
+    import knox_liens_daily
+    import knox_rod
+
+    scratch = str(config.STATE_DIR / "knox")
+    try:
+        stats = knox_liens_daily.prepare(scratch)
+    except knox_rod.RodSubscriptionExpired as exc:
+        res.status = "failed"
+        res.detail = f"REGISTER OF DEEDS SUBSCRIPTION EXPIRED. {exc}"
+    except Exception as exc:
+        res.status = "failed"
+        res.detail = f"{type(exc).__name__}: {exc}"
+    else:
+        res.status = "ok"
+        res.records = stats["with_parcels"]
+        res.detail = (
+            f"{stats['new_debtors']} new lien debtors ({stats['window']}), "
+            f"{stats['with_parcels']} matched to {stats['parcels']} parcels"
+        )
+        days = stats.get("subscription_days")
+        if days is not None and days <= SUBSCRIPTION_WARN_DAYS:
+            res.warnings.append(
+                f"The Register of Deeds subscription expires in {days} day(s). "
+                "Renew it at paxsub.knoxrod.org or the lien pull stops."
+            )
+        if stats.get("lookup_errors"):
+            res.warnings.append(
+                f"{stats['lookup_errors']} lien debtor(s) could not be checked "
+                "against the county tax roll (lookup error)."
+            )
+        # Releases (Ty, 2026-11-11): a lien that has been paid off must come
+        # back off the DataSift record. The pull above just refreshed the
+        # release index, so compare it against every lien record we hold.
+        try:
+            import knox_lien_releases
+
+            rel = knox_lien_releases.reconcile(
+                scratch, commit=bool(args.commit and not args.no_upload), log=logger.info)
+            if rel["to_update"]:
+                verb = "updated" if rel["committed"] else "would update"
+                done = rel["updated"] if rel["committed"] else rel["to_update"]
+                res.detail += (f"; {verb} {done} record(s) for released or restated liens "
+                               f"({rel['fully_released']} now fully released)")
+            bad = rel["failed"] + rel["mismatch"]
+            if bad:
+                res.warnings.append(
+                    f"{bad} lien record(s) could not be updated after a release; "
+                    "they are retried on the next run."
+                )
+        except Exception as exc:
+            res.warnings.append(f"Lien release update did not run: {type(exc).__name__}: {exc}")
+    res.seconds = round(time.time() - t0, 1)
+    return res
+
+
+def _mark_liens_uploaded(csv_path: str = "") -> None:
+    """Record the staged liens as handled. Only ever called after a real upload."""
+    scratch = str(config.STATE_DIR / "knox")
+    # FIRST, while the staged debtor file still holds the instrument lists:
+    # remember which liens now sit on which record, so a later release can
+    # find its way back to it. mark_uploaded() below empties that file.
+    if csv_path:
+        try:
+            import knox_lien_releases
+
+            added = knox_lien_releases.register_uploaded(scratch, csv_path)
+            if added:
+                logger.info("Liens: %d record(s) added to the release ledger", added)
+                # The upload states a record from this month's filings alone.
+                # Where the ledger knows older liens on the same house, put
+                # the full figure back now instead of leaving it short a day.
+                fixed = knox_lien_releases.reconcile(scratch, commit=True, log=logger.info)
+                if fixed["updated"]:
+                    logger.info("Liens: %d record(s) restated to their full lien total",
+                                fixed["updated"])
+        except Exception as exc:
+            logger.warning("Liens: release ledger not updated: %s", exc)
+    try:
+        import knox_liens_daily
+
+        moved = knox_liens_daily.mark_uploaded(scratch)
+        if moved:
+            logger.info("Liens: %d instrument(s) marked handled", moved)
+    except Exception as exc:  # the upload already succeeded; never fail the run on this
+        logger.warning("Liens: could not mark instruments handled: %s", exc)
 
 
 class _Blocked(Exception):
@@ -384,17 +599,16 @@ def _stage_capture(args) -> StageResult:
     try:
         import knox_condemnations
         paths = knox_condemnations.fetch(scratch)
-        fresh = []
-        for kind, p in paths.items():
-            fresh.extend(knox_condemnations.parse_agenda(p, kind))
-            if kind == "poh":
-                fresh.extend(knox_condemnations.parse_boardings(p))
+        # collect() owns the definition of a problem: an agenda not fetched, one
+        # that parsed to nothing without being a cancellation notice, or a set
+        # too old to be live. That last one is the check this stage lacked for
+        # months while it re-read a frozen June file and reported OK.
+        fresh, capture_problems = knox_condemnations.collect(paths)
         allrec = knox_condemnations.merge(scratch, fresh)
         with open(os.path.join(scratch, "condemnations.json"), "w", encoding="utf-8") as fh:
             json.dump(allrec, fh, indent=1)
         counts["condemnations"] = f"{len(fresh)} this cycle, {len(allrec)} cumulative"
-        if not fresh:
-            problems.append("condemnation agendas parsed 0 entries")
+        problems.extend(capture_problems)
     except Exception as exc:
         problems.append(f"condemnations: {type(exc).__name__}: {exc}")
 
@@ -422,8 +636,41 @@ def _stage_capture(args) -> StageResult:
     return res
 
 
+def _stage_sold(args) -> StageResult:
+    """Sold guard: a record is Sold only when the house sold AFTER it became a lead.
+
+    Until 2026-11-12 two SiftMap presets tagged every in-account record whose
+    last sale was on or after a FIXED date (2023-01-01) and a sequence set the
+    status to Sold, so any owner who had bought in the last 46 months was
+    marked Sold the night after the record arrived. Those presets are off.
+    This stage is now the only thing that hands out the tag: it revives a lead
+    whose "sale" is the owner's own purchase and marks the real sales, by
+    comparing the last sale with the day the record became a lead
+    (src/sold_guard.py). Never fatal to the run.
+    """
+    res = StageResult(name="sold")
+    t0 = time.time()
+    try:
+        import sold_guard
+        st = sold_guard.daily(commit=bool(args.commit))
+    except Exception as exc:
+        res.status = "failed"
+        res.detail = f"{type(exc).__name__}: {exc}"
+        res.seconds = time.time() - t0
+        return res
+    errors = st.get("repair_errors", 0) + st.get("mark_errors", 0)
+    res.status = "failed" if st.get("rc") else "ok"
+    res.records = st.get("restored", 0) + st.get("marked", 0)
+    res.detail = (f"{st.get('restored', 0)} leads revived, {st.get('marked', 0)} real sales marked "
+                  f"({st.get('repair_judged', 0) + st.get('mark_judged', 0)} judged)")
+    if errors:
+        res.warnings.append(f"sold guard could not read {errors} record(s)")
+    res.seconds = time.time() - t0
+    return res
+
+
 STAGE_FUNCS = {"notices": _stage_notices, "capture": _stage_capture,
-               "county": _stage_county}
+               "liens": _stage_liens, "county": _stage_county, "sold": _stage_sold}
 
 
 # ── doctor ────────────────────────────────────────────────────────────

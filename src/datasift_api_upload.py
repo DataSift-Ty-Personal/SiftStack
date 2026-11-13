@@ -34,6 +34,7 @@ import os
 import time
 import urllib.error
 import urllib.request
+from datetime import datetime
 
 BASE = "https://apiv2.reisift.io"
 CREATE_ROUTE = "/api/internal/property/"   # verified open 2026-09-05
@@ -55,7 +56,25 @@ FIELD_MAP = {
     "Source URL": "Source URL",
     "Personal Representative": "Personal Representative",
     "Decedent Name": "Decedent Name",
+    # The courthouse SALE date. Missing from this map from the move to the API uploader
+    # (2026-08-14) to 2026-11-11, so every foreclosure uploaded in between landed with no sale date
+    # anywhere on the record (found by the autopilot: Hot Auction read 0 across 981 courthouse
+    # records). Auction Soon and every auction-urgency rule read this field.
+    "Foreclosure Date": "Foreclosure Date",
+    "Date Added": "Date Added",
 }
+
+
+def iso_date(raw: str) -> str:
+    """A date value in the form DataSift stores (YYYY-MM-DD), or "" when it cannot be read.
+    The formatter writes M/D/YYYY for the old upload wizard."""
+    s = str(raw or "").strip()
+    for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%m/%d/%y", "%Y/%m/%d"):
+        try:
+            return datetime.strptime(s[:10] if fmt == "%Y-%m-%d" else s, fmt).date().isoformat()
+        except ValueError:
+            continue
+    return ""
 
 
 def env() -> dict:
@@ -364,8 +383,32 @@ def field_pairs(row: dict, idx: dict, warn: set) -> list[dict]:
             if not val:                      # option missing: skip, never guess
                 warn.add("%s option %r" % (label, raw))
                 continue
+        elif f["field_type"] == "date":
+            val = iso_date(raw)
+            if not val:                      # unreadable date: skip, never guess
+                warn.add("%s date %r" % (label, raw))
+                continue
         pairs.append({"field_uuid": f["uuid"], "value": val})
     return pairs
+
+
+def write_fields(api: "Api", uuid: str, pairs: list[dict], warn: set) -> int:
+    """PATCH the custom fields. One refused value sinks the whole batch, so a refusal is retried one
+    field at a time (the dream100_dp writeback rule): a bad date must never cost the record its
+    Notice Type and County. Returns how many fields landed."""
+    path = "/api/internal/property/%s/custom-field/update-values/" % uuid
+    try:
+        api.call(path, "PATCH", pairs)
+        return len(pairs)
+    except ApiError:
+        landed = 0
+        for p in pairs:
+            try:
+                api.call(path, "PATCH", [p])
+                landed += 1
+            except ApiError as e:
+                warn.add("field %s refused (HTTP %s)" % (p["field_uuid"][:8], e.code))
+        return landed
 
 
 def upload_rows(rows: list[dict], *, commit: bool = False,
@@ -402,9 +445,8 @@ def upload_rows(rows: list[dict], *, commit: bool = False,
             if isinstance(res, dict) and res.get("existing"):
                 existing += 1
             if uuid and pairs:
-                api.call("/api/internal/property/%s/custom-field/update-values/" % uuid,
-                         "PATCH", pairs)
-                fielded += 1
+                if write_fields(api, uuid, pairs, warn):
+                    fielded += 1
             if uuid and row.get("Notes"):
                 # notes are dropped from the property payload; post separately
                 try:
