@@ -29,7 +29,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from .. import config, slack, store
-from . import researcher
+from . import open_research, researcher
 
 log = logging.getLogger(__name__)
 
@@ -129,12 +129,14 @@ def run(task: dict) -> dict:
     if rn.load("people.json") is None:
         rn.save("people.json", [{"slug": slug, "people": [], "crm_only": [], "research_loaded": False}])
 
-    llm_cap = 3.0
+    # The Claude researcher unless AGENTS_RESEARCH_ENGINE=open (two low-cost models, cross-checked).
+    eng = open_research.engine()
+    llm_cap = eng.cap
     if budget.allows(llm_cap, "research"):
-        _, usd = researcher.research(rn, row)
-        budget.charge(usd, "research (Claude + web search)")
-        lines.append("== research ok ($%.2f)" % usd)
-        _, usd = researcher.analyze(rn, row, final=False)
+        _, usd = eng.research(rn, row)
+        budget.charge(usd, eng.label)
+        lines.append("== research ok ($%.2f, %s engine)" % (usd, eng.name))
+        _, usd = eng.analyze(rn, row, final=False)
         budget.charge(usd, "analysis")
         lines.append("== analysis ok ($%.2f)" % usd)
     else:
@@ -151,7 +153,7 @@ def run(task: dict) -> dict:
         n_verify = len(dpr.verify_pairs(rn, row) or [])
         paid("verify", n_verify * REAL_CONTACT_USD, lambda: dpr.phase_verify(args, rn, row))
         if budget.allows(1.0, "final analysis"):
-            _, usd = researcher.analyze(rn, row, final=True)
+            _, usd = eng.analyze(rn, row, final=True)
             budget.charge(usd, "final analysis")
             lines.append("== final analysis ok ($%.2f)" % usd)
 
