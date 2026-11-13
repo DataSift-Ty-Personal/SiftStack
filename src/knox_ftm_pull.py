@@ -436,6 +436,47 @@ def load_liens(scratch: str) -> list[dict]:
     return out
 
 
+def load_staged(scratch: str, feeds=()) -> list[dict]:
+    """Rows the newer feeds staged for this upload: substitute trustee appointments, the county
+    tax sale report, the code violation file (see ftm_staging).
+
+    Each of those stages writes records already in this module's shape, so they pass through the
+    same buy box, the same true-delinquency check and the same upside-down rule as a lien.
+
+    Only the feeds NAMED are read (--staged-feeds; the runner names the ones whose stage is in
+    the run). With none named, which is today's command line, nothing is read even when a
+    pending file exists: a file left by a hand-run must not upload in a run that never asked."""
+    if not feeds:
+        return []
+    try:
+        import ftm_staging
+    except Exception:      # the staging module is optional to this aggregator
+        return []
+    out = []
+    for feed in [f for f in ftm_staging.STAGED_FEEDS if f in set(feeds)]:
+        for r in ftm_staging.pending_rows(scratch, feed):
+            if isinstance(r, dict) and r.get("address") and r.get("notice_type"):
+                out.append(dict(r))
+    return out
+
+
+def _list_name(r: dict) -> str:
+    """The DataSift list for one record. A staged feed names its own list (a setting in
+    ftm_feeds), because two feeds can share a notice type and still belong on different lists:
+    a code violation from the City's file is not a condemnation."""
+    if r.get("list_name"):
+        return str(r["list_name"])
+    feed = r.get("feed")
+    if feed:
+        try:
+            import ftm_feeds
+            if feed in ftm_feeds.BY_KEY:
+                return ftm_feeds.BY_KEY[feed].list_name
+        except Exception:
+            pass
+    return LIST_NAME.get(r.get("notice_type", ""), "")
+
+
 def one_lien_row_per_address(records: list[dict]) -> list[dict]:
     """Collapse lien rows to one per property, keeping the largest open lien.
 
@@ -575,12 +616,18 @@ def enrich(records: list[dict], city: str = "Knoxville", state: str = "TN",
         from siftmap_standalone import SiftMapClient as StandaloneSiftMap
         c = StandaloneSiftMap()
         print("SiftMap: using the standalone client (Api-Key auth)")
+    try:
+        from ftm_budget import acquire as _slot     # this box's SiftMap share; a no-op unless switched on
+    except Exception:
+        def _slot(*_a, **_k):
+            return 0.0
     resolved = 0
     for i, r in enumerate(records):
         if not r.get("address"):
             continue
-        q = "%s, %s, %s" % (normalize_address(r["address"]), city, state)
+        q = "%s, %s, %s" % (normalize_address(r["address"]), (r.get("city") or city), state)
         try:
+            _slot("siftmap")
             hits = c.autocomplete(q, limit=3)
             if not hits:
                 continue
@@ -588,10 +635,16 @@ def enrich(records: list[dict], city: str = "Knoxville", state: str = "TN",
             pid = hits[0].get("id")
             if not pid:
                 continue
+            _slot("siftmap")
             d = c.get_detail(pid)
             r["sm"] = d
             resolved += 1
         except Exception as e:
+            if type(e).__name__ == "BudgetExhausted":
+                # The hour's SiftMap share is spent. Every record after this would read as "no
+                # SiftMap match", be rejected by the buy box, and then be marked handled as if
+                # it had been judged. Stop the pull instead: the stage fails and nothing settles.
+                raise
             r["sm_error"] = "%s: %s" % (type(e).__name__, e)
         if (i + 1) % 25 == 0:
             print("  enriched %d/%d (resolved %d)" % (i + 1, len(records), resolved), flush=True)
@@ -672,10 +725,13 @@ def to_datasift(r: dict, run_date: str) -> dict:
     if m:
         zip_code = m.group(1)
 
+    # Every source this module read before 2026-11 was Knox, so the county and city were
+    # constants. A staged feed may say otherwise; a record that says nothing is still Knox.
+    county = (r.get("county") or "Knox").strip() or "Knox"
     row = {k: "" for k in OUT_COLUMNS}
     row.update({
         "Property Street Address": r.get("address", ""),
-        "Property City": "Knoxville",
+        "Property City": (r.get("city") or "Knoxville").strip() or "Knoxville",
         "Property State": "TN",
         "Property ZIP Code": zip_code,
         "Owner First Name": first,
@@ -685,12 +741,12 @@ def to_datasift(r: dict, run_date: str) -> dict:
         "Mailing State": m_state,
         "Mailing ZIP Code": m_zip,
         "Tags": ", ".join(t for t in [
-            "Courthouse Data", r.get("notice_type", ""), "Knox",
+            "Courthouse Data", r.get("notice_type", ""), county,
             r.get("source", ""),
             ("filed_" + _quarter(filed)) if filed else "filed_unknown",
             _band(r["lien_total"]) if r.get("lien_total") else "",
             "pulled_" + run_date] if t),
-        "Lists": LIST_NAME.get(r.get("notice_type", ""), ""),
+        "Lists": _list_name(r),
         "Notes": build_notes(r),
         "Estimated Value": d.get("total_market_value") or "",
         "Last Sale Date": d.get("last_sale_date") or "",
@@ -705,10 +761,14 @@ def to_datasift(r: dict, run_date: str) -> dict:
         "Tax Deliquent Value": _tax_due(r),                # DataSift's own typo
         "Tax Delinquent Year": _tax_year(r),
         "Notice Type": r.get("notice_type", ""),
-        "County": "Knox",
+        "County": county,
         "Date Added": filed or run_date,
         "Source URL": r.get("source_url", ""),
     })
+    # A tax sale record rides the hot auction lane by its sale date, so the date has to land in
+    # a field, not only in the note.
+    if r.get("sale_date"):
+        row["Tax Auction Date"] = _iso(r["sale_date"]) or r["sale_date"]
     row.update(_equity_block(r))
     if r.get("lien_total"):
         row["Outstanding Lien Amount"] = round(float(r["lien_total"]), 2)
@@ -842,7 +902,11 @@ def main() -> int:
     ap.add_argument("--value-max", type=float, default=700000.0)
     ap.add_argument("--scratch", default=os.environ.get("FTM_SCRATCH", "."))
     ap.add_argument("--no-enrich", action="store_true")
+    ap.add_argument("--staged-feeds", default="",
+                    help="comma list of staged feeds to include (substitute_trustee, tax_sale_report, "
+                         "code_violations); none by default")
     a = ap.parse_args()
+    staged_feeds = tuple(x.strip() for x in a.staged_feeds.split(",") if x.strip())
 
     run_date = date.today().isoformat()
     # Evictions and trustee deeds retired 2026-08-25 (Ty). Evictions were not
@@ -852,7 +916,7 @@ def main() -> int:
     # foreclosure notices the scraper already takes. load_landlords() and
     # load_rod() are kept intact so re-wiring is a one-line change.
     records = (load_condemnations(a.scratch) + load_probate(a.scratch)
-               + load_tnpn(a.scratch) + load_liens(a.scratch))
+               + load_tnpn(a.scratch) + load_liens(a.scratch) + load_staged(a.scratch, staged_feeds))
     if not records:
         print("no source records found in", a.scratch)
         return 1
@@ -869,6 +933,12 @@ def main() -> int:
     for r in records:
         if not r.get("address"):
             rejected.append((r, "no property address in the record"))
+            continue
+        if not _list_name(r):
+            # A record with no list uploads fine and lands nowhere: no lane reads it and nobody
+            # finds it. Every source this pull has always read names its list, so this only
+            # ever stops a newer feed whose rows were staged without one.
+            rejected.append((r, "no DataSift list is named for this record"))
             continue
         ok, why = in_buybox(r.get("sm"), a.value_min, a.value_max)
         (kept if ok else rejected).append((r, why) if not ok else r)

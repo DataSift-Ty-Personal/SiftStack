@@ -30,6 +30,8 @@ the record became a lead.
     python src/sold_guard.py mark [--commit]          # real sales the tag missed
     python src/sold_guard.py daily [--commit]         # repair + mark, for the scheduler
     python src/sold_guard.py undo [--commit]          # put back every change in the log, newest first
+    python src/sold_guard.py reentry [--commit] [--force]     # January: sales older than 3 years come back
+    python src/sold_guard.py monthly-audit [--month YYYY-MM]  # last month's sold leads and how far we got
 
 Dry by default. Every write is appended to output/sold_guard/changes.jsonl first-read-then-write,
 so `undo` can restore the exact prior tag and status.
@@ -59,7 +61,14 @@ TAG = "recently sold"
 # PULL list (by id, by preset) leaves the owner alone, so it only counts for a record that was
 # born in the sold backlog. Not "Dispo - Flip Buyers": an older acquisition record that joined it
 # after its owner sold to an investor is a real sale for the acquisition side.
-UPLOAD_LISTS = ("Foreclosure", "Probate", "Obituary", "Liens", "Condemned", "Pre-Foreclosure", "Trustee Deed")
+# SOLD_GUARD_EXTRA_UPLOAD_LISTS names the lists a NEW courthouse feed uploads to (comma separated),
+# so a lead from that feed that lands on an old Sold record is revived like any other. Empty by
+# default: a list is added here the day its feed is switched on, not before, because every name
+# in this tuple widens which Sold records the daily pass is willing to put back.
+_EXTRA_UPLOAD_LISTS = tuple(x.strip() for x in (os.environ.get("SOLD_GUARD_EXTRA_UPLOAD_LISTS") or "").split(",")
+                            if x.strip())
+UPLOAD_LISTS = ("Foreclosure", "Probate", "Obituary", "Liens", "Condemned", "Pre-Foreclosure",
+                "Trustee Deed") + _EXTRA_UPLOAD_LISTS
 PULL_LISTS = ("Dispo - VIP Buyers", "D4D Top 3000", "Knox Blount - Top 15K DPD", "Dream 100",
               "Land - Builder Lots", "Land - Entitlement Tracts")
 OUR_LISTS = UPLOAD_LISTS + PULL_LISTS
@@ -298,7 +307,8 @@ def apply(crm: Crm, uuid: str, street: str, d: dict, commit: bool) -> bool:
     if d["action"] == "leave" or not commit:
         return False
     entry = {"at": datetime.now().isoformat(timespec="seconds"), "uuid": uuid, "street": street, "action": d["action"],
-             "status_from": d["status"], "status_to": d["status_to"], "tag_removed": d["action"] in ("restore", "untag"),
+             "status_from": d["status"], "status_to": d["status_to"],
+             "tag_removed": d["action"] in ("restore", "untag", "reenter"),
              "tag_added": d["action"] == "mark", "why": d["verdict"], "lead_day": d["lead_day"], "last_sold": d["last_sold"]}
     try:
         if (d["status_to"] or "") != (d["status"] or ""):
@@ -347,7 +357,7 @@ def _cache() -> dict:
         d = json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
     except ValueError:
         d = {}
-    return {"repair": d.get("repair") or {}, "mark": d.get("mark") or {}}
+    return {"repair": d.get("repair") or {}, "mark": d.get("mark") or {}, "reentry": d.get("reentry") or {}}
 
 
 def _save_cache(c: dict) -> None:
@@ -474,6 +484,304 @@ def daily(commit: bool = False, limit: int = 0) -> dict:
     return dict(args.stats, rc=rc)
 
 
+# ------------------------------------------------------- the yearly re-entry --
+#
+# The teaching keeps the sold window trailing about three years and resets it every January 1:
+# a house that sold more than three years ago is no longer "recently sold", and the person who
+# bought it then is today's owner and a prospect like any other. Until this existed nothing ever
+# took a record back out of Sold, so the Sold pile only grew.
+
+REENTRY_YEARS = int(os.environ.get("SOLD_REENTRY_YEARS") or 3)
+REENTRY_LOOKBACK_MONTHS = int(os.environ.get("SOLD_REENTRY_LOOKBACK_MONTHS") or 24)
+REENTRY_MAX_PER_RUN = int(os.environ.get("SOLD_REENTRY_MAX_PER_RUN") or 150)
+OWNER_SLACK_DAYS = 45       # how far before the sale date an owner record may be dated and still be the buyer's
+
+
+def reentry_cutoff(today: date, years: int = REENTRY_YEARS) -> str:
+    """Sales before this day have left the window: January 1 of (this year minus `years`).
+
+    On any day of 2027 with a three year window that is 2024-01-01, so the year leaving is 2023.
+    A fixed day of the year on purpose: the window moves once, on January 1, and stays put."""
+    return date(today.year - years, 1, 1).isoformat()
+
+
+def reentry_due(today: date) -> bool:
+    """The yearly pass runs in January (SOLD_REENTRY_MONTHS widens it for a pass that needs longer)."""
+    try:
+        months = max(1, int(os.environ.get("SOLD_REENTRY_MONTHS") or 1))
+    except ValueError:
+        months = 1
+    return today.month <= months
+
+
+def reentry_months(cutoff: str, months: int = REENTRY_LOOKBACK_MONTHS) -> list[tuple[str, str]]:
+    """Calendar months ending the day before the cutoff, newest first. One search per month keeps
+    every result under the records search's 10,000 row wall."""
+    y, m, _ = (int(x) for x in cutoff.split("-"))
+    out = []
+    for _i in range(max(1, months)):
+        m -= 1
+        if m == 0:
+            y, m = y - 1, 12
+        first = date(y, m, 1)
+        nxt = date(y + 1, 1, 1) if m == 12 else date(y, m + 1, 1)
+        out.append((first.isoformat(), (nxt - timedelta(days=1)).isoformat()))
+    return out
+
+
+def reentry_decide(rec: dict, events: list[dict], cutoff: str) -> dict:
+    """What to do with one Sold record whose sale may have left the window.
+
+    It comes back only when ALL of these hold, and each "leave" is counted by its reason:
+      * the status is Sold and the last sale is older than the cutoff
+      * automation marked it Sold (a person's Sold is never undone: it may be our own deal)
+      * the owner on the record is the BUYER. A record born with the sold tag came in through
+        the sold pull, which replaces owners, so its owner is the buyer. Any other record must
+        show an owner dated at or after the sale; otherwise the person on it is the seller we
+        once marketed to, and re-entering it would call a stranger's house and ask for someone
+        who left three years ago.
+      * it is not on one of our courthouse lists. Those name the PREVIOUS owner's distress, and
+        a returning record must not ride into the first-to-market lane on somebody else's notice.
+    """
+    status = str(rec.get("status") or "").strip()
+    sold = _day(rec.get("last_sold"))
+    out = {"verdict": "", "action": "leave", "status": status, "status_to": status, "last_sold": sold,
+           "lead_day": "", "born_sold": birth_sold(events)}
+
+    def leave(why: str) -> dict:
+        out["verdict"] = why
+        return out
+
+    if status.lower() != "sold":
+        return leave("not marked Sold")
+    if not sold:
+        return leave("no sale date")
+    if sold >= cutoff:
+        return leave("sold inside the window")
+    born = born_with_tag(events)
+    flip = sold_flip(events)
+    if flip is not None and flip["source"] not in AUTOMATION:
+        return leave("marked sold by a person")
+    if flip is None and not born:
+        return leave("no record of who marked it sold")
+    if not born:
+        owned = _day(rec.get("owned_since"))
+        floor = (date.fromisoformat(sold) - timedelta(days=OWNER_SLACK_DAYS)).isoformat()
+        if not owned or owned < floor:
+            return leave("the owner on the record is from before the sale")
+    lists = {str((x.get("title") or x.get("name")) if isinstance(x, dict) else x).strip().lower()
+             for x in rec.get("lists") or []}
+    ours = sorted(lists & {x.lower() for x in UPLOAD_LISTS})
+    if ours:
+        return leave("on a courthouse list from the previous owner")
+    reset = (os.environ.get("SOLD_REENTRY_STATUS") or "").strip()
+    out.update(verdict="sold before the window", action="reenter", status_to=reset)
+    return out
+
+
+def reentry(args) -> int:
+    """The January pass: Sold records whose sale left the three year window come back as the new
+    owner's record (status reset, sold tag off). Dry by default; every change is in the change
+    log with its prior status, so `undo` puts it back."""
+    today = getattr(args, "today", None) or date.today()
+    args.stats = dict(getattr(args, "stats", None) or {}, reentered=0, reentry_judged=0, reentry_errors=0,
+                      reentry_due=reentry_due(today), reentry_waiting=0)
+    if not args.stats["reentry_due"] and not getattr(args, "force", False):
+        print("Re-entry: not due. The window moves on January 1; pass --force to run it now.")
+        return 0
+    cutoff = reentry_cutoff(today)
+    crm = getattr(args, "crm", None) or Crm()
+    tags = crm.titles("/api/internal/tag/?limit=10000")
+    cache = _cache()
+    seen = {} if getattr(args, "fresh", False) else cache["reentry"]
+    cand: dict = {}
+    for a, b in reentry_months(cutoff):
+        for x in crm.page({"property_type": "clean", "any_tags": [tags[TAG]], "last_sold": [a, b]}):
+            if str(x.get("status") or "").lower() == "sold":
+                cand.setdefault(x["uuid"], x)
+    todo = [u for u in cand if seen.get(u) != row_sig(cand[u])]
+    limit = args.limit or REENTRY_MAX_PER_RUN
+    waiting = max(0, len(todo) - limit)
+    todo = todo[:limit]
+    print("%d Sold record(s) with a sale before %s, %d to judge this pass, %d waiting (%s)"
+          % (len(cand), cutoff, len(todo), waiting, "LIVE" if args.commit else "dry"), flush=True)
+    counts, changed, checked, plan = Counter(), 0, 0, []
+    for i, uuid in enumerate(todo, 1):
+        street = ((cand[uuid].get("address") or {}).get("street") or "")
+        try:
+            rec, events = crm.record(uuid), crm.events(uuid)
+            d = reentry_decide(rec, events, cutoff)
+            counts["%s: %s" % (d["action"], d["verdict"])] += 1
+            plan.append(dict(d, uuid=uuid, street=street))
+            if d["action"] == "leave" and args.commit:
+                cache["reentry"][uuid] = row_sig(cand[uuid])
+            if apply(crm, uuid, street, d, args.commit):
+                changed += 1
+                if checked < 3 or changed % 100 == 0:
+                    bad = verify(crm, uuid, d)
+                    checked += 1
+                    if bad:
+                        print("STOPPED: %s did not read back (%s)" % (street, bad), flush=True)
+                        _save_cache(cache)
+                        args.stats.update(reentered=changed, reentry_judged=i, reentry_waiting=waiting)
+                        return 2
+        except Exception as exc:  # noqa: BLE001  (one unreadable record never stops the pass)
+            counts["error: %s" % str(exc)[:50]] += 1
+        if i % 100 == 0:
+            _save_cache(cache)
+    _save_cache(cache)
+    OUT.mkdir(parents=True, exist_ok=True)
+    (OUT / "reentry_plan.json").write_text(json.dumps(plan, indent=1), encoding="utf-8")
+    for k, v in counts.most_common():
+        print("%6d  %s" % (v, k))
+    would = sum(v for k, v in counts.items() if k.startswith("reenter"))
+    print("Re-entry: %d judged, %d %s%s." % (len(todo), changed if args.commit else would,
+                                           "put back into marketing" if args.commit else "would come back",
+                                           "" if args.commit else " (dry run: nothing written)"))
+    args.stats.update(reentered=changed, reentry_would=would, reentry_judged=len(todo), reentry_waiting=waiting,
+                      reentry_errors=sum(v for k, v in counts.items() if k.startswith("error")))
+    return 0
+
+
+# -------------------------------------------------------- the monthly audit --
+#
+# The by-hand sold audit: every month, look at what sold and ask why each one was missed. This
+# reads last month's sales among the records we hold and says, for the ones that were OUR leads
+# when they sold, how far we got: how long we had it, whether anyone called, texted or mailed,
+# and what status it was sitting in. Read-only on the account; it writes two files beside the
+# change log.
+
+AUDIT_MAX = int(os.environ.get("SOLD_AUDIT_MAX") or 400)
+ATTEMPT_FIELDS = (("predictivecall_attempts", "calls"), ("sms_attempts", "texts"),
+                  ("directmail_attempts", "mail"), ("rvm_attempts", "voicemail drops"))
+
+
+def audit_month(today: date, month: str = "") -> tuple[str, str, str]:
+    """(YYYY-MM, first day, last day) for the month to audit: the one named, else last month."""
+    if month:
+        y, m = int(month[:4]), int(month[5:7])
+    else:
+        y, m = (today.year, today.month - 1) if today.month > 1 else (today.year - 1, 12)
+    first = date(y, m, 1)
+    nxt = date(y + 1, 1, 1) if m == 12 else date(y, m + 1, 1)
+    return "%04d-%02d" % (y, m), first.isoformat(), (nxt - timedelta(days=1)).isoformat()
+
+
+def _attempt(rec: dict, key: str) -> int:
+    for holder in (rec, rec.get("owner") or {}):
+        try:
+            if holder.get(key) not in (None, ""):
+                return int(holder.get(key) or 0)
+        except (TypeError, ValueError):
+            continue
+    return 0
+
+
+def audit_row(rec: dict, events: list[dict], lead_lists=None) -> dict:
+    """One sold record, as the audit sees it. `was_lead` is the question that matters: was this
+    ours to win when it sold?"""
+    lead_lists = lead_lists or OUR_LISTS
+    lead, sold, born = lead_day(events, lead_lists), _day(rec.get("last_sold")), birth_sold(events)
+    v = verdict(lead, sold, evidence_floor(rec, lead), born)
+    flip = sold_flip(events)
+    lists = [str((x.get("title") or x.get("name")) if isinstance(x, dict) else x) for x in rec.get("lists") or []]
+    ours = [x for x in lists if x in OUR_LISTS]
+    attempts = {label: _attempt(rec, key) for key, label in ATTEMPT_FIELDS}
+    days = None
+    if lead and sold and sold >= lead:
+        days = (date.fromisoformat(sold) - date.fromisoformat(lead)).days
+    try:
+        price = float(rec.get("last_sale_price") or 0) or None
+    except (TypeError, ValueError):
+        price = None
+    return {"street": ((rec.get("address") or {}).get("street") or ""), "was_lead": v == "sold since",
+            "verdict": v, "lead_day": lead, "sold": sold, "days_as_lead": days, "price": price,
+            "lists": ", ".join(ours), "status_before": (flip or {}).get("from") or "",
+            "marked_by": (flip or {}).get("source") or "", "assigned": bool(rec.get("assigned_to")),
+            "untouched": not any(attempts.values()), **attempts}
+
+
+def audit_summary(month: str, rows: list[dict]) -> dict:
+    leads = [r for r in rows if r["was_lead"]]
+    days = sorted(r["days_as_lead"] for r in leads if r["days_as_lead"] is not None)
+    by_status = Counter((r["status_before"] or "no status") for r in leads)
+    by_list = Counter(x.strip() for r in leads for x in r["lists"].split(",") if x.strip())
+    return {"month": month, "sold_records": len(rows), "were_our_leads": len(leads),
+            "never_touched": sum(1 for r in leads if r["untouched"]),
+            "never_called": sum(1 for r in leads if not r["calls"]),
+            "never_mailed": sum(1 for r in leads if not r["mail"]),
+            "never_texted": sum(1 for r in leads if not r["texts"]),
+            "unassigned": sum(1 for r in leads if not r["assigned"]),
+            "median_days_as_lead": days[len(days) // 2] if days else None,
+            "status_before_sold": dict(by_status.most_common(8)), "by_list": dict(by_list.most_common(8)),
+            "not_leads": dict(Counter(r["verdict"] for r in rows if not r["was_lead"]).most_common())}
+
+
+def audit_text(s: dict) -> str:
+    """The summary as a few plain lines."""
+    if not s["were_our_leads"]:
+        return "%s: %d record(s) we hold sold, none while it was our lead." % (s["month"], s["sold_records"])
+    lines = ["%s: %d of our leads sold (%d sold record(s) read)." % (s["month"], s["were_our_leads"], s["sold_records"]),
+             "%d were never touched, %d never called, %d never texted, %d never mailed, %d had no caller assigned."
+             % (s["never_touched"], s["never_called"], s["never_texted"], s["never_mailed"], s["unassigned"])]
+    if s["median_days_as_lead"] is not None:
+        lines.append("We held a lead a median %d days before it sold." % s["median_days_as_lead"])
+    if s["by_list"]:
+        lines.append("By list: " + ", ".join("%s %d" % kv for kv in s["by_list"].items()) + ".")
+    return "\n".join(lines)
+
+
+def monthly_audit(args) -> int:
+    """Last month's sales among the records we hold, and how far we got on the ones that were
+    ours. Runs once a month (the first run after the month ends); read-only on the account."""
+    import csv as _csv
+
+    today = getattr(args, "today", None) or date.today()
+    month, first, last = audit_month(today, getattr(args, "month", "") or "")
+    args.stats = dict(getattr(args, "stats", None) or {}, audit_month=month, audit_ran=False)
+    OUT.mkdir(parents=True, exist_ok=True)
+    out_json = OUT / ("audit_%s.json" % month)
+    if out_json.exists() and not getattr(args, "force", False) and not getattr(args, "month", ""):
+        print("Sold audit for %s is already written (%s). Pass --force to run it again." % (month, out_json))
+        try:
+            args.stats["audit_summary"] = json.loads(out_json.read_text(encoding="utf-8")).get("summary")
+        except (OSError, ValueError):
+            pass
+        return 0
+    crm = getattr(args, "crm", None) or Crm()
+    tags = crm.titles("/api/internal/tag/?limit=10000")
+    cand: dict = {}
+    day = date.fromisoformat(first)
+    while day.isoformat() <= last:                     # by week, to stay under the 10,000 row wall
+        end = min(day + timedelta(days=6), date.fromisoformat(last))
+        for x in crm.page({"property_type": "clean", "any_tags": [tags[TAG]],
+                           "last_sold": [day.isoformat(), end.isoformat()]}):
+            cand.setdefault(x["uuid"], x)
+        day = end + timedelta(days=1)
+    limit = args.limit or AUDIT_MAX
+    uuids = list(cand)[:limit]
+    print("%d tagged record(s) sold in %s, %d read" % (len(cand), month, len(uuids)), flush=True)
+    rows, errors = [], 0
+    for uuid in uuids:
+        try:
+            rows.append(dict(audit_row(crm.record(uuid), crm.events(uuid)), uuid=uuid))
+        except Exception:  # noqa: BLE001
+            errors += 1
+    summary = audit_summary(month, rows)
+    summary["not_read"] = max(0, len(cand) - len(uuids))
+    summary["errors"] = errors
+    out_json.write_text(json.dumps({"summary": summary, "rows": rows}, indent=1), encoding="utf-8")
+    cols = ["street", "was_lead", "verdict", "lead_day", "sold", "days_as_lead", "price", "lists", "status_before",
+            "marked_by", "assigned", "untouched", "calls", "texts", "mail", "voicemail drops", "uuid"]
+    with (OUT / ("audit_%s.csv" % month)).open("w", newline="", encoding="utf-8") as fh:
+        w = _csv.DictWriter(fh, fieldnames=cols, extrasaction="ignore")
+        w.writeheader()
+        w.writerows(sorted(rows, key=lambda r: (not r["was_lead"], r["street"])))
+    print(audit_text(summary))
+    args.stats.update(audit_ran=True, audit_summary=summary)
+    return 0
+
+
 def presets(args) -> int:
     """The nightly SiftMap presets that hand out the sold tag. Off means auto-add off, nothing deleted."""
     import datasift_api_upload as up
@@ -542,17 +850,23 @@ def undo(args) -> int:
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
-    for name in ("audit", "presets", "repair", "mark", "daily", "undo"):
+    for name in ("audit", "presets", "repair", "mark", "daily", "undo", "reentry", "monthly-audit"):
         p = sub.add_parser(name)
         p.add_argument("--commit", action="store_true")
         p.add_argument("--limit", type=int, default=0)
         p.add_argument("--include-distress", action="store_true",
                        help="also treat DataSift's own distress lists as a reason a record is a lead")
         p.add_argument("--fresh", action="store_true", help="judge every record again, ignoring earlier verdicts")
+        if name in ("reentry", "monthly-audit"):
+            p.add_argument("--force", action="store_true",
+                           help="run even when it is not due (re-entry outside January, an audit already written)")
+        if name == "monthly-audit":
+            p.add_argument("--month", default="", help="YYYY-MM to audit (default: last month)")
     a = ap.parse_args(argv)
     if a.cmd == "daily":
         return daily(a.commit, a.limit)["rc"]
-    return {"audit": audit, "presets": presets, "repair": repair, "mark": mark, "undo": undo}[a.cmd](a)
+    return {"audit": audit, "presets": presets, "repair": repair, "mark": mark, "undo": undo,
+            "reentry": reentry, "monthly-audit": monthly_audit}[a.cmd](a)
 
 
 if __name__ == "__main__":

@@ -81,6 +81,54 @@ SUBSCRIPTION_WARN_DAYS = 14
 # Read by the daily lien stage so the days-left figure can ride in the run report.
 SUBSCRIPTION: dict = {}
 
+# The doc-type tree as the last login read it off the live page: {label: API integer}.
+# DOC_TYPES above stays the source for the types the lien pull has always used. Any OTHER type
+# (the substitute trustee appointment, the deed of trust it points at) is resolved here by its
+# LABEL, never by a number typed into the code: the numbering is the county's, and a renumbered
+# tree would otherwise pull a different kind of document without a single error.
+DOC_TREE: dict = {}
+
+# The last captured search request, so a second stage in the same process (the appointment pull
+# straight after the lien pull) replays the session that is already open instead of logging in
+# again. The county's one concern is load, and a login is the heaviest thing this module does.
+SESSION: dict = {}
+SESSION_MAX_AGE = 900     # seconds a captured session is reused before a fresh login
+
+
+def doc_code(label: str) -> int | None:
+    """The API integer for a doc-type label, or None when neither table knows it."""
+    key = (label or "").strip().upper()
+    if key in DOC_TYPES:
+        return DOC_TYPES[key]
+    return DOC_TREE.get(key)
+
+
+def remember_tree(pairs) -> int:
+    """Fill DOC_TREE from the live tree's [id, label] pairs. Returns how many labels it holds."""
+    DOC_TREE.clear()
+    for code, label in pairs or []:
+        label = str(label or "").strip().upper()
+        try:
+            if label:
+                DOC_TREE.setdefault(label, int(str(code).strip()))
+        except ValueError:
+            continue
+    return len(DOC_TREE)
+
+
+def capture_cached(max_age: float = SESSION_MAX_AGE, capture=None, clock=time.time) -> tuple[dict, dict]:
+    """(fields, headers) from this process's open session, logging in only when there is none
+    or it is older than max_age seconds."""
+    if SESSION.get("fields") and clock() - float(SESSION.get("at") or 0) <= max_age:
+        return SESSION["fields"], SESSION["headers"]
+    if capture is None:
+        import asyncio
+        fields, headers = asyncio.run(capture_request())
+    else:
+        fields, headers = capture()
+    SESSION.update(fields=fields, headers=headers, at=clock())
+    return fields, headers
+
 
 class RodSubscriptionExpired(RuntimeError):
     """The paid Register of Deeds subscription has lapsed.
@@ -217,6 +265,7 @@ async def capture_request() -> tuple[dict, dict]:
         await b.close()
 
     if tree:
+        remember_tree(tree)
         try:
             os.makedirs("output/knox", exist_ok=True)
             with open("output/knox/rod_doctypes.json", "w", encoding="utf-8") as fh:
@@ -236,6 +285,7 @@ async def capture_request() -> tuple[dict, dict]:
     fields = dict(urllib.parse.parse_qsl(c["post"], keep_blank_values=True))
     headers = {k: v for k, v in c["headers"].items()
                if k.lower() not in ("content-length", "host", ":authority")}
+    SESSION.update(fields=fields, headers=headers, at=time.time())
     return fields, headers
 
 
@@ -254,9 +304,9 @@ def _post(fields: dict, headers: dict, timeout: int = 90) -> dict:
 def fetch_type(fields: dict, headers: dict, doc: str,
                d_from: str, d_to: str, sleep: float = 1.5) -> list[list]:
     """All rows for one doc type in one window, paged."""
-    code = DOC_TYPES.get(doc.upper())
+    code = doc_code(doc)
     if code is None:
-        raise ValueError(f"unknown doc type {doc!r}; known: {sorted(DOC_TYPES)}")
+        raise ValueError(f"unknown doc type {doc!r}; known: {sorted(set(DOC_TYPES) | set(DOC_TREE))}")
 
     base = dict(fields)
     base["CategoryDocumentTypes"] = str(code)

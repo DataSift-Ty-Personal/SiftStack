@@ -53,7 +53,17 @@ logger = logging.getLogger("ftm_runner")
 # Order matters when several are named: `liens` stages what `county` uploads, and
 # `sold` runs last so a lead uploaded this run onto an old Sold record is revived
 # in the same run instead of sitting dead until tomorrow.
-ALL_STAGES = ("notices", "capture", "liens", "county", "sold")
+#
+# The stages after the first five are OFF: each one is a switch, and it runs only
+# when its name is added to --stages (FTM_ARGS). The same ordering rule holds for
+# every stage that only PREPARES rows (appointments, tax_sale_report,
+# code_violations): it belongs BEFORE `county`, which uploads what they staged and
+# only then marks it handled. `deeds` reads the day's notice file and reuses the
+# recorder session `liens` opened, so it goes after both.
+TODAY_STAGES = ("notices", "capture", "liens", "county", "sold")
+ALL_STAGES = ("notices", "tax_sale", "tax_delinquent", "public_notices",
+              "capture", "liens", "appointments", "tax_sale_report", "code_violations",
+              "county", "deeds", "sold_reentry", "sold_audit", "sold")
 # "capture" is in the default set even though it uploads nothing. The Knox City
 # condemnation agendas are OVERWRITTEN at the source: a cycle that is not
 # pulled while it is live cannot be recovered later, unlike foreclosure and
@@ -168,6 +178,51 @@ def _revert_seen(seen_ids: dict, before: set) -> None:
             "Reverted %d seen-id(s) from the failed run so they are not skipped "
             "next time (they were scraped but never uploaded)", len(added),
         )
+
+
+def _new_filing() -> dict:
+    """The extra argument the uploader needs for the Appeared Again rule, and nothing when the
+    rule is off. Returning no argument at all (not new_filing=False) keeps the default upload
+    call identical to the one in production before the rule existed."""
+    if not os.environ.get("FTM_TAG_APPEARED_AGAIN", "").strip():
+        return {}                      # the default: nothing is imported, nothing is passed
+    try:
+        import ftm_intake
+        return {"new_filing": True} if ftm_intake.appeared_again_on() else {}
+    except Exception:
+        return {}
+
+
+def _intake(notices: list, res: "StageResult", stamp: str, screen=None):
+    """Run the intake switches that are on. Returns (notices, extras, what was left out).
+
+    `extras` is None when no intake switch is set, which tells the caller to write the upload
+    file the way it always has. A failure in here never costs the run its upload: the notices
+    come back untouched and the reason goes in the stage's warnings."""
+    if not (os.environ.get("FTM_INTAKE_SCREEN", "").strip() or os.environ.get("FTM_NOTICE_TEXT", "").strip()):
+        return notices, None, ""       # the default: the intake module is not even imported
+    try:
+        import ftm_intake
+        if not (ftm_intake.enabled() or ftm_intake.notice_text_mode() != "off"):
+            return notices, None, ""
+        extras: dict = {}
+        said = ""
+        if ftm_intake.enabled():
+            verdict = (screen or ftm_intake.screen)(notices)
+            res.warnings.extend(verdict.get("warnings") or [])
+            if verdict.get("rejected"):
+                path = config.OUTPUT_DIR / f"ftm_intake_rejected_{stamp}.csv"
+                ftm_intake.write_rejects(verdict["rejected"], path)
+                said = "intake left out " + ", ".join(
+                    "%d %s" % (n, why) for why, n in sorted(verdict["dropped"].items()))
+                logger.info("Intake screen: %s (%s)", said, path)
+            notices, extras = verdict["kept"], verdict["extras"]
+        ftm_intake.text_extras(notices, extras)
+        return notices, extras, said
+    except Exception as exc:
+        logger.warning("Intake did not run: %s", exc)
+        res.warnings.append(f"Intake did not run ({type(exc).__name__}: {exc}); the notices were uploaded unscreened.")
+        return notices, None, ""
 
 
 def _stage_notices(args) -> StageResult:
@@ -312,16 +367,27 @@ def _stage_notices(args) -> StageResult:
         source_label="FTM scheduled run",
     ))
     notices = deduplicate(notices)
+    stamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+
+    # Intake (build plan 1.11, 3.3): the single family and value screen, the debt and equity
+    # figures, the notice text. Every part is OFF until its switch is set, and with all of them
+    # off `intake` is None and the file below is written exactly as it always was.
+    notices, intake, left_out = _intake(notices, res, stamp)
     res.records = len(notices)
 
-    stamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
-    csv_path = write_datasift_csv(notices, filename=f"ftm_notices_{stamp}.csv")
+    if intake is None:
+        csv_path = write_datasift_csv(notices, filename=f"ftm_notices_{stamp}.csv")
+    else:
+        import ftm_intake
+        csv_path = ftm_intake.write_csv(notices, intake, f"ftm_notices_{stamp}.csv")
     res.csv_path = str(csv_path)
     logger.info("Wrote %s", csv_path)
 
     if args.no_upload:
         res.status = "ok"
         res.detail = f"{res.records} records written, upload skipped (--no-upload)"
+        if left_out:
+            res.detail += "; " + left_out
         res.seconds = round(time.time() - t0, 1)
         # Nothing was sent, so nothing may be marked as handled.
         _revert_seen(seen_ids, before_seen)
@@ -329,7 +395,9 @@ def _stage_notices(args) -> StageResult:
 
     from datasift_api_upload import upload_csv
 
-    up = upload_csv(str(csv_path), commit=args.commit, out_dir=str(config.OUTPUT_DIR))
+    # With the Appeared Again rule on, the uploader is told these rows are new filings. With it
+    # off (the default) the call is exactly the one this stage has always made.
+    up = upload_csv(str(csv_path), commit=args.commit, out_dir=str(config.OUTPUT_DIR), **_new_filing())
     res.uploaded = up["created"]
     res.warnings.extend(up["warnings"])
 
@@ -376,8 +444,36 @@ def _stage_notices(args) -> StageResult:
             from scraper import save_last_run_date
             save_last_run_date()
 
+    if left_out:
+        res.detail += "; " + left_out
     res.seconds = round(time.time() - t0, 1)
     return res
+
+
+# ── stages: notice feeds that run alone (build plan 1.10) ─────────────
+
+
+def _result(d: dict) -> StageResult:
+    """A stage result from the plain dict a helper module returns."""
+    return StageResult(name=d["name"], status=d["status"], detail=d.get("detail", ""),
+                       records=int(d.get("records") or 0), uploaded=int(d.get("uploaded") or 0),
+                       seconds=float(d.get("seconds") or 0.0), csv_path=d.get("csv_path", ""),
+                       warnings=list(d.get("warnings") or []))
+
+
+def _stage_feed(name: str):
+    """A stage function for one notice feed (tax_sale, tax_delinquent, public_notices).
+
+    Each runs as its own scrape, on its own proxy session, with its own seen file and its own
+    verdict, so a new feed can never fail or starve the foreclosure and probate stage."""
+    def run(args) -> StageResult:
+        import ftm_feed_runner
+        out = _result(ftm_feed_runner.run(
+            args, name, next_suffix=_next_proxy_session_suffix, all_dropped_suspect=ALL_DROPPED_SUSPECT))
+        _subscription_warning(out)
+        return out
+    run.__name__ = "_stage_" + name
+    return run
 
 
 # ── stage: Knox county multi-source pull ──────────────────────────────
@@ -421,10 +517,15 @@ def _stage_county(args) -> StageResult:
     # this it defaults to the CWD, finds none of the source JSON, and produces
     # an empty CSV while still looking like it ran.
     scratch = str(config.STATE_DIR / "knox")
+    # The staged feeds this run may upload: only those whose preparing stage is in this run's
+    # --stages. With today's stages the list is empty, the flag is not passed, and the command
+    # line is exactly the one this stage has always run.
+    staged = _staged_feeds(args)
     rc = os.system(
         f'{sys.executable} "{Path(__file__).parent / "knox_ftm_pull.py"}" '
         f'--scratch "{scratch}" --out "{out}" '
         f'--rejects "{config.OUTPUT_DIR / "knox_ftm_rejected.csv"}"'
+        + (f' --staged-feeds "{",".join(staged)}"' if staged else "")
     )
     if rc != 0 or not out.exists():
         res.status = "failed"
@@ -446,12 +547,16 @@ def _stage_county(args) -> StageResult:
         # staged liens are settled. (--no-upload settles nothing.)
         if args.commit and not args.no_upload:
             _mark_liens_uploaded()
+            _mark_staged_uploaded(staged)
         res.seconds = round(time.time() - t0, 1)
         return res
 
     from datasift_api_upload import upload_csv
 
-    up = upload_csv(str(out), commit=args.commit, out_dir=str(config.OUTPUT_DIR))
+    # Appeared Again (off by default): the rule's own ledger is what keeps the condemnation rows
+    # this stage re-sends every morning from being tagged. With the rule off the call is exactly
+    # the one this stage has always made.
+    up = upload_csv(str(out), commit=args.commit, out_dir=str(config.OUTPUT_DIR), **_new_filing())
     res.uploaded = up["created"]
     res.status = "ok" if (not args.commit or up["created"]) else "failed"
     res.detail = f"{len(rows)} records, {up['created']} into DataSift"
@@ -459,8 +564,38 @@ def _stage_county(args) -> StageResult:
     # leaves the staged liens to be sent tomorrow.
     if args.commit and res.status == "ok":
         _mark_liens_uploaded(str(out))
+        _mark_staged_uploaded(staged)
     res.seconds = round(time.time() - t0, 1)
     return res
+
+
+def _staged_feeds(args) -> tuple:
+    """The staged feeds whose preparing stage is in this run (see ftm_staging.STAGE_OF)."""
+    stages = [s.strip() for s in str(getattr(args, "stages", "") or "").split(",") if s.strip()]
+    if not any(s in ("appointments", "tax_sale_report", "code_violations") for s in stages):
+        return ()                      # today's run: nothing is imported, nothing is passed
+    try:
+        import ftm_staging
+        return ftm_staging.feeds_for_stages(stages)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Staged feeds not read: %s", exc)
+        return ()
+
+
+def _mark_staged_uploaded(feeds: tuple = ()) -> None:
+    """Settle what the newer county-stage feeds staged (appointments, the tax sale report, the
+    code violation file), and only the ones this run loaded. Only ever called after a real
+    upload, the same rule as the liens. With none of those stages in the run it does nothing."""
+    if not feeds:
+        return
+    try:
+        import ftm_staging
+
+        moved = ftm_staging.mark_all_uploaded(str(config.STATE_DIR / "knox"), feeds=feeds)
+        for feed, n in moved.items():
+            logger.info("%s: %d filing(s) marked handled", feed, n)
+    except Exception as exc:  # the upload already succeeded; never fail the run on this
+        logger.warning("Could not mark staged feeds handled: %s", exc)
 
 
 def _stage_liens(args) -> StageResult:
@@ -669,11 +804,277 @@ def _stage_sold(args) -> StageResult:
     return res
 
 
+# ── stages that are off until named in --stages ───────────────────────
+
+
+def _stage_appointments(args) -> StageResult:
+    """Substitute trustee appointments from the Register of Deeds (build plan 1.9).
+
+    Uploads nothing itself: it stages the appointments it could follow to a house, and the
+    county stage uploads them and marks them handled. So it belongs BEFORE `county`, and after
+    `liens`, whose recorder session it reuses instead of logging in a second time.
+    """
+    res = StageResult(name="appointments")
+    t0 = time.time()
+    if not (config.PAXSUB_USERNAME and config.PAXSUB_PASSWORD):
+        res.status = "skipped"
+        res.detail = "PAXSUB_USERNAME / PAXSUB_PASSWORD not set (Knox Register of Deeds login)"
+        return res
+
+    import knox_appointments
+    import knox_rod
+
+    try:
+        stats = knox_appointments.prepare(str(config.STATE_DIR / "knox"))
+    except knox_rod.RodSubscriptionExpired as exc:
+        res.status = "failed"
+        res.detail = f"REGISTER OF DEEDS SUBSCRIPTION EXPIRED. {exc}"
+    except knox_appointments.AppointmentsUnusable as exc:
+        res.status = "failed"
+        res.detail = f"SUBSTITUTE TRUSTEE FEED CANNOT RUN: {exc}"
+    except Exception as exc:
+        res.status = "failed"
+        res.detail = f"{type(exc).__name__}: {exc}"
+    else:
+        res.status = "ok"
+        res.records = stats["staged"]
+        res.detail = knox_appointments.describe(stats)
+        days = stats.get("subscription_days")
+        if days is not None and days <= SUBSCRIPTION_WARN_DAYS:
+            res.warnings.append(
+                f"The Register of Deeds subscription expires in {days} day(s). "
+                "Renew it at paxsub.knoxrod.org or the recorder pulls stop.")
+    res.seconds = round(time.time() - t0, 1)
+    return res
+
+
+def _stage_tax_sale_report(args) -> StageResult:
+    """The Knox County Trustee's tax sale documents (build plan 1.10). Prepares only; `county`
+    uploads. Any problem fails the stage, for the same reason the capture stage does: a zero on
+    this source reads exactly like "no sale is scheduled"."""
+    res = StageResult(name="tax_sale_report")
+    t0 = time.time()
+    try:
+        import knox_tax_sale
+        stats = knox_tax_sale.prepare(str(config.STATE_DIR / "knox"))
+    except Exception as exc:
+        res.status = "failed"
+        res.detail = f"{type(exc).__name__}: {exc}"
+        res.seconds = round(time.time() - t0, 1)
+        return res
+    res.records = stats["staged"]
+    res.warnings = list(stats["problems"])
+    detail = knox_tax_sale.describe(stats)
+    if stats["problems"]:
+        res.status = "failed"
+        res.detail = detail + " | " + "; ".join(stats["problems"])
+    else:
+        res.status = "ok"
+        res.detail = detail
+    res.seconds = round(time.time() - t0, 1)
+    return res
+
+
+def _stage_code_violations(args) -> StageResult:
+    """Code violations from the file a person drops on the volume (build plan 1.10). Prepares
+    only; `county` uploads. Fails by name when a file cannot be read, or when the file has
+    stopped arriving."""
+    res = StageResult(name="code_violations")
+    t0 = time.time()
+    try:
+        import code_violations
+        stats = code_violations.prepare(str(config.STATE_DIR / "knox"))
+    except Exception as exc:
+        res.status = "failed"
+        res.detail = f"{type(exc).__name__}: {exc}"
+        res.seconds = round(time.time() - t0, 1)
+        return res
+    res.records = stats["staged"]
+    res.warnings = list(stats["problems"])
+    detail = code_violations.describe(stats)
+    if stats["problems"]:
+        res.status = "failed"
+        res.detail = detail + " | " + "; ".join(stats["problems"])
+    else:
+        res.status = "ok"
+        res.detail = detail
+    res.seconds = round(time.time() - t0, 1)
+    return res
+
+
+def _stage_deeds(args) -> StageResult:
+    """Put the deed records on today's Knox foreclosures (build plan 3.3).
+
+    Reads the notice files this run wrote, looks up the deed of trust each notice cites, and adds
+    a "Deed records check" note and the debt to the record, where research reads them. Needs the
+    notice text on the row (FTM_NOTICE_TEXT) and belongs after `notices` and `liens`. Writes only
+    on a committed run. Never fatal to the run's uploads: they are already done.
+    """
+    res = StageResult(name="deeds")
+    t0 = time.time()
+    if not (config.PAXSUB_USERNAME and config.PAXSUB_PASSWORD):
+        res.status = "skipped"
+        res.detail = "PAXSUB_USERNAME / PAXSUB_PASSWORD not set (Knox Register of Deeds login)"
+        return res
+    import csv as _csv
+    import glob as _glob
+
+    today = datetime.now().strftime("%Y-%m-%d")
+    rows: list = []
+    for path in sorted(_glob.glob(str(config.OUTPUT_DIR / f"ftm_notices_{today}_*.csv"))):
+        with open(path, encoding="utf-8") as fh:
+            rows.extend(_csv.DictReader(fh))
+    try:
+        import rod_lookup
+
+        stats = rod_lookup.annotate(rows, str(config.STATE_DIR / "knox"),
+                                    commit=bool(args.commit and not args.no_upload))
+    except Exception as exc:
+        name = "REGISTER OF DEEDS SUBSCRIPTION EXPIRED. " if type(exc).__name__ == "RodSubscriptionExpired" else ""
+        res.status = "failed"
+        res.detail = f"{name}{type(exc).__name__}: {exc}"
+        res.seconds = round(time.time() - t0, 1)
+        return res
+    res.status = "ok"
+    res.records = stats["written"]
+    wrote = bool(args.commit and not args.no_upload)
+    res.detail = (f"{stats['looked_up']} Knox foreclosure(s) looked up, {stats['with_debt']} with a debt figure, "
+                  + (f"written to {stats['written']} record(s)" if wrote else "nothing written (dry run)"))
+    if stats["no_text"]:
+        res.warnings.append(f"{stats['no_text']} foreclosure row(s) carry no notice text, so their deed records "
+                            "could not be looked up. Set FTM_NOTICE_TEXT=field.")
+    if stats["failed"] or stats["not_found"]:
+        res.warnings.append(f"{stats['failed']} lookup(s) failed and {stats['not_found']} record(s) were not found "
+                            "in DataSift; they are tried again tomorrow.")
+    if stats["left_for_tomorrow"]:
+        res.detail += f", {stats['left_for_tomorrow']} left for tomorrow"
+    res.seconds = round(time.time() - t0, 1)
+    return res
+
+
+def _stage_sold_reentry(args) -> StageResult:
+    """The January pass of the sold guard (build plan 0.7): a record sold more than three years
+    ago comes back as the new owner's record.
+
+    DRY EVEN ON A COMMITTED RUN unless SOLD_REENTRY_COMMIT=1. Naming the stage shows what it
+    would put back; the second switch is what lets it write, because the first pass can touch
+    thousands of records. Outside January it reports that it is not due."""
+    res = StageResult(name="sold_reentry")
+    t0 = time.time()
+    live = bool(args.commit) and os.environ.get("SOLD_REENTRY_COMMIT", "").strip() == "1"
+    try:
+        import argparse as _argparse
+
+        import sold_guard
+
+        ns = _argparse.Namespace(commit=live, limit=0, include_distress=False, fresh=False, force=False, stats={})
+        rc = sold_guard.reentry(ns)
+        st = ns.stats
+    except Exception as exc:
+        res.status = "failed"
+        res.detail = f"{type(exc).__name__}: {exc}"
+        res.seconds = round(time.time() - t0, 1)
+        return res
+    res.status = "failed" if rc else "ok"
+    if not st.get("reentry_due"):
+        res.detail = "not due: the sold window moves on January 1"
+    else:
+        res.records = st.get("reentered", 0)
+        if live:
+            res.detail = (f"{st.get('reentered', 0)} record(s) put back into marketing "
+                          f"({st.get('reentry_judged', 0)} judged, {st.get('reentry_waiting', 0)} waiting)")
+        else:
+            res.detail = (f"{st.get('reentry_would', 0)} record(s) would come back "
+                          f"({st.get('reentry_judged', 0)} judged, {st.get('reentry_waiting', 0)} waiting); "
+                          "nothing written (SOLD_REENTRY_COMMIT is not set)")
+        if st.get("reentry_errors"):
+            res.warnings.append(f"sold re-entry could not read {st['reentry_errors']} record(s)")
+        # The pass only runs in January. Records still waiting when the month runs out would
+        # sit Sold for another year, and nothing else would ever say so.
+        if st.get("reentry_waiting") and datetime.now().day >= 25:
+            res.warnings.append(
+                f"{st['reentry_waiting']} Sold record(s) are still waiting to be judged and the January window is "
+                "closing. Raise SOLD_REENTRY_MAX_PER_RUN or set SOLD_REENTRY_MONTHS=2.")
+    res.seconds = round(time.time() - t0, 1)
+    return res
+
+
+def _stage_sold_audit(args) -> StageResult:
+    """The monthly sold audit (build plan 0.7): last month's sold leads and how far we got on
+    each. Read-only on the account; runs once a month and says "already written" after that."""
+    res = StageResult(name="sold_audit")
+    t0 = time.time()
+    try:
+        import argparse as _argparse
+
+        import sold_guard
+
+        ns = _argparse.Namespace(commit=False, limit=0, month="", force=False, stats={})
+        rc = sold_guard.monthly_audit(ns)
+        st = ns.stats
+    except Exception as exc:
+        res.status = "failed"
+        res.detail = f"{type(exc).__name__}: {exc}"
+        res.seconds = round(time.time() - t0, 1)
+        return res
+    res.status = "failed" if rc else "ok"
+    s = st.get("audit_summary") or {}
+    if st.get("audit_ran"):
+        res.records = s.get("were_our_leads", 0)
+        res.detail = sold_guard.audit_text(s).replace("\n", " ")
+    else:
+        res.detail = f"audit for {st.get('audit_month', '?')} is already written"
+    res.seconds = round(time.time() - t0, 1)
+    return res
+
+
 STAGE_FUNCS = {"notices": _stage_notices, "capture": _stage_capture,
-               "liens": _stage_liens, "county": _stage_county, "sold": _stage_sold}
+               "liens": _stage_liens, "county": _stage_county, "sold": _stage_sold,
+               # Off unless named in --stages:
+               "tax_sale": _stage_feed("tax_sale"), "tax_delinquent": _stage_feed("tax_delinquent"),
+               "public_notices": _stage_feed("public_notices"),
+               "appointments": _stage_appointments, "tax_sale_report": _stage_tax_sale_report,
+               "code_violations": _stage_code_violations, "deeds": _stage_deeds,
+               "sold_reentry": _stage_sold_reentry, "sold_audit": _stage_sold_audit}
 
 
 # ── doctor ────────────────────────────────────────────────────────────
+
+# Every switch this pipeline reads beyond FTM_ARGS, so the wiring check can say which ones THIS
+# process actually sees. On Fly a secret overrides the file's [env] block, and reading the file
+# has told the opposite of the truth before.
+SWITCH_NAMES = ("FTM_RATE_BUDGET", "FTM_INTAKE_SCREEN", "FTM_NOTICE_TEXT", "FTM_TAG_APPEARED_AGAIN",
+                "FTM_FEED_HEALTH", "FTM_FEED_LAG_ALARM_DAYS", "FTM_HEALTH_ALARM_FEEDS", "SOLD_REENTRY_COMMIT",
+                "SOLD_GUARD_EXTRA_UPLOAD_LISTS", "FTM_PUBLIC_NOTICE_SEARCHES", "FTM_UPLOAD_BROWSER")
+
+
+def switch_report() -> list[str]:
+    """What is switched on beyond today's run: the extra stages FTM_ARGS names, the feeds that
+    makes live, and each setting this process sees. Reads the environment only."""
+    lines: list[str] = []
+    try:
+        import ftm_feeds
+
+        asked = ftm_feeds.requested_stages()
+        extra = [s for s in asked if s not in TODAY_STAGES]
+        lines.append("\n  stages beyond today's five: " + (", ".join(extra) if extra else "none"))
+        unknown = [s for s in asked if s not in ALL_STAGES]
+        if unknown:
+            lines.append("    NOT A STAGE (the run would exit 2): " + ", ".join(unknown))
+        for f in ftm_feeds.live_feeds(asked):
+            if f.stage not in TODAY_STAGES:
+                lines.append(f"    live feed: {f.label} -> list {f.list_name!r}")
+        staged = [s for s in ("appointments", "tax_sale_report", "code_violations") if s in asked]
+        if staged and "county" not in asked:
+            lines.append("    WARNING: " + ", ".join(staged) + " only stage rows; without `county` nothing uploads them")
+        late = [s for s in staged if "county" in asked and asked.index(s) > asked.index("county")]
+        if late:
+            lines.append("    WARNING: " + ", ".join(late) + " is listed AFTER `county`, so its rows wait a day")
+    except Exception as exc:
+        lines.append(f"\n  feed table unreadable: {exc}")
+    on = [f"{n}={os.environ[n]}" for n in SWITCH_NAMES if os.environ.get(n)]
+    lines.append("  settings switched on: " + (", ".join(on) if on else "none"))
+    return lines
 
 
 def doctor() -> int:
@@ -714,6 +1115,9 @@ def doctor() -> int:
     for s in config.SAVED_SEARCHES:
         print(f"    - {s.saved_search_name:24}  {s.county}/{s.notice_type}")
     print("    verify against the live site: python src/main.py list-searches")
+
+    for line in switch_report():
+        print(line)
 
     print(f"\n  gate: {config.CAPTCHA_KIND}  sitekey={config.TURNSTILE_SITEKEY}")
     print(f"  output dir: {config.OUTPUT_DIR}")
@@ -760,6 +1164,56 @@ def _notify(run: RunResult) -> None:
         _send_webhook(_summary_text(run))
     except Exception as exc:
         logger.warning("Slack notify failed: %s", exc)
+
+
+def source_state(today: datetime | None = None) -> dict:
+    """What this run learned about the paid sources: when each subscription runs out.
+
+    The notice site prints its expiry date on the dashboard and the recorder prints days left in
+    its header. Both are read during the run and both used to be thrown away unless they were
+    within three days, so "how long until either lapses" could only be answered by logging in."""
+    out: dict = {}
+    day = (today or datetime.now()).strftime("%Y-%m-%d")
+    try:
+        # Read off the module only when a stage already loaded it: this must never be the
+        # reason the browser library gets imported.
+        sub = (sys.modules["scraper"].SUBSCRIPTION or {}) if "scraper" in sys.modules else {}
+        expires = sub.get("expires") or ""
+        if expires:
+            left = (datetime.strptime(expires, "%Y-%m-%d").date() - datetime.strptime(day, "%Y-%m-%d").date()).days
+            out["tnpublicnotice"] = {"expires": expires, "days_left": left, "read": day,
+                                     "product": sub.get("product") or ""}
+    except Exception:
+        pass
+    try:
+        if "knox_rod" in sys.modules:
+            sub = sys.modules["knox_rod"].SUBSCRIPTION or {}
+            if sub.get("days") is not None or sub.get("state"):
+                out["register_of_deeds"] = {"days_left": sub.get("days"), "state": sub.get("state") or "", "read": day}
+    except Exception:
+        pass
+    return out
+
+
+def _write_source_state() -> None:
+    """Keep the paid-source readings where the health check can find them (build plan 1.12).
+
+    Only with FTM_FEED_HEALTH=1. A source that was not read this run keeps its last reading, so
+    a day when the lien stage is skipped does not erase the recorder's days-left figure."""
+    if os.environ.get("FTM_FEED_HEALTH", "").strip() != "1":
+        return
+    try:
+        path = config.STATE_DIR / "ftm_sources.json"
+        try:
+            held = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            held = {}
+        held.update(source_state())
+        tmp = Path(str(path) + ".tmp")
+        tmp.write_text(json.dumps(held, indent=1), encoding="utf-8")
+        os.replace(tmp, path)
+    except Exception as exc:
+        logger.debug("Could not write source state: %s", exc)
 
 
 def _write_run_log(run: RunResult) -> None:
@@ -873,6 +1327,7 @@ def main(argv=None) -> int:
     print("=" * 60 + "\n")
 
     _write_run_log(run)
+    _write_source_state()
     _notify(run)
     return run.exit_code()
 

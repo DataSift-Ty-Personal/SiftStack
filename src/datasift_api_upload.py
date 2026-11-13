@@ -65,6 +65,26 @@ FIELD_MAP = {
 }
 
 
+def field_map() -> dict:
+    """FIELD_MAP plus the columns the newer feeds and the intake screen can write.
+
+    Kept apart from FIELD_MAP so nothing that imports the constant changes. Every extra column is
+    blank on today's upload files (a notice row leaves Tax Auction Date empty unless it is a tax
+    sale, and the intake columns do not exist until the intake switch is on), so with no new
+    setting this maps exactly what FIELD_MAP maps. Each label is a setting because the account
+    names its own fields; a label the account lacks is skipped with a warning, never guessed.
+    """
+    e = os.environ
+    out = dict(FIELD_MAP)
+    # A tax sale rides the hot auction lane by its sale date, so the date must reach a field.
+    out["Tax Auction Date"] = (e.get("FTM_TAX_SALE_DATE_FIELD") or "Tax Auction Date").strip()
+    out["Mortgage Debt"] = (e.get("FTM_DEBT_FIELD") or "Mortgage Debt").strip()
+    out["Listing Status"] = (e.get("FTM_LISTING_FIELD") or "Listing Status").strip()
+    if (e.get("FTM_NOTICE_TEXT") or "").strip().lower() == "field":
+        out["Notice Text"] = (e.get("FTM_NOTICE_TEXT_FIELD") or "Notice Text").strip()
+    return out
+
+
 def iso_date(raw: str) -> str:
     """A date value in the form DataSift stores (YYYY-MM-DD), or "" when it cannot be read.
     The formatter writes M/D/YYYY for the old upload wizard."""
@@ -98,6 +118,37 @@ def env() -> dict:
     except OSError:
         pass
     return out
+
+
+def _budget():
+    """The first-to-market request budget, or None when it is off (the default) or not shipped.
+
+    Off unless FTM_RATE_BUDGET is set, so this module behaves exactly as before on every box
+    that has not asked for it: the brain and the texting app import this file too and keep
+    their own budgets."""
+    if not os.environ.get("FTM_RATE_BUDGET", "").strip():
+        return None                    # the default: nothing is imported, nothing is counted
+    try:
+        import ftm_budget
+    except Exception:  # noqa: BLE001
+        return None
+    return ftm_budget if ftm_budget.enabled() else None
+
+
+def _refusal_wait(body: str, retry_after, attempt: int) -> float:
+    """Seconds to wait after a 429: the Retry-After header, else the server's "available in N
+    seconds" hint, else a growing pause. Capped so one refusal cannot stall a run for minutes."""
+    try:
+        if retry_after:
+            return min(90.0, float(retry_after) + 1)
+    except (TypeError, ValueError):
+        pass
+    words = (body or "").split("available in")
+    if len(words) > 1:
+        digits = "".join(c for c in words[1].strip().split(" ")[0] if c.isdigit())
+        if digits:
+            return min(90.0, int(digits) + 2)
+    return 10.0 * (attempt + 1)
 
 
 class ApiError(RuntimeError):
@@ -152,10 +203,15 @@ class Api:
             self.token = json.loads(r.read())["access"]
         self.minted = time.time()
 
-    def call(self, path, method="GET", body=None, _retry=True, headers=None):
+    def call(self, path, method="GET", body=None, _retry=True, headers=None, _refused=0):
         # JWTs are short-lived; refresh transparently rather than dying mid-run.
         if not self.api_key and time.time() - self.minted > 1800:
             self._mint()
+        budget = _budget()
+        if budget is not None:
+            # This box's share of the account's request limit (plan 0.14). Counted here because
+            # every DataSift write and read on the box passes through this one method.
+            budget.acquire("datasift")
         data = json.dumps(body).encode() if body is not None else None
         auth = "Api-Key " + self.api_key if self.api_key else "Bearer " + self.token
         hdrs = {"Authorization": auth, "Content-Type": "application/json"}
@@ -169,7 +225,14 @@ class Api:
             if e.code == 401 and _retry and not self.api_key:
                 self._mint()
                 return self.call(path, method, body, _retry=False, headers=headers)
-            raise ApiError(e.code, method, path, e.read().decode())
+            text = e.read().decode()
+            if e.code == 429 and budget is not None and _refused < 3:
+                # With the budget on, a refusal from the server is counted for the health report
+                # and waited out on the server's own hint, instead of costing the row.
+                budget.note("datasift:429")
+                time.sleep(_refusal_wait(text, e.headers.get("Retry-After") if e.headers else None, _refused))
+                return self.call(path, method, body, _retry=_retry, headers=headers, _refused=_refused + 1)
+            raise ApiError(e.code, method, path, text)
 
 
 _ROUTE_DECIDED = {"route": ""}
@@ -413,7 +476,7 @@ def build_property(row: dict) -> dict:
 
 def field_pairs(row: dict, idx: dict, warn: set) -> list[dict]:
     pairs = []
-    for col, label in FIELD_MAP.items():
+    for col, label in field_map().items():
         # values arrive as str from CSV but as int/float when called in-process
         raw = str(row.get(col) if row.get(col) is not None else "").strip()
         if not raw:
@@ -456,12 +519,51 @@ def write_fields(api: "Api", uuid: str, pairs: list[dict], warn: set) -> int:
         return landed
 
 
+def _row_lists(row: dict) -> list[str]:
+    return [x.strip() for x in str(row.get("Lists") or "").split(",") if x.strip()]
+
+
+def _appeared_ledger(warn: set):
+    """The ledger that decides "appeared again", or None when the rule is off (the default)."""
+    try:
+        import ftm_intake
+        if not ftm_intake.appeared_again_on():
+            return None, ""
+        return ftm_intake.AppearedLedger(), ftm_intake.appeared_again_tag()
+    except Exception as e:  # noqa: BLE001  (a tag is never worth an upload)
+        warn.add("Appeared Again not applied (%s: %s)" % (type(e).__name__, str(e)[:60]))
+        return None, ""
+
+
+def _notice_text_note(api, uuid: str, row: dict, was_existing: bool, warn: set) -> None:
+    """FTM_NOTICE_TEXT=notes: the notice text as its own note, added once per notice.
+
+    The custom field is the preferred home (see ftm_intake). This is for an account that has
+    no such field yet. An existing record is read first so a republished notice does not stack
+    a second copy of the same text."""
+    text = str(row.get("Notice Text") or "").strip()
+    if not text or (os.environ.get("FTM_NOTICE_TEXT") or "").strip().lower() != "notes":
+        return
+    try:
+        if was_existing:
+            have = str((api.call("/api/internal/property/%s/" % uuid) or {}).get("notes") or "")
+            if text[:80] in have:
+                return
+        api.call("/api/internal/property/%s/add-notes/" % uuid, "POST", {"notes": "Notice text: " + text})
+    except Exception as e:  # noqa: BLE001
+        warn.add("notice text note not added (%s)" % type(e).__name__)
+
+
 def upload_rows(rows: list[dict], *, commit: bool = False,
-                sleep: float = 0.1, out_dir: str = "output") -> dict:
+                sleep: float = 0.1, out_dir: str = "output", new_filing: bool = False) -> dict:
     """Push rows into DataSift. Returns counts so a caller can act on them.
 
     Broken out of main() so the scheduled runner can call it in-process and
     report real numbers to Slack, instead of shelling out and parsing stdout.
+
+    `new_filing` says these rows come from a pull (not a hand re-send), which is the only time
+    the Appeared Again rule may apply; the rule itself stays off until FTM_TAG_APPEARED_AGAIN
+    is set.
     """
     api = Api()
     idx = field_index(api)
@@ -469,8 +571,10 @@ def upload_rows(rows: list[dict], *, commit: bool = False,
           % ("COMMIT" if commit else "DRY RUN", len(rows), len(idx)))
 
     warn: set = set()
-    created = fielded = failed = existing = 0
+    created = fielded = failed = existing = again = 0
     errors: list[str] = []
+    ledger, again_tag = _appeared_ledger(warn) if (commit and new_filing) else (None, "")
+    stopped = ""
     t0 = time.time()
     for i, row in enumerate(rows, 1):
         prop = build_property(row)
@@ -487,7 +591,8 @@ def upload_rows(rows: list[dict], *, commit: bool = False,
             # new or pre-existing; the runner's success test rides on it and
             # the county stage re-sends the same rows daily on purpose.
             created += 1
-            if isinstance(res, dict) and res.get("existing"):
+            was_existing = bool(isinstance(res, dict) and res.get("existing"))
+            if was_existing:
                 existing += 1
             if uuid and pairs:
                 if write_fields(api, uuid, pairs, warn):
@@ -499,7 +604,27 @@ def upload_rows(rows: list[dict], *, commit: bool = False,
                              "POST", {"notes": row["Notes"][:2000]})
                 except Exception:
                     pass
+            if uuid and row.get("Notice Text"):
+                _notice_text_note(api, uuid, row, was_existing, warn)
+            if uuid and ledger is not None:
+                street, zip5 = row.get("Property Street Address", ""), row.get("Property ZIP Code", "")
+                if was_existing and again_tag and ledger.should_tag(street, zip5, _row_lists(row)):
+                    try:
+                        api.call("/api/internal/property/%s/add-tags/" % uuid, "POST", {"tags": again_tag})
+                        again += 1
+                    except Exception as e:  # noqa: BLE001
+                        warn.add("%s tag not added (%s)" % (again_tag, type(e).__name__))
+                ledger.record(street, zip5, _row_lists(row))
         except Exception as e:
+            if type(e).__name__ == "BudgetExhausted":
+                # The hour's request budget is used. Every row after this one would be refused
+                # the same way, so stop and say how many were not sent; they count as failed, and
+                # the runner leaves them unhandled for the next run.
+                stopped = str(e)
+                failed += len(rows) - i + 1
+                errors.append("stopped at row %d of %d: %s" % (i, len(rows), stopped[:150]))
+                print("  STOPPED", errors[-1])
+                break
             failed += 1
             msg = "%s | %s" % (str(row.get("Property Street Address", ""))[:30], str(e)[:150])
             errors.append(msg)
@@ -510,6 +635,13 @@ def upload_rows(rows: list[dict], *, commit: bool = False,
                   % (i, len(rows), created, fielded, failed, time.time() - t0), flush=True)
         time.sleep(sleep)
 
+    if ledger is not None:
+        try:
+            ledger.save()
+        except Exception as e:  # noqa: BLE001
+            warn.add("Appeared Again ledger not saved (%s)" % type(e).__name__)
+    if stopped:
+        warn.add("upload stopped early: %s" % stopped[:120])
     if warn:
         print("\nWARNINGS (values skipped, never guessed):")
         for w in sorted(warn):
@@ -519,6 +651,8 @@ def upload_rows(rows: list[dict], *, commit: bool = False,
     if commit:
         print("\ncreated=%d (of which %d already existed)  custom-fields-set=%d  failed=%d  %.0fs"
               % (created, existing, fielded, failed, time.time() - t0))
+        if again:
+            print("tagged %s: %d" % (again_tag, again))
         if errors:
             os.makedirs(out_dir, exist_ok=True)
             err_path = os.path.join(out_dir, "upload_errors.txt")
@@ -531,13 +665,14 @@ def upload_rows(rows: list[dict], *, commit: bool = False,
     return {
         "submitted": len(rows), "created": created, "existing": existing,
         "fielded": fielded, "failed": failed, "warnings": sorted(warn), "errors": errors,
-        "error_file": err_path, "committed": commit,
+        "error_file": err_path, "committed": commit, "appeared_again": again,
         "seconds": round(time.time() - t0, 1),
     }
 
 
 def upload_csv(path: str, *, commit: bool = False, limit: int = 0,
-               start: int = 0, sleep: float = 0.1, out_dir: str = "output") -> dict:
+               start: int = 0, sleep: float = 0.1, out_dir: str = "output",
+               new_filing: bool = False) -> dict:
     """Read an upload CSV and push it. Same return shape as upload_rows."""
     with open(path, encoding="utf-8") as fh:
         rows = list(csv.DictReader(fh))
@@ -545,7 +680,7 @@ def upload_csv(path: str, *, commit: bool = False, limit: int = 0,
         rows = rows[start:]
     if limit:
         rows = rows[:limit]
-    return upload_rows(rows, commit=commit, sleep=sleep, out_dir=out_dir)
+    return upload_rows(rows, commit=commit, sleep=sleep, out_dir=out_dir, new_filing=new_filing)
 
 
 def main() -> int:

@@ -43,10 +43,23 @@ THREE COUNTING RULES, each learned from real data on this volume:
    `FTM_ARGS` asked for and did not get as a finding. Deliberately checked here
    rather than by changing the runner's exit contract, which the scheduler rides on.
 
+FEED HEALTH (build plan 1.12). A feed that arrives a day or two after its filing is not first to
+market, and nothing here used to measure that. Every pass now works out, per feed, from the
+files already on the volume: the LAG of its new records (pull date minus filing date), its new
+records this month and last, the last day it produced one, and the days left on the paid source
+behind it. All of that is in `--full`. None of it is in the daily post, and none of it changes
+the verdict, unless a switch below asks for an alarm: the post stays two lines, and a feed
+finding reaches it only as the reason line of a red day.
+
 Config:
-  FTM_HEALTH_WEBHOOK    Slack incoming webhook; falls back to SLACK_WEBHOOK_URL
-  FTM_FEED_STALE_DAYS   per-feed staleness threshold (default 7)
-  FTM_HEALTH_WINDOW     default history window in days (default 14)
+  FTM_HEALTH_WEBHOOK         Slack incoming webhook; falls back to SLACK_WEBHOOK_URL
+  FTM_FEED_STALE_DAYS        staleness threshold for the four notice feeds (default 7)
+  FTM_HEALTH_WINDOW          default history window in days (default 14)
+  FTM_FEED_LAG_ALARM_DAYS    off when unset. Set to 2 and a live feed whose new records run more
+                             than 2 days behind their filings is a red finding
+  FTM_HEALTH_ALARM_FEEDS     off when unset. Comma list of feed keys (knox_liens, knox_condemned)
+                             that should also be judged by silence, on their own thresholds
+  FTM_FEED_HEALTH=1          has the runner keep each paid source's expiry in ftm_sources.json
 """
 
 from __future__ import annotations
@@ -67,6 +80,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import config  # noqa: E402
 
 logger = logging.getLogger("ftm_health")
+
+# The two dash characters no report may contain, built from their code points so this file
+# does not hold either one itself.
+_EM, _EN = chr(0x2014), chr(0x2013)
 
 RUNS_FILE = "ftm_runs.jsonl"
 LEDGER_FILE = "ftm_record_ledger.json"
@@ -92,25 +109,41 @@ RETIRED = "retired"
 NO_UPSTREAM = "no upstream"
 EXCLUDED = "excluded"
 
-# The full inventory. Every FTM source lives here with an explicit state, so a
-# source that was never automated stays visible instead of being absent.
-SOURCES = [
-    ("Foreclosure notices, Knox", AUTOMATED, "feed:Knox/foreclosure"),
-    ("Foreclosure notices, Blount", AUTOMATED, "feed:Blount/foreclosure"),
-    ("Probate notices, Knox", AUTOMATED, "feed:Knox/probate"),
-    ("Probate notices, Blount", AUTOMATED, "feed:Blount/probate"),
-    ("Condemnations, captured to volume", AUTOMATED, "stage:capture"),
-    ("Condemnations, into DataSift", AUTOMATED, "stage:county"),
-    ("General liens (LEN)", MANUAL, "knox_rod.py, then knox_lien_resolve.py"),
-    ("State tax liens (STL)", MANUAL, "knox_rod.py, no dollar amount at source"),
-    ("Federal tax liens (FTL)", MANUAL, "knox_rod.py"),
-    ("Lien releases", MANUAL, "knox_rod.py, filter feed not a lead source"),
-    ("tnpn public sales and orders", NOT_BUILT, "loader is live, nothing writes its JSON"),
+SWITCHED_OFF = "switched off"
+
+# Sources that are not feeds of this pipeline: retired on purpose, or with nothing to pull.
+# These never change with FTM_ARGS, so they are written down once.
+_FIXED_SOURCES = [
     ("Trustee deeds (TRS)", RETIRED, "2026-08-25, duplicates the foreclosure scrape"),
     ("Evictions and tired landlords", RETIRED, "2026-08-25, docket keeps one week only"),
     ("Knox TN probate, direct from court", NO_UPSTREAM, "no online index; the notice scrape covers it"),
-    ("Tax sale", EXCLUDED, "2026-07-26"),
+    ("Blount recorder and condemnations", NO_UPSTREAM, "no online source; Blount arrives through the notices only"),
 ]
+
+
+def sources(stages: list[str] | None = None) -> list[tuple[str, str, str]]:
+    """The full inventory, with each feed's state read off what the run is ASKED to do.
+
+    This used to be a hand-written list, and it went stale: liens read "manual" for weeks after
+    they became a daily stage. A feed is automated when its stage (and the stage that uploads
+    its rows) is in FTM_ARGS, and switched off otherwise, so the inventory cannot disagree with
+    the run. Falls back to the fixed rows alone when the feed table cannot be imported."""
+    out: list[tuple[str, str, str]] = []
+    try:
+        import ftm_feeds
+        live = {f.key for f in ftm_feeds.live_feeds(stages)}
+        for f in ftm_feeds.FEEDS:
+            if f.key in live:
+                out.append((f.label, AUTOMATED, "stage:%s" % f.stage))
+            else:
+                out.append((f.label, SWITCHED_OFF, "add the %s stage to FTM_ARGS" % f.stage))
+    except Exception:
+        pass
+    return out + list(_FIXED_SOURCES)
+
+
+# Kept for anything that imported the old name. Built for the stages in today's FTM_ARGS.
+SOURCES = sources()
 
 
 # ── small local utilities ─────────────────────────────────────────────
@@ -241,6 +274,227 @@ def _county_csvs() -> dict[str, list[str]]:
     return _csvs_by_day("knox_ftm_pull")
 
 
+def _feed_csvs() -> dict[str, list[str]]:
+    """Upload files written by the notice feeds that run alone (tax_sale, tax_delinquent,
+    public_notices). Empty until one of those stages is switched on."""
+    out: dict[str, list[str]] = {}
+    for p in sorted(glob.glob(str(config.OUTPUT_DIR / "ftm_feed_*.csv"))):
+        m = re.search(r"_(\d{4}-\d{2}-\d{2})_\d{6}\.csv$", os.path.basename(p))
+        if m:
+            out.setdefault(m.group(1), []).append(p)
+    return out
+
+
+# ── feed health: lag, volume, last good day (build plan 1.12) ─────────
+
+
+def _iso_day(raw: str) -> str:
+    """YYYY-MM-DD from the two date forms the upload files carry, or ""."""
+    s = (raw or "").strip()
+    if re.match(r"^\d{4}-\d{2}-\d{2}", s):
+        return s[:10]
+    m = re.match(r"^(\d{1,2})/(\d{1,2})/(\d{4})$", s)
+    if m:
+        try:
+            return date(int(m.group(3)), int(m.group(1)), int(m.group(2))).isoformat()
+        except ValueError:
+            return ""
+    return ""
+
+
+def _notice_id(url: str) -> str:
+    m = re.search(r"[?&]ID=(\d+)", url or "")
+    return m.group(1) if m else ""
+
+
+def _read_seen(name: str) -> dict:
+    try:
+        with open(config.STATE_DIR / name, "r", encoding="utf-8") as fh:
+            d = json.load(fh)
+            return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def feed_key(row: dict, family: str) -> str:
+    """Which feed one upload row belongs to, read off the row itself.
+
+    A notice row says its county and notice type. A county row says its list, and the list is
+    matched against the feed table by NAME (the setting may have renamed it)."""
+    try:
+        import ftm_feeds
+    except Exception:
+        return ""
+    county = (row.get("County") or "").strip().lower()
+    ntype = (row.get("Notice Type") or "").strip().lower()
+    if family in ("notices", "feeds"):
+        want = ("ftm_notices",) if family == "notices" else None
+        for f in ftm_feeds.FEEDS:
+            if f.notice_type != ntype:
+                continue
+            if want and f.csv_prefix not in want:
+                continue
+            if not want and f.csv_prefix in ("ftm_notices", "knox_ftm_pull"):
+                continue
+            if not f.county or f.county.lower() == county:
+                return f.key
+        return ""
+    lst = _row_list(row, "county").lower()
+    for f in ftm_feeds.FEEDS:
+        if f.csv_prefix == "knox_ftm_pull" and f.list_name.lower() == lst and f.notice_type == (ntype or f.notice_type):
+            return f.key
+    return ""
+
+
+def filed_day(row: dict, family: str, seen: dict) -> str:
+    """The day the county filed or published what this row carries, or "" when the file does not
+    say. A notice's publication date is not a column: it is what the seen-id cache stores against
+    the notice id in the row's Source URL. A county row carries it as Date Added."""
+    if family == "county":
+        return _iso_day(row.get("Date Added") or "")
+    got = seen.get(_notice_id(row.get("Source URL") or ""), "")
+    if got:
+        return _iso_day(str(got))
+    return _iso_day(row.get("Probate Open Date") or "")
+
+
+def feed_report(today: str, families: dict | None = None, seen: dict | None = None) -> dict:
+    """Per feed: new records today, lag of those records, last day it produced one, and new
+    records this month and last. Pure when `families` and `seen` are given (the selftest does).
+
+    NEW is "first time this address showed up under this feed", replayed over every upload file
+    on the volume, for the same reason the record ledger exists: the county stage re-sends the
+    same rows every morning, and counting rows would call a re-send a fresh lead. Lag is measured
+    on new records only, or a condemnation re-sent for a month would read a month late."""
+    if families is None:
+        families = {"notices": _notice_csvs(), "county": _county_csvs(), "feeds": _feed_csvs()}
+        families = {name: {d: [r for p in paths for r in _read_csv(p)] for d, paths in table.items()}
+                    for name, table in families.items()}
+    if seen is None:
+        seen = {}
+        for name in ("seen_ids.json", "seen_ids_tax_sale.json", "seen_ids_tax_delinquent.json",
+                     "seen_ids_public_notices.json"):
+            seen.update(_read_seen(name))
+    month = today[:7]
+    y, m = int(today[:4]), int(today[5:7])
+    last_month = "%04d-%02d" % ((y, m - 1) if m > 1 else (y - 1, 12))
+    first_seen: dict[tuple[str, str], str] = {}
+    out: dict[str, dict] = {}
+    days = sorted({d for table in families.values() for d in table})
+    for d in days:
+        if d > today:
+            continue
+        for family, table in families.items():
+            for row in table.get(d, []):
+                key = feed_key(row, family)
+                addr = _norm_addr(row.get("Property Street Address", ""), row.get("Property ZIP Code", ""))
+                if not key or not addr or addr.startswith("|") or (key, addr) in first_seen:
+                    continue
+                first_seen[(key, addr)] = d
+                rep = out.setdefault(key, {"new_today": 0, "last_new": "", "this_month": 0, "last_month": 0,
+                                           "lags": [], "undated_today": 0})
+                rep["last_new"] = d
+                if d[:7] == month:
+                    rep["this_month"] += 1
+                elif d[:7] == last_month:
+                    rep["last_month"] += 1
+                if d == today:
+                    rep["new_today"] += 1
+                    filed = filed_day(row, family, seen)
+                    if filed and filed <= d:
+                        rep["lags"].append((date.fromisoformat(d) - date.fromisoformat(filed)).days)
+                    else:
+                        rep["undated_today"] += 1
+    for rep in out.values():
+        lags = sorted(rep.pop("lags"))
+        rep["lag_median"] = lags[len(lags) // 2] if lags else None
+        rep["lag_max"] = lags[-1] if lags else None
+        rep["lag_measured"] = len(lags)
+    out["_followed"] = _appointments_followed(first_seen)
+    return out
+
+
+def _appointments_followed(first_seen: dict) -> dict:
+    """How many substitute trustee records later showed up as a foreclosure sale notice: the
+    proof that the earlier signal really is earlier."""
+    appt = {addr: d for (key, addr), d in first_seen.items() if key == "knox_substitute_trustee"}
+    later = sum(1 for (key, addr), d in first_seen.items()
+                if key.endswith("_foreclosure") and addr in appt and d > appt[addr])
+    return {"appointments": len(appt), "later_a_sale_notice": later}
+
+
+def feed_findings(today: str, report: dict, runs: list[dict], stages: list[str]) -> tuple[list[str], list[str]]:
+    """(red, amber) findings from the feed report. Empty unless a switch asks for an alarm, or a
+    feed from a NEWLY switched-on stage has gone silent past its own threshold."""
+    red: list[str] = []
+    amber: list[str] = []
+    try:
+        import ftm_feeds
+    except Exception:
+        return red, amber
+    try:
+        lag_alarm = int(os.getenv("FTM_FEED_LAG_ALARM_DAYS", "0") or 0)
+    except ValueError:
+        lag_alarm = 0
+    asked = {x.strip() for x in os.getenv("FTM_HEALTH_ALARM_FEEDS", "").split(",") if x.strip()}
+    today_d = date.fromisoformat(today)
+    for f in ftm_feeds.live_feeds(stages):
+        rep = report.get(f.key) or {}
+        lag = rep.get("lag_median")
+        if lag_alarm and lag is not None and lag > lag_alarm:
+            red.append("%s is running %d days behind its filings (%d new today)."
+                       % (f.label, lag, rep.get("new_today", 0)))
+        # Silence. The four notice feeds keep the check they have always had (in analyze). A feed
+        # from today's run is judged only when named; a feed from a newer stage is judged on its
+        # own threshold from the day its stage first ran.
+        judged = (f.key in asked) or (f.stage not in ftm_feeds.TODAY_STAGES and not f.core)
+        if f.core or not judged or not f.stale_days:
+            continue
+        last = rep.get("last_new") or ""
+        since = last or _first_run_day(runs, f.stage)
+        if not since:
+            continue
+        gap = (today_d - date.fromisoformat(since)).days
+        if gap >= f.stale_days:
+            red.append("%s has produced nothing for %d days (%s)."
+                       % (f.label, gap, ("last %s" % last) if last else "never since it was switched on"))
+    return red, amber
+
+
+def _first_run_day(runs: list[dict], stage: str) -> str:
+    days = [_day_of(r) for r in runs if _stage(r, stage) is not None and _day_of(r)]
+    return min(days) if days else ""
+
+
+def paid_sources(today: str) -> list[dict]:
+    """Days left on each paid source, from what the runner last read (ftm_sources.json).
+
+    Empty when the runner is not keeping the file (FTM_FEED_HEALTH is not set). A reading goes
+    stale: days left are recomputed from the day it was read, and the age is shown."""
+    try:
+        with open(config.STATE_DIR / "ftm_sources.json", "r", encoding="utf-8") as fh:
+            held = json.load(fh)
+    except Exception:
+        return []
+    out = []
+    for name, d in sorted((held or {}).items()):
+        if not isinstance(d, dict):
+            continue
+        read = _iso_day(str(d.get("read") or ""))
+        age = (date.fromisoformat(today) - date.fromisoformat(read)).days if read else None
+        left = d.get("days_left")
+        if d.get("expires"):
+            try:
+                left = (date.fromisoformat(d["expires"]) - date.fromisoformat(today)).days
+            except ValueError:
+                pass
+        elif left is not None and age is not None:
+            left = int(left) - age
+        out.append({"source": name, "days_left": left, "expires": d.get("expires") or "",
+                    "read": read, "age_days": age, "state": d.get("state") or ""})
+    return out
+
+
 # ── the ledger: what makes "new" mean new ─────────────────────────────
 
 
@@ -286,7 +540,8 @@ def _row_list(row: dict, src: str) -> str:
 def _addresses_for(day: str) -> list[tuple[str, str, str]]:
     """(key, source, list_name) for every row this day's pipelines wrote."""
     out: list[tuple[str, str, str]] = []
-    for src, table in (("notices", _notice_csvs()), ("county", _county_csvs())):
+    # "feeds" holds the notice feeds that run alone; it is empty until one is switched on.
+    for src, table in (("notices", _notice_csvs()), ("county", _county_csvs()), ("feeds", _feed_csvs())):
         for p in table.get(day, []):
             for r in _read_csv(p):
                 k = _norm_addr(r.get("Property Street Address", ""),
@@ -302,7 +557,7 @@ def _seed_ledger(led: dict, exclude_day: str) -> int:
     Everything already on the volume is backdated into the ledger EXCEPT the day
     being reported, so today's number is still measured honestly.
     """
-    days = sorted(set(_notice_csvs()) | set(_county_csvs()))
+    days = sorted(set(_notice_csvs()) | set(_county_csvs()) | set(_feed_csvs()))
     n = 0
     for d in days:
         if d >= exclude_day:
@@ -321,8 +576,13 @@ def _seed_ledger(led: dict, exclude_day: str) -> int:
 def analyze(runs: list[dict], today: str, *, feed_last: dict, feed_today: dict,
             new_by_source: dict, uploaded_by_source: dict,
             requested_stages: list[str], ledger_seeded: bool,
-            stale_days: int = STALE_DAYS) -> dict:
-    """Turn the raw material into findings and a verdict. No IO."""
+            stale_days: int = STALE_DAYS, feed_red: list | None = None,
+            feed_amber: list | None = None) -> dict:
+    """Turn the raw material into findings and a verdict. No IO.
+
+    `feed_red` and `feed_amber` are the feed-health findings (lag, a newer feed gone silent).
+    They are appended AFTER the run's own findings on purpose: the daily post carries only the
+    first red finding, and "the stage failed" names the cause better than "the feed is late"."""
     today_runs = [r for r in runs if _day_of(r) == today]
     run = today_runs[-1] if today_runs else None
 
@@ -381,6 +641,9 @@ def analyze(runs: list[dict], today: str, *, feed_last: dict, feed_today: dict,
     if ledger_seeded:
         amber.append("Record ledger was seeded from history on this run, so the "
                      "new-record count starts being meaningful tomorrow.")
+
+    red.extend(feed_red or [])
+    amber.extend(feed_amber or [])
 
     verdict = "red" if red else ("amber" if amber else "green")
     return {
@@ -460,12 +723,24 @@ def collect(days: int = WINDOW_DAYS, *, update_ledger: bool = True) -> dict:
         if i + 1 < len(requested):
             stages_req = [x for x in requested[i + 1].split(",") if x]
 
+    # Feed health. Computed on every pass and shown in --full; it adds a FINDING only when a
+    # switch asks for one. A failure in here must never take the daily verdict down with it.
+    feeds: dict = {}
+    feed_red: list[str] = []
+    feed_amber: list[str] = []
+    try:
+        feeds = feed_report(today)
+        feed_red, feed_amber = feed_findings(today, feeds, runs, stages_req)
+    except Exception as exc:
+        logger.warning("feed health skipped: %s", exc)
+
     data = analyze(
         window, today,
         feed_last=feed_last, feed_today=dict(feed_today),
         new_by_source=dict(new_by_source),
         uploaded_by_source=dict(uploaded_by_source),
         requested_stages=stages_req, ledger_seeded=seeded_now,
+        feed_red=feed_red, feed_amber=feed_amber,
     )
     data["window_days"] = days
     data["baseline"] = sorted(volumes)[len(volumes) // 2] if volumes else 0
@@ -473,6 +748,12 @@ def collect(days: int = WINDOW_DAYS, *, update_ledger: bool = True) -> dict:
     data["history"] = window
     data["new_by_list"] = dict(new_by_list)
     data["uploaded_by_list"] = dict(uploaded_by_list)
+    data["feeds"] = feeds
+    data["stages_requested"] = stages_req
+    try:
+        data["paid_sources"] = paid_sources(today)
+    except Exception:
+        data["paid_sources"] = []
     return data
 
 
@@ -486,6 +767,23 @@ def _icon(verdict: str) -> str:
 EXPECTED_LISTS = ["Foreclosure", "Probate", "Condemned"]
 
 REASON_LIMIT = 120
+
+
+def _newer_live_lists(stages: list[str]) -> list[str]:
+    """Lists fed by a stage that was switched on AFTER the three lists above were fixed.
+
+    A list that stops producing has to show as 0, not vanish, and that holds for a new feed the
+    day it goes live. Lists from today's run are deliberately not added (Liens would lengthen
+    every post): only a stage somebody chose to switch on changes what the post shows."""
+    try:
+        import ftm_feeds
+        out: list[str] = []
+        for f in ftm_feeds.live_feeds(stages):
+            if f.stage not in ftm_feeds.TODAY_STAGES and f.list_name not in out:
+                out.append(f.list_name)
+        return out
+    except Exception:
+        return []
 
 
 def _short_reason(text: str, limit: int = REASON_LIMIT) -> str:
@@ -525,7 +823,9 @@ def render_short(data: dict) -> str:
 
     # Expected lists first in a stable order, then anything unexpected, so a new
     # notice type appears instead of being silently dropped.
-    names = EXPECTED_LISTS + sorted(k for k in new_by_list if k not in EXPECTED_LISTS)
+    expected = EXPECTED_LISTS + [n for n in _newer_live_lists(data.get("stages_requested") or [])
+                                 if n not in EXPECTED_LISTS]
+    names = expected + sorted(k for k in new_by_list if k not in expected)
     counts = " · ".join(f"{n} {new_by_list.get(n, 0)}" for n in names)
 
     when = data["today"]
@@ -546,6 +846,63 @@ def render_short(data: dict) -> str:
     if data["verdict"] == "red" and data["red"]:
         lines.append(_short_reason(data["red"][0]))
     return "\n".join(lines)
+
+
+def _render_feed_health(data: dict) -> list[str]:
+    """The feed health section of the full report: one line per live feed, then the paid
+    sources and the request budget. Nothing here is in the daily post."""
+    feeds = data.get("feeds") or {}
+    lines: list[str] = []
+    try:
+        import ftm_feeds
+        live = ftm_feeds.live_feeds(data.get("stages_requested"))
+    except Exception:
+        return lines
+    if live:
+        lo, hi = ftm_feeds.TEACHING_MONTHLY
+        lines.append("")
+        lines.append("*Feed health*  (lag = pull date minus filing date, on new records)")
+        today_d = date.fromisoformat(data["today"])
+        for f in live:
+            rep = feeds.get(f.key) or {}
+            last = rep.get("last_new") or ""
+            if last:
+                gap = (today_d - date.fromisoformat(last)).days
+                when = "today" if gap == 0 else f"{last}, {gap}d ago"
+            else:
+                when = "never"
+            if rep.get("lag_median") is None:
+                lag = "no dated new record today"
+            else:
+                lag = f"lag {rep['lag_median']}d (max {rep['lag_max']}d over {rep['lag_measured']})"
+            lines.append(f"  {f.label}: {rep.get('new_today', 0)} new today, {lag}, last good day {when}, "
+                         f"{rep.get('this_month', 0)} this month, {rep.get('last_month', 0)} last month")
+        lines.append(f"  The teaching expects {lo} to {hi} new records a month from one first-to-market list.")
+        followed = feeds.get("_followed") or {}
+        if followed.get("appointments"):
+            lines.append(f"  Substitute trustee records that later ran as a sale notice: "
+                         f"{followed['later_a_sale_notice']} of {followed['appointments']}.")
+
+    paid = data.get("paid_sources") or []
+    lines.append("")
+    lines.append("*Paid sources*")
+    if not paid:
+        lines.append("  Days left are not being recorded (set FTM_FEED_HEALTH=1 on the runner).")
+    for p in paid:
+        left = "not read" if p["days_left"] is None else f"{p['days_left']} days left"
+        until = f", expires {p['expires']}" if p.get("expires") else ""
+        age = "" if not p.get("age_days") else f" (read {p['age_days']}d ago)"
+        lines.append(f"  {p['source']}: {left}{until}{age}")
+
+    try:
+        import ftm_budget
+        lines.append("")
+        lines.append("*DataSift request budget*")
+        for line in ftm_budget.summary_lines():
+            lines.append("  " + line)
+    except Exception:
+        pass
+    return lines
 
 
 def render(data: dict) -> str:
@@ -615,11 +972,13 @@ def render(data: dict) -> str:
         for f in data["amber"][:6]:
             lines.append(f"  {f}")
 
+    lines.extend(_render_feed_health(data))
+
     # The inventory. Reported every day so a source that was never automated
     # cannot quietly disappear from the picture.
     lines.append("")
     lines.append("*Full source inventory*")
-    for name, state, note in SOURCES:
+    for name, state, note in sources(data.get("stages_requested")):
         if state == AUTOMATED:
             continue
         lines.append(f"  {name}: {state} ({note})")
@@ -744,7 +1103,7 @@ def selftest() -> int:
     text = render(d)
     r.check("green render says it is working",
             "working correctly" in text)
-    r.check("render has no em dash", "—" not in text and "–" not in text)
+    r.check("render has no em dash", _EM not in text and _EN not in text)
     r.check("render lists the inventory", "Full source inventory" in text)
     r.check("render shows new vs written", "New records today" in text)
 
@@ -804,7 +1163,7 @@ def selftest() -> int:
             len([x for x in render_short(amber).split("\n") if x.strip()]) == 2)
 
     r.check("short post has no em dash",
-            "—" not in rs and "–" not in rs and "—" not in s)
+            _EM not in rs and _EN not in rs and _EM not in s)
 
     # An unexpected list must surface rather than be dropped.
     extra = dict(green); extra["new_by_list"] = {"Eviction": 2}
@@ -824,6 +1183,46 @@ def selftest() -> int:
     r.check("address key is case stable", a == b, f"{a!r} vs {b!r}")
     r.check("address key includes zip", a.endswith("|37917"))
     r.check("blank address yields no key", _norm_addr("", "37917") == "")
+
+    # Feed health (build plan 1.12). Invented rows; nothing is read from the volume.
+    def _row(n, county="Knox", ntype="foreclosure"):
+        return {"Property Street Address": "%d Sample Hollow Rd" % n, "Property ZIP Code": "37918",
+                "County": county, "Notice Type": ntype, "Lists": ntype.capitalize(),
+                "Source URL": "https://example.invalid/Details.aspx?ID=%d" % (7000 + n)}
+
+    fams = {"notices": {"2026-08-20": [_row(1)], T: [_row(1), _row(2), _row(3)]}, "county": {}, "feeds": {}}
+    rep = feed_report(T, fams, {"7002": "2026-08-27", "7003": "2026-08-24"})
+    fc = rep.get("knox_foreclosure") or {}
+    r.check("a row sent before is not new", fc.get("new_today") == 2, str(fc))
+    r.check("lag is pull day minus filing day", fc.get("lag_median") == 4 and fc.get("lag_max") == 4, str(fc))
+    r.check("last good day is the last NEW record", fc.get("last_new") == T)
+    stages = ["notices", "capture", "liens", "county", "sold"]
+    keep = {k: os.environ.pop(k, None) for k in ("FTM_FEED_LAG_ALARM_DAYS", "FTM_HEALTH_ALARM_FEEDS")}
+    try:
+        red, _amber = feed_findings(T, rep, [], stages)
+        r.check("a late feed adds no finding unless the alarm is set", red == [], str(red))
+        os.environ["FTM_FEED_LAG_ALARM_DAYS"] = "2"
+        red, _amber = feed_findings(T, rep, [], stages)
+        r.check("the lag alarm names the feed", len(red) == 1 and "4 days behind" in red[0], str(red))
+    finally:
+        os.environ.pop("FTM_FEED_LAG_ALARM_DAYS", None)
+        for k, v in keep.items():
+            if v is not None:
+                os.environ[k] = v
+    late = analyze([_mkrun(T, notices=("ok",))], T, **{**base, "requested_stages": ["notices"],
+                                                      "feed_red": ["Foreclosure notices, Knox is running 4 days behind."]})
+    late.update(window_days=14, baseline=8, ledger_size=979, history=[], new_by_list={})
+    lbody = [ln for ln in render_short(late).split("\n") if ln.strip()]
+    r.check("a feed finding is the reason line of a red post", len(lbody) == 3 and "4 days behind" in lbody[2])
+    full = dict(green)
+    full.update(feeds=rep, stages_requested=stages, paid_sources=[])
+    ftext = render(full)
+    r.check("the full report carries feed health", "Feed health" in ftext and "lag 4d" in ftext)
+    r.check("feed health never reaches a green post", "lag" not in render_short(full).lower())
+    r.check("the full report has no em dash", _EM not in ftext and _EN not in ftext)
+    states = {name: state for name, state, _note in sources(stages)}
+    r.check("the inventory follows the run", states.get("Liens, Knox") == AUTOMATED
+            and states.get("Substitute trustee appointments, Knox") == SWITCHED_OFF)
 
     return r.report()
 

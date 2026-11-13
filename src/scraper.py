@@ -70,6 +70,29 @@ class SubscriptionExpired(RuntimeError):
 # to warn before it lapses. {"expires": "YYYY-MM-DD", "expired": bool, "product": str}
 SUBSCRIPTION: dict = {}
 
+# What the last scrape_all saw of each saved search, keyed by its dropdown label:
+#   {"reached": bool, "pages": int, "rows": int, "notices": int}
+# `rows` counts the View buttons actually read off the search's grid, seen before or not, and it
+# is the only proof that the search was opened: a label that is missing from the dropdown falls
+# through to the same "0 results" return as a search with nothing new. `reached` only says the
+# paging step ran. A caller that must tell "read, and nothing new" from "could not be opened"
+# reads `rows`, because a feed that publishes twice a year cannot be judged by whether it
+# produced something today. Bookkeeping only; nothing in the scrape reads it back.
+SEARCH_STATS: dict = {}
+
+
+def _stat(name: str, key: str, value=None, add: int = 0) -> None:
+    """Record one fact about a saved search. Never raises: a counter must not cost a notice."""
+    try:
+        row = SEARCH_STATS.setdefault(name, {"reached": False, "pages": 0, "rows": 0, "notices": 0})
+        if value is not None:
+            row[key] = value
+        if add:
+            row[key] = int(row.get(key) or 0) + int(add)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 _SUB_EXPIRY_RE = re.compile(
     r"Current\s+Sub\.?\s+Expiration:\s*(\d{1,2})/(\d{1,2})/(\d{4})", re.IGNORECASE)
 _SUB_PRODUCT_RE = re.compile(r"Current\s+Product:\s*([^\r\n]+)", re.IGNORECASE)
@@ -463,6 +486,8 @@ async def run_saved_search(
     notices: list[NoticeData] = []
     current_page, total_pages = await _get_page_info(page)
     logger.info("  %d pages of results for %s", total_pages, search.saved_search_name)
+    _stat(search.saved_search_name, "reached", True)
+    _stat(search.saved_search_name, "pages", add=total_pages)
 
     # Skip ahead to start_page if needed
     if start_page > 1:
@@ -532,6 +557,7 @@ async def run_saved_search(
             break
 
     logger.info("  Found %d notices for %s", len(notices), search.saved_search_name)
+    _stat(search.saved_search_name, "notices", add=len(notices))
     return notices
 
 
@@ -594,6 +620,7 @@ async def _scrape_results_page(
     view_buttons = await page.query_selector_all(SEL_VIEW_BUTTON_PATTERN)
     num_results = len(view_buttons)
     logger.info("  %d results on this page", num_results)
+    _stat(search.saved_search_name, "rows", add=num_results)
 
     if num_results == 0:
         logger.warning(
@@ -1300,6 +1327,7 @@ async def scrape_all(
     """
     if searches is None:
         searches = SAVED_SEARCHES
+    SEARCH_STATS.clear()
 
     # Load the cross-run seen-ID cache (caller may have pre-loaded for KVS-backed stores)
     if seen_ids is None:
