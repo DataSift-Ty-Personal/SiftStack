@@ -17,6 +17,7 @@ from __future__ import annotations
 import hmac
 import json
 import logging
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -44,10 +45,33 @@ def _startup() -> None:
         from . import scheduler
         _worker["clock"], _worker["clock_stop"] = scheduler.start_thread(_roster_or_none)
         log.info("scheduler on: live workflows with a schedule trigger fire at business-local time")
-    first_hello()
+    if not first_hello() and hello_pending():
+        _worker["hello_stop"] = threading.Event()
+        _worker["hello"] = threading.Thread(target=hello_until_landed, args=(_worker["hello_stop"],),
+                                            name="first-hello", daemon=True)
+        _worker["hello"].start()
 
 
 FIRST_HELLO_KEY = "slack:first_hello"
+
+
+def hello_pending() -> bool:
+    """The Slack app's keys are set and the team has not introduced itself yet."""
+    return slack_app.mode() == "bot" and not store.kv_get(FIRST_HELLO_KEY)
+
+
+def hello_until_landed(stop, every_s: float = 300.0, tries: int = 288) -> int:
+    """Keep trying the first hello, every five minutes for a day. Two real cases: the channel is
+    private and the app is invited a few minutes after its keys were pasted, or Slack was not
+    reachable when the brain started. Stops the moment it lands. Returns the tries it used."""
+    used = 0
+    while used < tries and hello_pending():
+        if stop.wait(every_s):
+            break
+        used += 1
+        if first_hello():
+            break
+    return used
 
 
 def first_hello() -> int:

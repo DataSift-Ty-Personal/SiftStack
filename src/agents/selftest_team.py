@@ -525,6 +525,22 @@ def run(check, tmp: Path) -> None:
         store.finish(tid, "done", {})
         n0 = len(fake_slack.posts())
         check(brain.first_hello() == 0 and len(fake_slack.posts()) == n0, "it is said once, never again")
+
+        class _Stop:                      # a stop flag that is never set, and a wait that costs no time
+            waits = 0
+
+            def wait(self, seconds):
+                _Stop.waits += 1
+                if _Stop.waits == 2:      # the app is let into the channel before the third try
+                    fake_slack.down = False
+                return False
+
+        store.kv_set(brain.FIRST_HELLO_KEY, "")
+        fake_slack.down = True
+        used = brain.hello_until_landed(_Stop(), every_s=0, tries=10)
+        check(used == 2 and store.kv_get(brain.FIRST_HELLO_KEY) and not brain.hello_pending(),
+              "a hello that could not land at boot keeps trying and stops the moment it lands")
+        check(brain.hello_until_landed(_Stop(), every_s=0, tries=10) == 0, "once it has landed nothing more is tried")
     finally:
         config.SLACK_CHANNEL = ""
         worker.HANDLERS["deep_prospect"] = real_dp
