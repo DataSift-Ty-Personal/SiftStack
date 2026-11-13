@@ -7,6 +7,12 @@ requests>=2.31.0
 python-dotenv>=1.0.0
 tzdata>=2024.1
 anthropic==0.86.0
+# Verifies DataSift's Ed25519 webhook signatures (src/agents/webhook_sig.py).
+cryptography>=42
+# The team's runner. 0.2.180 is the version the live smoke (3 real turns, tool allowlist, ask-back,
+# resume) was verified on, 2026-11-11.
+claude-agent-sdk==0.2.180
+pyyaml>=6.0
 reportlab>=4.0
 pillow>=10.0
 openpyxl>=3.1

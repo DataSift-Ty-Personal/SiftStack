@@ -1,15 +1,21 @@
-"""The brain: one always-on web process that turns DataSift sequence webhooks into agent tasks.
+"""The brain: one always-on web process that turns Slack messages, DataSift sequence webhooks and
+the deploy's smoke test into tasks for the team.
 
+    POST /slack/events                         the Slack app's event subscription (signed)
     POST /hooks/datasift/<secret>/<workflow>   a sequence's webhook action lands here
-    GET  /health                               mode, queue, today's spend
+    POST /team/hello/<secret>                  start meet-the-team in the team channel (deploy check)
+    GET  /health                               mode, team, queue, today's spend
     GET  /files/<task>/<sig>/<name>            a property file, signed, for the Slack link
 
-The webhook answers in milliseconds and the work happens on the worker thread, because DataSift
-documents no retry and a slow answer risks a dropped event. Every body is logged before routing.
+Every route answers in milliseconds and the work happens on the worker thread: the web process
+never runs a model, because Slack retries after 3 seconds and DataSift retries a slow or failed
+delivery up to three times. DataSift deliveries are Ed25519-signed and verified before anything is
+logged (webhook_sig); each is deduped on DataSift's own event_id, then logged before routing.
 """
 from __future__ import annotations
 
 import hmac
+import json
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
@@ -17,7 +23,7 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
 
-from . import config, router, slack, store, worker
+from . import config, hello, intake, router, slack, slack_app, store, team, worker
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("agents.brain")
@@ -34,28 +40,131 @@ def _startup() -> None:
         log.info("requeued %d task(s) interrupted by a restart", n)
     if config.INLINE_WORKER:
         _worker["thread"], _worker["stop"] = worker.start_thread()
+    if config.SCHEDULER:
+        from . import scheduler
+        _worker["clock"], _worker["clock_stop"] = scheduler.start_thread(_roster_or_none)
+        log.info("scheduler on: live workflows with a schedule trigger fire at business-local time")
+
+
+def _roster_or_none():
+    try:
+        return team.load()
+    except Exception as exc:  # noqa: BLE001
+        log.error("roster failed to load: %s", exc)
+        return None
 
 
 @app.get("/health")
 def health() -> dict:
     day = datetime.now(timezone.utc).isoformat()[:10]
+    roster = _roster_or_none()
     return {"ok": True, "mode": config.MODE, "tasks": store.counts(),
             "spent_today_usd": round(store.spent(day=day), 2), "daily_cap_usd": config.DAILY_CAP_USD,
-            "run_cap_usd": config.RUN_CAP_USD,
-            "worker_alive": bool(_worker.get("thread") and _worker["thread"].is_alive())}
+            "run_cap_usd": config.RUN_CAP_USD, "slack": slack_app.mode(), "claude": config.USE_LLM,
+            "team": {e.id: e.display_name for e in roster.employees.values()} if roster else None,
+            "live_workflows": sorted(w.name for w in roster.workflows.values() if w.live) if roster else [],
+            "worker_alive": bool(_worker.get("thread") and _worker["thread"].is_alive()),
+            "clock_alive": bool(_worker.get("clock") and _worker["clock"].is_alive()),
+            "datasift_webhook_tests": {slug: store.kv_get("datasift:webhook_test:%s" % slug)
+                                       for slug in router.routes(roster)},
+            "autopilot": _autopilot_health()}
+
+
+def _autopilot_health() -> dict:
+    """Each playbook stage: its mode and what its last run found, did and tripped on. A stage that
+    stopped running shows an old `at`, which is what an outside watchdog looks for."""
+    try:
+        from .autopilot import policy
+        pol = policy.load()
+    except Exception as exc:  # noqa: BLE001
+        return {"error": str(exc)[:200]}
+    if pol is None:
+        return {}
+    out = {}
+    for sid, st in pol.stages.items():
+        raw = store.kv_get("autopilot:last:%s" % sid)
+        try:
+            last = json.loads(raw) if raw else {}
+        except ValueError:
+            last = {}
+        out[sid] = {"mode": st.mode, "owner": st.owner, "last": last}
+    return out
+
+
+def _secret_ok(secret: str) -> bool:
+    return bool(config.WEBHOOK_SECRET) and hmac.compare_digest(secret, config.WEBHOOK_SECRET)
+
+
+@app.post("/slack/events")
+async def slack_events(request: Request) -> dict:
+    # Ingress stays closed until the Slack app's signing secret is set: no secret, no listener.
+    if not config.SLACK_SIGNING_SECRET:
+        raise HTTPException(status_code=404)
+    raw = await request.body()
+    headers = {k.lower(): v for k, v in request.headers.items()}
+    if not slack_app.verify(headers, raw):
+        raise HTTPException(status_code=401)
+    try:
+        body = json.loads(raw or b"{}")
+    except ValueError:
+        raise HTTPException(status_code=400) from None
+    if body.get("type") == "url_verification":
+        return {"challenge": body.get("challenge", "")}
+    if headers.get("x-slack-retry-num"):
+        return {"ok": True, "retry": True}     # the first delivery was acked; a retry is a duplicate
+    event = body.get("event") or {}
+    if body.get("event_id") and not store.seen_once("slack:%s" % body["event_id"]):
+        return {"ok": True, "duplicate": True}
+    if event.get("bot_id") or event.get("subtype"):
+        return {"ok": True, "ignored": True}   # our own posts, edits, joins
+    roster = _roster_or_none()
+    if not roster:
+        return {"ok": False, "error": "roster"}
+    store.log_event("slack", event.get("type", ""), {"channel": event.get("channel"), "ts": event.get("ts"),
+                                                     "thread_ts": event.get("thread_ts")})
+    return {"ok": True, **intake.slack_event(event, roster)}
+
+
+@app.post("/team/hello/{secret}")
+def team_hello(secret: str) -> dict:
+    if not _secret_ok(secret):
+        raise HTTPException(status_code=404)
+    roster = _roster_or_none()
+    if not roster:
+        raise HTTPException(status_code=500, detail="roster did not load")
+    return {"ok": True, "task": hello.start(roster, roster.team_channel, "", source="deploy")}
 
 
 @app.post("/hooks/datasift/{secret}/{workflow}")
 async def datasift_hook(secret: str, workflow: str, request: Request) -> dict:
-    if not config.WEBHOOK_SECRET or not hmac.compare_digest(secret, config.WEBHOOK_SECRET):
+    if not _secret_ok(secret):
         raise HTTPException(status_code=404)
+    raw = await request.body()
     try:
-        payload = await request.json()
-    except Exception:  # noqa: BLE001
-        payload = {"_raw": (await request.body()).decode("utf-8", "replace")[:20000]}
+        payload = json.loads(raw.decode("utf-8") or "{}")
+    except ValueError:
+        payload = {"_raw": raw.decode("utf-8", "replace")[:20000]}
+    # Every DataSift delivery is Ed25519-signed (developers.datasift.ai/guides/webhooks). In require
+    # mode an unsigned or forged body is refused before anything is logged or queued.
+    from . import webhook_sig
+    sig_mode = webhook_sig.mode()
+    if sig_mode != "off":
+        ok, why = webhook_sig.verify(request.headers, raw)
+        if not ok:
+            log.warning("datasift webhook signature %s: %s", "REFUSED" if sig_mode == "require" else "invalid", why)
+            if sig_mode == "require":
+                raise HTTPException(status_code=401, detail="signature: %s" % why)
+    if isinstance(payload, dict) and payload.get("event_type") == "webhook.test":
+        store.log_event("datasift", workflow + ":test", payload)
+        store.kv_set("datasift:webhook_test:%s" % workflow, datetime.now(timezone.utc).isoformat(timespec="seconds"))
+        return {"ok": True, "test": True}
+    # DataSift retries up to three times and may deliver twice or out of order: its event_id is the key.
+    ds_event = (payload.get("event_id") if isinstance(payload, dict) else "") or ""
+    if ds_event and not store.seen_once("datasift-event:%s" % ds_event):
+        return {"ok": True, "duplicate": True}
     event_id = store.log_event("datasift", workflow, payload)
     try:
-        r = router.route(workflow, payload)
+        r = router.route(workflow, payload, _roster_or_none())
     except KeyError:
         raise HTTPException(status_code=404) from None
     if not r["record_uuid"]:

@@ -1,0 +1,468 @@
+"""Team selftest: the roster, routing, the bus, Slack in and out, the tools, the runner and the
+hello chain. Zero network: Slack, DataSift and the Claude Agent SDK are all fakes, the database is
+a fresh file, tasks run by id (never a blind drain), and the deep prospect handler is swapped for a
+canned one so nothing can spend.
+"""
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import hmac
+import json
+import sqlite3
+import time
+from pathlib import Path
+
+from . import config
+
+U3 = "33333333-2222-3333-4444-555555555555"
+U4 = "44444444-2222-3333-4444-555555555555"
+REC = {"uuid": U3, "address": {"street": "123 Main St", "city": "Knoxville", "state": "TN", "postal_code": "37914",
+                               "county": "Knox"},
+       "owner": {"first_name": "Pat", "last_name": "Example", "phones": [{"number": "8655550101"}]},
+       "status": {"title": "Warm Lead"}, "lists": [{"title": "Probate"}], "tags": ["Courthouse Data"],
+       "estimate_value": 180000, "bedrooms": 3}
+REC2 = dict(REC, uuid=U4, address={"street": "12 Oak St", "city": "Maryville", "state": "TN", "postal_code": "37801"})
+
+
+class FakeCRM:
+    def get_record(self, uuid):
+        return {U3: REC, U4: REC2}.get(uuid, {})
+
+    def search_by_address(self, q, limit=10, offset=0):
+        q = q.lower()
+        if "123 main" in q:
+            return [REC]
+        if "oak" in q:
+            return [REC2, dict(REC2, uuid=U3)]
+        return []
+
+
+class _Resp:
+    def __init__(self, d):
+        self._d = d
+
+    def json(self):
+        return self._d
+
+
+class FakeSlack:
+    names = {"CROMA": "roma-sales", "CTEAM": "ai-team", "CDIGGS": "diggs-research"}
+
+    def __init__(self):
+        self.calls, self.n = [], 0
+
+    def post(self, url, json=None, timeout=None, headers=None):
+        self.n += 1
+        self.calls.append((url.rsplit("/", 1)[-1], dict(json or {})))
+        return _Resp({"ok": True, "ts": "1700000000.%06d" % self.n})
+
+    def get(self, url, params=None, timeout=None, headers=None):
+        cid = (params or {}).get("channel", "")
+        return _Resp({"ok": cid in self.names, "channel": {"name": self.names.get(cid, "")}})
+
+    def posts(self):
+        return [b for m, b in self.calls if m == "chat.postMessage"]
+
+
+class FakeSDK:
+    """Stands in for claude_agent_sdk: records the options, runs the scripted tool calls through the
+    real guard hook and the real tool handlers, and returns a ResultMessage."""
+    script: list = []
+    options: list = []
+    prompts: list = []
+    denied: list = []
+    outputs: list = []
+
+    class ClaudeAgentOptions:
+        def __init__(self, **kw):
+            self.__dict__.update(kw)
+            self.kw = kw
+
+    class ResultMessage:
+        def __init__(self, **kw):
+            self.__dict__.update({"result": "", "session_id": "", "total_cost_usd": 0.0, "num_turns": 0,
+                                  "is_error": False, "subtype": "success", "errors": None})
+            self.__dict__.update(kw)
+
+    class HookMatcher:
+        def __init__(self, matcher=None, hooks=None, timeout=None):
+            self.matcher, self.hooks = matcher, hooks or []
+
+    @staticmethod
+    def tool(name, description, schema):
+        def deco(fn):
+            return {"name": name, "description": description, "schema": schema, "handler": fn}
+        return deco
+
+    @staticmethod
+    def create_sdk_mcp_server(name, version="1.0.0", tools=None):
+        return {"name": name, "tools": {t["name"]: t for t in tools or []}}
+
+    @staticmethod
+    async def query(prompt, options):
+        FakeSDK.options.append(options)
+        FakeSDK.prompts.append(prompt)
+        step = FakeSDK.script.pop(0)
+        server = options.mcp_servers["team"]
+        guard = options.hooks["PreToolUse"][0].hooks[0]
+        for name, args in step.get("calls", []):
+            full = name if name[0].isupper() else "mcp__team__" + name
+            if await guard({"tool_name": full, "tool_input": args}, None, {}):
+                FakeSDK.denied.append(name)
+                continue
+            FakeSDK.outputs.append((name, await server["tools"][name]["handler"](args)))
+        yield FakeSDK.ResultMessage(**({"result": step.get("text", ""), "session_id": "sess-%d" % len(FakeSDK.options),
+                                        "total_cost_usd": 0.11, "num_turns": 2} | step.get("result", {})))
+
+
+def _text_of(out: dict) -> str:
+    return " ".join(c.get("text", "") for c in out.get("content", []))
+
+
+def _sign(secret: str, body: bytes, ts: str | None = None) -> dict:
+    ts = ts or str(int(time.time()))
+    sig = "v0=" + hmac.new(secret.encode(), b"v0:" + ts.encode() + b":" + body, hashlib.sha256).hexdigest()
+    return {"x-slack-request-timestamp": ts, "x-slack-signature": sig, "content-type": "application/json"}
+
+
+def run(check, tmp: Path) -> None:
+    default_ws = config.WORKSPACES_DIR
+    config.DB_PATH, config.WORKSPACES_DIR = tmp / "team.db", tmp / "workspaces"
+    config.SLACK_BOT_TOKEN, config.SLACK_SIGNING_SECRET, config.USE_LLM = "", "", False
+    config.DAILY_CAP_USD, config.AGENT_BUDGET_USD, config.MAX_HOPS = 25.0, 2.0, 6
+    from . import bus, hello, intake, router, runner, slack_app, store, team, tools, worker
+    store.init()
+    tools.CRM = FakeCRM()
+    fake_slack = FakeSlack()
+    slack_app._http = fake_slack
+    slack_app._CHANNEL_NAMES.clear()
+    real_dp = worker.HANDLERS["deep_prospect"]
+    worker.HANDLERS["deep_prospect"] = (lambda t: {"street": "123 Main St", "headline": "daughter signs"},
+                                        lambda t, r: "Deep prospect done for %s: %s" % (r["street"], r["headline"]))
+
+    def run_id(tid):
+        store.mark(tid, "running")
+        return worker.run_task(store.task(tid))
+
+    try:
+        print("team: roster")
+        roster = team.load()
+        check(roster.order() == ["analysis", "research", "sales", "ops"], "four employees, in hello order")
+        check([e.display_name for e in roster.employees.values()] == ["Atlas", "Diggs", "Roma", "Quinn"],
+              "Tyler's persona names are the display names")
+        check(len(roster.workflows) >= 25 and not roster.warnings, "the catalog loads with no missing skills")
+        check(all(worker.handler_for(w.name) for w in roster.workflows.values() if w.live),
+              "every live workflow has a worker handler (fixed handlers plus the autopilot playbook)")
+        try:
+            team.parse({"employees": {"x": {"display_name": "X", "role": "r", "slack_channel": "c", "model": "m",
+                                            "job": "j", "introduction": "i", "builtins": ["Bash"]}},
+                        "workflows": {"w": {"owner": "nobody", "summary": "s", "status": "maybe"}}})
+            check(False, "a broken roster is refused")
+        except team.RosterError as exc:
+            msg = str(exc)
+            check("Bash" in msg and "nobody" in msg and "maybe" in msg, "every roster problem is reported at once")
+        check(router.routes(roster).get("deep-prospect") == ("research", "deep_prospect"), "deep-prospect routes to Diggs")
+        check("quick-screen" not in router.routes(roster), "a planned workflow's webhook is not routed")
+        md = team.render_team_md(roster)
+        check(md == team.render_team_md(roster), "TEAM.md renders the same every time (a stable prompt prefix)")
+        check(all(w in md for w in roster.workflows) and all(e.display_name in md for e in roster.employees.values()),
+              "TEAM.md names every employee and every workflow")
+        check("—" not in md and "–" not in md, "TEAM.md has no em or en dash")
+        committed = (config.TEAM_DIR / "TEAM.md").read_text(encoding="utf-8")
+        check(committed.endswith(md), "team/TEAM.md matches the roster (run cli.py team after editing it)")
+        for e in roster.employees.values():
+            p = team.persona(e.id)
+            check(p.startswith("# %s" % e.display_name) and "—" not in p and "–" not in p,
+                  "%s's brief exists, is titled, and has no dash" % e.display_name)
+
+        print("team: org chart coverage")
+        agents = team.org_chart_agents()
+        if agents:
+            cov = team.coverage(roster, agents)
+            check(not cov["uncovered"], "every live org-chart agent is run by a workflow %s" % cov["uncovered"][:4])
+            check(not cov["unknown"], "every covers id is on the org chart %s" % cov["unknown"][:3])
+            check(cov["covered"] + len(cov["platform"]) + len(cov["retired"]) == cov["agents"],
+                  "the org chart adds up: run by a workflow + platform + retired = all %d" % cov["agents"])
+            fake = dict(agents, zzlive={"name": "New Agent", "dept": "x", "phase": 1, "status": "live", "source": ""})
+            check(any("zzlive" in p for p in team.coverage(roster, fake)["problems"]),
+                  "a new org-chart agent no workflow runs is a problem, not a silent gap")
+            r2 = team.parse({"employees": {"x": {"display_name": "X", "role": "r", "slack_channel": "c", "model": "m",
+                                                 "job": "j", "introduction": "i"}},
+                             "workflows": {"w": {"owner": "x", "summary": "s", "covers": ["nosuch", "shot"]}}})
+            probs = " ".join(team.coverage(r2, agents)["problems"])
+            check("nosuch" in probs and "retired agent shot" in probs,
+                  "an id off the chart, or a retired agent, in covers is a problem")
+            cmd = team.render_coverage_md(roster, agents)
+            check("—" not in cmd and "–" not in cmd and cmd == team.render_coverage_md(roster, agents),
+                  "COVERAGE.md is deterministic and dash-free")
+            cov_file = config.TEAM_DIR / "COVERAGE.md"
+            check(cov_file.is_file() and cov_file.read_text(encoding="utf-8").endswith(cmd),
+                  "team/COVERAGE.md matches the roster and org chart (run cli.py team after editing either)")
+        else:
+            print("  (docs/agents.json not present here; coverage is checked in the repo)")
+
+        print("team: routing")
+        R = lambda ch, t: team.route_message(roster, ch, t)  # noqa: E731
+        check(R("ai-team", "Roma, quick screen 123 Main St") == {"kind": "ask", "agent": "sales",
+                                                              "text": "quick screen 123 Main St"}, "a name at the start picks the employee")
+        check(R("ai-team", "good morning Diggs: deep prospect 123 Main St")["agent"] == "research",
+              "a greeting before the name still routes to the name")
+        check(R("ai-team", "<@U0BOT> atlas pull Knox notices")["agent"] == "analysis", "a bot mention is stripped")
+        for g in ("good morning", "Hello World!", "meet the team", "Good morning team!"):
+            check(R("ai-team", g) == {"kind": "hello"}, "%r starts meet-the-team" % g)
+        check(R("ai-team", "good morning, can you look at 12 Oak?") == {"kind": "which"},
+              "a greeting with a request in it is not the hello chain")
+        check(R("roma-sales", "what about 12 Oak St?")["agent"] == "sales", "an employee's channel picks the employee")
+        check(R("ai-team", "this reminds me of roma") == {"kind": "which"}, "a name mid-sentence does not steal the message")
+
+        print("team: store migration")
+        old = tmp / "old.db"
+        c = sqlite3.connect(old)
+        c.executescript("CREATE TABLE tasks (id INTEGER PRIMARY KEY AUTOINCREMENT, created TEXT, agent TEXT, "
+                        "workflow TEXT, record_uuid TEXT, subject TEXT, status TEXT, attempts INTEGER DEFAULT 0, "
+                        "started TEXT, finished TEXT, result TEXT, error TEXT, event_id INTEGER);"
+                        "INSERT INTO tasks (created, agent, workflow, record_uuid, status) "
+                        "VALUES ('2026-11-03', 'research', 'deep_prospect', 'x', 'done');")
+        c.commit()
+        c.close()
+        live_db, config.DB_PATH = config.DB_PATH, old
+        store.init()
+        have = {r[1] for r in sqlite3.connect(old).execute("PRAGMA table_info(tasks)")}
+        check({n for n, _ in store.TEAM_COLUMNS} <= have, "an old queue gains the team columns in place")
+        row = store.task(1)
+        check(row and row["status"] == "done" and row["mode"] == "direct", "old rows survive with sane defaults")
+        config.DB_PATH = live_db
+
+        print("team: bus")
+        a, _ = store.enqueue("sales", "ask", "", payload={"text": "x"}, mode="agent", slack_channel="CROMA",
+                             slack_thread="1700.1", source="slack")
+        ta = store.task(a)
+        h = bus.handoff(ta, roster, "Diggs", "Who signs for 123 Main St?", "Owner Pat Example")
+        th = store.task(h)
+        check(th["agent"] == "research" and th["thread_id"] == ta["thread_id"] and th["hop"] == 1 and th["parent_id"] == a
+              and th["slack_thread"] == "1700.1" and th["source"] == "agent:sales",
+              "a handoff keeps the thread and the Slack thread and counts a hop")
+        check(store.payload_of(th)["known"] == "Owner Pat Example", "what the sender knows travels with the work")
+        for args, why in ((("Roma", "x"), "an employee cannot hand work to itself"),
+                          (("Nobody", "x"), "an unknown teammate is refused"), (("Diggs", "  "), "an empty ask is refused")):
+            try:
+                bus.handoff(ta, roster, *args)
+                check(False, why)
+            except bus.HandoffRefused:
+                check(True, why)
+        try:
+            bus.handoff(dict(ta, hop=config.MAX_HOPS), roster, "Diggs", "x")
+            check(False, "a chain past the hop limit is refused")
+        except bus.HandoffRefused:
+            check(True, "a chain past the hop limit is refused")
+
+        print("team: slack transport")
+        config.SLACK_SIGNING_SECRET = "sign-secret"
+        body = b'{"type":"event_callback"}'
+        check(slack_app.verify(_sign("sign-secret", body), body), "a correctly signed request verifies")
+        check(not slack_app.verify(_sign("other", body), body), "a wrong signing secret fails")
+        check(not slack_app.verify(_sign("sign-secret", body, str(int(time.time()) - 900)), body), "a replay fails")
+        check(not slack_app.verify({}, body), "no signature fails")
+        check(slack_app.clean_text("ARV — $180,000, rehab 4–6 weeks") == "ARV, $180,000, rehab 4-6 weeks",
+              "dashes are cleaned out of anything the team says")
+        check(slack_app.clean_text("**REVIEW** on 123 Main") == "*REVIEW* on 123 Main",
+              "Markdown bold becomes Slack bold instead of showing its asterisks")
+        check(slack_app.post("CROMA", "hi") == "" and not fake_slack.calls, "no bot token: falls back, never threads")
+        config.SLACK_BOT_TOKEN = "xoxb-test"
+        ts = slack_app.post("CROMA", "hi", thread_ts="1700.1", employee=roster.employees["sales"])
+        p = fake_slack.posts()[-1]
+        check(ts and p["thread_ts"] == "1700.1" and p["username"] == "Roma" and p["icon_emoji"],
+              "a bot post goes in the thread under the employee's own name and icon")
+        check(slack_app.channel_name("CROMA") == "roma-sales" and slack_app.channel_name("D123") == "",
+              "channel ids resolve to names; a DM has none")
+
+        print("team: hello chain")
+        n0 = len(fake_slack.posts())
+        first = hello.start(roster, "CTEAM", "1700.9")
+        tid, seen = first, []
+        while tid:
+            run_id(tid)
+            t = store.task(tid)
+            seen.append((t["agent"], t["hop"], t["thread_id"]))
+            nxt = [x for x in store.thread(t["thread_id"]) if x["status"] == "queued"]
+            tid = nxt[0]["id"] if nxt else 0
+        posts = fake_slack.posts()[n0:]
+        check([s[0] for s in seen] == roster.order() and [s[1] for s in seen] == [0, 1, 2, 3],
+              "everyone introduces themselves in order, one hop each")
+        check(len({s[2] for s in seen}) == 1 and all(x.get("thread_ts") == "1700.9" for x in posts),
+              "the whole chain is one job thread and one Slack thread")
+        check([x.get("username") for x in posts[1:]] == ["Atlas", "Diggs", "Roma", "Quinn"], "each speaks as itself")
+        check("Meet the team: complete" in posts[-1]["text"], "the last employee closes the chain")
+
+        print("team: tools")
+        ctx_s = tools.RunContext(task=ta, roster=roster, employee=roster.employees["sales"])
+        names = [t.name for t in tools.build(ctx_s)]
+        check(names[:4] == ["handoff", "ask_operator", "thread_history", "record_lookup"], "team and shared tools first")
+        check("quick_screen" in names and "deep_prospect" not in names, "an employee gets only the workflows it owns")
+        by = {t.name: t for t in tools.build(ctx_s)}
+        out = asyncio.run(by["record_lookup"].handler({"record": "123 Main St"}))
+        txt = _text_of(out)
+        check('"owner": "Pat Example"' in txt and '"phones_on_owner": 1' in txt and "8655550101" not in txt,
+              "record lookup reads the record and keeps phone numbers out of the model")
+        amb = asyncio.run(by["record_lookup"].handler({"record": "12 Oak St"}))
+        check(amb.get("is_error") and U3 in _text_of(amb) and U4 in _text_of(amb), "an ambiguous address lists the matches")
+        pl = asyncio.run(by["quick_screen"].handler({"details": "x"}))
+        check(pl.get("is_error") and "not wired" in _text_of(pl) and "comp_package" in _text_of(pl),
+              "a planned workflow says so and how it runs by hand")
+        ctx_r = tools.RunContext(task=th, roster=roster, employee=roster.employees["research"])
+        dp = {t.name: t for t in tools.build(ctx_r)}["deep_prospect"]
+        q1 = _text_of(asyncio.run(dp.handler({"record": "123 Main St"})))
+        q2 = _text_of(asyncio.run(dp.handler({"record": "123 Main St"})))
+        job = store.task(ctx_r.tickets[0])
+        check("Queued deep_prospect" in q1 and job["mode"] == "direct" and job["record_uuid"] == U3 and
+              job["thread_id"] == th["thread_id"], "a live workflow queues a direct job on the same thread")
+        check("Already" in q2 and len(set(ctx_r.tickets)) == 1, "the same record is not queued twice")
+        gated = team.Workflow(name="pull_test", owner="analysis", summary="s", status="live", spend="records", triggers=[])
+        g = tools.workflow_tool(tools.RunContext(task=ta, roster=roster, employee=roster.employees["analysis"]), gated)
+        check(asyncio.run(g.handler({})).get("is_error"), "a record-allowance job needs the operator's yes first")
+        check("Queued" in _text_of(asyncio.run(g.handler({"approved": True}))), "with the yes it queues")
+        run_id(job["id"])
+        done = fake_slack.posts()[-1]
+        check(store.task(job["id"])["status"] == "done" and "Deep prospect done" in done["text"] and
+              done["username"] == "Diggs" and done["thread_ts"] == "1700.1", "the direct job posts in the thread as its owner")
+
+        print("team: runner")
+        ws = team.materialize(roster, "sales")
+        check((ws / "EMPLOYEE.md").read_text(encoding="utf-8").startswith("# Roma") and not (ws / "CLAUDE.md").exists(),
+              "the workspace carries the brief as EMPLOYEE.md, never a second CLAUDE.md")
+        check((ws / ".claude" / "skills" / "real-estate-comping" / "SKILL.md").is_file(), "the employee's skills are in its workspace")
+        check(not default_ws.resolve().is_relative_to(config.ROOT.resolve()), "workspaces live outside the repo by default")
+        m1 = (ws / ".signature").stat().st_mtime
+        team.materialize(roster, "sales")
+        check((ws / ".signature").stat().st_mtime == m1, "an unchanged workspace is not rebuilt")
+
+        runner._SDK, config.USE_LLM = FakeSDK, True
+        FakeSDK.script = [{"calls": [("record_lookup", {"record": "123 Main St"}), ("deep_prospect", {"record": "x"}),
+                                     ("handoff", {"to": "Diggs", "need": "Who signs for 123 Main St?",
+                                                  "known": "Owner of record Pat Example"})],
+                           "text": "Pulled 123 Main St. Diggs is checking who signs."}]
+        s1, _ = store.enqueue("sales", "ask", "", subject="quick screen 123 Main St",
+                              payload={"text": "quick screen 123 Main St", "channel_name": "roma-sales"}, mode="agent",
+                              source="slack", slack_channel="CROMA", slack_thread="1700.20")
+        res = run_id(s1)
+        o = FakeSDK.options[-1]
+        check(o.tools == ["Read", "Glob", "Grep", "Skill"] and set(runner.NEVER) <= set(o.disallowed_tools),
+              "Roma has no shell, no file writes, no edits")
+        check(o.permission_mode == "dontAsk" and o.strict_mcp_config and o.setting_sources == ["project"],
+              "anything not pre-approved is denied and only the workspace's own settings load")
+        check("mcp__team__quick_screen" in o.allowed_tools and "mcp__team__deep_prospect" not in o.allowed_tools,
+              "Roma's approvals cover her tools, not Diggs'")
+        check(o.cwd == str(ws) and o.model == "claude-opus-5-5" and 0 < o.max_budget_usd <= config.AGENT_BUDGET_USD,
+              "runs in her workspace, on her model, under the turn budget")
+        check(FakeSDK.denied == ["deep_prospect"], "the guard blocks a teammate's workflow even if the model asks for it")
+        check(res and res["handoffs"] and res["handoffs"][0]["to"] == "Diggs", "Roma's handoff to Diggs is recorded")
+        kid = res["handoffs"][0]["task"]
+        check(store.task(kid)["agent"] == "research" and store.task(kid)["hop"] == 1, "Diggs has the work on the same thread")
+        check(fake_slack.posts()[-1]["thread_ts"] == "1700.20" and fake_slack.posts()[-1]["username"] == "Roma",
+              "Roma answers in the operator's thread")
+        check(abs(store.spent(task_id=s1) - 0.11) < 1e-9, "the turn's Claude cost lands in the spend ledger")
+        check("The operator wrote in #roma-sales" in FakeSDK.prompts[-1] and "Mode: dry" in FakeSDK.prompts[-1],
+              "the prompt carries the ask, the thread and the live mode")
+        guard = o.hooks["PreToolUse"][0].hooks[0]
+        deny = lambda n, a: asyncio.run(guard({"tool_name": n, "tool_input": a}, None, {}))  # noqa: E731
+        check(deny("Bash", {"command": "env"}), "the guard denies Bash")
+        check(deny("Read", {"file_path": str(config.ROOT / "CLAUDE.md")}), "the guard denies reading outside the workspace")
+        check(not deny("Read", {"file_path": str(ws / "EMPLOYEE.md")}), "the guard allows reading the workspace")
+        check(deny("Glob", {"pattern": "../../**/*.env"}), "a glob cannot climb out of the workspace")
+
+        FakeSDK.script = [{"calls": [("thread_history", {})], "text": "On it."}]
+        d1, _ = store.enqueue("research", "ask", "", payload={"text": "deep prospect 123 Main St"}, mode="agent",
+                              source="slack", slack_channel="CDIGGS", slack_thread="1700.30")
+        run_id(d1)
+        check({"WebSearch", "WebFetch"} <= set(FakeSDK.options[-1].tools), "Diggs is granted web research")
+
+        print("team: ask-back")
+        FakeSDK.script = [{"calls": [("ask_operator", {"question": "Which county is 12 Oak St in?"})], "text": ""}]
+        w1, _ = store.enqueue("sales", "ask", "", payload={"text": "screen 12 Oak St"}, mode="agent", source="slack",
+                              slack_channel="CROMA", slack_thread="1700.40")
+        run_id(w1)
+        wt = store.task(w1)
+        check(wt["status"] == "waiting" and wt["question"].startswith("Which county") and wt["session_id"],
+              "asking the operator parks the task with its session")
+        check(fake_slack.posts()[-1]["text"].startswith("Which county") and fake_slack.posts()[-1]["thread_ts"] == "1700.40",
+              "the question is posted in the thread")
+        r = intake.slack_event({"type": "message", "channel": "CROMA", "ts": "1700.41", "thread_ts": "1700.40",
+                                "text": "Blount", "user": "U1"}, roster)
+        check(r.get("resumed") == w1 and store.task(w1)["status"] == "answered", "the reply resumes that employee")
+        FakeSDK.script = [{"text": "Blount it is. Comps pulled."}]
+        run_id(r["task"])
+        check(FakeSDK.options[-1].resume == wt["session_id"] and "They said: Blount" in FakeSDK.prompts[-1],
+              "the resume continues the same Claude session with the answer")
+        again = intake.slack_event({"type": "message", "channel": "CROMA", "ts": "1700.42", "thread_ts": "1700.40",
+                                    "text": "thanks", "user": "U1"}, roster)
+        check("resumed" not in again and store.task(again["queued"])["agent"] == "sales",
+              "a later reply in the thread goes back to whoever spoke there, not to a closed question")
+
+        print("team: failure and caps")
+        FakeSDK.script = [{"text": "", "result": {"is_error": True, "subtype": "error_max_budget_usd"}}]
+        f1, _ = store.enqueue("ops", "ask", "", payload={"text": "x"}, mode="agent", source="slack",
+                              slack_channel="CTEAM", slack_thread="1700.50")
+        run_id(f1)
+        check(store.task(f1)["status"] == "failed" and ":x:" in fake_slack.posts()[-1]["text"],
+              "a turn that ends in an error with nothing done fails loudly in the thread")
+        store.add_spend(f1, config.DAILY_CAP_USD, "test: cap reached")
+        calls_before = len(FakeSDK.options)
+        f2, _ = store.enqueue("ops", "ask", "", payload={"text": "x"}, mode="agent", source="slack",
+                              slack_channel="CTEAM", slack_thread="1700.51")
+        run_id(f2)
+        check(store.task(f2)["status"] == "failed" and len(FakeSDK.options) == calls_before,
+              "with the day's cap spent no turn runs at all")
+        config.USE_LLM = False
+        f3, _ = store.enqueue("ops", "ask", "", payload={"text": "x"}, mode="agent", source="cli")
+        run_id(f3)
+        check(store.task(f3)["status"] == "done" and "switched off" in store.result_of(store.task(f3))["text"],
+              "with Claude off an employee answers honestly instead of pretending")
+
+        print("team: slack events (brain)")
+        from fastapi.testclient import TestClient
+        from . import brain
+        c = TestClient(brain.app)
+
+        def send(payload: dict, secret="sign-secret", headers=None):
+            raw = json.dumps(payload).encode()
+            return c.post("/slack/events", content=raw, headers={**_sign(secret, raw), **(headers or {})})
+
+        check(send({"type": "event_callback"}, secret="wrong").status_code == 401, "an unsigned event is refused")
+        check(send({"type": "url_verification", "challenge": "abc"}).json() == {"challenge": "abc"},
+              "Slack's URL check is answered")
+        ev = {"type": "message", "channel": "CTEAM", "ts": "1700.60", "text": "Roma, quick screen 123 Main St",
+              "user": "U1", "channel_type": "channel"}
+        r1 = send({"type": "event_callback", "event_id": "Ev1", "event": ev}).json()
+        r2 = send({"type": "event_callback", "event_id": "Ev1", "event": ev}).json()
+        r3 = send({"type": "event_callback", "event_id": "Ev2", "event": dict(ev, type="app_mention")}).json()
+        qt = store.task(r1["queued"])
+        check(qt["agent"] == "sales" and qt["slack_thread"] == "1700.60", "a Slack ask is queued for the named employee")
+        check(r2.get("duplicate") and r3.get("duplicate"), "a redelivery and the mention's twin event are dropped")
+        check(any(m == "reactions.add" for m, _ in fake_slack.calls), "the operator's message gets an :eyes: reaction")
+        check(send({"type": "event_callback", "event_id": "Ev3", "event": ev},
+                   headers={"x-slack-retry-num": "1"}).json().get("retry"), "a Slack retry is acknowledged, not re-run")
+        check(send({"type": "event_callback", "event_id": "Ev4", "event": dict(ev, ts="1700.61", bot_id="B1")}).json()
+              .get("ignored"), "the team's own posts are ignored")
+        n_posts = len(fake_slack.posts())
+        chat = send({"type": "event_callback", "event_id": "Ev5",
+                     "event": dict(ev, ts="1700.62", text="anyone want lunch?")}).json()
+        check(chat.get("which") is False and len(fake_slack.posts()) == n_posts, "people chatting in the team channel are left alone")
+        men = send({"type": "event_callback", "event_id": "Ev6",
+                    "event": dict(ev, type="app_mention", ts="1700.63", text="<@U0BOT> can someone help")}).json()
+        check(men.get("which") and "Which of us" in fake_slack.posts()[-1]["text"], "a bare mention gets the roster")
+        hi = send({"type": "event_callback", "event_id": "Ev7", "event": dict(ev, ts="1700.64", text="good morning")}).json()
+        check(store.task(hi["hello"])["workflow"] == "introduce_self", "good morning in Slack starts the hello chain")
+        check(c.post("/team/hello/wrong").status_code == 404 and c.post("/team/hello/test-secret").json()["ok"],
+              "the deploy's hello needs the brain secret")
+        hl = c.get("/health").json()
+        check(hl["slack"] == "bot" and hl["team"]["sales"] == "Roma" and "deep_prospect" in hl["live_workflows"],
+              "health reports Slack mode, the team and what is live")
+        config.SLACK_SIGNING_SECRET = ""
+        check(send({"type": "event_callback"}).status_code == 404, "with no signing secret the Slack door is closed")
+    finally:
+        worker.HANDLERS["deep_prospect"] = real_dp
+        runner._SDK = None
+        tools.CRM = None
+        slack_app._http = __import__("requests")
+        config.SLACK_BOT_TOKEN = config.SLACK_SIGNING_SECRET = ""

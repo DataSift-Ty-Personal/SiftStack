@@ -1,0 +1,374 @@
+# The SiftStack AI team: the single source of truth for who works here and what each one owns.
+#
+# Everything else is generated from this file: TEAM.md (the org chart every employee reads),
+# each employee's runtime workspace, the Slack routing, and the DataSift webhook routes.
+# Edit here, then run:  python src/agents/cli.py team
+#
+# Ids are the role and never change. Display names are personas and can be renamed per install
+# (Tyler's bootcamp names by default). An employee only calls workflows it owns; anything else is
+# a handoff to the owner on the same thread.
+
+team_channel: ai-team
+
+employees:
+  analysis:
+    display_name: Atlas
+    role: Analysis
+    icon_emoji: ":world_map:"
+    slack_channel: atlas-analysis
+    model: claude-opus-5-5
+    job: >-
+      Finds the data and the market: first-to-market notices, county pulls, list pulls,
+      idle records worth working, and the account structure (presets, fields, sequences)
+      that puts the right records in front of the team.
+    introduction: >-
+      I'm Atlas, Analysis. I hold the map: first-to-market data, county pulls, list pulls,
+      idle records worth a second look, and the presets and fields that route them. Diggs, you're up.
+    skills: [sift-market-research, first-market-county-data, sequential-presets, sift-sequences, account-blueprint]
+    builtins: []
+
+  research:
+    display_name: Diggs
+    role: Research
+    icon_emoji: ":mag:"
+    slack_channel: diggs-research
+    model: claude-opus-5-5
+    job: >-
+      Finds the people: who owns it, who can legally sign, and which number reaches them.
+      Deep prospecting, skip tracing, entity principals, phone scoring, probate property, buyer research.
+    introduction: >-
+      Diggs, Research. Atlas finds the property, I find the people: the decision maker, the heirs
+      behind an estate, the human behind an LLC, and the number that actually reaches them. Roma, take the numbers.
+    skills: [deep-prospecting-v5, probate-property-finder, phone-validator, buyer-prospector, vendor-directory-builder, contractor-call-sheet]
+    builtins: [WebSearch, WebFetch]
+
+  sales:
+    display_name: Roma
+    role: Sales Assistant
+    icon_emoji: ":chart_with_upwards_trend:"
+    slack_channel: roma-sales
+    model: claude-opus-5-5
+    job: >-
+      Runs the numbers and works the deal: quick screens, full underwrites, offer sheets,
+      the buyers for a contracted house, dispo staging, and lender packages.
+    introduction: >-
+      Roma, Sales Assistant. Give me an address and I'll tell you what it's worth, what it costs,
+      what we can pay, and who buys it from us. The detail goes on the DataSift record. Quinn, keep us honest.
+    skills: [real-estate-comping, rehab-estimator, comp-package, dispo-deal-blast]
+    builtins: []
+
+  ops:
+    display_name: Quinn
+    role: Operations
+    icon_emoji: ":clipboard:"
+    slack_channel: quinn-ops
+    model: claude-opus-5-5
+    job: >-
+      Keeps the machine honest: the morning digest, QA before anything reaches a homeowner,
+      KPIs, call coaching, SOPs and training, and outreach health.
+    introduction: >-
+      Quinn, Operations. I post the morning readout, QA every batch before it reaches a homeowner,
+      grade the calls, and write the SOPs. That's the whole team: ask any of us by name.
+    skills: [kpi-engine, cold-call-coach, lead-manager-coach, closer-coach, playbook-creator, caller-reputation-monitor, team-hiring, candidate-intake]
+    builtins: []
+
+# Shared read-only tools every employee gets (free, no writes).
+shared_tools: [record_lookup]
+
+# The workflow catalog. status:
+#   live     wired into the team and runnable now
+#   planned  in SiftStack today but run by hand; the employee says so instead of pretending
+# spend:
+#   free      reads only, runs without asking
+#   paid      vendor spend, runs inside the per-run and per-day caps
+#   records   spends the account's record allowance, needs the operator's yes first
+#   outreach  contacts a homeowner or buyer, the team only stages it, a human releases it
+# triggers: slack (ask by name), datasift:<slug> (sequence webhook), schedule:<HH:MM tz>, chain:<workflow>
+workflows:
+
+  # ---------------------------------------------------------------- Atlas, Analysis
+  ftm_pull:
+    owner: analysis
+    summary: First-to-market notices (foreclosure, probate) pulled, filtered, enriched and uploaded.
+    status: planned
+    spend: paid
+    triggers: [schedule:06:30 America/New_York, slack]
+    manual: Runs today on the siftstack-ftm Fly app (src/ftm_runner.py, src/ftm_schedule.py).
+    sources: [ftm_runner, ftm_schedule, scraper, captcha_solver, notice_parser, foreclosure_filter, proxy_resolver]
+    covers: [ftmrun, ftmsched, proxy, scraper, gate, parser, fcfilter, addr, prop, tax, obit, apiupload]
+  county_pull:
+    owner: analysis
+    summary: Register of Deeds liens and trustee deeds, condemnations and evictions, matched to parcels.
+    status: planned
+    spend: free
+    triggers: [schedule:07:00 America/New_York, slack]
+    manual: python src/knox_ftm_pull.py and src/knox_lien_resolve.py (Knox only today).
+    sources: [knox_ftm_pull, knox_lien_resolve]
+    covers: [knoxftm, lien, consolidate, apiupload]
+  courthouse_import:
+    owner: analysis
+    summary: Courthouse terminal photos and scanned PDFs read, parsed and turned into records.
+    status: planned
+    spend: paid
+    triggers: [schedule:every 15 min, slack]
+    manual: python src/main.py photo-import / dropbox-watch / pdf import.
+    sources: [photo_importer, dropbox_watcher, pdf_importer, image_utils, llm_parser]
+    covers: [photo, pdfimp, dropbox]
+  market_report:
+    owner: analysis
+    summary: Market Finder pulled for a county, ZIPs and neighborhoods scored, report built.
+    status: planned
+    spend: free
+    triggers: [slack]
+    manual: python src/extract_market_finder.py then the county report generator.
+    sources: [extract_market_finder, market_analyzer]
+    covers: [finder, report]
+  list_pull:
+    owner: analysis
+    summary: Pull a ranked list into the account (doors-per-deal ladder, AI pools, by id).
+    status: planned
+    spend: records
+    triggers: [slack]
+    manual: python src/pull_by_ids.py with an ai_pools or ladder export.
+    sources: [pull_by_ids, ai_pools, knox_blount_top15k, franklin_top30k]
+    covers: [ladderpull, aipools]
+  idle_records:
+    owner: analysis
+    summary: Idle records worth working again, by AI score, lists, last activity and no recent sale.
+    status: planned
+    spend: free
+    triggers: [schedule:Mon 07:00 America/New_York, slack]
+    manual: python src/dream100.py and src/obituary_opportunity.py (per-list today).
+    sources: [dream100, obituary_opportunity, d4d_call_list]
+    covers: [obitrank, dream100, d4dcalls]
+  sold_cleanup:
+    owner: analysis
+    summary: Recently sold properties tagged and pulled out of marketing.
+    status: planned
+    spend: free
+    triggers: [schedule:Sun 06:00 America/New_York]
+    manual: The Recently Sold SiftMap preset plus the sold sequence (sops/remove-sold-properties-from-marketing.sop.md).
+    sources: [siftmap_standalone, datasift_uploader]
+    covers: [siftmap]
+  account_setup:
+    owner: analysis
+    summary: Presets, sequences, boards, fields and statuses cloned from the blueprint and kept at parity.
+    status: planned
+    spend: free
+    triggers: [slack]
+    manual: python src/clone_account.py --phase plan / apply / verify.
+    sources: [clone_account, account_blueprint, datasift_schema_setup]
+    covers: [schema, presets, sequences, bpexport, bpapply, wizard]
+  land_desk:
+    owner: analysis
+    summary: Buildable lots and land tracts matched to the builders who buy them.
+    status: planned
+    spend: free
+    triggers: [slack]
+    manual: python src/vacant_land.py, src/builder_land.py, src/land_market.py.
+    sources: [vacant_land, builder_land, land_market]
+    covers: [builderland, vacantland]
+
+  # ---------------------------------------------------------------- Diggs, Research
+  deep_prospect:
+    owner: research
+    summary: One record deep prospected end to end (decedent, heirs, signers, live numbers) and written back.
+    status: live
+    spend: paid
+    triggers: [datasift:deep-prospect, slack]
+    inputs: {record: "Record uuid or full street line"}
+    manual: python src/agents/cli.py run --address "<street>".
+    sources: [deep_prospect_record, dream100_dp, agents.research]
+    covers: [researchagent, dprecord, dream100dp, dp5]
+  skip_trace:
+    owner: research
+    summary: Phones and emails for a record or a list, merged onto the owners.
+    status: planned
+    spend: paid
+    triggers: [chain:list_pull, chain:ftm_pull, slack]
+    manual: SmartSkip / Tracerfy today; Tyler's skip trace plugin replaces both.
+    sources: [smartskip_trace, tracerfy_ftm]
+    covers: [tracerfy]
+  phone_score:
+    owner: research
+    summary: Every unscored number tiered (Dial First to Drop) and written back to the phone.
+    status: planned
+    spend: paid
+    triggers: [chain:skip_trace, slack]
+    manual: python src/d4d_call_list.py --phase score / writeback (per cohort today).
+    sources: [phone_validator, trestle_router]
+    covers: [phone]
+  entity_principals:
+    owner: research
+    summary: The human behind an LLC or trust (free reverse address first, BusinessV2 second).
+    status: planned
+    spend: paid
+    triggers: [chain:skip_trace, slack]
+    manual: buyer_sweep unmask and enformion_business.find_principals.
+    sources: [buyer_sweep, enformion_business]
+    covers: [entity]
+  probate_property:
+    owner: research
+    summary: The decedent's property found for a probate filing that names no address.
+    status: planned
+    spend: free
+    triggers: [chain:ftm_pull]
+    manual: property_lookup (Knox Tax API, executor family search, people search).
+    sources: [property_lookup, obituary_enricher]
+    covers: [probfind]
+  buyer_registry:
+    owner: research
+    summary: Deed-verified local buyers, their principals and scored phones, refreshed monthly.
+    status: planned
+    spend: paid
+    triggers: [schedule:1st 07:00 America/New_York, slack]
+    manual: python src/dispo_buyers.py --phase sweep ... score.
+    sources: [dispo_buyers, dispo_skiptrace, buyer_sweep]
+    covers: [sweep, dispobuyers, disposkip, prospector]
+  vendor_directory:
+    owner: research
+    summary: A vetted contractor and vendor directory for a market, every field verified.
+    status: planned
+    spend: free
+    triggers: [slack]
+    manual: The vendor-directory-builder and contractor-call-sheet skills.
+    sources: [skills]
+    covers: [vendordir, callsheet]
+
+  # ---------------------------------------------------------------- Roma, Sales Assistant
+  quick_screen:
+    owner: sales
+    summary: New lead screened (record, Tier 1 comps, rough ARV, go or no-go) and posted to the record.
+    status: planned
+    spend: free
+    triggers: [datasift:quick-screen, slack]
+    model: claude-sonnet-5-5
+    manual: comp_package.py for comps; the summary is written by hand today.
+    sources: [comp_package, zillow_market_api, siftmap_standalone]
+    covers: [comp]
+  underwrite:
+    owner: sales
+    summary: Full underwrite (comps, rehab on the locked SKU list, MAO at each tier, buyers, offer ladder).
+    status: planned
+    spend: free
+    triggers: [slack]
+    manual: post_walkthrough.py plus offer_sheet.py.
+    sources: [post_walkthrough, offer_sheet, comp_package, rehab_estimator, sku_pricing]
+    covers: [arv, rehab, material, exits, dealanalyzer, lotsplit]
+  offer_sheet:
+    owner: sales
+    summary: The one-tab wholesale offer after a walkthrough.
+    status: planned
+    spend: free
+    triggers: [slack]
+    manual: python src/offer_sheet.py --pack ... --walk ....
+    sources: [offer_sheet]
+  deal_buyers:
+    owner: sales
+    summary: The top buyers for one contracted house, with the decision maker's number.
+    status: planned
+    spend: paid
+    triggers: [datasift:under-contract, slack]
+    manual: python src/deal_buyer_match.py then src/deal_buyer_dp.py.
+    sources: [deal_buyer_match, deal_buyer_dp]
+    covers: [dealmatch]
+  dispo_blast:
+    owner: sales
+    summary: A deal blast staged to the matched buyers; a human releases it.
+    status: planned
+    spend: outreach
+    triggers: [slack]
+    manual: python src/sms_agent/dispo_campaign.py --deal deals/<id>.json --queue, then release.
+    sources: [sms_agent.dispo_campaign]
+    covers: [dispoblast, dispobook, dispoflow]
+  lender_package:
+    owner: sales
+    summary: The eight-piece private lender set for one property.
+    status: planned
+    spend: free
+    triggers: [slack]
+    manual: python src/lender_package.py and src/lender_docs.py --spec deals/<deal>.json.
+    sources: [lender_package, lender_docs]
+    covers: [lender, lenderpkg, lenderdocs]
+  sms_replies:
+    owner: sales
+    summary: Seller and buyer text replies read, classified, written back to the record, hot leads handed to a person.
+    status: planned
+    spend: free
+    triggers: [slack]
+    manual: Runs live on the siftstack Fly app today (src/sms_agent for smrtPhone, sc_inbound for Smarter Contact), outside the team.
+    sources: [sms_agent.respond, sms_agent.sc_inbound, sms_agent.engine]
+    covers: [classifier, responder, scinbound]
+
+  # ---------------------------------------------------------------- Quinn, Operations
+  daily_digest:
+    owner: ops
+    summary: The two-line morning readout (new records, what the team did, spend, anything broken).
+    status: planned
+    spend: free
+    triggers: [schedule:08:00 America/New_York]
+    manual: python src/ftm_health.py on the FTM box.
+    sources: [ftm_health, agents.store]
+  kpi_report:
+    owner: ops
+    summary: Dials, connects, leads and appointments against the benchmarks.
+    status: planned
+    spend: free
+    triggers: [schedule:Mon 08:00 America/New_York, slack]
+    manual: The kpi-engine skill.
+    sources: [kpi-engine]
+    covers: [kpi]
+  qa_batch:
+    owner: ops
+    summary: QA a batch before outreach (read-back, junk names, DNC, duplicates, landlines).
+    status: planned
+    spend: free
+    triggers: [chain:dispo_blast, slack]
+    manual: python src/smarter_contact_audit.py and the uploader's one-record read-back.
+    sources: [smarter_contact_audit, datasift_api_upload]
+    covers: [scaudit]
+  call_coaching:
+    owner: ops
+    summary: Calls pulled, transcribed with tonality notes and graded on the team rubric.
+    status: planned
+    spend: paid
+    triggers: [schedule:Fri 16:00 America/New_York, slack]
+    manual: src/call_coaching/pull_calls.py and transcribe.py, then the coach skills.
+    sources: [call_coaching]
+    covers: [callpull, transcribe, coldcoach, lmcoach, closercoach]
+  sop_writer:
+    owner: ops
+    summary: SOPs, step guides and training manuals from a narrated video or notes.
+    status: planned
+    spend: free
+    triggers: [slack]
+    manual: The playbook-creator skill.
+    sources: [playbook-creator]
+    covers: [playbookgen]
+  outreach_health:
+    owner: ops
+    summary: Deliverability and caller reputation readout, with what to rest or replace.
+    status: planned
+    spend: free
+    triggers: [schedule:08:05 America/New_York, slack]
+    manual: python src/sms_agent/cli.py deliverability and the caller-reputation monitor.
+    sources: [sms_agent, caller-reputation]
+    covers: [deliver, callerrep]
+  sms_campaign:
+    owner: ops
+    summary: A text campaign built, audited and staged (Smarter Contact groups, text touches, sender pool); a human releases it.
+    status: planned
+    spend: outreach
+    triggers: [slack]
+    manual: python src/smarter_contact_launch.py for campaigns, the text-touch-builder skill for copy, src/sms_agent/cli.py seed then release for smrtPhone.
+    sources: [smarter_contact_launch, smarter_contact_templates, sms_agent.sender_pool, mms_sender]
+    covers: [sccampaign, texttouch, sender, mms]
+  obituary_mail:
+    owner: ops
+    summary: Obituary-list mail campaign (letters to the family) exported to the mail house; a human releases it.
+    status: planned
+    spend: outreach
+    triggers: [slack]
+    manual: python src/obituary_campaign.py then src/obituary_mail_export.py.
+    sources: [obituary_campaign, obituary_mail_export]
+    covers: [obitcamp, obitmail]

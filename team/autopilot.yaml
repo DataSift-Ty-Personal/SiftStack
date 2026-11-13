@@ -1,0 +1,271 @@
+# The autopilot playbook: the prospecting half of the business, run stage by stage.
+#
+# The account already describes the lifecycle as saved presets (folders 05 FTM - CALL, 06 FTM -
+# MAIL, 11 DEEP PROSPECTING, 12 REACTIVATION, 13 HOT AUCTION SALE). Each stage below names the
+# presets that hold its records, by exact title, and does the one move a person used to make by
+# hand. The presets are read live every run, so editing one in DataSift changes what the stage does.
+#
+# mode:
+#   off   never runs
+#   plan  runs on its schedule, works out exactly what it would do and cost, posts that, writes nothing
+#   live  acts inside its caps, and only on a box running AGENTS_MODE=live
+# Every stage ships in plan. Flip one at a time once its plan reads right.
+#
+# Check this file:  python src/agents/cli.py autopilot check
+# See every plan:   python src/agents/cli.py autopilot plan
+
+business:
+  tz: America/New_York
+  hours: "09:00-18:00"      # outreach never goes out outside these hours
+  days: [Mon, Tue, Wed, Thu, Fri]
+
+caps:
+  daily_usd: 25             # data spend in one day (skip traces, phone scoring), all stages together
+  outreach_daily_usd: 60    # mail spend in one day, its own budget: at $1.89 a handwritten letter, about 31 a day
+  record_usd: 1.00          # lifetime trace and scoring spend on one record before it stops being traced
+
+people:
+  # Who new records go to, by DataSift first name. Inactive users are skipped and said so.
+  # ty+2 on 2026-11-11: Adriana is active (lead manager); Tinaa is inactive.
+  callers: [Adriana]
+
+stages:
+
+  # ------------------------------------------------------------------ Atlas, Analysis
+  ftm_assign:
+    kind: assign
+    owner: analysis
+    mode: "plan"
+    schedule: "every 30 min 08:00-18:00 Mon-Fri"
+    summary: New first-to-market records handed to a caller within 30 minutes of landing, balanced by open workload.
+    # Challenge C8.2: every new FTM record is in the CRM by morning and in every flow the same day.
+    presets:
+      - FTM - 00 Needs Skipped
+      - FTM - 01 Skipped No Numbers
+      - FTM - 02 Ready to Call
+      - FTM - 03 Call Attempt 1
+      - FTM - 04 Call Attempt 2
+      - FTM - 05 Call Attempt 3
+    strategy: balanced      # fewest records waiting to start; round_robin also works
+    backlog: false          # records already unassigned on the first run stay as they are
+    max_per_run: 200
+    routes: {}              # e.g. {Probate: [Adriana]} sends probate to one caller
+
+  ftm_auction:
+    kind: auction
+    owner: analysis
+    mode: "plan"
+    schedule: "07:45 daily"
+    summary: Auction Soon kept true on every courthouse foreclosure, so the Hot Auction preset is the real hot list.
+    presets: []
+    scope_tags: [FTM, Courthouse Data]
+    tag: Auction Soon
+    soon_days: 21
+    # The courthouse sale date lives in the custom field. The built-in foreclosure_date on bulk
+    # records is a stale public-record artifact (2022 batch defaults), so it is not trusted.
+    custom_date_fields: [Foreclosure Date]
+    date_fields: [auction_date, tax_auction_date]
+    trust_builtin_foreclosure_date: false
+    refresh_days: 3
+
+  ftm_reactivate:
+    kind: reactivate
+    owner: analysis
+    mode: "plan"
+    schedule: "Mon 08:15"
+    summary: Not-interested first-to-market records whose wait is over handed back to a caller.
+    presets:
+      - Not Interested - FTM Foreclosure (30d)
+      - Not Interested - FTM Probate (30d)
+      - Not Interested - FTM rest (90d)
+    every_days: 30
+    max_per_run: 100
+
+  # ------------------------------------------------------------------ Diggs, Research
+  ftm_native_trace:
+    kind: native_trace
+    owner: research
+    mode: "plan"
+    schedule: "every 30 min 07:00-19:00 daily"   # challenge C2.2 (Oct 6 workshop): trace no-number records every 30 minutes
+    summary: Records that land with no trace get DataSift's own skip trace, scoped to exactly them, estimate first.
+    presets: [FTM - 00 Needs Skipped]
+    min_age_hours: 1        # DataSift traces new uploads on its own (lesson 4-06); give it an hour first
+    scoped: true            # the trace covers exactly the waiting records, checked against DataSift's estimate
+    every_hours: 12         # only for scoped: false, where the route traces the whole account
+
+  ftm_retrace:
+    kind: retrace
+    owner: research
+    covers: [tracerfy]   # the org-chart agent whose job this stage does
+    mode: "plan"
+    schedule: "11:00 Mon-Fri"
+    summary: Records DataSift traced with no number found, traced again with the next source nobody has tried.
+    presets: [FTM - 01 Skipped No Numbers]
+    # Lesson 5-01: DataSift's free trace first, then re-trace only what is still unreached, at most
+    # three passes on first-to-market records: DataSift, SmartSkip (15 cents a hit), one more.
+    # Tracerfy ($0.02 a row) is the third pass here; Enformion ($0.10 a match, street-anchored) can
+    # be added as a fourth.
+    sources: [smartskip, tracerfy]
+    callable_tiers: [Dial First, Dial Second]   # lessons 4-05, 14-13, 5-03: only these are dialed
+    deceased: deep_prospect          # a dead owner or a probate record goes to Diggs, never a blind trace
+    entity: after                    # an LLC or trust has no person to trace yet; see after_sources
+    after_sources: mail_only         # lessons 4-06, 4-05: no numbers means mail at minimum, then deep prospecting
+    mail_only_tag: Mail Only
+    deep_prospect_per_day: 3
+    max_records: 50
+    daily_usd: 10
+
+  ftm_exhausted:
+    kind: retrace
+    owner: research
+    covers: [tracerfy]   # the org-chart agent whose job this stage does
+    mode: "plan"
+    schedule: "11:30 Mon-Fri"
+    summary: Called three times with nothing left to dial, traced with a source not yet tried, then Diggs.
+    # Challenge C11.2: every number called through with no contact, or the 6-attempt maximum, means exhausted: deep prospect.
+    presets: ["03 Exhausted Call -> DP"]
+    require_tags: [FTM]
+    sources: [smartskip, tracerfy]   # a source this record has already had is skipped, so the three-pass rule holds
+    callable_tiers: [Dial First, Dial Second]
+    deceased: deep_prospect
+    entity: deep_prospect
+    after_sources: deep_prospect
+    new_numbers_tag: New Numbers     # a dialed-out record that gains numbers is flagged for the callers
+    deep_prospect_per_day: 3
+    max_records: 25
+    daily_usd: 5
+
+  ftm_score:
+    kind: score
+    owner: research
+    covers: [phone]   # the org-chart agent whose job this stage does
+    mode: "plan"
+    schedule: "08:30 Mon-Fri"
+    summary: Every unscored number in the FTM call lane tiered before the callers start.
+    # Challenge C3.1-C3.3: Trestle-score every phone, dial only Dial First and Second, always run the litigator check.
+    presets:
+      - FTM - 02 Ready to Call
+      - FTM - 03 Call Attempt 1
+      - FTM - 04 Call Attempt 2
+      - FTM - 05 Call Attempt 3
+    max_records: 200
+    recheck_days: 7
+    daily_usd: 5
+
+  ftm_deep_prospect:
+    kind: handoff
+    owner: research
+    mode: "plan"
+    schedule: "13:00 Mon-Fri"
+    summary: First-to-market records whose owner has died go to Diggs for the full heir and signer research, two a day.
+    # Challenge C12.1, C11.9: no marketing before month 3; deep prospect once the last obituary date is 3+ months old.
+    # The preset's own window (last_obituary_date 24 months back to 3 months back) already holds that rule.
+    presets: ["02 Obituary / Deceased"]
+    require_tags: [FTM]
+    workflow: deep_prospect
+    agent: research
+    per_day: 2
+
+  # Lesson 4-05 @ 26:09 and 5-01: deep prospect a record when its mail comes back, and when it has
+  # no number after every trace (it has already moved to mail only, so it is still being mailed).
+  ftm_return_mail:
+    kind: handoff
+    owner: research
+    mode: "plan"
+    schedule: "13:15 Mon-Fri"
+    summary: First-to-market records whose mail came back go to Diggs, one a day.
+    presets: ["04 Return Mail -> DP"]
+    require_tags: [FTM]
+    workflow: deep_prospect
+    agent: research
+    per_day: 1
+
+  ftm_no_numbers:
+    kind: handoff
+    owner: research
+    mode: "plan"
+    schedule: "13:30 Mon-Fri"
+    summary: First-to-market records still without a number after every trace go to Diggs, one a day.
+    presets: ["01 No / Bad Phone"]
+    require_tags: [FTM, Mail Only]
+    workflow: deep_prospect
+    agent: research
+    per_day: 1
+
+  # ------------------------------------------------------------------ Quinn, Operations
+  ftm_mail:
+    kind: mail
+    owner: ops
+    mode: "plan"
+    schedule: "10:00 Mon-Fri"
+    summary: The FTM mail lane dropped a month apart through DataSift's own mail, staged for a person to release.
+    # Challenge C6.7-C6.9 (Oct 2026): one piece every 30 days, stop after 12 months for FTM and obituary records.
+    # Open decision (C6.2): the presets mail from day one (Feb 2026); the newest teaching mails only records
+    # the call and text lane did not reach. Add a call-attempts gate to the Mail 01 preset to follow it.
+    # siftmail: DataSift's own direct mail (printed by Open Letter Connect). It sets the record's
+    # mail counter and last-mailed date itself, which is what moves a record from Mail 01 to Mail 02.
+    # csv: a file for any outside mail house; the counter is then written back on release.
+    # SiftMail's campaign route is NOT in the published API (developers.datasift.ai), so the engine
+    # refuses it unless internal_routes is true. True here because this playbook drives OUR account
+    # (ty+2), and only after one record is verified on staging. A user's install ships false + csv.
+    vendor: siftmail
+    internal_routes: true
+    send: staged           # staged: a person releases each batch; auto: sends inside the caps
+    daily_pieces: 50
+    daily_usd: 60
+    wait_days: 30
+    offer_pct: 0           # the soft-offer check needs an offer; 0 skips that piece and says why
+    # design: the Mail Design template uuid for the piece (list them: cli.py autopilot mail-designs).
+    # product_id: 16 Real Penned letter ($1.89), 13 Postcard 4x6 ($0.67), 5 Personal Letter ($1.23).
+    # The three FTM designs do not exist yet in ty+2 (it holds "Test" and "Ramis Mail List").
+    pieces:
+      - {preset: FTM - Mail 01 Handwritten Letter, piece: handwritten_letter, product_id: 16, design: ""}
+      - {preset: FTM - Mail 02 Family Postcard, piece: family_postcard, product_id: 13, design: ""}
+      - {preset: FTM - Mail 03 Soft-Offer Check, piece: soft_offer_check, product_id: 5, design: ""}
+      - {preset: FTM - Mail 04 Handwritten Letter, piece: handwritten_letter, product_id: 16, design: ""}
+      - {preset: FTM - Mail 05 Family Postcard, piece: family_postcard, product_id: 13, design: ""}
+      - {preset: FTM - Mail 06 Soft-Offer Check, piece: soft_offer_check, product_id: 5, design: ""}
+    sender: {}             # return name, address and tracking phone come from AUTOPILOT_MAIL_FROM_*
+
+  # ------------------------------------------------------------------ the next lane: Priority 1 (Hottest)
+  # The same moves on the Priority 1 presets (folders 01 and 02). Off until the FTM lane has run
+  # live for a week; set mode: plan to see their plan in the digest.
+  hottest_retrace:
+    kind: retrace
+    owner: research
+    covers: [tracerfy]   # the org-chart agent whose job this stage does
+    mode: "off"
+    schedule: "11:15 Mon-Fri"
+    presets: [Hottest - 01 Skipped No Numbers]
+    sources: [smartskip]             # lesson 5-01: one extra pass on high-volume Priority 1 leftovers
+    callable_tiers: [Dial First, Dial Second]
+    deceased: deep_prospect
+    entity: after
+    after_sources: mail_only
+    deep_prospect_per_day: 2
+    max_records: 50
+    daily_usd: 5
+
+  hottest_score:
+    kind: score
+    owner: research
+    covers: [phone]   # the org-chart agent whose job this stage does
+    mode: "off"
+    schedule: "08:45 Mon-Fri"
+    presets: [Hottest - 02 Ready to Call, Hottest - 03 Call Attempt 1, Hottest - 04 Call Attempt 2, Hottest - 05 Call Attempt 3]
+    max_records: 200
+    daily_usd: 5
+
+  autopilot_digest:
+    kind: digest
+    owner: ops
+    mode: "plan"
+    schedule: "08:00 Mon-Fri"
+    summary: The morning readout of the FTM lane, what the autopilot did, what it cost, what waits on a person.
+    presets:
+      - FTM - 01 Skipped No Numbers
+      - FTM - 02 Ready to Call
+      - FTM - 05 Call Attempt 3
+      - FTM - Mail 01 Handwritten Letter
+      - Hot Auction + Buy Box
+      - "03 Exhausted Call -> DP"

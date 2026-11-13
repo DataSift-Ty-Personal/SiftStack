@@ -1,14 +1,16 @@
-"""Wire DataSift to the agents, over the Open API key alone. Dry by default; --commit applies.
+"""Wire DataSift to the agents.
 
-For the Research agent's deep prospect it makes sure that:
-  1. a webhook named "SiftStack agents: deep prospect" points at this brain's URL,
-  2. the sequence "Send to Deep Prospecting" (status changed to Deep Prospecting) creates the card
-     on the Deep Prospecting board in a column that exists AND fires that webhook, and is active.
+THE SUPPORTED PATH IS THE APP (developers.datasift.ai, 2026-11-01 changelog and Acceptable use):
+creating or changing a webhook is an app-only operation, and sequences are not part of the Open
+API at all. So by default this prints the steps for the person (Settings > Integrations > Webhooks,
+then Sequence Builder) with this brain's exact URL, and reports whether DataSift's own
+`webhook.test` delivery has reached the brain, which is the proof the setup worked.
 
-ty+2 already had that sequence, inactive, pointing at a deleted column, so it is repaired in place
-rather than duplicated: plans cap sequences (Essentials 3, Professional 8). Everything is read
-back after the write. The webhook action shape comes from the DataSift app's own source:
-{"action": "send-webhook", "payload": {"webhook_uuid": ..., "label": "send.webhook"}}.
+--staff-api keeps the old route for OUR accounts only: it creates the webhook and repairs the
+sequence "Send to Deep Prospecting" through endpoints the reference no longer lists. ty+2 already
+had that sequence, inactive, pointing at a deleted column, so it is repaired in place rather than
+duplicated (plans cap sequences: Essentials 3, Professional 8). The webhook action shape comes from
+the app's own source: {"action": "send-webhook", "payload": {"webhook_uuid": ..., "label": "send.webhook"}}.
 """
 from __future__ import annotations
 
@@ -37,7 +39,40 @@ def hook_url(workflow: str = "deep-prospect") -> str:
     return "%s/hooks/datasift/%s/%s" % (config.PUBLIC_URL, config.WEBHOOK_SECRET, workflow)
 
 
+def test_receipt(workflow: str = "deep-prospect") -> tuple[str, str]:
+    """(when DataSift's Test delivery last reached the brain, where that was read). The receipt is
+    written by the RUNNING brain, so its /health is asked first: on Fly the local database is not
+    the one the webhook landed in. The local store answers only for a brain run on this machine."""
+    import requests
+    try:
+        r = requests.get(config.PUBLIC_URL.rstrip("/") + "/health", timeout=15)
+        if r.ok:
+            return (r.json().get("datasift_webhook_tests") or {}).get(workflow, ""), "the running brain"
+    except Exception:  # noqa: BLE001
+        pass
+    from . import store
+    store.init()
+    return store.kv_get("datasift:webhook_test:%s" % workflow), "the local database (brain not reachable)"
+
+
+def app_checklist(workflow: str = "deep-prospect") -> dict:
+    """The supported setup: what a person does in the DataSift app, and whether it has worked."""
+    if not (config.PUBLIC_URL and config.WEBHOOK_SECRET):
+        raise SystemExit("Set AGENTS_PUBLIC_URL and AGENTS_WEBHOOK_SECRET first.")
+    got, where = test_receipt(workflow)
+    return {"mode": "app", "webhook_url": hook_url(workflow), "verified": bool(got),
+            "test_received": got or "not yet", "checked": where, "steps": [
+        "DataSift > Settings > Integrations > Webhooks > Add Webhook. Name: %s. URL: the webhook_url above. Save." % WEBHOOK_NAME,
+        "Select Test on that webhook. This brain records the test delivery; re-run this command to see it arrive.",
+        "Sequence Builder: open (or create) the sequence %r: trigger Property Status Change, condition status "
+        "updated to %r; actions: create a card on the %r board, then Send a webhook > %s. Make it active." % (
+            SEQUENCE_TITLE, config.DP_STATUS, config.DP_BOARD, WEBHOOK_NAME),
+        "Creating webhooks needs the Super Admin or Sensei role; anyone with Sequence Builder can use one.",
+    ]}
+
+
 def plan_and_apply(commit: bool = False) -> dict:
+    """The --staff-api path (our accounts only): routes the published reference no longer lists."""
     if not (config.PUBLIC_URL and config.WEBHOOK_SECRET):
         raise SystemExit("Set AGENTS_PUBLIC_URL and AGENTS_WEBHOOK_SECRET first.")
     crm = crm_key_client.from_env()
@@ -101,7 +136,9 @@ def plan_and_apply(commit: bool = False) -> dict:
     return report
 
 
-def safe_plan(commit: bool) -> dict:
+def safe_plan(commit: bool, staff_api: bool = False) -> dict:
+    if not staff_api:
+        return app_checklist()
     try:
         return plan_and_apply(commit)
     except StandaloneCRMError as exc:

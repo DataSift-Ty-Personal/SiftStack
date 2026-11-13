@@ -3,6 +3,7 @@ workstation), so one image serves every install."""
 from __future__ import annotations
 
 import os
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -47,6 +48,30 @@ DEDUPE_HOURS = _f("AGENTS_DEDUPE_HOURS", 24.0)
 SLACK_WEBHOOK = os.environ.get("AGENTS_SLACK_WEBHOOK") or os.environ.get("SLACK_WEBHOOK_URL", "")
 MODEL = os.environ.get("AGENTS_MODEL") or "claude-opus-5-5"
 INLINE_WORKER = (os.environ.get("AGENTS_INLINE_WORKER") or "1") == "1"
+# The clock (scheduler.py) fires every live workflow with a schedule trigger. On by default in the
+# brain; AGENTS_SCHEDULER=0 stops it without stopping the worker.
+SCHEDULER = (os.environ.get("AGENTS_SCHEDULER") or "1") == "1"
+
+# The team (team/roster.yaml): who works here, what each one owns, and the skills they carry.
+TEAM_DIR = Path(os.environ.get("AGENTS_TEAM_DIR") or ROOT / "team")
+SKILLS_DIR = Path(os.environ.get("AGENTS_SKILLS_DIR") or ROOT / "skills")
+# Each employee runs in its own workspace OUTSIDE the repo, so the repo's CLAUDE.md and the
+# operator's personal Claude settings never load into an employee's context. /data/workspaces on Fly.
+WORKSPACES_DIR = Path(os.environ.get("AGENTS_WORKSPACES_DIR")
+                      or Path(tempfile.gettempdir()) / "siftstack-agents" / "workspaces")
+
+# Two-way Slack (a real app, not the post-only webhook). Without a bot token the team falls back
+# to SLACK_WEBHOOK: it can still report, but it cannot thread, speak as each employee, or hear.
+SLACK_BOT_TOKEN = os.environ.get("SLACK_BOT_TOKEN", "")
+SLACK_SIGNING_SECRET = os.environ.get("SLACK_SIGNING_SECRET", "")
+
+# Claude for conversational asks. On whenever a key exists; AGENTS_USE_LLM=0 forces the stub, which
+# answers honestly without spending. Meet-the-team never uses the model, so it is the free smoke test.
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+USE_LLM = (os.environ.get("AGENTS_USE_LLM") or ("1" if ANTHROPIC_API_KEY else "0")) == "1"
+AGENT_BUDGET_USD = _f("AGENTS_AGENT_BUDGET_USD", 2.0)     # Claude spend cap for one employee turn
+AGENT_MAX_TURNS = int(_f("AGENTS_AGENT_MAX_TURNS", 30))
+MAX_HOPS = int(_f("AGENTS_MAX_HOPS", 6))                  # handoffs allowed on one thread
 
 # The status and board the Research agent's deep prospect hangs off.
 DP_STATUS = os.environ.get("AGENTS_DP_STATUS") or "deep prospecting"
