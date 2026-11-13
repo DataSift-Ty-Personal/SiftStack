@@ -158,10 +158,10 @@ def _drain(limit: int = 50) -> int:
 
 
 def cmd_hello(a) -> int:
-    from agents import hello, team
+    from agents import hello, slack_app, team
     store.init()
     roster = team.load()
-    hello.start(roster, roster.team_channel, "", source="cli")
+    hello.start(roster, slack_app.home_channel(None, roster), "", source="cli")
     print("ran %d task(s); without SLACK_BOT_TOKEN the posts above went to the webhook or the log" % _drain())
     return 0
 

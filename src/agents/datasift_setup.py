@@ -15,6 +15,7 @@ the app's own source: {"action": "send-webhook", "payload": {"webhook_uuid": ...
 from __future__ import annotations
 
 import json
+import time
 
 from sms_agent.crm_standalone import StandaloneCRMError
 
@@ -132,8 +133,33 @@ def plan_and_apply(commit: bool = False) -> dict:
         report["verified"] = bool(back.get("is_active")) and hook_uuid in got and col["uuid"] in got
         say("read back: active=%s, webhook action=%s, card column=%s" % (
             back.get("is_active"), hook_uuid in got, col["uuid"] in got))
+        report["test_delivery"] = send_test(crm, hook_uuid)
+        say("test delivery: %s" % report["test_delivery"])
+        report["verified"] = report["verified"] and report["test_delivery"].startswith("received")
     report["webhook_url"] = url.replace(config.WEBHOOK_SECRET, "<secret>")
     return report
+
+
+def send_test(crm, hook_uuid: str, wait_s: float = 30.0, sleep=time.sleep) -> str:
+    """Have DataSift send its own Test delivery to the webhook (the app's Test button), then look
+    for the running brain's receipt. This is the proof the URL, the secret path and the signature
+    check all line up; a sequence that reads back correctly proves none of that. The same route the
+    app uses, on our accounts only."""
+    before, _ = test_receipt()
+    try:
+        out = crm._request("/api/internal/integration/webhook/%s/test/" % hook_uuid, method="POST", body={})
+    except StandaloneCRMError as exc:
+        return "not sent (%s)" % str(exc)[:160]
+    if isinstance(out, dict) and out.get("success") is False:
+        return "sent, and the brain answered %s" % out.get("status_code")
+    waited = 0.0
+    while waited <= wait_s:
+        got, where = test_receipt()
+        if got and got != before:
+            return "received by %s at %s" % (where, got)
+        sleep(2.0)
+        waited += 2.0
+    return "sent, but the brain shows no receipt after %d seconds" % wait_s
 
 
 def safe_plan(commit: bool, staff_api: bool = False) -> dict:

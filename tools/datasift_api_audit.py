@@ -68,6 +68,7 @@ KNOWN = {
     "/api/internal/sequence-folder/": ("absent", "sequences are not in the API: build them in Sequence Builder"),
     "/api/internal/integration/webhook/": ("app", "creating or changing a webhook is app-only (Settings > Integrations > Webhooks)"),
     "/api/internal/integration/webhook/{x}/": ("app", "creating or changing a webhook is app-only"),
+    "/api/internal/integration/webhook/{x}/test/": ("app", "the webhook's Test button; a person selects Test in the app"),
     "/api/internal/property/direct-mail-campaign/": ("absent", "SiftMail campaigns are not in the API"),
     "/api/internal/accounting/direct-mail-pricing/": ("absent", "SiftMail pricing is not in the API"),
     "/api/internal/property/{x}/directmail-attempts/": ("absent", "no direct-mail attempt counter in the API (sms, rvm, predictivecall and skiptrace have one)"),

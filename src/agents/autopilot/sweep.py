@@ -3,7 +3,9 @@
 The worker calls `task_handler` for any task whose workflow is a playbook stage (the clock queues
 them, an employee's workflow tool queues them, or `cli.py autopilot run` runs one in-process).
 `slack_text` renders the result for the owner's channel. A quiet run (nothing found, nothing done,
-nothing wrong) renders nothing, so a stage that runs every 30 minutes does not fill a channel.
+nothing wrong) renders nothing, so a stage that runs every 30 minutes does not fill a channel. A
+stage in plan mode says its plan once a day, for the same reason: it writes nothing, so every run
+finds the same work again.
 """
 from __future__ import annotations
 
@@ -11,6 +13,7 @@ import json
 import logging
 import uuid
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 from .. import config, store
 from . import budget
@@ -111,10 +114,38 @@ def task_handler(task: dict) -> dict:
     return s.as_dict()
 
 
-def slack_text(task: dict, result: dict) -> str:
+def plan_repeat(task: dict, result: dict, now: datetime | None = None) -> bool:
+    """True when a scheduled plan run has nothing new to say. A stage in plan mode writes nothing,
+    so it finds the same work on every run: said once a day that is a picture of what the stage
+    would do, said every 30 minutes it buries the channel. So a plan run posts the first time each
+    business day, and again that day only when it has MORE problems than it had then. A live run,
+    an ask from Slack and a run from the command line are never held back."""
+    if result.get("live") or (task.get("source") or "") != "schedule":
+        return False
+    stage = result.get("stage") or task.get("workflow") or ""
+    try:
+        tz = ZoneInfo(policy_mod.load().tz)
+    except Exception:  # noqa: BLE001  (no playbook, or a zone the box does not know)
+        tz = ZoneInfo("America/New_York")
+    day = (now or datetime.now(timezone.utc)).astimezone(tz).date().isoformat()
+    n = len(result.get("problems") or [])
+    key = "autopilot:plan_said:%s" % stage
+    try:
+        prev = json.loads(store.kv_get(key) or "{}")
+    except ValueError:
+        prev = {}
+    if prev.get("day") == day and n <= int(prev.get("problems") or 0):
+        return True
+    store.kv_set(key, json.dumps({"day": day, "problems": n}))
+    return False
+
+
+def slack_text(task: dict, result: dict, now: datetime | None = None) -> str:
     kind = result.get("kind")
     quiet = not (result.get("acted") or result.get("problems") or result.get("batch"))
     if quiet and kind not in REPORT_KINDS and not (task.get("source") or "").startswith("slack"):
+        return ""
+    if plan_repeat(task, result, now):
         return ""
     title = (result.get("stage") or task.get("workflow") or "").replace("_", " ")
     mode = "" if result.get("live") else " _(plan: nothing written)_"

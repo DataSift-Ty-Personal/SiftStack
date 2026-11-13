@@ -92,7 +92,40 @@ def post(channel: str, text: str, *, thread_ts: str = "", employee=None) -> str:
         if employee.icon_emoji:
             body["icon_emoji"] = employee.icon_emoji
     data = _api("chat.postMessage", body)
+    if data.get("error") == "not_in_channel" and join(channel):
+        data = _api("chat.postMessage", body)       # the app was not a member yet: joined, sent once more
     return str(data.get("ts") or "") if data.get("ok") else ""
+
+
+def home_channel(employee=None, roster=None) -> str:
+    """Where a post that belongs to no thread goes. One channel for the whole team when
+    AGENTS_SLACK_CHANNEL is set; otherwise the employee's own channel, then the team's."""
+    if config.SLACK_CHANNEL:
+        return config.SLACK_CHANNEL
+    if employee is not None and getattr(employee, "slack_channel", ""):
+        return employee.slack_channel
+    return roster.team_channel if roster is not None else ""
+
+
+def join(channel: str) -> bool:
+    """Join a public channel by id, so nobody has to invite the app before it can post or hear.
+    A private channel refuses this (the app has to be invited there), and that is logged once."""
+    if not (config.SLACK_BOT_TOKEN and channel):
+        return False
+    data = _api("conversations.join", {"channel": channel})
+    if not data.get("ok"):
+        log.warning("slack: could not join %s (%s). In a private channel, invite the app: /invite @<app name>",
+                    channel, data.get("error"))
+    return bool(data.get("ok"))
+
+
+def notice(text: str, roster=None) -> str:
+    """A message for the operator that belongs to no task (a webhook the brain could not read).
+    With the app it goes to the team's home channel; without it, to the post-only webhook."""
+    if config.SLACK_BOT_TOKEN:
+        return post(home_channel(None, roster), text)
+    slack.post(clean_text(text))
+    return ""
 
 
 def react(channel: str, ts: str, emoji: str = "eyes") -> None:

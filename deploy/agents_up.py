@@ -208,9 +208,14 @@ def main() -> int:
         print("\n    %s\n" % team.manifest_url(team.slack_manifest(url)))
         print("    Install it to your workspace, then add to .env and rerun this command:\n"
               "      SLACK_BOT_TOKEN=xoxb-...      (OAuth & Permissions)\n"
-              "      SLACK_SIGNING_SECRET=...      (Basic Information)\n"
-              "    Create #%s plus each employee's channel (%s) and invite the app.\n" % (
-                  roster.team_channel, ", ".join("#" + e.slack_channel for e in roster.employees.values())))
+              "      SLACK_SIGNING_SECRET=...      (Basic Information)")
+        if env.get("AGENTS_SLACK_CHANNEL"):
+            print("    AGENTS_SLACK_CHANNEL is set: the whole team posts in that one channel. The app joins a\n"
+                  "    public channel by itself; in a private one, invite it (/invite @SiftStack Team).\n")
+        else:
+            print("    Create #%s plus each employee's channel (%s) and invite the app, or set\n"
+                  "    AGENTS_SLACK_CHANNEL to one channel's ID (C0...) and the whole team posts there.\n" % (
+                      roster.team_channel, ", ".join("#" + e.slack_channel for e in roster.employees.values())))
     else:
         p.say("slack", "ok", "app keys present (synced with the secrets)")
 
@@ -240,11 +245,20 @@ def main() -> int:
 
     if a.commit and slack_ready:
         import requests
+        where = "your one team channel" if env.get("AGENTS_SLACK_CHANNEL") else "#%s" % roster.team_channel
         try:
-            r = requests.post("%s/team/hello/%s" % (url, env.get("AGENTS_WEBHOOK_SECRET", "")), timeout=20).json()
-        except Exception as exc:  # noqa: BLE001
-            r = {"error": str(exc)}
-        p.say("hello", "sent" if r.get("ok") else "FAILED", "watch #%s: everyone introduces themselves" % roster.team_channel)
+            said = requests.get("%s/health" % url, timeout=20).json().get("slack_first_hello")
+        except Exception:  # noqa: BLE001
+            said = ""
+        if said:
+            # The brain introduces the team by itself on its first boot with the app's keys.
+            p.say("hello", "sent", "the team introduced itself in %s at %s" % (where, said))
+        else:
+            try:
+                r = requests.post("%s/team/hello/%s" % (url, env.get("AGENTS_WEBHOOK_SECRET", "")), timeout=20).json()
+            except Exception as exc:  # noqa: BLE001
+                r = {"error": str(exc)}
+            p.say("hello", "sent" if r.get("ok") else "FAILED", "watch %s: everyone introduces themselves" % where)
     else:
         p.say("hello", "would" if not a.commit else "waiting", "POST /team/hello/<secret> once Slack is set")
 

@@ -41,7 +41,7 @@ def _roster():
 def _post(task: dict, text: str, emp, roster) -> str:
     channel, thread = task.get("slack_channel") or "", task.get("slack_thread") or ""
     if not channel and config.SLACK_BOT_TOKEN:
-        channel = emp.slack_channel if emp else (roster.team_channel if roster else "")
+        channel = slack_app.home_channel(emp, roster)
     ts = slack_app.post(channel, text, thread_ts=thread, employee=emp)
     if ts and not thread:
         store.set_slack(task["id"], channel, ts)

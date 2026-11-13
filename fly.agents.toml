@@ -19,6 +19,10 @@ primary_region = "iad"
   AGENTS_RUN_CAP_USD = "5"
   AGENTS_DAILY_CAP_USD = "25"
   AGENTS_DP_COLUMN = "Check Relatives"
+  # The deep prospect's research runs on the low-cost engine (two inexpensive models, cross-checked,
+  # a referee on a hard disagreement; measured $1.21 a record live against more than $4). The
+  # analysis passes stay on Claude. Remove this line and the Claude researcher does the research.
+  AGENTS_RESEARCH_ENGINE = "open"
 
 [mounts]
   source = "agents_data"

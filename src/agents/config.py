@@ -71,6 +71,10 @@ WORKSPACES_DIR = Path(os.environ.get("AGENTS_WORKSPACES_DIR")
 # to SLACK_WEBHOOK: it can still report, but it cannot thread, speak as each employee, or hear.
 SLACK_BOT_TOKEN = os.environ.get("SLACK_BOT_TOKEN", "")
 SLACK_SIGNING_SECRET = os.environ.get("SLACK_SIGNING_SECRET", "")
+# One channel for the whole team: a channel ID (C0...). Set, every post that belongs to no thread
+# goes there whoever on the team is speaking, and the per-employee channel names in the roster are
+# not needed. Unset, each employee posts in its own channel and the team shares one.
+SLACK_CHANNEL = (os.environ.get("AGENTS_SLACK_CHANNEL") or "").strip()
 
 # Claude for conversational asks. On whenever a key exists; AGENTS_USE_LLM=0 forces the stub, which
 # answers honestly without spending. Meet-the-team never uses the model, so it is the free smoke test.

@@ -244,6 +244,41 @@ def main() -> int:
     except ImportError as exc:
         check(False, "brain tests need fastapi + httpx: %s" % exc)
 
+    print("datasift setup: the test delivery")
+    from . import datasift_setup
+
+    class _HookCRM:
+        def __init__(self, answer):
+            self.answer, self.calls = answer, []
+
+        def _request(self, path, method="GET", body=None, params=None):
+            self.calls.append((method, path))
+            if isinstance(self.answer, Exception):
+                raise self.answer
+            return self.answer
+
+    real_receipt, receipts = datasift_setup.test_receipt, []
+    datasift_setup.test_receipt = lambda workflow="deep-prospect": (receipts.pop(0) if len(receipts) > 1 else receipts[0],
+                                                                    "the running brain")
+    try:
+        crm_ok = _HookCRM({"success": True, "status_code": 200})
+        receipts[:] = ["", "", "2026-01-02T03:04:05+00:00"]
+        said = datasift_setup.send_test(crm_ok, "hook-1", sleep=lambda s: None)
+        check(said.startswith("received by the running brain at 2026-01-02") and
+              crm_ok.calls == [("POST", "/api/internal/integration/webhook/%s/test/" % "hook-1")],
+              "the setup asks DataSift for its Test delivery and waits for the brain's own receipt")
+        receipts[:] = ["2026-01-01T00:00:00+00:00"]
+        check(datasift_setup.send_test(crm_ok, "hook-1", wait_s=4, sleep=lambda s: None).startswith("sent, but"),
+              "an older receipt is not taken for this test: no new receipt is said plainly")
+        receipts[:] = [""]
+        check(datasift_setup.send_test(_HookCRM({"success": False, "status_code": 401}), "hook-1", sleep=lambda s: None)
+              == "sent, and the brain answered 401", "a delivery the brain refused is reported with its status")
+        from sms_agent.crm_standalone import StandaloneCRMError
+        check(datasift_setup.send_test(_HookCRM(StandaloneCRMError("HTTP 404")), "hook-1", sleep=lambda s: None)
+              .startswith("not sent"), "a route that refuses the test is reported, never raised")
+    finally:
+        datasift_setup.test_receipt = real_receipt
+
     print("team")
     from . import selftest_team
     try:

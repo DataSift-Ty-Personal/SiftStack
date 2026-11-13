@@ -51,10 +51,21 @@ class FakeSlack:
 
     def __init__(self):
         self.calls, self.n = [], 0
+        self.outside, self.private, self.down = set(), set(), False   # not a member yet / refuses a join / all fail
 
     def post(self, url, json=None, timeout=None, headers=None):
+        method, ch = url.rsplit("/", 1)[-1], (json or {}).get("channel", "")
         self.n += 1
-        self.calls.append((url.rsplit("/", 1)[-1], dict(json or {})))
+        self.calls.append((method, dict(json or {})))
+        if self.down:
+            return _Resp({"ok": False, "error": "invalid_auth"})
+        if method == "conversations.join":
+            if ch in self.private:
+                return _Resp({"ok": False, "error": "method_not_supported_for_channel_type"})
+            self.outside.discard(ch)
+            return _Resp({"ok": True})
+        if method == "chat.postMessage" and ch in self.outside:
+            return _Resp({"ok": False, "error": "not_in_channel"})
         return _Resp({"ok": True, "ts": "1700000000.%06d" % self.n})
 
     def get(self, url, params=None, timeout=None, headers=None):
@@ -130,6 +141,7 @@ def run(check, tmp: Path) -> None:
     default_ws = config.WORKSPACES_DIR
     config.DB_PATH, config.WORKSPACES_DIR = tmp / "team.db", tmp / "workspaces"
     config.SLACK_BOT_TOKEN, config.SLACK_SIGNING_SECRET, config.USE_LLM = "", "", False
+    config.SLACK_CHANNEL = ""       # this machine's own env may name one channel; the checks set their own
     config.DAILY_CAP_USD, config.AGENT_BUDGET_USD, config.MAX_HOPS = 25.0, 2.0, 6
     from . import bus, hello, intake, router, runner, slack_app, store, team, tools, worker
     store.init()
@@ -460,7 +472,61 @@ def run(check, tmp: Path) -> None:
               "health reports Slack mode, the team and what is live")
         config.SLACK_SIGNING_SECRET = ""
         check(send({"type": "event_callback"}).status_code == 404, "with no signing secret the Slack door is closed")
+
+        print("team: one channel for the whole team")
+        roma, diggs = roster.employees["sales"], roster.employees["research"]
+        check(slack_app.home_channel(roma, roster) == roma.slack_channel
+              and slack_app.home_channel(None, roster) == roster.team_channel,
+              "without the setting each employee keeps its own channel and the team shares one")
+        config.SLACK_CHANNEL = "CONE"
+        check(slack_app.home_channel(roma, roster) == "CONE" and slack_app.home_channel(None, roster) == "CONE",
+              "with one channel set, every post that belongs to no thread goes there")
+        t_one, _ = store.enqueue("research", "deep_prospect", "00000000-0000-4000-8000-0000000000aa", source="datasift")
+        n0 = len(fake_slack.posts())
+        worker._post(store.task(t_one), "file ready", diggs, roster)
+        p = fake_slack.posts()[-1]
+        check(len(fake_slack.posts()) == n0 + 1 and p["channel"] == "CONE" and p["username"] == "Diggs",
+              "a webhook-born task posts in the one channel, still under the employee's own name")
+        check(store.task(t_one)["slack_channel"] == "CONE" and store.task(t_one)["slack_thread"],
+              "and adopts that message as its thread")
+        store.finish(t_one, "done", {})
+        fake_slack.outside.add("CONE")
+        n0 = len(fake_slack.calls)
+        ts = slack_app.post("CONE", "first words")
+        check(ts and [m for m, _ in fake_slack.calls[n0:]] == ["chat.postMessage", "conversations.join", "chat.postMessage"],
+              "an app that is not in the channel yet joins it and sends once more")
+        fake_slack.outside.add("CPRIV")
+        fake_slack.private.add("CPRIV")
+        check(slack_app.post("CPRIV", "x") == "", "a private channel that refuses the join is a failed post, never a crash")
+        check("channels:join" in team.slack_manifest("https://brain.example")["oauth_config"]["scopes"]["bot"],
+              "the app manifest asks for the right to join a public channel")
+        n0 = len(fake_slack.posts())
+        slack_app.notice("a webhook arrived with no record id", roster)
+        check(fake_slack.posts()[-1]["channel"] == "CONE" and len(fake_slack.posts()) == n0 + 1,
+              "a notice that belongs to no task goes to the one channel too")
+        check(c.get("/health").json()["slack_one_channel"] is True, "health says one channel is set, never which")
+
+        print("team: first hello")
+        store.kv_set(brain.FIRST_HELLO_KEY, "")
+        config.SLACK_BOT_TOKEN = ""
+        check(brain.first_hello() == 0, "no Slack app: nothing is said")
+        config.SLACK_BOT_TOKEN = "xoxb-test"
+        fake_slack.down = True
+        check(brain.first_hello() == 0 and not store.kv_get(brain.FIRST_HELLO_KEY),
+              "an opening message that did not land is not marked done, so the next boot tries again")
+        fake_slack.down = False
+        n0 = len(fake_slack.posts())
+        tid = brain.first_hello()
+        opening = fake_slack.posts()[n0]
+        check(tid and store.kv_get(brain.FIRST_HELLO_KEY) and opening["channel"] == "CONE" and not opening.get("thread_ts"),
+              "the first boot with the app has the team introduce itself in the one channel")
+        check(store.task(tid)["slack_thread"].startswith("1700000000.") and store.task(tid)["source"] == "first-boot",
+              "and the introductions thread under that opening message")
+        store.finish(tid, "done", {})
+        n0 = len(fake_slack.posts())
+        check(brain.first_hello() == 0 and len(fake_slack.posts()) == n0, "it is said once, never again")
     finally:
+        config.SLACK_CHANNEL = ""
         worker.HANDLERS["deep_prospect"] = real_dp
         runner._SDK = None
         tools.CRM = None

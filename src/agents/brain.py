@@ -44,6 +44,33 @@ def _startup() -> None:
         from . import scheduler
         _worker["clock"], _worker["clock_stop"] = scheduler.start_thread(_roster_or_none)
         log.info("scheduler on: live workflows with a schedule trigger fire at business-local time")
+    first_hello()
+
+
+FIRST_HELLO_KEY = "slack:first_hello"
+
+
+def first_hello() -> int:
+    """The first boot with a working Slack app has the team introduce itself, once. The person who
+    just pasted the app's two keys sees it worked without asking anyone, and nobody has to call
+    /team/hello. It is marked done only when the opening message really landed, so a wrong key or
+    a channel the app cannot reach is tried again on the next boot. Returns the task id, or 0."""
+    try:
+        if slack_app.mode() != "bot" or store.kv_get(FIRST_HELLO_KEY):
+            return 0
+        roster = _roster_or_none()
+        if not roster:
+            return 0
+        tid = hello.start(roster, slack_app.home_channel(None, roster), "", source="first-boot", must_land=True)
+        if tid:
+            store.kv_set(FIRST_HELLO_KEY, store.now())
+            log.info("slack is connected: the team is introducing itself (task %s)", tid)
+        else:
+            log.warning("slack app keys are set but the first message did not land; trying again next boot")
+        return tid
+    except Exception as exc:  # noqa: BLE001  (a greeting must never stop the brain from starting)
+        log.warning("first hello failed: %s", exc)
+        return 0
 
 
 def _roster_or_none():
@@ -61,6 +88,7 @@ def health() -> dict:
     return {"ok": True, "mode": config.MODE, "tasks": store.counts(),
             "spent_today_usd": round(store.spent(day=day), 2), "daily_cap_usd": config.DAILY_CAP_USD,
             "run_cap_usd": config.RUN_CAP_USD, "slack": slack_app.mode(), "claude": config.USE_LLM,
+            "slack_one_channel": bool(config.SLACK_CHANNEL), "slack_first_hello": store.kv_get(FIRST_HELLO_KEY),
             "team": {e.id: e.display_name for e in roster.employees.values()} if roster else None,
             "live_workflows": sorted(w.name for w in roster.workflows.values() if w.live) if roster else [],
             "worker_alive": bool(_worker.get("thread") and _worker["thread"].is_alive()),
@@ -153,7 +181,10 @@ def team_hello(secret: str) -> dict:
     roster = _roster_or_none()
     if not roster:
         raise HTTPException(status_code=500, detail="roster did not load")
-    return {"ok": True, "task": hello.start(roster, roster.team_channel, "", source="deploy")}
+    tid = hello.start(roster, slack_app.home_channel(None, roster), "", source="deploy")
+    if slack_app.mode() == "bot" and not store.kv_get(FIRST_HELLO_KEY):
+        store.kv_set(FIRST_HELLO_KEY, store.now())
+    return {"ok": True, "task": tid}
 
 
 @app.post("/hooks/datasift/{secret}/{workflow}")
@@ -189,8 +220,8 @@ async def datasift_hook(secret: str, workflow: str, request: Request) -> dict:
     except KeyError:
         raise HTTPException(status_code=404) from None
     if not r["record_uuid"]:
-        slack.post(":warning: A DataSift webhook for *%s* arrived with no record id I could read. "
-                   "Logged as event %s; nothing was run." % (workflow, event_id))
+        slack_app.notice(":warning: A DataSift webhook for *%s* arrived with no record id I could read. "
+                         "Logged as event %s; nothing was run." % (workflow, event_id), _roster_or_none())
         return {"ok": True, "queued": False, "event": event_id, "reason": "no record id"}
     task_id, created = store.enqueue(r["agent"], r["workflow"], r["record_uuid"], event_id=event_id)
     return {"ok": True, "queued": created, "task": task_id, "event": event_id}

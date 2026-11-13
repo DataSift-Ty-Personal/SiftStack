@@ -691,6 +691,22 @@ def run(check, tmp: Path) -> None:
     loud = sweep.slack_text({"workflow": "r_native", "source": "schedule"},
                             {"kind": "native_trace", "acted": 0, "problems": ["metered"], "batch": 0, "stage": "r_native"})
     check(quiet == "" and loud.startswith(":warning:"), "a quiet scheduled run posts nothing; a problem always posts")
+    sched = {"workflow": "r_score", "source": "schedule"}
+    would = {"kind": "score", "stage": "r_score", "acted": 78, "problems": [], "batch": 0, "head": "would score 78 numbers"}
+    day1, day2 = T0 + timedelta(days=40, hours=14), T0 + timedelta(days=41, hours=14)
+    first = sweep.slack_text(sched, would, now=day1)
+    again = sweep.slack_text(sched, would, now=day1 + timedelta(minutes=30))
+    check("plan: nothing written" in first and again == "",
+          "a stage in plan mode says its plan once a day, not on every 30-minute run")
+    worse = sweep.slack_text(sched, dict(would, problems=["the scorer refused the key"]), now=day1 + timedelta(hours=1))
+    same = sweep.slack_text(sched, dict(would, problems=["the scorer refused the key"]), now=day1 + timedelta(hours=2))
+    check(worse.startswith(":warning:") and same == "", "a new problem is said the day it appears, once")
+    check(sweep.slack_text(sched, would, now=day2) != "", "the next business day the plan is said again")
+    check(sweep.slack_text(sched, dict(would, live=True), now=day2 + timedelta(minutes=30)) != ""
+          and sweep.slack_text(sched, dict(would, live=True), now=day2 + timedelta(minutes=60)) != "",
+          "a live run that acted is always said")
+    check(sweep.slack_text({"workflow": "r_score", "source": "slack"}, would, now=day2 + timedelta(minutes=90)) != "",
+          "a plan somebody asked for in Slack is always answered")
     config.MODE = "dry"
     dry = sweep.run("a_assign", crm=FakeCRM([_rec("z1", "1 Dry St")]), now=T0 + timedelta(days=9), pol=pol)
     check(not dry.live, "a live stage on a dry box does not write: both switches must say live")
