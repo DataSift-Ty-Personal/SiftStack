@@ -2024,9 +2024,16 @@ def _probe_code() -> str:
     return "import json\nCFG = json.loads(%r)\n" % json.dumps(cfg) + PROBE_BODY
 
 
+# Names that carry a key word but hold a network address Fly sets, not a credential. FLY_PRIVATE_IP is
+# the machine's own 6PN address, which /etc/hosts must list: counted as a key, it failed the box check
+# on its first run (2026-11-13) with nothing exposed.
+NOT_SECRET = {"FLY_PRIVATE_IP", "FLY_PUBLIC_IP"}
+
+
 def _secret_values(env) -> list[str]:
     """The values in an environment that are keys: a name that says so, and long enough to matter."""
-    return sorted({v for k, v in dict(env).items() if len(v or "") >= 12 and any(w in k.upper() for w in SECRET_WORDS)})
+    return sorted({v for k, v in dict(env).items() if len(v or "") >= 12 and k.upper() not in NOT_SECRET
+                   and any(w in k.upper() for w in SECRET_WORDS)})
 
 
 def _secret_files(paths: list, secrets: list, budget_mb: int = 400) -> list[str]:

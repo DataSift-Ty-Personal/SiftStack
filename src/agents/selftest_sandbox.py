@@ -266,6 +266,10 @@ def run(check, tmp: Path) -> None:
     sandbox._RUNS.clear()
     try:
         _command_and_env(check)
+        found = sandbox._secret_values({"FLY_PRIVATE_IP": "fdaa:0:1234:a7b:1:2:3:4", "FLY_API_TOKEN": "fo1_" + "x" * 20,
+                                        "SLACK_BOT_TOKEN": "xoxb-" + "1" * 16, "PATH": "/usr/local/bin:/usr/bin"})
+        check(found == sorted(["fo1_" + "x" * 20, "xoxb-" + "1" * 16]),
+              "the key sweep looks for real keys and not the machine's own address (FLY_PRIVATE_IP is in /etc/hosts)")
         _preflight(check)
         _outcomes(check, root)
         _inputs(check, store, root)
