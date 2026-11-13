@@ -47,6 +47,8 @@ GROUPS = {
     "state": STATE,
     "texts": TEXTS,
     "board": BOARD,
+    # A note a person wrote counts as a real conversation for the lead clock (plan 2.5).
+    "notes": ("property.message.added", "owner.message.added"),
 }
 FLOOR_DAYS = 45          # how far back the first sync reaches
 KEEP_DAYS = 200

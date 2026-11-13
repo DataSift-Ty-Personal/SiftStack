@@ -35,6 +35,10 @@ The whole team also listens in #ai-team.
 | ftm_reactivate | Not-interested first-to-market records whose wait is over handed back to a caller. | schedule (Mon 08:15), ask in Slack | free | live |
 | ladder_check | The lists checked against real investor sales once a month, and the Priority 1 feeders against the ladder. | schedule (1st 03:10), ask in Slack | free | live |
 | conventions_check | The account's naming rules checked once a week; what breaks one is listed and nothing is changed. | schedule (Sun 03:40), ask in Slack | free | live |
+| hot_auction_tasks | Hot auctions worked past the call round, closed the day after the sale, and checked once 45 days later. | schedule (08:05 Mon-Fri), ask in Slack | free | live |
+| second_chances | Every Not Interested record gets a task to call its Correct number again, on the clock its list sets. | schedule (08:40 Mon-Fri), ask in Slack | free | live |
+| caller_book | Each caller gets a book of new Priority 1 records on Monday morning, and nothing more until the next Monday. | schedule (Mon 07:30), ask in Slack | free | live |
+| probate_honest | Probate kept honest as a list a person approves, flagged addresses by the measured split, old probates to mail only, a no called again at 45 days. | schedule (Mon 07:40), ask in Slack | free | live |
 
 ### Diggs (Research)
 
@@ -57,11 +61,19 @@ The whole team also listens in #ai-team.
 | ftm_no_numbers | First-to-market records still without a number after every trace go to Diggs, one a day. | schedule (13:30 Mon-Fri), ask in Slack | paid, inside the caps | live |
 | hottest_retrace | Records with no callable number traced again with the next source nobody has tried. | schedule (11:15 Mon-Fri), ask in Slack | paid, inside the caps | live |
 | hottest_score | Every new number scored and tiered (Dial First to Drop) on the phone itself. | schedule (08:45 Mon-Fri), ask in Slack | paid, inside the caps | live |
+| ftm_refresh | Active first-to-market records last traced 180 or more days ago traced again by DataSift, free and outside the per-record cap. | schedule (Sun 05:00), ask in Slack | free | live |
+| strong_native_trace | Records waiting on a skip trace get DataSift's own (free on the unlimited plan). | schedule (every 60 min 08:00-18:00 Mon-Fri), ask in Slack | free | live |
+| strong_score | Every new number scored and tiered (Dial First to Drop) on the phone itself. | schedule (09:00 Mon-Fri), ask in Slack | paid, inside the caps | live |
+| bulk_native_trace | Records waiting on a skip trace get DataSift's own (free on the unlimited plan). | schedule (every 60 min 08:00-18:00 Mon-Fri), ask in Slack | free | live |
+| bulk_score | Every new number scored and tiered (Dial First to Drop) on the phone itself. | schedule (09:15 Mon-Fri), ask in Slack | paid, inside the caps | live |
+| research_queue | Research works one ranked queue inside its daily budget; each record gets the tag Research Queued and one card. | schedule (every 30 min 08:00-17:00 Mon-Fri), ask in Slack | paid, inside the caps | live |
+| obituary_lane | Obituary records held a month, one soft letter before month three, researched at three months, mailed monthly until then, matched against probate filings. | schedule (09:40 Mon-Fri), ask in Slack | staged, a human releases | live |
 
 ### Roma (Sales Assistant)
 
 | Workflow | What it does | Runs on | Spend | Status |
 |---|---|---|---|---|
+| book_appointment | A walkthrough booked on a lead's record as an appointment task, with its day and time and who takes it. | ask in Slack | free | live |
 | quick_screen | New lead screened (record, Tier 1 comps, rough ARV, go or no-go) and posted to the record. | DataSift sequence (quick-screen), ask in Slack | free | by hand today |
 | underwrite | Full underwrite (comps, rehab on the locked SKU list, MAO at each tier, buyers, offer ladder). | ask in Slack | free | by hand today |
 | offer_sheet | The one-tab wholesale offer after a walkthrough. | ask in Slack | free | by hand today |
@@ -71,7 +83,9 @@ The whole team also listens in #ai-team.
 | sms_replies | Seller and buyer text replies read, classified, written back to the record, hot leads handed to a person. | ask in Slack | free | by hand today |
 | revocation | An opt-out, a death, a sale or a new lead pulls the owner out of mail that is staged and campaigns that are still sending. | schedule (every 60 min 08:00-19:00 daily), ask in Slack | free | live |
 | full_attempt | The owners dialed today who still have a top-tier number nobody tried, listed while there is time to finish them. | schedule (16:30 Mon-Fri), ask in Slack | free | live |
-| lead_check | Every lead checked for an open task, an assignee and a confirmed number; what is missing goes to the lead manager. | schedule (08:10 Mon-Fri), ask in Slack | free | live |
+| speed_to_lead | Each new lead timed from the status change to the first outbound call; the assignee is told at 5 minutes and the owner at 15. | schedule (every 5 min 09:00-18:00 Mon-Fri), ask in Slack | free | live |
+| lead_nurture | Every Follow Up record on a confirmed number holds one dated call task 90 days out. | schedule (08:15 Mon-Fri), ask in Slack | free | live |
+| lead_appointments | Every walkthrough gets a post and comps when it is booked, a confirm call the day before and a recorded outcome that sets the next move. | schedule (every 30 min 08:00-19:00 Mon-Sat), ask in Slack | free | live |
 
 ### Quinn (Operations)
 
@@ -90,8 +104,29 @@ The whole team also listens in #ai-team.
 | sequence_watchdog | Yesterday's sequence triggers checked against what each sequence should have produced; only failures are posted. | schedule (07:20 daily), ask in Slack | free | live |
 | touch_audit | Every dial and mail piece from yesterday checked against the gate; anything that should not have gone out is named. | schedule (07:30 daily), ask in Slack | free | live |
 | daily_capture | Each caller's day written down from the call log, dials, answers, conversations and talk time, whichever dialer was used. | schedule (19:15 Mon-Fri), ask in Slack | free | live |
+| lead_check | Every lead checked for an open task, an assignee and a confirmed number; what is missing goes to the lead manager. | schedule (08:10 Mon-Fri), ask in Slack | free | live |
 | ftm_mail | The FTM mail lane dropped a month apart through DataSift's own mail, staged for a person to release. | schedule (10:00 Mon-Fri), ask in Slack | staged, a human releases | live |
 | autopilot_digest | The morning readout of the FTM lane, what the autopilot did, what it cost, what waits on a person. | schedule (08:00 Mon-Fri), ask in Slack | free | live |
+| lead_clock | Lead cards moved between phases on time, measured from the last real conversation, never from time in a column. | schedule (07:40 Mon-Fri), ask in Slack | free | live |
+| lead_drips | Ghosting, cold and said-no leads kept on a slow drip of staged texts, emails and review tasks; a reply or a status change ends it. | schedule (every 60 min 09:00-18:00 Mon-Fri), ask in Slack | staged, a human releases | live |
+| lead_tasks | A lead with no open task gets the task its column's own sequence would have created. | schedule (08:05 Mon-Fri), ask in Slack | free | live |
+| lead_weekly | The weekly deeper pass on every lead, card against status, notes after conversations, overdue and undated tasks, and the check presets themselves. | schedule (Wed 08:20), ask in Slack | free | live |
+| lead_exits | Dead and Not Interested cards leave the board after 30 days with the status kept; a dead lead returns to marketing after 180 days if the house has not sold. | schedule (1st 07:10), ask in Slack | free | live |
+| ftm_registry_scrub | The do-not-call registry flags on the first-to-market lane remembered and counted, so no flagged number is texted or put on a call list. | schedule (08:20 Mon-Fri), ask in Slack | free | live |
+| ftm_texts | New first-to-market owners loaded for text 1 the day they land and texts 2 and 3 on the next two days, staged for a person to release. | schedule (08:45 Mon-Fri), ask in Slack | staged, a human releases | live |
+| ftm_followup_texts | After the call round, the follow-up texts on the lane's timeline, ending with the breakup text, staged for a person to release. | schedule (10:15 Mon-Fri), ask in Slack | staged, a human releases | live |
+| outreach_limits | The day's dials and texts checked against the outreach limits; every one broken is named by caller and by a number's last four digits. | schedule (19:20 Mon-Fri), schedule (07:25 daily), ask in Slack | free | live |
+| strong_dial_file | The current Strong tranche as a daily power-dialer file of Dial First and Second numbers nobody has reached, landlines last. | schedule (07:40 Mon-Fri), ask in Slack | free | live |
+| bulk_dial_file | The current Bulk tranche as a weekly power-dialer file; each record is dialed about once a month to attempt 6. | schedule (Mon 07:50), ask in Slack | free | live |
+| rehash_dial_file | Records that never answered, back in the power dialer every 90 days. | schedule (1st 07:30), ask in Slack | free | live |
+| kpi_alarms | The day's numbers checked against the catalog's alarms; each one is said once, with what to check first and the list to move to. | schedule (19:25 Mon-Fri), ask in Slack | free | live |
+| goal_sheet | The revenue goal worked back to deals, leads, conversations and dials, each marked behind, at risk or on track, with a quarterly owner review on top. | schedule (Mon 07:40), ask in Slack | free | live |
+| deal_sources | Each closed deal recorded with its lane, list, channel, days from first touch and three names; each month, deals by source and cost per deal. | schedule (03:10 daily), ask in Slack | free | live |
+| cadence_tuner | Every sold record's last conversation set against its sale date; proposes follow-up intervals 15 days shorter where leads are being lost. It never edits anything. | schedule (1st 03:40), ask in Slack | free | live |
+| coaching_picks | The two best and two worst calls of each caller picked from the call log and queued for call coaching, daily in a new hire's first week. | schedule (19:30 Mon-Fri), ask in Slack | free | live |
+| research_results | Each researched record read 30 days on, was a decision maker reached, by which number, did it become a lead, against the teaching's 50 to 70 percent. | schedule (1st 03:50), ask in Slack | free | live |
+| heir_lane | Researched records worked one verified heir at a time by one caller, texted by name about the property, written to at the heir's own address. | schedule (09:15 Mon-Fri), ask in Slack | staged, a human releases | live |
+| paid_lookups | Records every source missed and worth the money queued for the assistant's paid people search, with a weekly task. | schedule (09:05 Mon-Fri), ask in Slack | free | live |
 
 Every employee can also use: record_lookup.
 

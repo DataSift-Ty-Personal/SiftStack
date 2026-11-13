@@ -195,6 +195,10 @@ def scan_files() -> list[Path]:
         for p in ROOT.glob(pat):
             if "__pycache__" in p.parts or "archive" in p.parts or p.resolve() == me:
                 continue
+            # A selftest module's routes are fakes it answers itself; both selftests refuse the
+            # network outright, so none of them is a dependency on DataSift.
+            if p.name.startswith("selftest"):
+                continue
             files.append(p)
     return sorted(set(files))
 

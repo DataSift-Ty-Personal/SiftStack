@@ -26,6 +26,7 @@ IRREVERSIBLE = {"add_numbers": "numbers added to an owner stay (no delete route)
 
 def plan(run_id: str) -> list[dict]:
     """The steps an undo would take, newest change first."""
+    from .leadroutes import UNDOABLE as LEAD_ROUTES
     out = []
     for c in reversed(ledger.changes(run_id=run_id)):
         what, before, after = c["what"], c["before"], c["after"]
@@ -45,6 +46,17 @@ def plan(run_id: str) -> list[dict]:
             step["do"], step["args"] = "set_status", before
         elif what == "call_attempts":
             step["do"], step["args"] = "call_attempts", int(before or 0)
+        elif what == "sms_attempts":
+            step["do"], step["args"] = "sms_attempts", int(before or 0)
+        elif what in LEAD_ROUTES:
+            step["do"], step["args"] = "lead_route", c
+        elif what == "task" and after:
+            step["do"], step["args"] = "complete_task", str(after)
+        elif what == "task_complete":
+            step["note"] = "a completed task cannot be reopened through the published API; reopen it in DataSift"
+        elif what == "custom_field" and isinstance(before, dict) and (before.get("field_uuid") or (after or {}).get("field_uuid")):
+            step["do"], step["args"] = "custom_field", {"field_uuid": before.get("field_uuid") or after.get("field_uuid"),
+                                                          "value": before.get("value", "")}
         elif what == "skiptrace_attempts":
             step["do"], step["args"] = "skiptrace_attempts", int(before or 0)
         elif what == "phones":
@@ -81,6 +93,16 @@ def run(run_id: str, crm=None, commit: bool = False) -> dict:
                 crm.set_status(u, s["args"])
             elif s["do"] == "call_attempts":
                 crm.call_attempts(u, s["args"])
+            elif s["do"] == "sms_attempts":
+                crm.sms_attempts(u, s["args"])
+            elif s["do"] == "lead_route":
+                from .leadroutes import undo_step
+                undo_step(crm, s["args"])
+            elif s["do"] == "complete_task":
+                from .laneroutes import complete_task
+                complete_task(crm, s["args"])
+            elif s["do"] == "custom_field":
+                crm.set_custom_field(u, s["args"]["field_uuid"], s["args"]["value"])
             elif s["do"] == "skiptrace_attempts":
                 owner = (crm.record(u).get("owner") or {}).get("uuid")
                 if not owner:

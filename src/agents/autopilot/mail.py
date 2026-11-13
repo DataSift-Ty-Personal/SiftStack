@@ -486,6 +486,8 @@ def release(batch_id: int, *, crm=None, pol=None, commit: bool = False, uploaded
         raise SystemExit("no batch %d" % batch_id)
     if b["status"] != "staged":
         raise SystemExit("batch %d is %s, not staged" % (batch_id, b["status"]))
+    if b["kind"] != "mail":
+        raise SystemExit("batch %d is a %s batch, not mail" % (batch_id, b["kind"]))
     pol = pol or policy_mod.load()
     st = pol.stage(b["stage"])
     vendor = vendor_for(st)

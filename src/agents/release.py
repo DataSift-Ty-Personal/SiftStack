@@ -35,7 +35,24 @@ from . import config, store
 RELEASE: dict[str, tuple[str, str]] = {
     "mail": ("autopilot.mail", "release"),
     "attempts": ("autopilot.attempts", "release"),
+    "text": ("autopilot.textlane", "release"),
+    "leadclock": ("autopilot.leadclock", "release"),
+    "drip": ("autopilot.drips", "release"),
+    "heir_mail": ("autopilot.heirlane", "release"),
+    "heir_text": ("autopilot.heirlane", "release"),
+    "obituary_mail": ("autopilot.obituary", "release"),
+    "probate": ("autopilot.probate", "release"),
 }
+# Kinds whose release has two steps because a person uploads a file between them: the second step
+# (after the upload) is the confirm with "uploaded".
+FILE_KINDS = ("heir_mail", "heir_text", "obituary_mail")
+LABELS = {"mail": "mail piece(s)", "attempts": "call counter correction(s)", "text": "owner text(s)",
+          "leadclock": "card move(s)", "drip": "text(s) and email(s)", "heir_mail": "heir letter(s)",
+          "heir_text": "heir text(s)", "obituary_mail": "obituary letter(s)", "probate": "probate change(s)"}
+
+
+def label(kind: str) -> str:
+    return LABELS.get(kind, "item(s)")
 CONFIRM_MINUTES = 15
 WORKFLOW = "release_batch"
 
@@ -70,7 +87,7 @@ def release_fn(kind: str):
 def describe(b: dict) -> str:
     """One plain line about a staged batch: what it is, how many items, what it costs."""
     n = len(b.get("items") or [])
-    what = {"mail": "mail piece(s)", "attempts": "call counter correction(s)"}.get(b.get("kind"), "item(s)")
+    what = label(b.get("kind") or "")
     cost = " for about $%.2f" % float(b["usd"]) if float(b.get("usd") or 0) else ""
     return "batch %d from %s: %d %s%s, staged %s" % (b["id"], (b.get("stage") or "").replace("_", " "), n, what, cost,
                                                      str(b.get("created") or "")[:16].replace("T", " "))
@@ -85,7 +102,7 @@ def run(batch_id: int, *, commit: bool = False, uploaded: bool = False, **kw) ->
     fn = release_fn(b["kind"])
     if fn is None:
         raise SystemExit("batch %d is a %s batch, and nothing is registered to release that kind" % (batch_id, b["kind"]))
-    if b["kind"] == "mail":
+    if b["kind"] == "mail" or b["kind"] in FILE_KINDS:
         kw["uploaded"] = uploaded
     return fn(batch_id, commit=commit, **kw)
 
@@ -155,6 +172,8 @@ def slack_command(cmd: tuple[str, int, bool], user: str, channel: str, thread: s
 
 
 def _export_only(b: dict) -> bool:
+    if b.get("kind") in FILE_KINDS:
+        return True
     try:
         from .autopilot import mail
         from .autopilot import policy as policy_mod

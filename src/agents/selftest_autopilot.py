@@ -693,6 +693,19 @@ def run(check, tmp: Path) -> None:
     check(quiet == "" and loud.startswith(":warning:"), "a quiet scheduled run posts nothing; a problem always posts")
     sched = {"workflow": "r_score", "source": "schedule"}
     would = {"kind": "score", "stage": "r_score", "acted": 78, "problems": [], "batch": 0, "head": "would score 78 numbers"}
+    posts_was = config.PLAN_POSTS
+    config.PLAN_POSTS = "digest"
+    check(sweep.slack_text(sched, would, now=T0 + timedelta(days=39, hours=14)) == "",
+          "by default a stage in plan mode posts nothing on its own: what it would do is read in the morning digest")
+    check(sweep.slack_text(sched, dict(would, problems=["the scorer refused the key"]), now=T0 + timedelta(days=39, hours=15)) != "",
+          "but a problem in a plan-mode stage is still posted the day it appears")
+    check(sweep.slack_text({"workflow": "r_digest", "source": "schedule"},
+                           {"kind": "digest", "stage": "r_digest", "acted": 0, "problems": [], "head": "Last 24h"},
+                           now=T0 + timedelta(days=39, hours=8)) != "", "and the digest itself always posts")
+    config.PLAN_POSTS = "off"
+    check(sweep.slack_text(sched, dict(would, problems=["x"]), now=T0 + timedelta(days=39, hours=16)) == "",
+          "with plan posts off, a plan-mode stage posts nothing at all")
+    config.PLAN_POSTS = "daily"
     day1, day2 = T0 + timedelta(days=40, hours=14), T0 + timedelta(days=41, hours=14)
     first = sweep.slack_text(sched, would, now=day1)
     again = sweep.slack_text(sched, would, now=day1 + timedelta(minutes=30))
@@ -707,6 +720,7 @@ def run(check, tmp: Path) -> None:
           "a live run that acted is always said")
     check(sweep.slack_text({"workflow": "r_score", "source": "slack"}, would, now=day2 + timedelta(minutes=90)) != "",
           "a plan somebody asked for in Slack is always answered")
+    config.PLAN_POSTS = posts_was
     config.MODE = "dry"
     dry = sweep.run("a_assign", crm=FakeCRM([_rec("z1", "1 Dry St")]), now=T0 + timedelta(days=9), pol=pol)
     check(not dry.live, "a live stage on a dry box does not write: both switches must say live")

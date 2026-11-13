@@ -78,6 +78,10 @@ SLACK_APP_TOKEN = os.environ.get("SLACK_APP_TOKEN", "")
 # Slack user ids (U0...) allowed to release a staged batch from the channel (agents/release.py).
 # Empty, nobody can: a batch is then released from the command line only.
 RELEASERS = os.environ.get("AGENTS_RELEASERS", "")
+# What a stage in plan mode posts on its own. digest (default): nothing but a new problem; what each
+# stage would do is summarized in the morning digest. daily: its plan once a business day. off:
+# nothing at all. With about 45 stages, daily would put dozens of posts in the channel every day.
+PLAN_POSTS = (os.environ.get("AGENTS_PLAN_POSTS") or "digest").strip().lower()
 # One channel for the whole team: a channel ID (C0...). Set, every post that belongs to no thread
 # goes there whoever on the team is speaking, and the per-employee channel names in the roster are
 # not needed. Unset, each employee posts in its own channel and the team shares one.

@@ -67,26 +67,41 @@ def _suppressing(e: dict, cfg: gate.GateConfig) -> tuple[str, str]:
 
 
 def pull_from_batches(ctx: Ctx, record_uuids: set[str], why: dict) -> int:
-    """Take these records out of every staged batch. Returns how many pieces were pulled."""
+    """Take these records out of every staged batch: mail pieces, texts and lead drip steps. Returns
+    how many were pulled. Until 2026-11-13 only mail was pulled, so a record that became untouchable
+    stayed in a staged text batch, held back only by the gate at release and missing from this count."""
     pulled = 0
     for b in ledger.batches(status="staged"):
         full = ledger.batch(b["id"])
-        if not full or full["kind"] != "mail":
+        if not full or full["kind"] not in ("mail", "text", "drip", "heir_mail", "heir_text", "obituary_mail"):
             continue
-        keep = [it for it in full["items"] if it.get("record_uuid") not in record_uuids]
-        gone = len(full["items"]) - len(keep)
-        if not gone:
+        hit = [it for it in full["items"] if it.get("record_uuid") in record_uuids]
+        if not hit:
             continue
+        if full["kind"] == "text":
+            from . import textlane
+            gone, what = textlane.pull(b["id"], record_uuids, commit=ctx.live), "text(s)"
+        else:
+            keep = [it for it in full["items"] if it.get("record_uuid") not in record_uuids]
+            gone = len(hit)
+            what = {"mail": "piece(s)", "drip": "drip step(s)", "heir_mail": "heir letter(s)",
+                    "heir_text": "heir text(s)", "obituary_mail": "obituary letter(s)"}[full["kind"]]
+            if ctx.live:
+                if full["kind"] == "mail":
+                    ledger.batch_items_set(b["id"], keep, sum(float(it.get("price") or 0) for it in keep))
+                else:
+                    ledger.batch_items_set(b["id"], keep)
+                if full["kind"] == "heir_text":
+                    from . import limits
+                    for u in {it.get("record_uuid") for it in hit}:
+                        limits.drop_text(b["id"], u)
         pulled += gone
-        ctx.out.line("batch %d: %d piece(s) pulled before release" % (b["id"], gone))
+        ctx.out.line("batch %d: %d %s pulled before release" % (b["id"], gone, what))
         if ctx.live:
-            usd = sum(float(it.get("price") or 0) for it in keep)
-            ledger.batch_items_set(b["id"], keep, usd)
-            for it in full["items"]:
-                if it.get("record_uuid") in record_uuids:
-                    ledger.event(ctx.run_id, ctx.stage.id, it["record_uuid"], "revoke",
-                                 {"from": "mail batch %d" % b["id"], "why": why.get(it["record_uuid"], "")},
-                                 now=ctx.now, tz=ctx.policy.tz)
+            for it in hit:
+                ledger.event(ctx.run_id, ctx.stage.id, it["record_uuid"], "revoke",
+                             {"from": "%s batch %d" % (full["kind"], b["id"]), "why": why.get(it["record_uuid"], "")},
+                             now=ctx.now, tz=ctx.policy.tz)
     return pulled
 
 

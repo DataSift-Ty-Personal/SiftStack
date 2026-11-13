@@ -125,6 +125,12 @@ def plan_repeat(task: dict, result: dict, now: datetime | None = None) -> bool:
     an ask from Slack and a run from the command line are never held back."""
     if result.get("live") or (task.get("source") or "") != "schedule":
         return False
+    mode = (getattr(config, "PLAN_POSTS", "") or "digest").lower()
+    kind = result.get("kind")
+    if mode == "off" and kind != "digest":
+        return True
+    if mode == "digest" and kind not in REPORT_KINDS and not (result.get("problems") or []):
+        return True                   # a plan with nothing wrong is read in the morning digest
     stage = result.get("stage") or task.get("workflow") or ""
     try:
         tz = ZoneInfo(policy_mod.load().tz)
@@ -154,9 +160,10 @@ def slack_text(task: dict, result: dict, now: datetime | None = None) -> str:
     mode = "" if result.get("live") else " _(plan: nothing written)_"
     icon = ":warning:" if result.get("problems") else ":white_check_mark:"
     out = ["%s *%s*%s %s" % (icon, title, mode, result.get("head") or "")]
-    for ln in (result.get("lines") or [])[:6]:
+    many = kind == "digest"          # the digest carries what the plan-mode stages would do
+    for ln in (result.get("lines") or [])[:16 if many else 6]:
         out.append("  %s" % ln)
-    for p in (result.get("problems") or [])[:3]:
+    for p in (result.get("problems") or [])[:6 if many else 3]:
         out.append(":small_orange_diamond: %s" % p)
     return "\n".join(out)
 

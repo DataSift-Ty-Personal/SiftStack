@@ -6,11 +6,29 @@ Rules that cut across stages:
   * Dead statuses are never touched (sold, closed, under contract, not interested, DNC ...). A
     reactivation stage is the only one that reads not-interested records, and it only hands them
     back to a caller.
-  * A source counts as a hit only when it found a CALLABLE number (Dial Fourth or better, not a
-    litigator). Drop-tier numbers are still written, tagged, so the caller can see them, but the
-    record keeps moving down the waterfall.
-  * Money: every paid call checks the stage's daily cap, the autopilot's daily cap, the brain's
-    daily cap and the per-record lifetime cap, in that order, before it is made.
+  * A source counts as a hit only when it found a CALLABLE number (Dial First or Dial Second, not
+    a litigator; `callable_tiers` widens it). Lower tiers are still written, tagged, so the caller
+    can see them, unless the stage sets `write_tiers`, and the record keeps moving down the waterfall.
+  * Money: every paid call checks the stage's daily cap, the lane's own daily cap when the
+    playbook gives it one, the autopilot's daily cap, the brain's daily cap and the per-record
+    lifetime cap, in that order, before it is made.
+
+Rules added with the second version of the waterfall and the lanes below first to market (build
+plan 1.7, 1.13 to 1.15, 1.17, 4.1). Every one of them is switched on by a setting in the stage's
+playbook block; a stage whose block does not name the setting behaves exactly as it did before:
+  * tranche               a lane worked in fixed sets: the stage acts only on records in the lane's
+                          current tranche, and the next is drawn when this one has been worked
+  * every_record_sources  that many sources run on EVERY record, not only the ones with no number
+  * agreement_tag         a number two sources agree on is marked, on the phone
+  * keep_numbers          at most this many numbers land per person from one trace
+  * write_tiers           only these tiers land on a record; reserve_tiers land when nothing better did
+  * drop_status           a Drop number is marked dead, with the value it replaced recorded
+  * fixup_queue           a record with no full name or no mailing address waits for a person
+                          (that many at a time) and never reaches a paid source
+  * entity: principals    a company or trust goes to the principal finder, not to mail only
+  * research_by_list      which lists are researched on arrival and which only once exhausted
+  * return_signals        the three ways returned mail is recorded, read by one handoff stage
+  * retrace_after_days    DataSift's own trace again on anything still active after that long
 """
 from __future__ import annotations
 
@@ -23,7 +41,7 @@ from zoneinfo import ZoneInfo
 
 from .. import config, store
 from . import gate, lanes, ledger, windows
-from .sources import Subject, digits, subject_of
+from .sources import Subject, digits, line_kind, missing_for_trace, subject_of
 
 log = logging.getLogger(__name__)
 
@@ -42,6 +60,15 @@ CALLABLE_TIERS = {"Dial First", "Dial Second"}
 BAD_PHONE = {"WRONG", "DEAD", "DNC", "CORRECT_DNC", "WRONG_DNC"}
 LITIGATOR_TAG = "DNC"
 MAX_LINES = 12
+TIER_RANK = {"Dial First": 0, "Dial Second": 1, "Dial Third": 2, "Dial Fourth": 3, "Drop": 4}
+UNSET_PHONE = {"", "UNKNOWN"}                 # a phone status nobody and no dialer has set
+# When research may take a record, by the list it is on: the most eager rule a record matches wins.
+RESEARCH_RANK = {"arrival": 0, "exhausted": 1, "never": 2}
+# The free 180-day trace is logged under its own action so it never counts toward a record's
+# lifetime trace cap (plan 1.13): that cap exists to stop paying for the same record twice.
+REFRESH_ACTION = "native_refresh"
+# How long "reachable, and every stacked source already tried" is trusted before the record is read again.
+STACK_DONE_TTL = timedelta(days=7)
 
 
 # ---------------------------------------------------------------------- summary + context
@@ -153,6 +180,17 @@ class Ctx:
         pending = self._reserved
         if stage_cap is not None and ledger.spent(d, self.stage.id) + pending + usd > float(stage_cap):
             return False, "stage cap $%.2f/day" % float(stage_cap)
+        # A lane's own cap (plan 4.1): what every stage of that lane has spent today, together.
+        # Without it the Strong lane's scoring could use up the day before first to market runs.
+        lane = str(self.stage.get("lane") or "")
+        outreach = self.stage.spend == "outreach"
+        lane_cap = lanes.lane_cap(getattr(self.policy, "lanes", None), lane, "outreach_daily_usd" if outreach else "daily_usd")
+        if lane_cap is not None:
+            ids = [s.id for s in (getattr(self.policy, "stages", None) or {}).values() if str(s.get("lane") or "") == lane]
+            used = sum(ledger.spent(d, sid, action="mail") if outreach else ledger.spent(d, sid, exclude_action="mail")
+                       for sid in ids)
+            if used + pending + usd > lane_cap:
+                return False, "%s lane cap $%.2f/day" % (lane.replace("_", " "), lane_cap)
         if self.stage.spend == "outreach":
             # Marketing spend has its own budget: it does not compete with traces and scoring for
             # the data cap, and it never counts toward the brain's research cap.
@@ -164,7 +202,7 @@ class Ctx:
         if store.spent(day=datetime.now(timezone.utc).isoformat()[:10], research=False) + pending + usd > config.DAILY_CAP_USD:
             return False, "brain cap $%.2f/day" % config.DAILY_CAP_USD
         one = usd if record_usd is None else record_usd
-        if record_uuid and ledger.spent(record_uuid=record_uuid) + one > self.policy.record_usd:
+        if record_uuid and ledger.spent(record_uuid=record_uuid, exclude_action=REFRESH_ACTION) + one > self.policy.record_usd:
             return False, "record cap $%.2f lifetime" % self.policy.record_usd
         return True, ""
 
@@ -216,6 +254,101 @@ def _list(v) -> list:
 def assignee_of(rec: dict) -> str:
     a = (rec or {}).get("assigned_to")
     return (a.get("uuid") if isinstance(a, dict) else a) or ""
+
+
+def marks_of(rec: dict) -> set[str]:
+    """Every tag and list title on a record, in lower case: the names a route or a list rule keys
+    on. Courthouse records are told apart by their LIST (Liens, Condemned), which is often not a
+    tag, so a rule that read tags alone could never see them."""
+    out = {t.strip().lower() for t in tag_titles(rec)}
+    for x in (rec or {}).get("lists") or []:
+        n = (x.get("title") or x.get("name")) if isinstance(x, dict) else x
+        if n:
+            out.add(str(n).strip().lower())
+    return out
+
+
+def mask(number) -> str:
+    """A number as it may be printed or posted: its last four digits. The whole number stays on
+    the record and in files that never leave the box."""
+    d = digits(number) or "".join(ch for ch in str(number or "") if ch.isdigit())
+    return ("ending %s" % d[-4:]) if d else "no number"
+
+
+def dial_order(numbers: list[dict], agreed=()) -> list[dict]:
+    """The order to dial an owner's usable numbers in (plan 1.14): a number a person confirmed,
+    then mobiles before landlines, a number two sources agree on before one source's word, then by
+    tier. Landlines go last because they reach the owner least often and cannot take the text that
+    follows an unanswered dial. `numbers` are the gate's usable numbers ({number, tier, status, type})."""
+    agreed = set(agreed or ())
+
+    def key(n: dict):
+        confirmed = str(n.get("status") or "").upper() == "CORRECT"
+        landline = str(n.get("type") or "").upper() == "LANDLINE"
+        return (0 if confirmed else 1, 1 if landline else 0, 0 if n.get("number") in agreed else 1,
+                TIER_RANK.get(n.get("tier") or "", 9))
+    return sorted(numbers, key=key)
+
+
+def round_ends_at(ctx: "Ctx", lane: str = "") -> int:
+    """The call counter that ends the round for this stage's lane (5 unless the playbook says otherwise)."""
+    cfg = getattr(ctx.policy, "lanes", None) or lanes.Lanes()
+    tl = cfg.timeline(lane or str(ctx.stage.get("lane") or "")) or cfg.timeline("ftm") or {}
+    return int(ctx.stage.get("round_ends_at") or tl.get("round_ends_at", 5))
+
+
+def exhausted_of(ctx: "Ctx", rec: dict) -> bool:
+    """Nothing is left to dial on this record: the call round is over, the record's status says so,
+    or every number on it is wrong, dead or do-not-call. A record with no number at all is
+    exhausted once its mail lane has run out, since mail is the only channel it ever had."""
+    if status_of(rec) == "exhausted":
+        return True
+    if int(rec.get("predictivecall_attempts") or 0) >= round_ends_at(ctx):
+        return True
+    phones = (rec.get("owner") or {}).get("phones") or []
+    if phones:
+        return all(str(p.get("status") or "UNKNOWN").upper() in BAD_PHONE for p in phones)
+    cfg = getattr(ctx.policy, "lanes", None) or lanes.Lanes()
+    tl = cfg.timeline(str(ctx.stage.get("lane") or "")) or cfg.timeline("ftm") or {}
+    return int(rec.get("directmail_attempts") or 0) >= int(tl.get("mail_pieces", 12))
+
+
+def research_rule(ctx: "Ctx", rec: dict) -> tuple[str, str]:
+    """(arrival | exhausted | never, the list that decided it): when research may take this record,
+    by the lists and tags it carries (plan 1.17). Liens are the largest courthouse list and are
+    dialed and mailed until exhausted before a dollar of research is spent on them; a condemned
+    house, a foreclosure and a probate are researched the day they arrive. A record on two lists
+    follows the more eager rule. A stage with no research_by_list researches on arrival, as before."""
+    table = ctx.stage.get("research_by_list")
+    if not isinstance(table, dict) or not table:
+        return "arrival", ""
+    names = marks_of(rec)
+    hits = []
+    for k, v in table.items():
+        rule = str(v).strip().lower()
+        if rule not in RESEARCH_RANK:
+            ctx.out.problem("research_by_list: %s is set to %r (use arrival, exhausted or never); those records are not researched" % (k, v))
+            rule = "never"
+        if str(k).strip().lower() in names:
+            hits.append((rule, str(k)))
+    if not hits:
+        default = str(ctx.stage.get("research_default", "arrival")).strip().lower()
+        return (default if default in RESEARCH_RANK else "arrival"), ""
+    return min(hits, key=lambda h: RESEARCH_RANK[h[0]])
+
+
+def research_open(ctx: "Ctx", rec: dict, death: bool = False) -> tuple[bool, str]:
+    """(may research take this record now, why not or the list that let it through). A possible
+    death is never held by a list rule: a dead owner is held out of every channel until research
+    writes back, whichever list the record came from."""
+    if death:
+        return True, ""
+    rule, by = research_rule(ctx, rec)
+    if rule == "never":
+        return False, "%s records are not researched" % (by or "other")
+    if rule == "exhausted" and not exhausted_of(ctx, rec):
+        return False, "%s records are researched once they are exhausted" % (by or "other")
+    return True, by
 
 
 def lane_entry(ctx: "Ctx", rec: dict, lane: str) -> datetime:
@@ -274,12 +407,11 @@ def merge_must(must: dict, extra: dict | None) -> dict:
     return m
 
 
-def stage_rows(ctx: Ctx, extra: dict | None = None, cap: int | None = None) -> list[tuple[str, dict]]:
-    """(preset title, search row) for every record in the stage's presets, deduped in preset order.
-    The presets are read live by title, so an edit in DataSift changes what the stage works on."""
+def preset_rows(ctx: Ctx, titles, extra: dict | None = None, cap: int = 2000) -> list[tuple[str, dict]]:
+    """(preset title, search row) for every record in the named presets, deduped in preset order.
+    The presets are read live by title, so an edit in DataSift changes what a stage works on."""
     seen, out = set(), []
-    cap = int(cap or ctx.stage.get("max_scan", 2000))
-    for title in ctx.stage.presets:
+    for title in titles:
         try:
             must = ctx.crm.preset_must(title)
         except KeyError as exc:
@@ -296,6 +428,101 @@ def stage_rows(ctx: Ctx, extra: dict | None = None, cap: int | None = None) -> l
                 seen.add(u)
                 out.append((title, row))
     return out
+
+
+def stage_rows(ctx: Ctx, extra: dict | None = None, cap: int | None = None) -> list[tuple[str, dict]]:
+    """(preset title, search row) for every record in the stage's presets, deduped in preset order.
+    A stage that works in tranches (`tranche` in its block) gets only the rows in its lane's
+    current tranche."""
+    cap = int(cap or ctx.stage.get("max_scan", 2000))
+    return _in_tranche(ctx, preset_rows(ctx, ctx.stage.presets, extra, cap))
+
+
+# ---------------------------------------------------------------------- tranches (plan 4.1)
+def _tranche_cfg(ctx: Ctx, lane: str) -> dict:
+    """The lane's tranche settings: the playbook's lanes.<lane>.tranche block, or, for a stage that
+    names only a size (`tranche: 1500`), that size with the default rules."""
+    lanes_cfg = getattr(ctx.policy, "lanes", None) or lanes.Lanes()
+    cfg = dict((getattr(lanes_cfg, "tranches", None) or {}).get(lane) or {})
+    want = ctx.stage.get("tranche")
+    if not cfg and isinstance(want, int) and not isinstance(want, bool) and want > 0:
+        cfg = {"size": int(want), "presets": [], "waiting_presets": [], "carry_over": 0.05, "min_days": 7.0,
+               "check_hours": 12.0, "scan": 5000}
+    if cfg and not cfg.get("presets"):
+        cfg["presets"] = list((getattr(lanes_cfg, "presets", None) or {}).get(lane) or [])
+    return cfg
+
+
+def tranche_done(ctx: Ctx, lane: str, cfg: dict, state: dict) -> bool:
+    """Has the lane's current tranche been worked? It has when it has been open for a week and no
+    more than a few of its records (carry_over, 5%) still sit in the presets that hold a record
+    until it is texted and dialed. Scoring comes first by construction: the text and call lanes use
+    only tiered numbers. The check pages those presets, so it runs at most twice a day."""
+    try:
+        opened = datetime.fromisoformat(state.get("opened") or "")
+    except ValueError:
+        return False
+    if ctx.now - opened < timedelta(days=float(cfg.get("min_days", 7))):
+        return False
+    checked = state.get("checked") or ""
+    if checked:
+        try:
+            if ctx.now - datetime.fromisoformat(checked) < timedelta(hours=float(cfg.get("check_hours", 12))):
+                return False
+        except ValueError:
+            pass
+    members = lanes.tranche_members(lane, int(state["n"]))
+    titles = cfg.get("waiting_presets") or cfg.get("presets") or list(ctx.stage.presets)
+    waiting = {r["uuid"] for _, r in preset_rows(ctx, titles, None, int(cfg.get("scan", 5000)))} & members
+    lanes.tranche_note(lane, checked=ctx.now.isoformat(timespec="seconds"), waiting=len(waiting))
+    return len(waiting) <= float(cfg.get("carry_over", 0.05)) * max(1, len(members))
+
+
+def _next_tranche(ctx: Ctx, lane: str, cfg: dict, rows: list, state: dict | None) -> tuple[dict | None, set]:
+    """Draw the next tranche: the first `size` records of the lane's entry presets that were never
+    in a tranche before. A live run remembers it; a plan run only works out which records it would
+    be, so a plan can never leave a tranche behind for a later live run to inherit."""
+    source = preset_rows(ctx, cfg["presets"], None, int(cfg.get("scan", 5000))) if cfg.get("presets") else rows
+    drawn = lanes.tranche_members(lane)
+    fresh = [r["uuid"] for _, r in source if r["uuid"] not in drawn][: int(cfg["size"])]
+    name = lane.replace("_", " ")
+    if not fresh:
+        # Nothing is left behind the last tranche: the lane's backlog is finished.
+        return state, (lanes.tranche_members(lane, int(state["n"])) if state else set())
+    n = int((state or {}).get("n") or 0) + 1
+    if ctx.live:
+        new = lanes.tranche_open(lane, fresh, ctx.now)
+        ctx.out.line("Drew tranche %d of the %s lane: %d record(s)." % (n, name, len(fresh)))
+        return new, set(fresh)
+    ctx.out.tally["would draw tranche %d of the %s lane" % (n, name)] = len(fresh)
+    return {"n": n, "opened": "", "size": len(fresh), "planned": True}, set(fresh)
+
+
+def _in_tranche(ctx: Ctx, rows: list) -> list:
+    """Keep only the rows in the lane's current tranche, for a stage whose block sets `tranche`
+    (true, or a size). All of Strong and Bulk at once is tens of thousands of texts and a scoring
+    bill to match, so those lanes are worked a tranche at a time: the next is drawn only when this one
+    has been scored, texted and dialed. A stage that does not ask (the attempt keeper, a
+    second-chance stage) sees every row, because a dialed record must be counted whichever tranche
+    it came from."""
+    want = ctx.stage.get("tranche")
+    if not want:
+        return rows
+    lane = str(ctx.stage.get("lane") or "")
+    cfg = _tranche_cfg(ctx, lane) if lane else {}
+    if not cfg.get("size"):
+        ctx.out.problem("this stage works in tranches, but its lane has no tranche size (lanes.<lane>.tranche in "
+                        "the playbook, or tranche: <size> on the stage); it did nothing")
+        return []
+    state = lanes.tranche_state(lane)
+    if state is None or tranche_done(ctx, lane, cfg, state):
+        state, members = _next_tranche(ctx, lane, cfg, rows, state)
+    else:
+        members = lanes.tranche_members(lane, int(state["n"]))
+    kept = [(t, r) for t, r in rows if r["uuid"] in members]
+    if len(kept) != len(rows):
+        ctx.out.tally["behind the current tranche, waiting their turn"] += len(rows) - len(kept)
+    return kept
 
 
 def required_tags(ctx: Ctx) -> dict | None:
@@ -399,7 +626,9 @@ def run_assign(ctx: Ctx) -> None:
             continue
         pool = people
         if routes:
-            tags = {t.lower() for t in tag_titles(rec)}
+            # A route keys on a tag or a list title (plan 1.17): the lien and condemned records
+            # are told apart by their list, which is often not a tag.
+            tags = marks_of(rec)
             for tag, names in routes.items():
                 if tag in tags:
                     pool = [p for p in people if p["name"].lower() in names] or people
@@ -439,8 +668,65 @@ def run_assign(ctx: Ctx) -> None:
 
 
 # ---------------------------------------------------------------------- native trace
+def _last_traces() -> dict:
+    """record uuid -> the newest trace of any kind this autopilot logged for it."""
+    with store._LOCK, store._db() as c:
+        rows = c.execute("SELECT record_uuid, MAX(at) AS at FROM ap_events WHERE action IN ('trace', 'native_trace', ?) "
+                         "AND record_uuid<>'' GROUP BY record_uuid", (REFRESH_ACTION,)).fetchall()
+    out = {}
+    for r in rows:
+        try:
+            out[r["record_uuid"]] = datetime.fromisoformat(r["at"])
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def last_traced(ctx: Ctx, row: dict, logged: dict) -> datetime:
+    """When this record was last skip traced: the later of the date DataSift shows on the search
+    row and the newest trace this autopilot logged. A record with neither is dated from the day the
+    stage first saw it, so the wait can only ever be too long, never too short."""
+    from . import activity
+    seen = []
+    at = activity.parse_ts(row.get("last_skip_traced") or "")
+    if at:
+        seen.append(at)
+    if logged.get(row["uuid"]):
+        seen.append(logged[row["uuid"]])
+    return max(seen) if seen else ledger.first_seen(row["uuid"], ctx.stage.id, ctx.now)
+
+
+def _native_refresh(ctx: Ctx) -> None:
+    """The 180-day re-trace (plan 1.13): anything still active whose last trace is that old gets
+    DataSift's own trace again. People change numbers, and a record traced once in the spring is
+    being dialed in the autumn on what was true then. The trace is DataSift's (free on the unlimited
+    plan), so it sits outside the per-record cap, which exists to stop PAYING twice for one record."""
+    st = ctx.stage
+    days = float(st.get("retrace_after_days"))
+    rows = stage_rows(ctx)
+    ctx.out.found = len(rows)
+    logged = _last_traces()
+    cutoff = ctx.now - timedelta(days=days)
+    due = []
+    for _, r in rows:
+        v = gate.check_row(r, "trace", cfg=getattr(ctx.policy, "gate", None), allow=_list(st.get("gate_allow")))
+        if not v.ok:
+            ctx.out.tally["held back: %s" % v.reason()] += 1
+            continue
+        if last_traced(ctx, r, logged) > cutoff:
+            continue
+        due.append(r)
+    if not due:
+        ctx.out.head = "No active record was last traced %d or more days ago." % days
+        return
+    _native_scoped(ctx, due, refresh_days=days)
+
+
 def run_native_trace(ctx: Ctx) -> None:
     st = ctx.stage
+    if st.get("retrace_after_days"):
+        _native_refresh(ctx)
+        return
     rows = stage_rows(ctx)
     ctx.out.found = len(rows)
     # A bulk trace never opens each record, so only the row's own status can be checked here.
@@ -493,25 +779,37 @@ def run_native_trace(ctx: Ctx) -> None:
         "Ran" if ctx.live else "Would run", len(waiting))
 
 
-def _native_scoped(ctx: Ctx, waiting: list[dict]) -> None:
+def _native_scoped(ctx: Ctx, waiting: list[dict], refresh_days: float = 0) -> None:
     """The documented flow: a dry run on exactly these records, refuse unless it covers exactly
     them, then the real call carrying expected_count so the server refuses any other selection.
     That pair is the guard against the 2026-08-19 class of bug, where an ignored scope traced the
     whole account. The bulk policy treats a skip trace as an ACTIVITY: under 20 records it is not
     allocated properly and repeated small ones count as abuse, so a smaller set waits (DataSift
-    traces new uploads on its own, which is where a few stragglers usually get picked up)."""
+    traces new uploads on its own, which is where a few stragglers usually get picked up).
+
+    `refresh_days` marks the 180-day re-trace: the same guarded pair, asked to trace records that
+    were traced before, and logged under its own action."""
     st = ctx.stage
     floor = int(st.get("min_batch", 20))
     uuids = [r["uuid"] for r in waiting][: min(int(st.get("max_records", 1000)), 1000)]
+    again = {"force_refresh": True} if refresh_days else {}
     if len(uuids) < floor:
+        if refresh_days:
+            ctx.out.head = ("%d active record(s) were last traced %d or more days ago; the bulk policy needs %d or more "
+                            "per job, so they wait for more to come due." % (len(uuids), refresh_days, floor))
+            return
         ctx.out.head = ("%d record(s) wait on a trace; the bulk policy needs %d or more per job, so they wait for "
                         "more to arrive (DataSift's own upload trace usually takes them first)." % (len(uuids), floor))
         return
     ctx.out.acted = len(uuids)
     if not ctx.live:
+        if refresh_days:
+            ctx.out.head = ("Would ask DataSift to trace %d active record(s) again, each last traced %d or more days ago, "
+                            "scoped to exactly those (dry run first)." % (len(uuids), refresh_days))
+            return
         ctx.out.head = "Would ask DataSift to skip trace %d waiting record(s), scoped to exactly those (dry run first)." % len(uuids)
         return
-    est = ctx.crm.skiptrace_scoped(uuids, dry_run=True)
+    est = ctx.crm.skiptrace_scoped(uuids, dry_run=True, **again)
     n = None
     if isinstance(est, dict):
         n = est.get("number_of_records", est.get("count", est.get("expected_count")))
@@ -527,12 +825,17 @@ def _native_scoped(ctx: Ctx, waiting: list[dict]) -> None:
             ctx.out.acted = 0
             ctx.out.problem("DataSift quotes $%.2f for this trace, over the %s; not run" % (cost, why))
             return
-    ctx.crm.skiptrace_scoped(uuids, dry_run=False, tags=_list(st.get("tags")))
+    ctx.crm.skiptrace_scoped(uuids, dry_run=False, tags=_list(st.get("tags")), **again)
     ctx.settle(0, cost, "native trace x%d" % len(uuids))
-    store.kv_set("autopilot:native_trace:last", ctx.now.isoformat(timespec="seconds"))
+    if not refresh_days:
+        store.kv_set("autopilot:native_trace:last", ctx.now.isoformat(timespec="seconds"))
     for u in uuids:
-        ledger.event(ctx.run_id, st.id, u, "native_trace", {"scope": "records"}, usd=round(cost / len(uuids), 4),
-                     now=ctx.now, tz=ctx.policy.tz)
+        ledger.event(ctx.run_id, st.id, u, REFRESH_ACTION if refresh_days else "native_trace", {"scope": "records"},
+                     usd=round(cost / len(uuids), 4), now=ctx.now, tz=ctx.policy.tz)
+    if refresh_days:
+        ctx.out.head = "Asked DataSift to trace %d active record(s) again, each last traced %d or more days ago%s." % (
+            len(uuids), refresh_days, (", $%.2f" % cost) if cost else ", free on this plan")
+        return
     ctx.out.head = "Asked DataSift to skip trace %d record(s), scoped and estimated first%s." % (
         len(uuids), (", $%.2f" % cost) if cost else ", free on this plan")
 
@@ -566,7 +869,8 @@ def score_numbers(ctx: Ctx, numbers: list[str], record_uuid: str = "") -> dict:
     for n in dict.fromkeys(numbers):
         c = ledger.phone(n)
         if c and c.get("tier"):
-            out[n] = {"tier": c["tier"], "score": c.get("score"), "cached": True, "litigator": bool(c.get("litigator"))}
+            out[n] = {"tier": c["tier"], "score": c.get("score"), "cached": True, "litigator": bool(c.get("litigator")),
+                      "line_type": c.get("line_type") or ""}
         else:
             need.append(n)
     if not need:
@@ -648,12 +952,55 @@ def suppress_litigator(ctx: Ctx, rec: dict) -> None:
     ctx.out.line("%s: a litigator's number, record%s tagged %s" % (addr(rec), "s" if len(targets) > 1 else "", " and ".join(add)))
 
 
+def _unset(p: dict) -> bool:
+    return str(p.get("status") or "UNKNOWN").upper() in UNSET_PHONE
+
+
+def _tier_rules(ctx: Ctx, payload: list[dict], elig: list[dict], tiers: dict, old_drops: list[dict],
+                old_types: list[tuple], drop_status: str, write_type: bool) -> list[dict]:
+    """Tier discipline on the same upsert that writes the tiers (plan 1.14, decision D12).
+
+    A Drop number is marked dead, so no dialer preset, export or text list can pick it up again and
+    the "every number is wrong or dead" preset can see the record for what it is. Only a status
+    nobody has set is replaced: a number a person marked, correct or wrong, keeps that mark.
+
+    The scorer's line type is written where DataSift has none, because two rules read it: a text
+    may only use a mobile, and landlines are dialed last. A number left at UNKNOWN is invisible to
+    both."""
+    by_num = {digits(p.get("number")): p for p in elig}
+    for ph in payload:
+        res = tiers.get(ph["number"]) or {}
+        if drop_status and "Drop" in ph["tags"] and ph["status"] in UNSET_PHONE and not res.get("litigator"):
+            ph["status"] = drop_status
+            ctx.out.tally["Drop numbers marked %s" % drop_status.lower()] += 1
+        src = by_num.get(ph["number"]) or {}
+        if write_type and str(src.get("type") or "UNKNOWN").upper() == "UNKNOWN" and line_kind(res.get("line_type")):
+            ph["type"] = line_kind(res.get("line_type"))
+            ctx.out.tally["line types written"] += 1
+    # Numbers tiered before these rules existed are never "eligible" again, so they are swept here.
+    older: dict[str, dict] = {}
+    for p in old_drops:
+        ph = phone_payload(p, "Drop")
+        ph["status"] = drop_status
+        older[ph["number"]] = ph
+        ctx.out.tally["Drop numbers marked %s" % drop_status.lower()] += 1
+    for p, kind in old_types:
+        n = digits(p.get("number"))
+        ph = older.get(n) or phone_payload(p, phone_tier(p))
+        ph["type"] = kind
+        older[n] = ph
+        ctx.out.tally["line types written"] += 1
+    return payload + list(older.values())
+
+
 def run_score(ctx: Ctx) -> None:
     st = ctx.stage
     rows = stage_rows(ctx, extra=required_tags(ctx))
     ctx.out.found = len(rows)
     recheck = timedelta(days=float(st.get("recheck_days", 7)))
     max_records = int(st.get("max_records", 200))
+    drop_status = str(st.get("drop_status") or "").strip().upper()      # "DEAD" marks Drop numbers dead (D12)
+    write_type = bool(st.get("write_line_type", False))
     done = 0
     checked = 0
     # Finding a record's unscored numbers means reading the record, and a lane of 568 records is
@@ -682,20 +1029,35 @@ def run_score(ctx: Ctx) -> None:
             continue
         ow = rec.get("owner") or {}
         elig = [p for p in (ow.get("phones") or []) if eligible(p)]
-        if not elig:
+        # Already tiered, so never eligible again: Drop numbers still unmarked, and tiered numbers
+        # whose line type the scoring cache knows and DataSift does not (plan 1.14).
+        old_drops = [p for p in (ow.get("phones") or []) if drop_status and phone_tier(p) == "Drop" and _unset(p)
+                     and digits(p.get("number"))]
+        old_types = []
+        if write_type:
+            for p in ow.get("phones") or []:
+                n = digits(p.get("number"))
+                if n and phone_tier(p) and str(p.get("type") or "UNKNOWN").upper() == "UNKNOWN":
+                    kind = line_kind((ledger.phone(n) or {}).get("line_type"))
+                    if kind:
+                        old_types.append((p, kind))
+        older = old_drops + [p for p, _ in old_types if p not in old_drops]
+        if not elig and not older:
             if ctx.live:
                 ledger.set_fact(u, "scored", ctx.now.isoformat(timespec="seconds"))
             continue
-        tiers = score_numbers(ctx, [digits(p["number"]) for p in elig], u)
+        tiers = score_numbers(ctx, [digits(p["number"]) for p in elig], u) if elig else {}
         lit_tag = litigator_tag(ctx)
         payload = [phone_payload(p, (tiers.get(digits(p["number"])) or {}).get("tier", ""),
                                  [lit_tag] if (tiers.get(digits(p["number"])) or {}).get("litigator") else None)
                    for p in elig if (tiers.get(digits(p["number"])) or {}).get("tier") not in (None, "", "Unknown")]
+        if drop_status or write_type:
+            payload = _tier_rules(ctx, payload, elig, tiers, old_drops, old_types, drop_status, write_type)
         done += 1
         if any((tiers.get(digits(p["number"])) or {}).get("litigator") for p in elig):
             suppress_litigator(ctx, rec)
         if payload and ow.get("uuid"):
-            ctx.change(u, "phones", [phone_payload(p, phone_tier(p)) for p in elig], [ph["number"] for ph in payload])
+            ctx.change(u, "phones", [phone_payload(p, phone_tier(p)) for p in elig + older], [ph["number"] for ph in payload])
             ctx.write("tier phones", ctx.crm.upsert_phones, ow["uuid"], payload)
             if ctx.live and checked < 1:
                 back = {digits(p.get("number")): p for p in ((ctx.crm.record(u).get("owner") or {}).get("phones") or [])}
@@ -708,7 +1070,11 @@ def run_score(ctx: Ctx) -> None:
                         break
         if ctx.live:
             ledger.set_fact(u, "scored", ctx.now.isoformat(timespec="seconds"))
-        ctx.out.line("%s: %d number(s)%s" % (addr(rec), len(elig), "" if ctx.live else " to score"))
+        if elig:
+            ctx.out.line("%s: %d number(s)%s" % (addr(rec), len(elig), "" if ctx.live else " to score"))
+        else:
+            ctx.out.line("%s: %d older number(s) %s" % (addr(rec), len(older), "tidied (marked dead or given a line type)"
+                                                        if ctx.live else "to tidy (mark dead or give a line type)"))
     ctx.out.acted = done
     n = ctx.out.tally.get("numbers scored", 0) or ctx.out.tally.get("numbers to score", 0)
     ctx.out.head = "%s %d number(s) on %d record(s)%s." % (
@@ -717,15 +1083,22 @@ def run_score(ctx: Ctx) -> None:
 
 
 # ---------------------------------------------------------------------- retrace (the waterfall)
-def _handoff(ctx: Ctx, rec: dict, subj: Subject, why: str) -> None:
+def _handoff(ctx: Ctx, rec: dict, subj: Subject, why: str, death: bool = False) -> None:
+    """Hand one record to Diggs for a deep prospect. `death` says the reason is a possible death,
+    which no list rule may hold back (plan 1.17): every other reason follows research_by_list."""
     st = ctx.stage
     u = subj.record_uuid
     if ledger.handed_off(u, "deep_prospect"):
         return
     if not ctx.passes(rec, "research"):
         return
+    ok, by = research_open(ctx, rec, death=death)
+    if not ok:
+        ctx.out.tally["research waits: %s" % by] += 1
+        return
     d = ledger.day(ctx.now, ctx.policy.tz)
-    today_n = sum(1 for e in ledger.events(action="handoff", stage=st.id) if e["day"] == d)
+    today_n = sum(1 for e in ledger.events(action="handoff", stage=st.id)
+                  if e["day"] == d and e["detail"].get("to") == "deep_prospect")
     cap = int(st.get("deep_prospect_per_day", 3))
     if today_n + ctx.out.tally.get("to Diggs for a deep prospect", 0) >= cap:
         ctx.out.tally["deep prospect waiting (cap %d/day)" % cap] += 1
@@ -736,6 +1109,8 @@ def _handoff(ctx: Ctx, rec: dict, subj: Subject, why: str) -> None:
         ledger.event(ctx.run_id, st.id, u, "handoff", {"to": "deep_prospect", "why": why,
                                                        "task": tid[0] if tid else 0}, now=ctx.now, tz=ctx.policy.tz)
     ctx.out.tally["to Diggs for a deep prospect"] += 1
+    if st.get("research_by_list"):
+        ctx.out.tally["to research, by list: %s" % (by or ("a possible death" if death else "other"))] += 1
     ctx.out.line("%s: %s, to Diggs for a deep prospect" % (addr(rec), why))
 
 
@@ -758,13 +1133,206 @@ def _after(ctx: Ctx, rec: dict, subj: Subject, why: str) -> None:
         ctx.out.tally["left in place (%s)" % why] += 1
 
 
-def _write_numbers(ctx: Ctx, rec: dict, subj: Subject, nums: list[dict], source: str) -> int:
+def _to_principals(ctx: Ctx, rec: dict, subj: Subject) -> None:
+    """A company or a trust owns the house (plan 1.15): hand the record to the principal finder
+    (the free reverse-address check, then the business search) instead of parking it as Mail Only.
+    A letter to "Acme Holdings LLC" reaches nobody who can sell. The record stays out of the paid
+    trace and out of Mail Only until a person is named on it; the next run after that traces the
+    person like any other owner."""
+    st = ctx.stage
+    u = subj.record_uuid
+    if ledger.fact(u, "entity_pending") is None:
+        # The autopilot's own note that this record waits on a named person, kept in plan mode too.
+        ledger.set_fact(u, "entity_pending", {"company": subj.company or " ".join([subj.first, subj.last]).strip(),
+                                              "since": ctx.now.isoformat(timespec="seconds")})
+    if ledger.handed_off(u, "entity_principals"):
+        ctx.out.tally["company owners waiting on a named person"] += 1
+        return
+    if not ctx.passes(rec, "research"):
+        return
+    d = ledger.day(ctx.now, ctx.policy.tz)
+    today_n = sum(1 for e in ledger.events(action="handoff", stage=st.id)
+                  if e["day"] == d and e["detail"].get("to") == "entity_principals")
+    cap = int(st.get("principals_per_day", 10))
+    if today_n + ctx.out.tally.get("to the principal finder", 0) >= cap:
+        ctx.out.tally["principal finder waiting (cap %d/day)" % cap] += 1
+        return
+    enqueue = ctx.enqueue or store.enqueue
+    tid = ctx.write("handoff", enqueue, "research", "entity_principals", u, addr(rec), source="autopilot:%s" % st.id)
+    if ctx.live:
+        ledger.event(ctx.run_id, st.id, u, "handoff", {"to": "entity_principals", "why": "company or trust owner",
+                                                       "task": tid[0] if tid else 0}, now=ctx.now, tz=ctx.policy.tz)
+    ctx.out.tally["to the principal finder"] += 1
+    ctx.out.line("%s: a company or trust owns it, to the principal finder" % addr(rec))
+
+
+def _fixup_open(now: datetime, stale_days: float = 14) -> dict:
+    """record uuid -> its fix-up note, for every record waiting in the fix-up queue. A record no
+    run has seen for two weeks has left the lane (sold, suppressed, out of the presets) and no
+    longer holds one of the queue's places: without that, a hundred records that went away would
+    block the queue for good."""
+    with store._LOCK, store._db() as c:
+        rows = c.execute("SELECT record_uuid, value FROM ap_facts WHERE key='fixup'").fetchall()
+    out = {}
+    for r in rows:
+        try:
+            v = json.loads(r["value"])
+        except ValueError:
+            continue
+        if not (isinstance(v, dict) and v.get("since") and not v.get("fixed")):
+            continue
+        try:
+            seen = datetime.fromisoformat(v.get("seen") or v["since"])
+        except ValueError:
+            continue
+        if now - seen <= timedelta(days=stale_days):
+            out[r["record_uuid"]] = v
+    return out
+
+
+def _fixup(ctx: Ctx, rec: dict, subj: Subject, missing: list[str], size: int, queue: dict, row: dict | None = None) -> None:
+    """An incomplete record goes to the fix-up queue, never to a paid source (plan 1.13). A trace on
+    half a name bills for a stranger's numbers, and a record with no mailing address cannot be
+    matched at all. The queue is the autopilot's own memory first; it holds `size` records at a
+    time so a person can clear it, and a tag is written only when the playbook names one."""
+    u = subj.record_uuid
+    why = " and ".join(missing)
+    if u not in queue:
+        if not ctx.passes(rec, "trace", row=row):
+            return
+        if len(queue) >= size:
+            ctx.out.tally["incomplete, waiting for room in the fix-up queue (%d at a time)" % size] += 1
+            return
+        note = {"why": missing, "since": ctx.now.isoformat(timespec="seconds"), "seen": ctx.now.isoformat(timespec="seconds")}
+        ledger.set_fact(u, "fixup", note)
+        queue[u] = note
+        ctx.out.line("%s: %s, to the fix-up queue before any paid trace" % (addr(rec), why))
+    else:
+        note = queue[u]
+        try:
+            fresh = ctx.now - datetime.fromisoformat(note.get("seen") or note["since"]) < timedelta(days=1)
+        except ValueError:
+            fresh = False
+        if not fresh or note.get("why") != missing:
+            # Still here and still incomplete: keep its place in the queue (see _fixup_open).
+            note = dict(note, why=missing, seen=ctx.now.isoformat(timespec="seconds"))
+            ledger.set_fact(u, "fixup", note)
+            queue[u] = note
+    ctx.out.tally["in the fix-up queue: %s" % why] += 1
+    tag = str(ctx.stage.get("fixup_tag") or "")
+    if tag and tag.lower() not in marks_of(rec):
+        ctx.change(u, "add_tags", None, [tag])
+        ctx.write("fix-up tag", ctx.crm.add_tags, u, [tag], rec)
+
+
+def _fixup_done(ctx: Ctx, rec: dict, queue: dict) -> None:
+    """A record that was in the fix-up queue and is complete now leaves it, and its tag comes off.
+    The tag also comes off a complete record whose place in the queue had already lapsed, so the
+    tag never outlives the reason for it."""
+    u = rec.get("uuid") or ""
+    was = queue.pop(u, None)
+    if was is not None:
+        ledger.set_fact(u, "fixup", dict(was, fixed=ctx.now.isoformat(timespec="seconds")))
+        ctx.out.tally["fixed up, back in the trace"] += 1
+    tag = str(ctx.stage.get("fixup_tag") or "")
+    if tag and tag.lower() in marks_of(rec):
+        ctx.change(u, "remove_tags", [tag], None)
+        ctx.write("fix-up tag off", ctx.crm.remove_tags, u, [tag])
+
+
+def _numbers_to_keep(ctx: Ctx, rec: dict, nums: list[dict], tiers: dict, written: dict | None = None) -> list[dict]:
+    """Which of a source's new numbers land on the record (plan 1.13 and 1.14, decision D12).
+    With `write_tiers` only those tiers land (a number that could not be scored is kept, since it
+    cannot be judged); a `reserve_tiers` number lands only when the record has nothing better; the
+    rest stay off the record, where no dialer preset can pick them up. With `keep_numbers` a person
+    keeps at most that many usable numbers: what the record already has counts, and the best new
+    ones fill the room that is left. A caller with nine numbers for one owner dials the first two
+    and never reaches the rest, so the rest are noise. A litigator's number always lands, so the
+    record carries the reason it was suppressed. A stage with neither setting writes every number,
+    as before."""
+    st = ctx.stage
+    write = set(_list(st.get("write_tiers")))
+    keep_n = int(st.get("keep_numbers") or 0)
+    if not write and not keep_n:
+        return nums
+    cfg = getattr(ctx.policy, "gate", None) or gate.GateConfig()
+
+    def tier_of(n: dict) -> str:
+        return (tiers.get(n["number"]) or {}).get("tier", "") or ""
+
+    lits = [n for n in nums if (tiers.get(n["number"]) or {}).get("litigator")]
+    rest = [n for n in nums if n not in lits]
+    if write:
+        reserve = set(_list(st.get("reserve_tiers")))
+        good = [n for n in rest if tier_of(n) in write or tier_of(n) in ("", "Unknown")]
+        spare = [n for n in rest if tier_of(n) in reserve and n not in good]
+        low = len(rest) - len(good) - len(spare)
+        if spare and not good and not gate.usable_numbers(rec, "call", cfg):
+            good = spare
+        else:
+            low += len(spare)
+        if low:
+            ctx.out.tally["low-tier numbers kept off the record"] += low
+        rest = good
+    if keep_n:
+        on_record = {digits(p.get("number")) for p in ((rec.get("owner") or {}).get("phones") or [])}
+        have = len(gate.usable_numbers(rec, "call", cfg))
+        have += sum(1 for n, p in (written or {}).items() if n not in on_record and phone_tier(p) in cfg.callable_tiers)
+        room = max(0, keep_n - have)
+        if len(rest) > room:
+            best = sorted(rest, key=lambda n: (TIER_RANK.get(tier_of(n), 5), 1 if str(n.get("type") or "").upper() == "LANDLINE" else 0))
+            ctx.out.tally["numbers past the %d kept per person" % keep_n] += len(rest) - room
+            rest = best[:room]
+    return rest + lits
+
+
+def _mark_agreed(ctx: Ctx, rec: dict, subj: Subject, nums: list[dict], source: str, written: dict) -> None:
+    """A paid source returned a number the record already had: two sources agree, and that is the
+    number to dial first (plan 1.13). The agreement is the autopilot's own fact first; the phone is
+    tagged only when the playbook names the tag (`agreement_tag`)."""
+    u = subj.record_uuid
+    known = ledger.fact(u, "agreed_numbers") or {}
+    fresh = False
+    for n in nums:
+        by = known.setdefault(n["number"], [])
+        if source not in by:
+            by.append(source)
+            fresh = True
+    if fresh:
+        ledger.set_fact(u, "agreed_numbers", known)
+    ctx.out.tally["numbers two sources agree on"] += len(nums)
+    tag = str(ctx.stage.get("agreement_tag") or "")
+    if not tag or not subj.owner_uuid:
+        return
+    on_record = {digits(p.get("number")): p for p in ((rec.get("owner") or {}).get("phones") or [])}
+    before, payload = [], []
+    for n in nums:
+        p = written.get(n["number"]) or on_record.get(n["number"])
+        if not p or tag in tag_titles(p):
+            continue
+        before.append(phone_payload(p, phone_tier(p)))
+        payload.append(phone_payload(p, phone_tier(p), [tag]))
+        written[n["number"]] = payload[-1]
+    if payload:
+        ctx.change(u, "phones", before, [ph["number"] for ph in payload])
+        ctx.write("agreement tag", ctx.crm.upsert_phones, subj.owner_uuid, payload)
+
+
+def agreed_numbers(record_uuid: str) -> set[str]:
+    """The numbers on this record that two sources agree on (the autopilot's own fact)."""
+    return set(ledger.fact(record_uuid, "agreed_numbers") or {})
+
+
+def _write_numbers(ctx: Ctx, rec: dict, subj: Subject, nums: list[dict], source: str, written: dict | None = None) -> int:
     """Score, then add the new numbers once, tiered and tagged with their source. Returns how many
     are callable (the measure of a hit)."""
     tiers = score_numbers(ctx, [n["number"] for n in nums], subj.record_uuid)
     tag = {"smartskip": "SmartSkip"}.get(source, source.capitalize())
     reached = set(_list(ctx.stage.get("callable_tiers"))) or CALLABLE_TIERS
     lit_tag = litigator_tag(ctx)
+    drop_status = str(ctx.stage.get("drop_status") or "").strip().upper()
+    write_type = bool(ctx.stage.get("write_line_type", False))
+    nums = _numbers_to_keep(ctx, rec, nums, tiers, written)
     phones, callable_n, litigator = [], 0, False
     for n in nums:
         res = tiers.get(n["number"]) or {}
@@ -773,11 +1341,17 @@ def _write_numbers(ctx: Ctx, rec: dict, subj: Subject, nums: list[dict], source:
         litigator = litigator or is_lit
         phones.append(phone_payload({"number": n["number"], "type": n.get("type") or "UNKNOWN", "tags": []}, t,
                                     [tag] + ([lit_tag] if is_lit else [])))
+        if drop_status and t == "Drop" and not is_lit:
+            phones[-1]["status"] = drop_status          # a Drop number is dead on arrival (plan 1.14)
+        if write_type and phones[-1]["type"] == "UNKNOWN" and line_kind(res.get("line_type")):
+            phones[-1]["type"] = line_kind(res.get("line_type"))
         # Unscored (no Trestle key, an Unknown score) cannot be judged, so it counts as a hit: the
         # waterfall must not keep paying the next source for a record that already has numbers.
         if not is_lit and (t in reached or t in ("", "Unknown")):
             callable_n += 1
-    if subj.owner_uuid:
+    if written is not None:
+        written.update({p["number"]: p for p in phones})
+    if subj.owner_uuid and phones:
         ctx.change(subj.record_uuid, "add_numbers", None, [p["number"] for p in phones])
         ctx.write("add numbers", ctx.crm.upsert_phones, subj.owner_uuid, phones)
         if ctx.stage.get("count_as_traced", True):
@@ -792,6 +1366,18 @@ def _write_numbers(ctx: Ctx, rec: dict, subj: Subject, nums: list[dict], source:
     return callable_n
 
 
+def _stack_done(note, owed: list, now: datetime) -> bool:
+    """Is the note "reachable, and every stacked source already tried" still good? Only for the
+    same stacked sources (a source added to the stack is owed at once) and only for a week, timed
+    against the run's own clock so a plan run and a test read it the way a live run does."""
+    if not isinstance(note, dict) or list(note.get("sources") or []) != list(owed):
+        return False
+    try:
+        return now - datetime.fromisoformat(str(note.get("at") or "")) < STACK_DONE_TTL
+    except (TypeError, ValueError):
+        return False
+
+
 def run_retrace(ctx: Ctx) -> None:
     st = ctx.stage
     rows = stage_rows(ctx, extra=required_tags(ctx), cap=int(st.get("max_scan", 500)))
@@ -801,6 +1387,14 @@ def run_retrace(ctx: Ctx) -> None:
     deceased_to = st.get("deceased", "deep_prospect")
     entity_to = st.get("entity", "after")
     new_tag = st.get("new_numbers_tag", "")
+    # The second version of the waterfall (plan 1.13, decision D11): the first `stack` sources run
+    # on EVERY record, with or without a number, because a number two sources agree on is the one
+    # to dial first; the sources after them run only on a record still without a callable number.
+    stack = max(0, int(st.get("every_record_sources") or 0))
+    done_key = "stack_done:%s" % st.id
+    fixup_size = max(0, int(st.get("fixup_queue") or 0))
+    fixups = _fixup_open(ctx.now) if fixup_size else {}
+    gate_cfg = getattr(ctx.policy, "gate", None) or gate.GateConfig()
     queue: dict[str, dict] = {}
     for _, row in rows:
         if len(queue) + ctx.out.tally.get("to Diggs for a deep prospect", 0) >= max_records:
@@ -809,15 +1403,31 @@ def run_retrace(ctx: Ctx) -> None:
         u = row["uuid"]
         if status_of(row) in DEAD_STATUSES:
             continue
+        if stack and _stack_done(ledger.fact(u, done_key), order[:stack], ctx.now):
+            # Known to be reachable with every stacked source behind it: not read again this week.
+            # Stacking puts the call presets in front of this stage, and without the note every
+            # record in them would be opened on every run only to be told there is nothing to do.
+            ctx.out.tally["already has a callable number and every stacked source"] += 1
+            continue
         rec = ctx.crm.record(u)
         if status_of(rec) in DEAD_STATUSES:
             continue
         subj = subject_of(rec)
         if subj.kind in ("deceased", "probate") and deceased_to == "deep_prospect":
-            _handoff(ctx, rec, subj, "%s owner" % subj.kind)
+            _handoff(ctx, rec, subj, "%s owner" % subj.kind, death=True)
             continue
+        if fixup_size and not subj.org:
+            # The clean-record check, before anything is paid for. A company is not incomplete, it
+            # is a company: it goes to the principal finder below.
+            missing = missing_for_trace(subj)
+            if missing:
+                _fixup(ctx, rec, subj, missing, fixup_size, fixups, row)
+                continue
+            _fixup_done(ctx, rec, fixups)
         if subj.kind == "entity":
-            if entity_to == "deep_prospect":
+            if entity_to == "principals":
+                _to_principals(ctx, rec, subj)
+            elif entity_to == "deep_prospect":
                 _handoff(ctx, rec, subj, "entity owner, needs its principal")
             else:
                 ctx.out.tally["entity owners (need a principal)"] += 1
@@ -829,23 +1439,31 @@ def run_retrace(ctx: Ctx) -> None:
             if v.code == "deceased" and deceased_to == "deep_prospect":
                 # The gate reads death from more places than the owner flag (the Obituary list, the
                 # Owner Deceased field), and a possible death goes to research, never to a blind trace.
-                _handoff(ctx, rec, subj, "the owner may have died (%s)" % v.reasons[0][1])
+                _handoff(ctx, rec, subj, "the owner may have died (%s)" % v.reasons[0][1], death=True)
             else:
                 ctx.out.tally["held back: %s" % v.reason()] += 1
             continue
         rem = [s for s in order if s not in ledger.tried_sources(u)]
+        reached = bool(stack) and bool(gate.usable_numbers(rec, "call", gate_cfg, row))
+        if reached:
+            # Already reachable: only the sources that run on every record are still owed.
+            rem = [s for s in rem if order.index(s) < stack]
+            if not rem:
+                ledger.set_fact(u, done_key, {"at": ctx.now.isoformat(timespec="seconds"), "sources": order[:stack]})
+                ctx.out.tally["already has a callable number and every stacked source"] += 1
+                continue
         if not rem:
             if ctx.live:
                 _after(ctx, rec, subj, "every source already tried")
             else:
                 ctx.out.tally["every source already tried"] += 1
             continue
-        queue[u] = {"rec": rec, "subj": subj, "rem": rem, "hit": False}
+        queue[u] = {"rec": rec, "subj": subj, "rem": rem, "hit": False, "reached": reached, "written": {}}
     plan_round = 0
     for _ in range(len(order)):
         groups: dict[str, list[str]] = defaultdict(list)
         for u, q in queue.items():
-            if q["rem"] and not q["hit"]:
+            if q["rem"] and (not q["hit"] or order.index(q["rem"][0]) < stack):
                 groups[q["rem"][0]].append(u)
         if not groups:
             break
@@ -901,16 +1519,24 @@ def run_retrace(ctx: Ctx) -> None:
             for u in allowed:
                 q = queue[u]
                 rec, subj = q["rec"], q["subj"]
-                nums = [n for n in found.get(u, []) if n["number"] not in subj.existing]
+                # A number an earlier source returned and the rules kept off the record is neither
+                # new nor agreed: agreement is only ever said about a number the record holds.
+                left_off = q.setdefault("left_off", set())
+                nums = [n for n in found.get(u, []) if n["number"] not in subj.existing and n["number"] not in left_off]
+                same = [n for n in found.get(u, []) if n["number"] in subj.existing]
                 usd_u = costs.get(u, 0.0) if (costs and src.per == "match") else per
                 ledger.event(ctx.run_id, st.id, u, "trace", {"source": name, "found": len(found.get(u, [])),
                                                             "new": len(nums)}, usd=round(usd_u, 4), now=ctx.now,
                              tz=ctx.policy.tz)
                 q["rem"].pop(0)
+                if same:
+                    _mark_agreed(ctx, rec, subj, same, name, q["written"])
                 if not nums:
                     continue
-                good = _write_numbers(ctx, rec, subj, nums, name)
-                subj.existing |= {n["number"] for n in nums}
+                good = _write_numbers(ctx, rec, subj, nums, name, q["written"])
+                landed = {n["number"] for n in nums if (digits(n["number"]) or n["number"]) in q["written"]}
+                subj.existing |= landed
+                left_off |= {n["number"] for n in nums} - landed
                 if good:
                     ctx.out.tally["found callable numbers via %s" % name] += 1
                     ctx.out.line("%s: %d new number(s) via %s, %d callable" % (addr(rec), len(nums), name, good))
@@ -919,14 +1545,19 @@ def run_retrace(ctx: Ctx) -> None:
                         ledger.set_fact(u, "new_numbers_at_attempts", subj.attempts)
                     q["hit"] = True
         plan_round += 1
-    misses = [q for q in queue.values() if not q["hit"] and not q["rem"] and not q.get("capped") and not q.get("failed")]
+    # A record that already had a callable number is not a miss when a stacked source adds nothing.
+    misses = [q for q in queue.values() if not q["hit"] and not q["rem"] and not q.get("capped") and not q.get("failed")
+              and not q.get("reached")]
     if ctx.live:
         for q in misses:
             _after(ctx, q["rec"], q["subj"], "no source found a callable number")
     elif misses:
         ctx.out.tally["if every source misses: %s" % st.get("after_sources", "mail_only")] += len(misses)
     hits = sum(1 for q in queue.values() if q["hit"])
-    ctx.out.acted = hits + ctx.out.tally.get("to Diggs for a deep prospect", 0) + ctx.out.tally.get("moved to mail only", 0)
+    if st.get("lookback_days"):
+        _trace_lookback(ctx)
+    ctx.out.acted = (hits + ctx.out.tally.get("to Diggs for a deep prospect", 0) + ctx.out.tally.get("moved to mail only", 0)
+                     + ctx.out.tally.get("to the principal finder", 0))
     if ctx.live:
         ctx.out.head = "Retraced %d record(s): %d found callable numbers, %d to Diggs, %d to mail only, $%.2f." % (
             len(queue), hits, ctx.out.tally.get("to Diggs for a deep prospect", 0), ctx.out.tally.get("moved to mail only", 0),
@@ -935,6 +1566,72 @@ def run_retrace(ctx: Ctx) -> None:
         ctx.out.head = "Would retrace %d record(s) (up to $%.2f with scoring), %d to Diggs, %d entity owners." % (
             len(queue), ctx.out.would_usd, ctx.out.tally.get("to Diggs for a deep prospect", 0),
             ctx.out.tally.get("entity owners (need a principal)", 0))
+    extra = []
+    finder = ctx.out.tally.get("to the principal finder", 0)
+    if finder:
+        extra.append("%d company owner(s) %s the principal finder" % (finder, "went to" if ctx.live else "would go to"))
+    waiting = sum(n for k, n in ctx.out.tally.items() if k.startswith("in the fix-up queue"))
+    if waiting:
+        extra.append("%d incomplete record(s) wait in the fix-up queue and were not traced" % waiting)
+    if extra:
+        ctx.out.head += " " + "; ".join(extra) + "."
+
+
+def _trace_lookback(ctx: Ctx) -> None:
+    """The 14-day look-back (plan 1.13): judge each trace pass by what the callers found, not by
+    what the source returned. A trace "succeeds" the day it lands numbers; whether any of them is
+    the owner's is only known once somebody has dialed or texted them. So two weeks after each
+    pass the record is read once and the pass is scored: did it have a number, and did a person or
+    a dialer confirm one as correct. Each (record, source) is judged once. The first trace is
+    DataSift's own, and when it finds numbers on under nine records in ten the data is the
+    problem, not the callers."""
+    st = ctx.stage
+    days = float(st.get("lookback_days"))
+    hi = ctx.now - timedelta(days=days)
+    lo = hi - timedelta(days=float(st.get("lookback_window_days", 7)))
+    max_reads = int(st.get("lookback_max_reads", 60))
+    due: dict[tuple, None] = {}
+    for action in ("native_trace", REFRESH_ACTION, "trace"):
+        for e in ledger.events(action=action, since=lo):
+            if e["record_uuid"] and datetime.fromisoformat(e["at"]) <= hi:
+                due[(e["record_uuid"], e["detail"].get("source") or "datasift")] = None
+    key = "autopilot:lookback:%s" % st.id
+    try:
+        totals = json.loads(store.kv_get(key) or "{}")
+    except ValueError:
+        totals = {}
+    reads = 0
+    for u, source in due:
+        seen = ledger.fact(u, "trace_judged") or {}
+        if source in seen:
+            continue
+        if reads >= max_reads:
+            ctx.out.tally["trace passes not judged yet (read cap %d)" % max_reads] += 1
+            continue
+        reads += 1
+        phones = (ctx.crm.record(u).get("owner") or {}).get("phones") or []
+        res = {"numbers": bool(phones), "at": ctx.now.isoformat(timespec="seconds"),
+               "correct": any(str(p.get("status") or "").upper() in ("CORRECT", "CORRECT_DNC") for p in phones)}
+        seen[source] = res
+        ledger.set_fact(u, "trace_judged", seen)          # what the look-back found: knowledge, kept in plan mode too
+        t = totals.setdefault(source, {"judged": 0, "numbers": 0, "correct": 0})
+        t["judged"] += 1
+        t["numbers"] += int(res["numbers"])
+        t["correct"] += int(res["correct"])
+    if reads:
+        store.kv_set(key, json.dumps(totals))
+    for source, t in sorted(totals.items()):
+        if t.get("judged"):
+            ctx.out.line("%s, %d days on: %d of %d record(s) have a number, %d a confirmed correct one (%d%%)" % (
+                source, days, t["numbers"], t["judged"], t["correct"], round(100.0 * t["correct"] / t["judged"])))
+            ctx.out.tally["%s: share with a confirmed correct number, %d days on (percent)" % (source, days)] = round(
+                100.0 * t["correct"] / t["judged"])
+    first = totals.get("datasift") or {}
+    floor = float(st.get("first_trace_floor", 0.9))
+    if first.get("judged", 0) >= int(st.get("lookback_min_records", 20)) and first["numbers"] / first["judged"] < floor:
+        ctx.out.problem("DataSift's own trace found a number on %d%% of %d record(s), under the %d%% it should; check the "
+                        "trace before paying for more passes" % (round(100.0 * first["numbers"] / first["judged"]),
+                                                                 first["judged"], round(100 * floor)))
 
 
 # ---------------------------------------------------------------------- auction
@@ -1055,7 +1752,12 @@ def run_auction(ctx: Ctx) -> None:
         if after_status and nxt is None:
             past = sorted(d for d in (_as_date(v) for v in dates.values()) if d and d < today)
             cur = status_of(row)
-            if past and 1 <= (today - past[-1]).days <= after_window and cur in ("", "prospecting", "exhausted"):
+            # A record the 45-day deed check brought back (the borrower still owns the house) keeps
+            # its past sale date, and must not be closed out a second time for that same sale.
+            kept = ledger.fact(u, "deed_check") or {}
+            if past and kept.get("verdict") == "still_owned" and kept.get("sale") == str(past[-1]):
+                ctx.out.tally["sale passed, borrower still owns it: left in the lane"] += 1
+            elif past and 1 <= (today - past[-1]).days <= after_window and cur in ("", "prospecting", "exhausted"):
                 ctx.change(u, "status", cur or None, after_status)
                 ctx.write("after sale", ctx.crm.set_status, u, after_status)
                 ctx.out.tally["sale date passed: set %s" % after_status] += 1
@@ -1119,10 +1821,17 @@ def run_handoff(ctx: Ctx) -> None:
     to, agent = str(st.get("workflow")), str(st.get("agent"))
     per_day = int(st.get("per_day", 3))
     rows = stage_rows(ctx, extra=required_tags(ctx))
+    # Returned mail is recorded three ways (plan 1.7); a stage that names them reads all three.
+    signals: dict[str, str] = {}
+    if st.get("return_signals"):
+        rows, signals = _return_rows(ctx, rows)
     ctx.out.found = len(rows)
     d = ledger.day(ctx.now, ctx.policy.tz)
     today_n = sum(1 for e in ledger.events(action="handoff", stage=st.id) if e["day"] == d)
     enqueue = ctx.enqueue or store.enqueue
+    by_list = bool(st.get("research_by_list"))
+    max_reads = int(st.get("max_reads", 100))
+    reads = 0
     sent = 0
     for _, row in rows:
         u = row["uuid"]
@@ -1131,17 +1840,176 @@ def run_handoff(ctx: Ctx) -> None:
         if today_n + sent >= per_day:
             ctx.out.tally["waiting for a later day (%d a day)" % per_day] += 1
             continue
-        if not ctx.passes(ctx.crm.record(u), "research", row=row):
+        if by_list:
+            # A list rule can leave a record waiting for weeks (a lien, until it is exhausted), so
+            # the answer is remembered for a day and the reads are capped: a stage must stop reading
+            # when it can no longer act.
+            if ledger.fact(u, "research_wait", max_age=timedelta(hours=20)) is not None:
+                ctx.out.tally["research waits (checked earlier today)"] += 1
+                continue
+            if reads >= max_reads:
+                ctx.out.tally["not read this run (read cap %d)" % max_reads] += 1
+                continue
+            reads += 1
+        rec = ctx.crm.record(u)
+        if not ctx.passes(rec, "research", row=row):
             continue
+        by, death = "", False
+        if by_list:
+            # A possible death is never held by a list rule, whichever stage sees the record first.
+            gcfg = getattr(ctx.policy, "gate", None) or gate.GateConfig()
+            marks = {str(t).lower() for t in list(getattr(gcfg, "deceased_tags", []) or []) + list(getattr(gcfg, "deceased_lists", []) or [])}
+            death = subject_of(rec).kind in ("deceased", "probate") or bool(marks_of(rec) & marks)
+            ok, by = research_open(ctx, rec, death=death)
+            if not ok:
+                ledger.set_fact(u, "research_wait", by)     # the autopilot's own note, kept in plan mode too
+                ctx.out.tally["research waits: %s" % by] += 1
+                continue
         tid = ctx.write("handoff", enqueue, agent, to, u, addr(row), source="autopilot:%s" % st.id)
         if ctx.live:
             ledger.event(ctx.run_id, st.id, u, "handoff", {"to": to, "task": tid[0] if tid else 0}, now=ctx.now,
                          tz=ctx.policy.tz)
         sent += 1
-        ctx.out.line("%s -> %s" % (addr(row), to.replace("_", " ")))
+        if by_list:
+            ctx.out.tally["to research, by list: %s" % (by or ("a possible death" if death else "other"))] += 1
+        if u in signals:
+            ctx.out.tally["mail came back: %s" % signals[u]] += 1
+            ctx.out.line("%s -> %s (mail came back: %s)" % (addr(row), to.replace("_", " "), signals[u]))
+        else:
+            ctx.out.line("%s -> %s" % (addr(row), to.replace("_", " ")))
+    if st.get("returns_scan"):
+        _returns_scan_task(ctx)
     ctx.out.acted = sent
-    ctx.out.head = "%s %d record(s) to %s; %d in the presets." % ("Handed" if ctx.live else "Would hand", sent,
-                                                                 to.replace("_", " "), len(rows))
+    ctx.out.head = "%s %d record(s) to %s; %d in the presets%s." % (
+        "Handed" if ctx.live else "Would hand", sent, to.replace("_", " "), len(rows),
+        " and the return signals" if st.get("return_signals") else "")
+
+
+RETURN_LABELS = {"status": "the Return Mail status", "tag": "a return tag", "flag": "the do-not-mail flag"}
+
+
+def _flag_is_return(ctx: Ctx, row: dict, seen: dict) -> bool:
+    """A do-not-mail flag cannot say whether mail came back or the owner asked not to be mailed
+    (plan 1.7). The two are told apart by a tag written at the time: an opt-out carries its own tag
+    (or Do Not Market, or the owner's opt-out flag), and a flag with none of those is a return,
+    which is marked with the return tag the day it is first seen so nobody has to guess later."""
+    st = ctx.stage
+    u = row["uuid"]
+    known = ledger.fact(u, "mail_flag")
+    if known == "opt_out":
+        ctx.out.tally["do-not-mail set by an opt-out, not a return"] += 1
+        return False
+    if known == "return":
+        return True
+    if seen["reads"] >= int(st.get("max_reads", 100)):
+        ctx.out.tally["do-not-mail flags not read this run (read cap)"] += 1
+        return False
+    seen["reads"] += 1
+    rec = ctx.crm.record(u)
+    names = marks_of(rec)
+    ow = rec.get("owner") or {}
+    cfg = getattr(ctx.policy, "gate", None) or gate.GateConfig()
+    opt_tags = {str(t).strip().lower() for t in (_list(st.get("opt_out_tags")) or ["Mail Opt Out", "Do Not Mail"])}
+    opt_tags |= {t.lower() for t in cfg.do_not_market_tags}
+    if names & opt_tags or ow.get("opt_out") or ow.get("dnc"):
+        ledger.set_fact(u, "mail_flag", "opt_out")          # what the record says: knowledge, kept in plan mode too
+        ctx.out.tally["do-not-mail set by an opt-out, not a return"] += 1
+        return False
+    if st.get("flag_requires_mailed", False) and not ledger.events(u, "mail"):
+        ctx.out.tally["do-not-mail on a record the autopilot never mailed (left alone)"] += 1
+        return False
+    tag = str(st.get("return_tag", "Return Mail") or "")
+    if tag and tag.lower() not in names:
+        ctx.change(u, "add_tags", None, [tag])
+        ctx.write("return mail tag", ctx.crm.add_tags, u, [tag], rec)
+        ctx.out.tally["returns marked with the %s tag" % tag] += 1
+    if ctx.live:
+        ledger.set_fact(u, "mail_flag", "return")
+    return True
+
+
+def _return_rows(ctx: Ctx, rows: list) -> tuple[list, dict]:
+    """The stage's preset rows plus every record whose mail came back, however that was recorded
+    (plan 1.7): the Return Mail status somebody set by hand, a return tag an outside mail house
+    wrote, or the do-not-mail flag DataSift's own mail sets on a return. Returns (rows, record uuid
+    -> how the return was recorded). The flag is looked for on one lane's records, never the whole
+    account, and it rides on the search row, so finding it costs no record read."""
+    st = ctx.stage
+    sig = st.get("return_signals")
+    if not isinstance(sig, dict):
+        ctx.out.problem("return_signals must be a mapping (statuses, tags, flag, flag_scope_tags)")
+        return rows, {}
+    cap = int(st.get("max_scan", 2000))
+    extra = required_tags(ctx) or {}
+    have = {r["uuid"] for _, r in rows}
+    out, how = list(rows), {}
+
+    def add(row: dict, kind: str) -> None:
+        u = row.get("uuid")
+        if u and u not in have:
+            have.add(u)
+            out.append((RETURN_LABELS[kind], row))
+            how[u] = RETURN_LABELS[kind]
+
+    statuses = [str(s) for s in _list(sig.get("statuses"))]
+    if statuses:
+        for row in ctx.crm.rows(merge_must({"any_property_status": statuses}, extra), cap=cap):
+            add(row, "status")
+    tag_ids = []
+    for t in _list(sig.get("tags")):
+        tid = ctx.crm.tag_uuid(str(t))
+        if tid:
+            tag_ids.append(tid)
+        else:
+            ctx.out.tally["no tag named %s in this account yet" % t] = 1
+    if tag_ids:
+        for row in ctx.crm.rows(merge_must({"any_tags": tag_ids}, extra), cap=cap):
+            add(row, "tag")
+    if sig.get("flag"):
+        scope = [ctx.crm.tag_uuid(str(t)) for t in (_list(sig.get("flag_scope_tags")) or _list(st.get("require_tags")))]
+        if not scope or not all(scope):
+            ctx.out.problem("return_signals.flag needs flag_scope_tags (or require_tags) that exist in this account, "
+                            "so the do-not-mail flag is looked for on one lane and not on every record")
+        else:
+            seen = {"reads": 0}
+            for row in ctx.crm.rows({"all_tags": scope, "must_not": {"any_property_status": GONE_STATUSES}}, cap=cap):
+                flagged = row.get("do_not_mail_ever") or row.get("owner_do_not_mail_ever")
+                if flagged and row.get("uuid") not in have and _flag_is_return(ctx, row, seen):
+                    add(row, "flag")
+    return out, how
+
+
+def _returns_scan_task(ctx: Ctx) -> None:
+    """Handwritten letters carry no tracking, so nothing in DataSift ever says one came back
+    (plan 1.7). Once a week a person goes through the returned envelopes and marks each record;
+    this creates that task, once per week, for whoever the playbook names."""
+    st = ctx.stage
+    cfg = st.get("returns_scan")
+    cfg = cfg if isinstance(cfg, dict) else {}
+    local = ctx.now.astimezone(ZoneInfo(ctx.policy.tz))
+    week = "%d-W%02d" % (local.isocalendar()[0], local.isocalendar()[1])
+    key = "autopilot:returns_scan:%s" % st.id
+    days = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+    start = str(cfg.get("weekday", "mon")).lower()[:3]
+    if store.kv_get(key) == week or local.weekday() < (days.index(start) if start in days else 0):
+        return
+    who = cfg.get("assignee")
+    people = resolve_callers(ctx, [who]) if who else []
+    if not people:
+        ctx.out.line("The weekly scan of returned handwritten letters has nobody named yet (returns_scan.assignee).")
+        return
+    from . import laneroutes
+    title = str(cfg.get("title") or "Go through this week's returned letters")
+    notes = str(cfg.get("notes") or "Handwritten letters carry no tracking. For each envelope that came back, set the "
+                                    "record's status to Return Mail so it goes to research and stops being mailed.")
+    ctx.write("returns scan task", laneroutes.create_task, ctx.crm, title,
+              laneroutes.end_of_day(local.date(), ctx.policy.tz), notes, people[0]["uuid"])
+    ctx.out.line("%s the weekly returned-letters task for %s." % ("Created" if ctx.live else "Would create", people[0]["name"]))
+    ctx.out.tally["weekly returned-letters task"] += 1
+    if ctx.live:
+        store.kv_set(key, week)
+        ledger.event(ctx.run_id, st.id, "", "returns_scan", {"to": people[0]["name"], "week": week}, now=ctx.now,
+                     tz=ctx.policy.tz)
 
 
 # ---------------------------------------------------------------------- digest
@@ -1173,7 +2041,7 @@ def run_digest(ctx: Ctx) -> None:
     ctx.out.found = sum(counts.values())
     parts = []
     for k, label in (("assign", "assigned"), ("trace", "retraced"), ("handoff", "to Diggs"),
-                     ("auction_tag", "auction tags"), ("mail", "mailed"), ("score", "scored")):
+                     ("auction_tag", "auction tags"), ("mail", "mailed"), ("score", "scored"), ("text", "texted")):
         if by.get(k):
             parts.append("%d %s" % (by[k], label))
     ctx.out.head = "Last 24h: %s, $%.2f." % (", ".join(parts) or "nothing moved", spent)
@@ -1181,8 +2049,9 @@ def run_digest(ctx: Ctx) -> None:
         delta = n - prev[title] if title in prev else None
         ctx.out.line("%s: %d%s" % (title, n, "" if delta in (None, 0) else " (%+d)" % delta))
     if staged:
+        from .. import release as release_mod
         ctx.out.line("Waiting on a person: %s" % ", ".join("batch %d (%d %s, $%.2f)" % (
-            b["id"], b["count"], "counter corrections" if b["kind"] == "attempts" else "pieces", b["usd"]) for b in staged[:4]))
+            b["id"], b["count"], release_mod.label(b["kind"]), b["usd"]) for b in staged[:4]))
     try:
         from . import budget, capture
         for ln in capture.recent_lines(1)[:4]:
@@ -1193,4 +2062,100 @@ def run_digest(ctx: Ctx) -> None:
                 use["minute_waits_today"], use["hour_refusals_today"]))
     except Exception:  # noqa: BLE001  (the digest must post even when an extra line cannot be built)
         log.exception("digest extras failed")
+    try:
+        for ln in lane_lines(ctx):
+            ctx.out.line(ln)
+    except Exception:  # noqa: BLE001
+        log.exception("digest lane lines failed")
+    digest_extras(ctx, counts)
     ctx.out.acted = 0
+
+
+def _stage_ids(ctx: Ctx, kind: str) -> list[str]:
+    return [s.id for s in (getattr(ctx.policy, "stages", None) or {}).values() if s.kind == kind and s.mode != "off"]
+
+
+def digest_extras(ctx: Ctx, counts: dict) -> None:
+    """The lines the stages built after the first digest add: speed to lead, the outreach limits
+    broken, the registry scrub, research, heirs, obituaries, the KPI alarms and the pacing rule
+    about to be broken, and what each stage in plan mode would do. Each is built on its own, so one
+    that fails costs its line and never the digest."""
+    def add(label, fn, problem=False, limit=3):
+        try:
+            for ln in [x for x in (fn() or []) if x][:limit]:
+                (ctx.out.problem if problem else ctx.out.line)(ln)
+        except Exception:  # noqa: BLE001
+            log.exception("digest %s line failed", label)
+
+    from . import alarms, heirlane, leadclock, limits, obituary, pacing, researchqueue, scrub
+    add("speed", lambda: leadclock.speed_lines(ctx.now, ctx.policy.tz), limit=2)
+    add("limits", lambda: limits.recent_lines(ctx.now, ctx.policy.tz), problem=True, limit=3)
+    add("scrub", lambda: [scrub.recent_line(sid) for sid in _stage_ids(ctx, "scrub")], limit=2)
+    add("research", lambda: [researchqueue.digest_line()], limit=1)
+    add("heirs", lambda: [heirlane.digest_line(sid) for sid in _stage_ids(ctx, "heirlane")], limit=2)
+    add("obituary", lambda: [obituary.waiting_line(sid) for sid in _stage_ids(ctx, "obituary")], limit=2)
+    add("alarms", lambda: alarms.digest_lines(now=ctx.now, tz=ctx.policy.tz, limit=2), problem=True, limit=2)
+    add("pacing", lambda: pacing.digest_lines(ctx.policy, now=ctx.now, counts=counts, limit=1,
+                                              remember=bool(ctx.task_id)), problem=True, limit=1)
+    add("plans", lambda: plan_lines(ctx), limit=7)
+
+
+def plan_lines(ctx: Ctx, hours: int = 24, limit: int = 6) -> list[str]:
+    """What each stage in plan mode would have done, from its last run in the last day. Plan-mode
+    stages no longer post their plans one by one (config.PLAN_POSTS), so this is where they are read."""
+    since = ctx.now - timedelta(hours=hours)
+    rows = []
+    for s in (getattr(ctx.policy, "stages", None) or {}).values():
+        if s.mode != "plan" or s.kind == "digest":
+            continue
+        try:
+            last = json.loads(store.kv_get("autopilot:last:%s" % s.id) or "{}")
+            at = datetime.fromisoformat(last.get("at") or "")
+        except ValueError:
+            continue
+        if at < since or not (last.get("acted") or last.get("problems")):
+            continue
+        head = (last.get("head") or "").strip()
+        rows.append((s.id.replace("_", " "), head if len(head) <= 150 else head[:147] + "..."))
+    if not rows:
+        return []
+    out = ["In plan mode, nothing written. What %d stage(s) would do:" % len(rows)]
+    out += ["%s: %s" % r for r in rows[:limit]]
+    if len(rows) > limit:
+        out.append("and %d more (cli.py autopilot last)" % (len(rows) - limit))
+    return out
+
+
+def lane_lines(ctx: Ctx) -> list[str]:
+    """One line for each lane that is worked in tranches (plan 4.1): the tranche's size, what it
+    has cost so far and what is left, in this tranche and behind it."""
+    cfg = getattr(ctx.policy, "lanes", None) or lanes.Lanes()
+    out = []
+    for lane in lanes.ORDER:
+        tcfg = (getattr(cfg, "tranches", None) or {}).get(lane)
+        state = lanes.tranche_state(lane)
+        if not tcfg and not state:
+            continue
+        name = lane.replace("_", " ").capitalize()
+        if not state:
+            out.append("%s lane: no tranche drawn yet (the first will be %d records)." % (name, tcfg["size"]))
+            continue
+        try:
+            opened = datetime.fromisoformat(state.get("opened") or "")
+        except ValueError:
+            continue
+        ids = {s.id for s in (getattr(ctx.policy, "stages", None) or {}).values() if str(s.get("lane") or "") == lane}
+        usd = sum(v[1] for (stage, _action), v in ledger.counts_since(opened).items() if stage in ids)
+        waiting = int(state.get("waiting") or 0)
+        behind = ""
+        source = (tcfg or {}).get("presets") or (getattr(cfg, "presets", None) or {}).get(lane) or []
+        try:
+            total = sum(ctx.crm.count(windows.resolve(ctx.crm.preset_must(t), ctx.now)[0]) for t in source)
+            if source:
+                behind = ", %d behind it" % max(0, total - waiting)
+        except KeyError:
+            behind = ""
+        out.append("%s lane: tranche %d, %d record(s), opened %s; $%.2f spent on it; %d still waiting%s." % (
+            name, int(state["n"]), int(state.get("size") or 0),
+            opened.astimezone(ZoneInfo(ctx.policy.tz)).strftime("%b %d").replace(" 0", " "), usd, waiting, behind))
+    return out

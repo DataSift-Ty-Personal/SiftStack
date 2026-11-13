@@ -18,6 +18,34 @@ EXTRA: dict[str, tuple[str, str, str, bool, bool]] = {
     # data, lists and hygiene (plan phase 5)
     "laddercheck": ("laddercheck", "run_laddercheck", "free", False, True),
     "conventions": ("conventions", "run_conventions", "free", False, True),
+    # text lane and outreach limits (plan 1.3, 1.4, 4.5, 4.6, 0.22)
+    "scrub": ("scrub", "run_scrub", "free", True, False),
+    "textlane": ("textlane", "run_textlane", "outreach", False, False),
+    "limits": ("limits", "run_limits", "free", False, False),
+    # lead management (plan phase 2)
+    "leadclock": ("leadclock", "run_leadclock", "free", False, False),
+    "drips": ("drips", "run_drips", "outreach", False, False),
+    "leadtasks": ("leadtasks", "run_leadtasks", "free", False, False),
+    "appointments": ("appointments", "run_appointments", "free", False, False),
+    "exits": ("exits", "run_exits", "free", False, False),
+    # trace, auction, second chances and other lanes (plan 1.8, 4.2, 4.3, 4.4)
+    "secondchance": ("secondchance", "run_secondchance", "free", False, False),
+    "callerbook": ("callerbook", "run_callerbook", "free", True, False),
+    "dialexport": ("dialexport", "run_dialexport", "free", True, False),
+    "auctiontasks": ("auctiontasks", "run_auctiontasks", "free", False, False),
+    # KPIs, alarms and measurement (plan phase 6, 3.11)
+    "alarms": ("alarms", "run_alarms", "free", False, False),
+    "goals": ("goals", "run_goals", "free", False, True),
+    "dealsource": ("dealsource", "run_dealsource", "free", False, False),
+    "cadence": ("cadence", "run_cadence", "free", False, True),
+    "coachpick": ("coachpick", "run_coachpick", "free", False, False),
+    "researchstats": ("researchstats", "run_researchstats", "free", False, True),
+    # the research lane (plan 3.1, 3.2, 3.5 to 3.8, 3.10)
+    "researchqueue": ("researchqueue", "run_researchqueue", "paid", False, False),
+    "heirlane": ("heirlane", "run_heirlane", "outreach", False, False),
+    "obituary": ("obituary", "run_obituary", "outreach", True, False),
+    "probate": ("probate", "run_probate", "free", False, False),
+    "paidlookup": ("paidlookup", "run_paidlookup", "free", True, False),
 }
 
 

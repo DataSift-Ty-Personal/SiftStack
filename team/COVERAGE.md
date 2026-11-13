@@ -22,6 +22,10 @@ Every agent on docs/agents.json (the public org chart), the team workflow that r
 | ftm_reactivate | autopilot stage | none: not on the org chart yet |
 | ladder_check | autopilot stage | none: not on the org chart yet |
 | conventions_check | autopilot stage | none: not on the org chart yet |
+| hot_auction_tasks | autopilot stage | none: not on the org chart yet |
+| second_chances | autopilot stage | none: not on the org chart yet |
+| caller_book | autopilot stage | none: not on the org chart yet |
+| probate_honest | autopilot stage | none: not on the org chart yet |
 
 ## Diggs (Research)
 
@@ -44,11 +48,19 @@ Every agent on docs/agents.json (the public org chart), the team workflow that r
 | ftm_no_numbers | autopilot stage | none: not on the org chart yet |
 | hottest_retrace | autopilot stage | Tracerfy Skip Trace (tracerfy) |
 | hottest_score | autopilot stage | Phone Validator (phone) |
+| ftm_refresh | autopilot stage | none: not on the org chart yet |
+| strong_native_trace | autopilot stage | none: not on the org chart yet |
+| strong_score | autopilot stage | none: not on the org chart yet |
+| bulk_native_trace | autopilot stage | none: not on the org chart yet |
+| bulk_score | autopilot stage | none: not on the org chart yet |
+| research_queue | autopilot stage | none: not on the org chart yet |
+| obituary_lane | autopilot stage | none: not on the org chart yet |
 
 ## Roma (Sales Assistant)
 
 | Workflow | Status | Org-chart agents it runs |
 |---|---|---|
+| book_appointment | live | none: not on the org chart yet |
 | quick_screen | by hand today | Comp Package Engine (comp) |
 | underwrite | by hand today | Dual-Track ARV Engine (arv), Rehab Estimator (rehab), Master Material List (material), Exit Strategy Engine (exits), Deal Analyzer (dealanalyzer), Lot Split Underwriter (lotsplit) |
 | offer_sheet | by hand today | none: not on the org chart yet |
@@ -58,7 +70,9 @@ Every agent on docs/agents.json (the public org chart), the team workflow that r
 | sms_replies | by hand today | Reply Classifier (classifier), Reply Drafter (responder), Smarter Contact Reply Agent (scinbound) |
 | revocation | autopilot stage | none: not on the org chart yet |
 | full_attempt | autopilot stage | none: not on the org chart yet |
-| lead_check | autopilot stage | none: not on the org chart yet |
+| speed_to_lead | autopilot stage | none: not on the org chart yet |
+| lead_nurture | autopilot stage | none: not on the org chart yet |
+| lead_appointments | autopilot stage | none: not on the org chart yet |
 
 ## Quinn (Operations)
 
@@ -77,8 +91,29 @@ Every agent on docs/agents.json (the public org chart), the team workflow that r
 | sequence_watchdog | autopilot stage | none: not on the org chart yet |
 | touch_audit | autopilot stage | none: not on the org chart yet |
 | daily_capture | autopilot stage | none: not on the org chart yet |
+| lead_check | autopilot stage | none: not on the org chart yet |
 | ftm_mail | autopilot stage | none: not on the org chart yet |
 | autopilot_digest | autopilot stage | none: not on the org chart yet |
+| lead_clock | autopilot stage | none: not on the org chart yet |
+| lead_drips | autopilot stage | none: not on the org chart yet |
+| lead_tasks | autopilot stage | none: not on the org chart yet |
+| lead_weekly | autopilot stage | none: not on the org chart yet |
+| lead_exits | autopilot stage | none: not on the org chart yet |
+| ftm_registry_scrub | autopilot stage | none: not on the org chart yet |
+| ftm_texts | autopilot stage | none: not on the org chart yet |
+| ftm_followup_texts | autopilot stage | none: not on the org chart yet |
+| outreach_limits | autopilot stage | none: not on the org chart yet |
+| strong_dial_file | autopilot stage | none: not on the org chart yet |
+| bulk_dial_file | autopilot stage | none: not on the org chart yet |
+| rehash_dial_file | autopilot stage | none: not on the org chart yet |
+| kpi_alarms | autopilot stage | KPI Engine (kpi) |
+| goal_sheet | autopilot stage | KPI Engine (kpi) |
+| deal_sources | autopilot stage | none: not on the org chart yet |
+| cadence_tuner | autopilot stage | none: not on the org chart yet |
+| coaching_picks | autopilot stage | Call Puller (callpull) |
+| research_results | autopilot stage | none: not on the org chart yet |
+| heir_lane | autopilot stage | none: not on the org chart yet |
+| paid_lookups | autopilot stage | none: not on the org chart yet |
 
 ## Not workflows
 

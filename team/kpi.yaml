@@ -1,0 +1,622 @@
+# The KPI catalog: every number a report is judged against, set once, here.
+#
+# The goal sheet, the alarms, the deal-source table, the cadence tuner, the coaching picks, the
+# research results and the pacing rules all read this file (src/agents/autopilot/kpi.py) and carry no
+# number of their own. Change a figure here and every report changes with it.
+#
+# A figure is one value, or a low and a high:
+#   value | low + high   the number
+#   unit                 what it counts. "$ a deal" prints as $15,000 a deal, "% of dials" as 50% of dials
+#   source               where it comes from: a decision (D30), a challenge rule (C13.1), a lesson and
+#                        its timestamp ("6-02 1:18"), a plan package (plan 6.4), or a measurement
+#   status               confirmed    the owner has agreed to it
+#                        recommended  the plan's or the teaching's value, not yet confirmed
+#                        measured     counted on this account (give the date under `measured`)
+#                        placeholder  nobody has given a value yet; a stand-in so the report works
+#   decision             the open decision the figure waits on, when there is one
+#   says                 what the number means, in one sentence
+#
+# A report that uses a figure that is not confirmed says so. A figure the code needs and cannot find
+# here stops the report with the missing name: nothing falls back to a number hidden in the code.
+#
+# Check this file:  python src/agents/cli.py selftest   (the KPI section reads and validates it)
+
+figures:
+
+  # ------------------------------------------------------------------ one caller, one calling day (decision D30)
+  caller.dials_per_day:
+    value: 150
+    unit: dials a day
+    source: [D30, C4.21, C13.13, "6-02 1:18", "12-01 0:47"]
+    status: recommended
+    decision: D30
+    says: The floor for one caller on one calling day, follow-up dials and training days included.
+  caller.conversations_per_day:
+    low: 20
+    high: 25
+    unit: conversations a day
+    source: [D30, C13.13, "6-02 1:48"]
+    status: recommended
+    decision: D30
+    says: What 150 dials should turn into for one caller, counting texts and inbound calls.
+    note: Measured 2026-11-12 on one caller's day, 6 conversations of a minute or more from 234 dials.
+  caller.opportunities_per_day:
+    low: 1
+    high: 5
+    unit: opportunities a day
+    source: [D30, C13.13, "6-02 2:01", "12-01 0:51"]
+    status: recommended
+    decision: D30
+    says: New leads one caller should produce on a calling day.
+  caller.judge_days:
+    value: 90
+    unit: days
+    source: [C4.33, C13.40, plan 6.2]
+    status: recommended
+    says: How long a caller is measured before the numbers are held against them. A week is not a test.
+
+  # ------------------------------------------------------------------ the funnel
+  funnel.leads_per_deal:
+    low: 5
+    high: 15
+    unit: leads a deal
+    source: [D30, "13-02 3:43", C13.19]
+    status: recommended
+    decision: D30
+    says: Leads it takes to close one deal on the doors-per-deal lists.
+  funnel.leads_per_deal_first_to_market:
+    low: 10
+    high: 20
+    unit: leads a deal
+    source: [C13.7, plan 6.1]
+    status: recommended
+    decision: D30
+    says: The same ratio on first-to-market records. Forty to seventy leads with no contract means something is broken.
+  funnel.dials_per_correct_number:
+    value: 13.5
+    unit: dials a correct number
+    source: [D30, C13.3]
+    status: recommended
+    decision: D30
+    says: Dials it takes to confirm one number, texts and calls blended.
+  funnel.dials_per_lead:
+    low: 50
+    high: 100
+    unit: dials a lead
+    source: [C13.2]
+    status: recommended
+    says: Dials it takes to produce one lead. The rule of thumb is 50; the goal sheet plans on the cautious end.
+  funnel.contracts_that_close:
+    value: 75
+    unit: "% of signed contracts"
+    source: [C13.8]
+    status: recommended
+    says: The share of signed contracts that should close. Under it, something is wrong on the selling side.
+  funnel.walk_to_contract:
+    low: 50
+    high: 60
+    unit: "% of walked houses"
+    source: ["6-09 4:41", X08]
+    status: recommended
+    decision: D30
+    says: The share of houses the team walks that become contracts.
+    note: Rule C13.9 (October 2026) gives 30% to 40% for in-person walks. The plan takes the lesson's figure.
+
+  # ------------------------------------------------------------------ the other roles
+  role.lead_manager_attempts_per_day:
+    value: 50
+    unit: attempts a day
+    source: [C9.22, C4.23]
+    status: recommended
+    says: Touches a lead manager makes across new and old leads.
+  role.lead_manager_passoffs_per_day:
+    low: 3
+    high: 5
+    unit: pass-offs a day
+    source: [C9.23]
+    status: recommended
+    says: Offer opportunities a lead manager hands to the closer.
+  role.closer_offers_per_day:
+    low: 5
+    high: 10
+    unit: offers a day
+    source: [C9.24, C13.14]
+    status: recommended
+    says: Offers one closer makes.
+
+  # ------------------------------------------------------------------ sales cycles and turnover
+  cycle.probate_months:
+    low: 4
+    high: 7
+    unit: months
+    source: [C13.39]
+    status: recommended
+    says: From the first marketing day to a contract on probate and the other county lists, foreclosures aside.
+  cycle.free_clear_senior_vacant_days:
+    value: 30
+    unit: days
+    source: [C13.39]
+    status: recommended
+    says: How fast a free and clear, vacant, senior-owned house can close once the price works.
+  cycle.cash_back_days:
+    low: 60
+    high: 180
+    unit: days
+    source: [C13.41]
+    status: recommended
+    says: From the first marketing touch to money in the bank.
+  cycle.list_turnover_per_month:
+    value: 10
+    unit: "% of a list"
+    source: [C13.33, "4-11 0:14"]
+    status: recommended
+    says: The share of a marketed list that is new records each month.
+  cycle.foreclosure_notice_to_sale_days:
+    value: 34
+    unit: days
+    source: [outcome study 2026-11-12]
+    status: measured
+    measured: "2026-11-12"
+    says: The median from a first foreclosure notice to its sale date, over 406 notices.
+  foreclosure.borrower_keeps_house:
+    value: 58
+    unit: "% of notices"
+    source: [outcome study 2026-11-12]
+    status: measured
+    measured: "2026-11-12"
+    says: Notices whose borrower still owned the house 60 days after the sale date.
+  foreclosure.investor_buys:
+    value: 20
+    unit: "% of notices"
+    source: [outcome study 2026-11-12]
+    status: measured
+    measured: "2026-11-12"
+    says: Notices that ended with an investor buying the house.
+  foreclosure.lender_takes_back:
+    value: 9
+    unit: "% of notices"
+    source: [outcome study 2026-11-12]
+    status: measured
+    measured: "2026-11-12"
+    says: Notices that ended with the lender taking the house back.
+
+  # ------------------------------------------------------------------ measured on this account
+  measured.talk_seconds_per_dial:
+    value: 16
+    unit: seconds of talk a dial
+    source: [daily capture 2026-11-12]
+    status: measured
+    measured: "2026-11-12"
+    says: One caller's ordinary day, 63 minutes of talk on 234 dials.
+  measured.answered_share:
+    value: 79
+    unit: "% of dials"
+    source: [daily capture 2026-11-12]
+    status: measured
+    measured: "2026-11-12"
+    says: The same day, 185 of 234 dials answered. An answer is not a conversation, a voicemail greeting answers too.
+
+  # ------------------------------------------------------------------ alarms (plan 6.3)
+  alarm.dials_without_lead:
+    value: 500
+    unit: dials
+    source: [C13.1, plan 6.3]
+    status: recommended
+    says: Dials since the last new lead before the process is called broken.
+  alarm.min_talk_seconds_per_dial:
+    value: 4
+    unit: seconds of talk a dial
+    source: [C13.28, plan 6.3]
+    status: recommended
+    says: Under this, a day's dials look padded, dialed and ended at once.
+    note: The teaching gives no number. Four seconds is a quarter of the ordinary day measured on 2026-11-12.
+  alarm.min_dials_to_judge:
+    value: 80
+    unit: dials in the day
+    source: [plan 6.3]
+    status: recommended
+    says: A caller's day with fewer dials is too small for a rate to mean anything.
+  alarm.dial_jump:
+    value: 20
+    unit: "% above the caller's own average"
+    source: ["13-02 8:12", plan 6.3]
+    status: recommended
+    says: A jump in a day's dials this large means fewer people are picking up, which is a bad list.
+  alarm.dial_jump_baseline_days:
+    value: 10
+    unit: calling days
+    source: [plan 6.3]
+    status: recommended
+    says: How many of the caller's earlier calling days make the average a jump is measured against.
+  alarm.answer_rate_min:
+    value: 50
+    unit: "% of dials answered"
+    source: [C4.26]
+    status: recommended
+    says: Under this, the numbers or the caller ID lines are at fault, not the time of day.
+  alarm.answer_rate_normal:
+    value: 70
+    unit: "% of dials answered"
+    source: [C4.26]
+    status: recommended
+    says: The answer rate on an ordinary day.
+  alarm.first_trace_hit_min:
+    value: 90
+    unit: "% of traced records with a number"
+    source: [C2.8]
+    status: recommended
+    says: What the first skip trace should find. Under it, the trace run or its source is at fault.
+  alarm.first_trace_window_days:
+    value: 30
+    unit: days
+    source: [plan 6.3]
+    status: recommended
+    says: How far back the trace rate looks at new records.
+  alarm.first_trace_min_records:
+    value: 20
+    unit: traced records
+    source: [plan 6.3]
+    status: recommended
+    says: Fewer traced records than this is too small a sample for a trace rate.
+  alarm.flagged_lines_normal:
+    value: 25
+    unit: "% of caller ID lines"
+    source: ["4-13 6:09"]
+    status: recommended
+    says: The share of lines flagged as spam on an ordinary day. More than this is the fault to fix first.
+
+  # ------------------------------------------------------------------ the goal sheet (plan 6.4)
+  goal.revenue_per_year:
+    name: revenue goal
+    value: 360000
+    unit: $ a year
+    source: [C13.30, C13.57]
+    status: placeholder
+    says: The revenue goal the sheet works back from.
+    note: A stand-in until the owner sets it. Two deals a month at the average deal below.
+  goal.average_deal:
+    value: 15000
+    unit: $ a deal
+    source: [C13.49]
+    status: placeholder
+    says: What one closed deal pays.
+    note: A stand-in. Assignments run $10,000 to $15,000; the teaching's figure with no history is $30,000.
+  goal.at_risk_share:
+    value: 80
+    unit: "% of the pace needed"
+    source: [C13.30, plan 6.4]
+    status: recommended
+    says: At or above the pace is on track, at or above this share of it is at risk, under it is behind.
+    note: The teaching names the three marks and gives no cut-off.
+  goal.activity_window_days:
+    value: 30
+    unit: days
+    source: [plan 6.4]
+    status: recommended
+    says: The window dials, conversations and leads are judged on.
+  goal.deal_window_days:
+    value: 90
+    unit: days
+    source: [plan 6.4, C13.41]
+    status: recommended
+    says: The window contracts and closed deals are judged on. Deals are too few to judge on a month.
+
+  # ------------------------------------------------------------------ the quarterly owner review (plan 6.4)
+  owner.days_to_first_deal:
+    value: 90
+    unit: days
+    source: [C13.40]
+    status: recommended
+    says: How long a first deal takes when everything is done right.
+  owner.net_margin:
+    low: 30
+    high: 50
+    unit: "% net margin"
+    source: [C13.50]
+    status: recommended
+    says: The margin a team of under three people should hold.
+  owner.market_share_ceiling:
+    value: 15
+    unit: "% of the market's investor deals"
+    source: [C13.55]
+    status: recommended
+    says: The most one operator takes of a market. Past it, the plan is wrong, not the effort.
+  owner.cost_per_deal:
+    low: 1000
+    high: 2000
+    unit: $ a deal
+    source: [C13.45, "dpd_v7 16:05"]
+    status: recommended
+    says: What a deal costs to find for a team running every channel in order.
+
+  # ------------------------------------------------------------------ where deals come from (plan 6.5)
+  source.not_interested_share_of_deals:
+    low: 20
+    high: 30
+    unit: "% of deals"
+    source: [C13.42, "4-05 34:31", "4-23 0:43"]
+    status: recommended
+    says: Deals that come from calling a Not Interested owner again.
+  source.rehash_share_of_deals:
+    low: 20
+    high: 30
+    unit: "% of deals"
+    source: ["4-05 35:24"]
+    status: recommended
+    says: Deals that come from working old leads again.
+  source.exhausted_callbacks_per_deal:
+    low: 5
+    high: 10
+    unit: call backs a deal
+    source: [C13.10]
+    status: recommended
+    says: Call backs from mail to dialed-out records that it takes to close one.
+  channel.leads_per_100_touches:
+    value: 1
+    unit: lead per 100 texts or emails
+    source: [C13.15]
+    status: recommended
+    says: What a text or an email touch converts at.
+  channel.smarter_contact_leads_per_day:
+    low: 3
+    high: 5
+    unit: leads a day
+    source: [C13.17]
+    status: recommended
+    says: What the texting tool should bring in.
+  channel.calling_agency_leads_per_day:
+    low: 2
+    high: 4
+    unit: leads a day
+    source: [C13.17]
+    status: recommended
+    says: What a calling agency should bring in.
+  commission.generated:
+    value: 2.5
+    unit: "% of the deal"
+    source: ["12-03 4:43", X15]
+    status: recommended
+    says: Paid to whoever generated the lead. It is why every closed deal records three names.
+  commission.carried:
+    value: 5
+    unit: "% of the deal"
+    source: ["12-04 3:57", X15]
+    status: recommended
+    says: Paid to whoever carried the lead through.
+  commission.closed:
+    value: 10
+    unit: "% of the deal"
+    source: ["12-04 2:50", X15]
+    status: recommended
+    says: Paid to whoever closed it.
+
+  # ------------------------------------------------------------------ research results (plan 3.11)
+  research.check_after_days:
+    value: 30
+    unit: days
+    source: [plan 3.11]
+    status: recommended
+    says: How long after a record is researched its result is read.
+  research.reached:
+    low: 50
+    high: 70
+    unit: "% of researched records"
+    source: [C11.37, C13.6, "5-01 7:34"]
+    status: recommended
+    says: Researched records where a decision maker was reached.
+  research.blind_trace_reached:
+    low: 5
+    high: 7
+    unit: "% of records"
+    source: [C11.37]
+    status: recommended
+    says: What a plain skip trace reaches on the same records, for comparison.
+  research.contacts_per_deal:
+    value: 10
+    unit: contacts a deal
+    source: [C13.12]
+    status: recommended
+    says: Researched contacts it takes to close one deal. Contacts, not leads.
+  research.min_records_to_judge:
+    value: 10
+    unit: researched records
+    source: [plan 3.11]
+    status: recommended
+    says: Fewer checked records than this is too small a sample to hold against the reach figure.
+
+  # ------------------------------------------------------------------ follow-up cadence (plan 6.6)
+  cadence.cold_days:
+    value: 45
+    unit: days
+    source: ["7-04", C9.34, D15]
+    status: recommended
+    decision: D15
+    says: Days between follow-ups on a cold lead.
+  cadence.warm_days:
+    value: 15
+    unit: days
+    source: ["7-04", D15]
+    status: recommended
+    decision: D15
+    says: Days between follow-ups on a warm lead.
+  cadence.hot_days:
+    value: 2
+    unit: days
+    source: ["7-04", D15]
+    status: recommended
+    decision: D15
+    says: Days between follow-ups on a hot lead.
+  cadence.not_interested_auction_days:
+    value: 30
+    unit: days
+    source: [D23]
+    status: recommended
+    decision: D23
+    says: The wait before a Not Interested owner on a foreclosure list is called again.
+  cadence.not_interested_priority_days:
+    value: 45
+    unit: days
+    source: [D23]
+    status: recommended
+    decision: D23
+    says: The same wait on probate, Priority 1 and Priority 2 records.
+  cadence.not_interested_other_days:
+    value: 90
+    unit: days
+    source: [D23]
+    status: recommended
+    decision: D23
+    says: The same wait on every other list.
+  cadence.step_days:
+    value: 15
+    unit: days
+    source: [C9.34, plan 6.6]
+    status: recommended
+    says: The size of one change the cadence tuner may propose.
+  cadence.min_sales_to_propose:
+    value: 5
+    unit: sold records in a group
+    source: [plan 6.6, C13.21]
+    status: recommended
+    says: Sales a group needs before the tuner proposes anything from it.
+    note: A median is steadier on 15 or more sales, and no group here sees that many in a month.
+
+  # ------------------------------------------------------------------ coaching (plan 6.7)
+  coaching.best_calls:
+    value: 2
+    unit: calls per caller
+    source: ["6-06 1:54"]
+    status: recommended
+    says: The best calls picked for review each week.
+  coaching.worst_calls:
+    value: 2
+    unit: calls per caller
+    source: ["6-06 1:54"]
+    status: recommended
+    says: The worst calls picked for review each week.
+  coaching.new_hire_days:
+    value: 7
+    unit: days
+    source: ["6-06 4:22"]
+    status: recommended
+    says: How long a new hire's calls are reviewed every day instead of every week.
+
+  # ------------------------------------------------------------------ budget and pacing (plan 5.7)
+  pacing.ai_data_monthly_spend:
+    low: 3000
+    high: 5000
+    unit: $ a month
+    source: [C1.64]
+    status: recommended
+    says: The marketing budget at which AI data starts to pay.
+  pacing.runway_months:
+    value: 6
+    unit: months
+    source: [C1.64, C13.41]
+    status: recommended
+    says: Months of that budget to hold in the bank before starting, since cash comes back slowly.
+  pacing.strategy_hold_days:
+    value: 90
+    unit: days
+    source: [C1.32]
+    status: recommended
+    says: How long a list strategy is held before it is changed.
+  pacing.no_lead_days_to_change:
+    value: 30
+    unit: days
+    source: [C1.32]
+    status: recommended
+    says: With no lead at all for this long, a strategy may be changed early.
+  pacing.as_is_to_arv:
+    low: 15
+    high: 30
+    unit: "% above SiftMap's value"
+    source: ["4-03 3:56"]
+    status: recommended
+    says: How far the repaired value sits above the as-is number SiftMap shows.
+  pacing.repeat_days:
+    value: 7
+    unit: days
+    source: [plan 5.7]
+    status: recommended
+    says: How often the digest repeats a pacing rule that is still being broken.
+
+# What the words mean. A report that counts one of these counts it this way.
+definitions:
+  conversation:
+    says: An answered call of a minute or more, or an inbound text. An answer alone is not a conversation, because a voicemail greeting answers too.
+    min_seconds: 60
+    counts_inbound_text: true
+    counts_inbound_call: true
+    source: [D30, "6-02 1:48", "13-02 2:49", C13.5]
+    status: recommended
+    decision: D30
+  contact:
+    says: A decision maker reached, counted once for an address however many numbers or calls it took.
+    source: [C13.5, plan 6.1]
+    status: recommended
+    decision: D30
+  opportunity:
+    says: A record that enters a lead status from outside one, credited to the caller on the last conversation before it.
+    credit_days: 3                 # how far back that conversation may be
+    settle_minutes: 30             # a status set this long after a call still belongs to that call
+    source: ["6-02 2:01", C13.26, "13-02 1:23", plan 6.5]
+    status: recommended
+  correct_number:
+    says: A number a person confirmed reaches the owner or someone who knows the owner. Numbers confirmed on a call and by a text are counted apart.
+    dialer_sources: [kixie, smrtphone, smrtdialer, calltools, xencall, aircall]
+    source: [C3.15, C3.16, "13-02 2:02"]
+    status: recommended
+  deal:
+    says: A contract that closed and paid. A signed contract is counted on its own line and never as a deal.
+    source: [C13.29]
+    status: recommended
+
+# This business's own numbers, typed by the owner. Blank means not given: a report that needs one
+# says it is missing and never guesses.
+inputs:
+  monthly_costs:                 # dollars a month the autopilot's ledger cannot see
+    dialer:
+    texting:
+    salaries:
+    subscriptions:
+  market_investor_deals_6mo:     # investor purchases in the county over six months, from the doors-per-deal page
+  marketing_started:             # the day marketing began, as "YYYY-MM-DD", for days to a first deal
+  monthly_marketing_budget:      # dollars a month across every channel
+  runway_months:                 # months of that budget in the bank
+
+# Budget and pacing rules (plan 5.7). The team reads this page; the morning digest quotes a rule when
+# the playbook or the day's dialing is about to break it. A figure in braces is read from above, so a
+# rule and its number cannot drift apart. A rule with no `check` is one for people to hold.
+pacing:
+  first_to_market_ready: FTM - 02 Ready to Call      # the preset that holds first-to-market records waiting for a first call
+  ai_lanes: [priority1, strong, bulk]                # the lanes fed by AI data
+  preset_prefixes:                                   # how a stage with no `lane` is placed: by how its preset titles start
+    ftm: [FTM]
+    priority1: [Hottest]
+    strong: [Strong]
+    bulk: [Bulk]
+  rules:
+    - id: first_to_market_first
+      says: First to market first, then stacked lists, then AI data.
+      source: [C1.67]
+      check: lower_lane_while_first_to_market_waits
+    - id: one_list_end_to_end
+      says: One list end to end before the next.
+      source: [C1.69, C1.70, C1.71]
+      check: second_lane_before_first_is_live
+    - id: hold_a_strategy
+      says: Hold a strategy about {pacing.strategy_hold_days}. Change sooner only when {pacing.no_lead_days_to_change} bring no lead at all.
+      source: [C1.32]
+      check: strategy_changed_early
+    - id: ai_data_budget
+      says: AI data only at {pacing.ai_data_monthly_spend} of marketing, with {pacing.runway_months} of runway.
+      source: [C1.64, C13.41]
+      check: ai_lane_without_budget
+    - id: mail_past_the_buy_box
+      says: Mail past the buy box. Returned mail feeds research, and a buy-box list hides it.
+      source: [C1.75]
+      check: mail_on_ai_lane
+    - id: siftmap_value_is_as_is
+      says: A SiftMap value is an as-is number. The repaired value runs {pacing.as_is_to_arv}.
+      source: ["4-03 3:56"]

@@ -238,6 +238,16 @@ def _check_stage(st: Stage, problems: list[str]) -> None:
         per = st.get("per_day", 3)
         if not isinstance(per, int) or per < 0:
             p.append("stage %s: per_day must be a whole number" % st.id)
+    if st.kind in registry.EXTRA:
+        # A kind added after the first build checks its own settings, so a typo in its block is
+        # refused when the playbook loads instead of read as a default.
+        try:
+            import importlib
+            check = getattr(importlib.import_module("%s.%s" % (__package__, registry.EXTRA[st.kind][0])), "block_problems", None)
+            if callable(check):
+                p.extend(check(st))
+        except Exception as exc:  # noqa: BLE001
+            p.append("stage %s: its module could not check the block (%s)" % (st.id, str(exc)[:120]))
     for key in ("daily_usd", "max_records"):
         v = st.get(key)
         if v is not None and (not isinstance(v, (int, float)) or v < 0):

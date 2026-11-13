@@ -60,7 +60,7 @@ RULES = {
     "not_single_family": (OUTREACH | PAID, ""),
     "mail_only": (frozenset({"assign", "call", "text", "task"}), "mail_only"),
     "exhausted": (frozenset({"assign", "call"}), "exhausted"),
-    "return_mail": (frozenset({"mail"}), ""),
+    "return_mail": (frozenset({"mail"}), "heir"),    # a heir letter goes to the heir's own address, not the one that bounced
     "do_not_mail": (frozenset({"mail"}), ""),
     "owner_lane": (OUTREACH, ""),
     "no_number": (frozenset({"call", "text"}), ""),
@@ -78,7 +78,7 @@ class GateConfig:
     deceased_fields: list = field(default_factory=lambda: ["Owner Deceased"])
     probate_marks: list = field(default_factory=lambda: ["Probate"])
     heir_tags: list = field(default_factory=lambda: ["Heir Identified"])
-    sold_tags: list = field(default_factory=lambda: ["recently sold", "Sold"])
+    sold_tags: list = field(default_factory=lambda: ["recently sold", "Sold", "Estate Sold"])
     mail_only_tags: list = field(default_factory=lambda: ["Mail Only"])
     not_sfr_tags: list = field(default_factory=lambda: ["Not Single Family"])
     listed_values: list = field(default_factory=lambda: ["listed", "pending"])

@@ -54,7 +54,9 @@ gate:
 # two stages can disagree about what happens after the call round (decisions D1, D3, D6).
 lanes:
   heirs:       {tags: [Heir Identified]}
-  hot_auction: {tags: [Auction Soon]}
+  hot_auction:
+    tags: [Auction Soon]
+    timeline: true            # the FTM round, then a call task every 2 days to the sale, a door knock inside 7 days (1.8, 4.8)
   ftm:
     tags: [FTM]
     timeline:
@@ -67,8 +69,20 @@ lanes:
       mail_at_once: [no_number, foreclosure]   # no usable number, or a sale a median 34 days out
       followup_texts: {first_day: 8, last_day: 18, count: 4}
   obituary:    {tags: [Obituary], lists: [Obituary]}
-  priority1:   {tags: [Priority 1]}
-  strong:      {tags: [Priority 2]}
+  priority1:
+    tags: [Priority 1]
+    timeline: true            # texts days 0-2, calls days 1-5, mail when the round ends, 6 pieces, research at exhaustion (D3, D7)
+  strong:
+    tags: [Priority 2]
+    timeline: true
+    presets: [Strong - 00 Needs Skipped, Strong - 01 Skipped No Numbers, Strong - 02 Ready to Call]
+    tranche: {size: 1500, waiting_presets: [Strong - 00 Needs Skipped, Strong - 02 Ready to Call], min_days: 7, carry_over: 0.05}   # D38 (yours)
+    caps: {daily_usd: 10}
+  bulk:
+    timeline: true            # texts days 0-2, the power dialer from day 3 every 30 days to attempt 6, then six months of mail
+    presets: [Bulk - 00 Needs Skipped, Bulk - 01 Skipped No Numbers, Bulk - 02 Ready to Call]
+    tranche: {size: 1500, waiting_presets: [Bulk - 00 Needs Skipped, Bulk - 02 Ready to Call], min_days: 7, carry_over: 0.05}
+    caps: {daily_usd: 10}
 
 stages:
 
@@ -193,18 +207,34 @@ stages:
     mode: "plan"
     schedule: "16:30 Mon-Fri"
     summary: The owners dialed today who still have a top-tier number nobody tried, listed while there is time to finish them.
-    # Plan 1.3. A full attempt dials every Dial First and Second number. Reads only; shows the last
-    # four digits of a number.
+    # Plan 1.3. A full attempt dials every Dial First and Second number. Shows the last four digits
+    # of a number. A number the do-not-call registry flags is left off the list while those calls
+    # are held (D32).
     short_by: 2
+    lane: ftm                   # the lane whose timeline says which call days get the afternoon text
+    # The afternoon text: one short text to a number dialed today and not reached, in the thread the
+    # owner already has, staged for a person to release before 5:30pm. Keep it false until one
+    # one-off text has been proven to land in an existing Smarter Contact thread (proofs.py, thread_text).
+    afternoon_text: false
+    sender: Adriana             # who signs it: the caller who dialed
+    text_by: "17:30"
+    reached_seconds: 60         # an answered call this long means the owner was reached: no text
 
   lead_check:
     kind: leadcheck
-    owner: sales
+    owner: ops
     mode: "plan"
     schedule: "08:10 Mon-Fri"
     summary: Every lead checked for an open task, an assignee and a confirmed number; what is missing goes to the lead manager.
-    # Plan 2.7. Reads only. Creating the missing task is the live half and waits on one staging proof.
+    # Plan 2.7 and 2.12. The missing task itself is created by lead_tasks five minutes earlier; this
+    # check names what could not be fixed. A record that gained a list (a new lien, notice or
+    # obituary) gets a same-day task for the lead manager; a new obituary marks the Correct numbers
+    # Verify Number and queues the record for research, without changing its lead status.
     new_lead_hours: 24
+    gate_allow: [lead]
+    research_per_day: 2
+    stale_tag: Verify Number
+    lead_manager_id: ""         # decision D13. A user id here gets the tasks; empty gives them to the record's assignee
 
   # ------------------------------------------------------------------ Atlas, Analysis
   ftm_assign:
@@ -294,12 +324,26 @@ stages:
     sources: [smartskip, tracerfy]
     callable_tiers: [Dial First, Dial Second]   # lessons 4-05, 14-13, 5-03: only these are dialed
     deceased: deep_prospect          # a dead owner or a probate record goes to Diggs, never a blind trace
-    entity: after                    # an LLC or trust has no person to trace yet; see after_sources
+    entity: principals               # plan 1.15: the person behind an LLC or trust (the entity_principals handler is needed before live)
+    principals_per_day: 10
     after_sources: mail_only         # lessons 4-06, 4-05: no numbers means mail at minimum, then deep prospecting
     mail_only_tag: Mail Only
     deep_prospect_per_day: 3
     max_records: 50
     daily_usd: 10
+    # Plan 1.13 and 1.14 (11-13): a number two sources agree on is marked, at most three usable
+    # numbers kept a person, a Drop number marked dead, and an incomplete record goes to the fix-up
+    # queue before any paid trace. Each pass is judged 14 days later.
+    # every_record_sources: 1        # D11 (yours): SmartSkip on every FTM record, Tracerfy only on a miss
+    agreement_tag: Two Sources
+    write_tiers: [Dial First, Dial Second]   # D12
+    reserve_tiers: [Dial Third]
+    keep_numbers: 3
+    drop_status: DEAD
+    write_line_type: true
+    fixup_queue: 100
+    fixup_tag: Needs Fix-Up
+    lookback_days: 14
 
   ftm_exhausted:
     kind: retrace
@@ -323,6 +367,13 @@ stages:
     deep_prospect_per_day: 3
     max_records: 25
     daily_usd: 5
+    write_tiers: [Dial First, Dial Second]
+    reserve_tiers: [Dial Third]
+    keep_numbers: 3
+    drop_status: DEAD
+    write_line_type: true
+    fixup_queue: 100
+    fixup_tag: Needs Fix-Up
 
   ftm_score:
     kind: score
@@ -342,6 +393,8 @@ stages:
     max_records: 200
     recheck_days: 7
     daily_usd: 5
+    drop_status: DEAD                # D12: a Drop number is marked dead; a Correct mark is never overwritten
+    write_line_type: true
 
   ftm_deep_prospect:
     kind: handoff
@@ -372,6 +425,12 @@ stages:
     workflow: deep_prospect
     agent: research
     per_day: 1
+    # Plan 1.7: a return is read three ways (the status, a return tag, the do-not-mail flag), and a
+    # return is told apart from an opt-out by a tag written the day it is first seen.
+    return_signals: {statuses: [Return Mail], tags: [Return Mail, Returned Mail], flag: true}
+    return_tag: Return Mail
+    opt_out_tags: [Mail Opt Out, Do Not Mail]
+    returns_scan: {weekday: mon}     # D37: add assignee: <first name> for the weekly returned-letters task
 
   ftm_no_numbers:
     kind: handoff
@@ -440,6 +499,11 @@ stages:
     deep_prospect_per_day: 2
     max_records: 50
     daily_usd: 5
+    lane: priority1
+    write_tiers: [Dial First, Dial Second]
+    reserve_tiers: [Dial Third]
+    keep_numbers: 3
+    drop_status: DEAD
 
   hottest_score:
     kind: score
@@ -450,6 +514,9 @@ stages:
     presets: [Hottest - 02 Ready to Call, Hottest - 03 Call Attempt 1, Hottest - 04 Call Attempt 2, Hottest - 05 Call Attempt 3, Hottest - 06 Call Attempt 4]
     max_records: 200
     daily_usd: 5
+    lane: priority1
+    drop_status: DEAD
+    write_line_type: true
 
   autopilot_digest:
     kind: digest
@@ -461,6 +528,7 @@ stages:
       - FTM - 01 Skipped No Numbers
       - FTM - 02 Ready to Call
       - FTM - 05 Call Attempt 3
+      - FTM - 06 Call Attempt 4
       - FTM - Mail 01 Handwritten Letter
       - Hot Auction + Buy Box
       - "03 Exhausted Call -> DP"
@@ -502,3 +570,567 @@ stages:
     known_lists: [DNC, Dream 100]
     known_prefixes: ["Dispo - "]
     settings: {auto_update: true}
+
+  # ------------------------------------------------------------------ Phase 2: lead management on the clock
+  # A lead is its own lane, and these are the only stages that may touch one (gate_allow: [lead]).
+  # The board's columns are learned from one card's timeline and remembered for a week. If a stage
+  # says it cannot learn them, give it the id of one column that holds a card under seed_columns,
+  # or every column under column_ids.
+  speed_to_lead:
+    kind: leadclock
+    job: speed
+    owner: sales
+    mode: "plan"
+    schedule: "every 5 min 09:00-18:00 Mon-Fri"
+    summary: Each new lead timed from the status change to the first outbound call; the assignee is told at 5 minutes and the owner at 15.
+    # Plan 2.2, the clock half. It reads the shared log copy and writes nothing to DataSift, so
+    # switching it to live changes one thing only, that every ping posts (a plan run posts once a
+    # day). A lead that arrives at night is timed from the next opening. The text to the seller
+    # belongs to the texting stage.
+    assignee_minutes: 5
+    owner_minutes: 15
+    lead_manager: ""            # decision D13. Name the lead manager and the 5-minute line goes to that name; empty tells the record's assignee
+    owner_label: Owner          # how the 15-minute line addresses the owner (a name, or a Slack mention)
+    people: {}                  # user id to first name, for an assignee the call log has never named
+    window_hours: 24
+    max_reads: 20
+
+  lead_clock:
+    kind: leadclock
+    owner: ops
+    mode: "plan"
+    schedule: "07:40 Mon-Fri"
+    summary: Lead cards moved between phases on time, measured from the last real conversation, never from time in a column.
+    # Plan 2.5, decision D15. A real conversation is an answered call of a minute or more, an inbound
+    # text or a note a person wrote. A card holding a future task a person dated is never moved.
+    gate_allow: [lead]
+    board: Lead Management
+    offers_board: Acquisitions
+    first_run: staged           # the first live run stages its moves for a person to release
+    sequences_fire: unknown     # true, false or unknown. Unknown moves the card and checks on the next run that the column's sequence did its work
+    clear_old_tasks: true       # when the stage does a sequence's work itself, the old column's sequence-made tasks go, as the sequence would have done
+    settle_minutes: 30
+    trust_column_time: false    # true lets a card's time in its column stand in for what the 200-day log copy cannot prove
+    future_task_filter: true    # also ask the board which cards hold a task due in the future
+    rejected_offers: true       # a card a week in Offer Rejected goes back to the lead manager
+    conversation_seconds: 60
+    marginal_tags: [Marginal Lead]
+    limits:
+      new_lead_hours: 24
+      new_lead_needs_dial: true # a new lead nobody dialed is named, not filed as No Contact
+      no_contact_tries: 5
+      nurture_strong_days: 180
+      nurture_marginal_days: 60
+      nurture_touches: 31
+      hot_quiet_days: 14
+      warm_quiet_days: 60
+      cold_quiet_days: 365
+      offer_rejected_days: 7
+    column_ids: {}              # {"<board title>": {"<column title>": "<column id>"}}
+    seed_columns: {}            # {"<board title>": "<the id of any one column that holds a card>"}
+    max_moves: 25
+    max_reads: 120
+
+  lead_drips:
+    kind: drips
+    owner: ops
+    mode: "plan"
+    schedule: "every 60 min 09:00-18:00 Mon-Fri"
+    summary: Ghosting, cold and said-no leads kept on a slow drip of staged texts, emails and review tasks; a reply or a status change ends it.
+    # Plan 2.6. Runs on the brain's clock. A text or an email is staged for a person and nothing is
+    # sent from here. The three default drips are in drips.py; a `drips:` block here changes one
+    # or switches it off (cold: false). An email step adds a tag, and a sequence built in DataSift
+    # on that tag sends the email. Until that sequence exists the email step is passed over.
+    gate_allow: [lead, not_interested]
+    never: [Hot Lead]
+    sender_name: ""             # signs the texts. Empty uses the assignee's first name, else the text goes unsigned
+    lead_manager_id: ""         # decision D13. A user id here gets the review tasks; empty gives them to the record's assignee
+    conversation_seconds: 60
+    max_chars: 160
+    daily_items: 25
+    max_reads: 60
+
+  lead_tasks:
+    kind: leadtasks
+    owner: ops
+    mode: "plan"
+    schedule: "08:05 Mon-Fri"   # five minutes ahead of lead_check, so the check lists what could not be fixed
+    summary: A lead with no open task gets the task its column's own sequence would have created.
+    # Plan 2.7. A ghosting lead with a drip step ahead of it already has its next action.
+    gate_allow: [lead]
+    board: Lead Management
+    task_assignee: preset       # preset keeps the task preset's own assignee; record gives the task to the record's assignee
+    task_for: {}                # a status to a task preset title, where the column's own preset is not the right one
+    proof_preset: "Board - No Tasks (no next action)"
+    max_create: 50
+    max_reads: 80
+
+  lead_weekly:
+    kind: leadtasks
+    job: weekly
+    owner: ops
+    mode: "plan"
+    schedule: "Wed 08:20"
+    summary: The weekly deeper pass on every lead, card against status, notes after conversations, overdue and undated tasks, and the check presets themselves.
+    # Plan 2.7. Reads only.
+    board: Lead Management
+    check_presets: ["3. Leads Missing Tasks"]
+    column_ids: {}
+    seed_columns: {}
+
+  lead_nurture:
+    kind: leadtasks
+    job: nurture
+    owner: sales
+    mode: "plan"
+    schedule: "08:15 Mon-Fri"
+    summary: Every Follow Up record on a confirmed number holds one dated call task 90 days out.
+    # Plan 2.13. The cold drip in lead_drips covers the months between.
+    gate_allow: [lead]
+    statuses: [follow_up]
+    due_days: 90
+    require_confirmed: true
+    lead_manager_id: ""
+
+  lead_appointments:
+    kind: appointments
+    owner: sales
+    mode: "plan"
+    schedule: "every 30 min 08:00-19:00 Mon-Sat"
+    summary: Every walkthrough gets a post and comps when it is booked, a confirm call the day before and a recorded outcome that sets the next move.
+    # Plan 2.10. An appointment is a task with a start, an end and an outcome, made in DataSift or
+    # through the booking workflow. `outcomes:` changes what an outcome makes the next task.
+    gate_allow: [lead]
+    offers_board: Acquisitions
+    comps_workflow: quick_screen
+    comps_agent: sales
+    outcome_grace_hours: 24
+    give_up_days: 14
+    check_column: true          # once a day, count cards in Appointment Booked that have no appointment
+    lead_manager_id: ""
+    column_ids: {}
+    seed_columns: {}
+    max_reads: 40
+
+  lead_exits:
+    kind: exits
+    owner: ops
+    mode: "plan"
+    schedule: "1st 07:10"
+    summary: Dead and Not Interested cards leave the board after 30 days with the status kept; a dead lead returns to marketing after 180 days if the house has not sold.
+    # Plan 2.14, decision D27 (yours). remarket_dead false keeps dead leads dead.
+    board: Lead Management
+    card_days: 30
+    remarket_dead: true
+    remarket_days: 180
+    column_ids: {}
+    seed_columns: {}
+    max_remove: 40
+    max_remarket: 25
+    max_reads: 120
+
+  # ------------------------------------------------------------------ Text lane and outreach limits
+  ftm_registry_scrub:
+    kind: scrub
+    owner: ops
+    lane: ftm
+    mode: "plan"
+    schedule: "08:20 Mon-Fri"       # ahead of the text stage and the callers' day
+    summary: The do-not-call registry flags on the first-to-market lane remembered and counted, so no flagged number is texted or put on a call list.
+    # Decision D32 (11-13): a number DataSift's registry scrub flags is never texted, and is held
+    # from calls until the attorney answers. The flag shows only on a search row, for one number a
+    # record, so every flag seen is remembered and applies wherever that number turns up.
+    presets:
+      - FTM - 02 Ready to Call
+      - FTM - 03 Call Attempt 1
+      - FTM - 04 Call Attempt 2
+      - FTM - 05 Call Attempt 3
+      - FTM - 06 Call Attempt 4
+    calls: hold                 # hold until the attorney answers; allow lifts it for calls only
+    hold_unseen: false          # true also holds a number no row has shown with the flag off
+    max_records: 60             # flagged records opened a run, to say how many have nothing left to text or call
+
+  ftm_texts:
+    kind: textlane
+    owner: ops
+    lane: ftm
+    mode: "plan"
+    schedule: "08:45 Mon-Fri"       # after the death screen (07:00 on) and the scrub (08:20), before the window opens at 9
+    summary: New first-to-market owners loaded for text 1 the day they land and texts 2 and 3 on the next two days, staged for a person to release.
+    # Plan 1.4. The stage never sends: it stages a batch, a person releases it, and the release
+    # writes the load file for the Smarter Contact loader. The days come from lanes.ftm.timeline.
+    series: opening
+    presets:
+      - FTM - 02 Ready to Call
+      - FTM - 03 Call Attempt 1
+      - FTM - 04 Call Attempt 2
+    system: smarter_contact     # D4: Smarter Contact for every campaign
+    label: FTM                  # the group name prefix in Smarter Contact
+    numbers_per_owner: 3
+    require_screen: true        # never before the death screen has seen the record (plan 0.21)
+    stop_on_correct: true       # a number marked CORRECT means the owner answered: a person has the thread
+    urgent_copy: true           # D21: for a sale inside 14 days, texts 2 and 3 use the time-sensitive templates
+    urgent_tag: Auction Critical
+    text_usd: 0.02              # what one text costs, for the plan and the stage cap
+    daily_usd: 10
+    daily_owners: 150
+    max_records: 150            # full records opened a run
+    max_new: 150                # records looked at for the first time a run
+
+  ftm_followup_texts:
+    kind: textlane
+    owner: ops
+    lane: ftm
+    mode: "plan"
+    schedule: "10:15 Mon-Fri"
+    summary: After the call round, the follow-up texts on the lane's timeline, ending with the breakup text, staged for a person to release.
+    # Plan 4.5 (decision D20). Count, first day and last day come from lanes.ftm.timeline.followup_texts.
+    series: followup
+    system: smarter_contact
+    label: FTM
+    numbers_per_owner: 3
+    require_screen: true
+    stop_on_correct: true
+    text_usd: 0.02
+    daily_usd: 10
+
+  outreach_limits:
+    kind: limits
+    owner: ops
+    mode: "plan"
+    schedule: ["19:20 Mon-Fri", "07:25 daily"]   # the evening run checks today so far, the morning run all of yesterday
+    summary: The day's dials and texts checked against the outreach limits; every one broken is named by caller and by a number's last four digits.
+    # Plan 4.6. These numbers are also what every text stage asks before it stages anything
+    # (limits.room), whatever this stage's mode.
+    call_hours: "09:00-19:00"   # people call 9am to 7pm, on the business clock and on the owner's own
+    text_hours: "09:00-18:00"   # what the machine sends goes out 9am to 6pm, on both clocks
+    calls_per_line_day: 25
+    texts_per_line_day: 25
+    text_lines: 10              # how many sending numbers carry the day's texts: 25 x 10 = 250 a day
+    lines_per_caller: 10
+    monthly_texts: 20000
+    owner_texts_day: 1
+    owner_texts_week: 5
+    owner_dials_number_day: 1   # one call per owner a day: a number is not dialed twice
+    platform_cap: 3             # Smarter Contact: three campaign texts in seven days, then fourteen days of rest
+    platform_window_days: 7
+    platform_rest_days: 14
+    count_record_counter: true  # the record's own text counter counts the other texting system's texts
+
+  # ------------------------------------------------------------------ Trace, auction, second chances and the other lanes (plan 1.8, 1.13, 4.1 to 4.4)
+  ftm_refresh:
+    kind: native_trace
+    owner: research
+    lane: ftm
+    mode: "plan"
+    schedule: "Sun 05:00"
+    summary: Active first-to-market records last traced 180 or more days ago traced again by DataSift, free and outside the per-record cap.
+    presets: [FTM - 01 Skipped No Numbers, FTM - 02 Ready to Call, FTM - 03 Call Attempt 1, FTM - 04 Call Attempt 2, FTM - 05 Call Attempt 3, FTM - 06 Call Attempt 4]
+    retrace_after_days: 180
+    min_batch: 20
+    max_records: 1000
+
+  hot_auction_tasks:
+    kind: auctiontasks
+    owner: analysis
+    lane: hot_auction
+    mode: "plan"
+    schedule: "08:05 Mon-Fri"     # after ftm_auction (07:45) has set the tags
+    summary: Hot auctions worked past the call round, closed the day after the sale, and checked once 45 days later.
+    scope_tags: [FTM, Courthouse Data]
+    tag: Auction Soon
+    critical_days: 14
+    custom_date_fields: [Foreclosure Date]
+    date_fields: [auction_date, tax_auction_date]
+    trust_builtin_foreclosure_date: false
+    priority_package: true        # D34 (yours)
+    package_value: [1, 700000]
+    package_min_equity_pct: 20
+    door_knock: true
+    close_out: true               # D39 (yours)
+    after_sale_status: Auction Date Passed
+    deed_check_days: 45
+    deed_check_per_run: 10
+    still_owned_tag: Still Owned After Sale
+    max_reads: 150
+
+  second_chances:
+    kind: secondchance
+    owner: analysis
+    mode: "plan"
+    schedule: "08:40 Mon-Fri"
+    summary: Every Not Interested record gets a task to call its Correct number again, on the clock its list sets.
+    statuses: [not_interested]
+    intervals: {auction: 30, probate: 45, "priority 1": 45, "priority 2": 45, code: 90, tax: 90, "priority 3": 90, other: 90}   # D23
+    max_per_run: 50
+    max_reads: 150
+
+  caller_book:
+    kind: callerbook
+    owner: analysis
+    lane: priority1
+    mode: "plan"
+    schedule: "Mon 07:30"
+    summary: Each caller gets a book of new Priority 1 records on Monday morning, and nothing more until the next Monday.
+    presets: [Hottest - 02 Ready to Call]
+    book_size: 75                 # D5
+    caller_cap: 2000              # D2 (yours)
+    best_rungs: 6
+    top_up: false
+    dream100_list: Dream 100
+    dream100_per_day: 20
+
+  strong_native_trace:
+    kind: native_trace
+    owner: research
+    lane: strong
+    mode: "plan"
+    schedule: "every 60 min 08:00-18:00 Mon-Fri"
+    presets: [Strong - 00 Needs Skipped]
+    tranche: true
+    scoped: true
+    min_age_hours: 1
+
+  strong_score:
+    kind: score
+    owner: research
+    lane: strong
+    mode: "plan"
+    schedule: "09:00 Mon-Fri"
+    presets: [Strong - 02 Ready to Call, Strong - 03 Call Attempt 1, Strong - 04 Call Attempt 2, Strong - 05 Call Attempt 3, Strong - 06 Call Attempt 4]
+    tranche: true
+    drop_status: DEAD
+    write_line_type: true
+    max_records: 250
+    recheck_days: 7
+
+  strong_dial_file:
+    kind: dialexport
+    owner: ops
+    lane: strong
+    mode: "plan"
+    schedule: "07:40 Mon-Fri"
+    summary: The current Strong tranche as a daily power-dialer file of Dial First and Second numbers nobody has reached, landlines last.
+    presets: [Strong - 02 Ready to Call, Strong - 03 Call Attempt 1, Strong - 04 Call Attempt 2, Strong - 05 Call Attempt 3, Strong - 06 Call Attempt 4]
+    tranche: true
+    every_days: 0.8               # under a day: the Strong round is a call each weekday
+    power_dialer_over: 1000       # D36 (yours): Kixie Power List, one proof call first
+    rest_after_days: 5
+    max_reads: 400
+
+  bulk_native_trace:
+    kind: native_trace
+    owner: research
+    lane: bulk
+    mode: "plan"
+    schedule: "every 60 min 08:00-18:00 Mon-Fri"
+    presets: [Bulk - 00 Needs Skipped]
+    tranche: true
+    scoped: true
+    min_age_hours: 1
+
+  bulk_score:
+    kind: score
+    owner: research
+    lane: bulk
+    mode: "plan"
+    schedule: "09:15 Mon-Fri"
+    presets: [Bulk - 02 Ready to Call, Bulk - 03 Call Attempt 1, Bulk - 04 Call Attempt 2, Bulk - 05 Call Attempt 3, Bulk - 06 Call Attempt 4, Bulk - 07 Call Attempt 5]
+    tranche: true
+    drop_status: DEAD
+    write_line_type: true
+    max_records: 250
+    recheck_days: 7
+
+  bulk_dial_file:
+    kind: dialexport
+    owner: ops
+    lane: bulk
+    mode: "plan"
+    schedule: "Mon 07:50"
+    summary: The current Bulk tranche as a weekly power-dialer file; each record is dialed about once a month to attempt 6.
+    presets: [Bulk - 02 Ready to Call, Bulk - 03 Call Attempt 1, Bulk - 04 Call Attempt 2, Bulk - 05 Call Attempt 3, Bulk - 06 Call Attempt 4, Bulk - 07 Call Attempt 5]
+    tranche: true
+    every_days: 30
+    power_dialer_over: 1000
+    rest_after_days: 5
+    max_reads: 400
+
+  rehash_dial_file:
+    kind: dialexport
+    owner: ops
+    mode: "plan"
+    schedule: "1st 07:30"
+    summary: Records that never answered, back in the power dialer every 90 days.
+    presets: ["Rehash - Ready (never answered)"]
+    gate_allow: [exhausted]       # a finished round is the point of a rehash; nothing else is lifted
+    every_days: 90
+    rest_after_days: 5
+    max_reads: 400
+
+
+  # ------------------------------------------------------------------ Phase 6: KPIs, alarms and measurement
+  # Every number these stages judge against is in team/kpi.yaml (the KPI catalog); none is set here.
+  # None of them contacts a homeowner. The only change to the account is deal_sources' closing fields.
+  kpi_alarms:
+    kind: alarms
+    owner: ops
+    mode: "plan"
+    schedule: "19:25 Mon-Fri"      # ten minutes after the daily capture writes the day
+    summary: The day's numbers checked against the catalog's alarms; each one is said once, with what to check first and the list to move to.
+    covers: [kpi]
+    # Plan 6.3. Five rules: 500 dials with no lead, talk time low for the dials, dials up 20%, an
+    # answer rate under 50%, a first trace under 90%. The thresholds are figures in team/kpi.yaml.
+    ready_lists:                   # the ladder, first to market first: the list an alarm suggests moving to
+      - {lane: ftm, preset: FTM - 02 Ready to Call}
+      - {lane: priority1, preset: Hottest - 02 Ready to Call}
+    trace_check:                   # where the first-trace rate is read from: these presets, no record opened
+      label: first-to-market records
+      scope_tags: [FTM]
+      waiting_preset: FTM - 00 Needs Skipped
+      no_number_preset: FTM - 01 Skipped No Numbers
+    stale_days: 4                  # a capture older than this is not judged, and the stage says so
+
+  goal_sheet:
+    kind: goals
+    owner: ops
+    mode: "plan"
+    schedule: "Mon 07:40"
+    summary: The revenue goal worked back to deals, leads, conversations and dials, each marked behind, at risk or on track, with a quarterly owner review on top.
+    covers: [kpi]
+    # Plan 6.4. Dials, conversations and leads are judged on 30 days, contracts and deals on 90, each
+    # caller on 90. The revenue goal and the average deal in team/kpi.yaml are placeholders until set.
+    closed_statuses: [closed]
+    contract_statuses: [under_contract]
+    owner_review: quarterly        # quarterly | always | off
+    max_record_reads: 40           # records opened a run to credit a new lead to its caller
+
+  deal_sources:
+    kind: dealsource
+    owner: ops
+    mode: "plan"
+    schedule: "03:10 daily"        # the night list
+    summary: Each closed deal recorded with its lane, list, channel, days from first touch and three names; each month, deals by source and cost per deal.
+    # Plan 6.5. The deal rows are the autopilot's own record. Live, it also fills seven custom fields
+    # on the record, each only when empty: create them first (text fields), the stage names any missing.
+    closed_statuses: [closed]
+    contract_statuses: [under_contract]
+    researched_tags: [Deep Prospected]
+    list_order: [Foreclosure, Probate, Tax Sale, Tax Delinquent, Liens, Condemned, Code Violation, Eviction, Divorce, Obituary]
+    write_fields: true
+    fields:
+      lane: Deal Lane
+      list: Deal List
+      channel: Deal Channel
+      days: Days From First Touch
+      generated_by: Lead Generated By
+      carried_by: Lead Carried By
+      closed_by: Deal Closed By
+    fee_field: ""                  # the custom field holding what a deal paid, for the margin in the owner review
+    mail_tracking_lines: {}        # "8655550140": handwritten_letter, or "" for a line every piece shares
+    max_records: 25                # closings read a run
+    max_lead_reads: 60             # records opened for the monthly table, to place a lead's channel
+
+  cadence_tuner:
+    kind: cadence
+    owner: ops
+    mode: "plan"
+    schedule: "1st 03:40"          # monthly, on the night list
+    summary: Every sold record's last conversation set against its sale date; proposes follow-up intervals 15 days shorter where leads are being lost. It never edits anything.
+    # Plan 6.6. A proposal only: the intervals in team/kpi.yaml and in DataSift are yours to change.
+    sold_statuses: [sold]
+    days: 120                      # sale dates this far back (the sale date lags a closing by weeks)
+    auction_marks: [Foreclosure, Auction Soon]
+    priority_marks: [Probate]
+    max_records: 150               # sold records opened a run; one already studied is not opened again
+
+  coaching_picks:
+    kind: coachpick
+    owner: ops
+    mode: "plan"
+    schedule: "19:30 Mon-Fri"      # after the capture; weekly picks on weekly_on, a new hire's every day
+    summary: The two best and two worst calls of each caller picked from the call log and queued for call coaching, daily in a new hire's first week.
+    covers: [callpull]
+    # Plan 6.7. It picks, it does not grade. Notes go to the owner first.
+    weekly_on: Fri
+    new_hires: {}                  # Name: "YYYY-MM-DD", the caller's first day
+    workflow: call_coaching
+    agent: ops
+    outcome_hours: 24
+
+  research_results:
+    kind: researchstats
+    owner: ops
+    mode: "plan"
+    schedule: "1st 03:50"          # monthly, on the night list
+    summary: Each researched record read 30 days on, was a decision maker reached, by which number, did it become a lead, against the teaching's 50 to 70 percent.
+    # Plan 3.11.
+    researched_tags: [Deep Prospected]
+    closed_statuses: [closed]
+    max_records: 60                # researched records opened a run; each is read once
+
+  # ------------------------------------------------------------------ The research lane (plan 3.1, 3.2, 3.5 to 3.8, 3.10)
+  research_queue:
+    kind: researchqueue
+    owner: research
+    mode: "plan"
+    schedule: "every 30 min 08:00-17:00 Mon-Fri"
+    summary: Research works one ranked queue inside its daily budget; each record gets the tag Research Queued and one card.
+    # When this goes live, switch ftm_deep_prospect, ftm_return_mail and ftm_no_numbers off, so the
+    # queue is the one door into research.
+    presets: ["02 Obituary / Deceased", "03 Exhausted Call -> DP", "03b No Live Number -> DP", "04 Return Mail -> DP", "05 Vacant -> DP", "01 No / Bad Phone"]
+    hints: {"03 Exhausted Call -> DP": exhausted, "03b No Live Number -> DP": no_number, "04 Return Mail -> DP": returned_mail, "05 Vacant -> DP": vacant_mailing, "01 No / Bad Phone": no_number}
+    scope_tags: [Auction Soon]
+    scope_lists: [Probate, Condemned]
+    statuses: [Deep Prospecting]
+    return_signals: true
+    research_by_list: {Condemned: arrival, Foreclosure: arrival, Probate: arrival, Liens: exhausted}   # plan 1.17
+    workflow: deep_prospect
+    agent: research
+    rate_usd: 1.21
+    daily_usd: 25
+    max_open: 2                   # one worker runs every task: five 8-minute research runs would hold the clock 40 minutes
+    card_column: {title: Check Relatives, uuid: ""}    # the column uuid; no published route lists columns
+    card_done_column: ""                                # uuid of the done column; empty leaves the card
+
+  heir_lane:
+    kind: heirlane
+    owner: ops
+    mode: "plan"
+    schedule: "09:15 Mon-Fri"
+    summary: Researched records worked one verified heir at a time by one caller, texted by name about the property, written to at the heir's own address.
+    gate_allow: [heir, in_research]
+    heir_caller: null        # D19
+    attempts_per_heir: 5
+    letters_per_heir: 4
+    text_system: smarter_contact
+    daily_pieces: 30
+    daily_texts: 30
+
+  obituary_lane:
+    kind: obituary
+    owner: research
+    mode: "plan"
+    schedule: "09:40 Mon-Fri"
+    summary: Obituary records held a month, one soft letter before month three, researched at three months, mailed monthly until then, matched against probate filings.
+    presets: ["Obituary - All"]
+    gate_allow: [deceased]
+    call_presets: ["06 Obituary - Ready to Call", "07 Obituary - Call Attempt 1", "08 Obituary - Call Attempt 2", "09 Obituary - Call Attempt 3"]
+    calls: after_research
+
+  probate_honest:
+    kind: probate
+    owner: analysis
+    mode: "plan"
+    schedule: "Mon 07:40"
+    summary: Probate kept honest as a list a person approves, flagged addresses by the measured split, old probates to mail only, a no called again at 45 days.
+    recall: auto
+
+  paid_lookups:
+    kind: paidlookup
+    owner: ops
+    mode: "plan"
+    schedule: "09:05 Mon-Fri"
+    summary: Records every source missed and worth the money queued for the assistant's paid people search, with a weekly task.
+    presets: ["01 No / Bad Phone", "03b No Live Number -> DP"]
+    assistant: null          # D37

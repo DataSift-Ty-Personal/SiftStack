@@ -236,6 +236,15 @@ workflows:
     covers: [vendordir, callsheet]
 
   # ---------------------------------------------------------------- Roma, Sales Assistant
+  book_appointment:
+    owner: sales
+    summary: A walkthrough booked on a lead's record as an appointment task, with its day and time and who takes it.
+    status: live
+    spend: free
+    triggers: [slack]
+    inputs: {record: "Record uuid or full street line", when: "Day and time of the walkthrough, business-local"}
+    manual: In DataSift, an appointment task on the record (start, end and outcome).
+    sources: [agents.autopilot.appointments]
   quick_screen:
     owner: sales
     summary: New lead screened (record, Tier 1 comps, rough ARV, go or no-go) and posted to the record.

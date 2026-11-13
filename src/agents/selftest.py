@@ -90,6 +90,12 @@ def _webhook_signer(check):
 EXTRA_SECTIONS: list[tuple[str, str]] = [
     ("data, lists and hygiene", "selftest_data"),
     ("releasing a batch from slack", "selftest_release"),
+    ("text lane", "selftest_textlane"),
+    ("lead management", "selftest_leads"),
+    ("lanes", "selftest_lanes"),
+    ("kpi, alarms and measurement", "selftest_kpi"),
+    ("research lane", "selftest_research"),
+    ("research write-back", "selftest_writeback"),
 ]
 
 

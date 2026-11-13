@@ -28,6 +28,7 @@ from __future__ import annotations
 import importlib
 
 REGISTRY: dict[str, str] = {
+    "book_appointment": "book_appointment",
     "release_batch": "release_batch",    # queued only by a named person's confirm in Slack (agents/release.py)
 }
 

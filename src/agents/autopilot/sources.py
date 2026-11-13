@@ -10,6 +10,16 @@ Two hard lessons are built in:
     full street line and keeps the match only when that street is in the person's address history.
   * A number is bought once. Every score is cached by number in the ledger, so the same phone on a
     second record (a spouse, a portfolio owner) costs nothing.
+
+The order the sources run in is the playbook's (`sources:` on a retrace stage), so swapping the
+third pass (decision D10: DirectSkip in place of Tracerfy, once an account and a key exist) is a
+playbook edit plus one new Source class here, registered in default_sources() and in
+policy.SOURCES. No DirectSkip client is written yet: its API contract has not been read, and a
+client written from a guess is how a batch gets billed and its results lost.
+
+A source is only ever handed a COMPLETE subject (missing_for_trace): a person with a first and a
+last name and a mailing address. A record without those is fixed up by a person first, because a
+trace on half a name bills for a stranger's numbers.
 """
 from __future__ import annotations
 
@@ -86,6 +96,33 @@ class Subject:
     attempts: int = 0
     existing: set = field(default_factory=set)
     tags: list = field(default_factory=list)
+    org: bool = False             # a company, trust or agency owns it (a blank name alone is not that)
+
+
+def missing_for_trace(s: Subject) -> list[str]:
+    """What a record lacks before a paid trace is worth buying, in plain words; [] when it is
+    complete. A source matches on first name, last name and mailing address: without all three it
+    either bills for a miss or returns a stranger who shares half the name."""
+    out = []
+    if not (s.first and s.last):
+        out.append("no full name")
+    if not (s.mail_street and (s.mail_zip or (s.mail_city and s.mail_state))):
+        out.append("no mailing address")
+    return out
+
+
+def line_kind(text) -> str:
+    """The scorer's line type in DataSift's phone-type words (MOBILE, LANDLINE, VOIP), or '' when
+    the scorer could not say. A text may only use a mobile and landlines are dialed last, so a
+    number left at UNKNOWN is a number neither rule can see."""
+    t = str(text or "").lower()
+    if "voip" in t:
+        return "VOIP"
+    if "mobile" in t or "wireless" in t or "cell" in t:
+        return "MOBILE"
+    if "land" in t:
+        return "LANDLINE"
+    return ""
 
 
 def _tag_titles(rec: dict) -> list[str]:
@@ -122,7 +159,8 @@ def subject_of(rec: dict, probate_tags=("Probate",), deceased_tags=("deceased", 
                    zip=str(pa.get("postal_code") or pa.get("zip5") or "")[:5],
                    mail_street=ma.get("street") or "", mail_city=ma.get("city") or "",
                    mail_state=ma.get("state") or "", mail_zip=str(ma.get("postal_code") or "")[:5],
-                   attempts=int(rec.get("predictivecall_attempts") or 0), existing=existing, tags=tags)
+                   attempts=int(rec.get("predictivecall_attempts") or 0), existing=existing, tags=tags,
+                   org=bool(company or ORG.search(name)))
 
 
 class Source:

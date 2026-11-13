@@ -226,6 +226,12 @@ def cmd_autopilot(a) -> int:
         for st in pol.stages.values():
             print("%-18s %-12s %-9s %-5s %s" % (st.id, st.kind, roster.employees[st.owner].display_name, st.mode,
                                                 "; ".join(st.schedule)))
+        from agents.autopilot import kpi
+        cat_problems = list(getattr(kpi.load(), "problems", []) or [])
+        for ln in cat_problems:
+            print("KPI catalog: %s" % ln)
+        if cat_problems:
+            return 1
         if a.live:
             from agents.autopilot.crm import CRM
             have = CRM().presets()
@@ -235,6 +241,13 @@ def cmd_autopilot(a) -> int:
                 print("missing preset in the account: %r" % t)
             print("%d presets in the account, %d named by the playbook are missing" % (len(have), len(missing)))
             return 1 if missing else 0
+        return 0
+    if a.action == "dial-check":
+        if len(a.stages) != 2:
+            print("name the dial file and the stage: autopilot dial-check <file.csv> <stage_id>")
+            return 2
+        from agents.autopilot import dialexport
+        print(json.dumps(dialexport.recheck(a.stages[0], a.stages[1]), indent=1, default=str))
         return 0
     if a.action == "plan":
         pol = policy.load()
@@ -389,7 +402,7 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="SiftStack agents")
     sub = ap.add_subparsers(dest="cmd", required=True)
     au = sub.add_parser("autopilot")
-    au.add_argument("action", choices=["check", "plan", "run", "batches", "release", "mail-designs",
+    au.add_argument("action", choices=["check", "plan", "run", "batches", "release", "mail-designs", "dial-check",
                                        "backfill-sale-dates", "runs", "undo", "budget", "lanes", "log", "calibrate",
                                        "last"])
     au.add_argument("--csv", action="append", default=[], help="backfill-sale-dates: run CSV glob (repeatable)")

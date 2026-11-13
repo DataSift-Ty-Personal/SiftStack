@@ -22,9 +22,16 @@ Two more things ride on the same reads:
     a notice, an obituary) is named, because that is the day to call. A new Obituary list on a lead
     also means the confirmed number may now reach someone else.
 
-It reads only. Creating the missing task from the status's preset is the live half, and it waits
-on one proof of the task route on staging (proofs.py). Until then the stage hands the lead manager
-the list, grouped by what is missing, and stays silent when nothing is.
+The check itself reads only: it hands the lead manager the list, grouped by what is missing, and
+stays silent when nothing is. Two things act, and both live in leadtasks.py and go through
+Ctx.write, so in plan mode they are only described:
+
+  * the missing task is created by the lead-tasks stage that runs just before this one, so what is
+    still listed here is what could not be fixed by a machine;
+  * a lead whose record GAINED A LIST is handed to leadtasks.new_distress on the spot: a task for
+    the lead manager that day and, for a new obituary, a mark on the confirmed number and a place
+    in the research queue. The lead's status is never changed. What the lead looked like is
+    remembered only once that was done, so a failed write is looked at again the next morning.
 """
 from __future__ import annotations
 
@@ -32,10 +39,21 @@ import logging
 from collections import defaultdict
 from datetime import timedelta
 
-from . import activity, gate, lanes, ledger
+from . import activity, budget, gate, lanes, leadtasks, ledger
+from . import leadroutes as routes
 from .stages import Ctx, addr, assignee_of
 
 log = logging.getLogger(__name__)
+
+
+def _list_titles(rec: dict) -> list[str]:
+    """The record's lists by title. The detail route has returned both plain titles and objects."""
+    out = set()
+    for x in rec.get("lists") or []:
+        t = (x.get("title") or x.get("name")) if isinstance(x, dict) else x
+        if t:
+            out.add(str(t))
+    return sorted(out)
 
 
 def _speed_to_lead(ctx: Ctx, owners: dict, window: timedelta) -> None:
@@ -91,7 +109,9 @@ def run_leadcheck(ctx: Ctx) -> None:
     cfg = getattr(ctx.policy, "lanes", None) or lanes.Lanes()
     statuses = [str(s) for s in (st.get("statuses") or lanes.LEAD_STATUS_VALUES)]
     skip_task = {str(s).lower() for s in (st.get("no_task_needed") or ["under_contract", "transactions"])}
-    rows = ctx.crm.rows({"any_property_status": statuses}, cap=int(st.get("max_scan", 2000)))
+    # Checked row by row as well: a search that stopped filtering would hand every record in the
+    # account to the list-gained step below.
+    rows = routes.status_rows(ctx, statuses, cap=int(st.get("max_scan", 2000)))
     ctx.out.found = len(rows)
     if not rows:
         ctx.out.head = "No record is in a lead status."
@@ -123,13 +143,23 @@ def run_leadcheck(ctx: Ctx) -> None:
             continue
         rec = ctx.crm.record(row["uuid"])
         owners[row["uuid"]] = (rec.get("owner") or {}).get("uuid") or ""
-        now_lists = sorted(str(x) for x in rec.get("lists") or [] if isinstance(x, str))
+        now_lists = _list_titles(rec)
         before = ledger.fact(row["uuid"], "lead_lists")
+        handled = True
         if before is not None:
             new_lists = [x for x in now_lists if x not in before]
             if new_lists:
                 gained.append("%s gained %s" % (street, ", ".join(new_lists)))
-        ledger.set_fact(row["uuid"], "lead_lists", now_lists)      # what the lead looked like today: knowledge, kept in plan mode too
+                try:
+                    handled = leadtasks.new_distress(ctx, rec, row, new_lists)
+                except budget.BudgetExhausted:
+                    raise
+                except Exception as exc:  # noqa: BLE001  (one lead failing must not stop the morning check)
+                    handled = False
+                    ctx.out.problem("could not act on %s gaining a list (%s); it is looked at again tomorrow" % (
+                        street, str(exc)[:100]))
+        if handled:
+            ledger.set_fact(row["uuid"], "lead_lists", now_lists)      # what the lead looked like today: knowledge, kept in plan mode too
         if not assignee_of(rec):
             missing["no assignee"].append(street)
         phones = (rec.get("owner") or {}).get("phones") or []
@@ -146,6 +176,12 @@ def run_leadcheck(ctx: Ctx) -> None:
     if gained:
         ctx.out.tally["leads whose record gained a list since the last check"] = len(gained)
         ctx.out.problem("%d lead(s) gained a list since the last check: call them today (%s)" % (len(gained), "; ".join(gained[:3])))
+    try:
+        leadtasks.flush_research(ctx)      # a lead an earlier day's research cap left waiting
+    except budget.BudgetExhausted:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        ctx.out.problem("could not queue a waiting lead for research (%s)" % str(exc)[:100])
     if log_ok:
         _speed_to_lead(ctx, owners, timedelta(days=float(st.get("speed_days", 7))))
     total = sum(len(v) for v in missing.values())
