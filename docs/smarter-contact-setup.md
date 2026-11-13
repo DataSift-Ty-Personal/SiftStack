@@ -326,6 +326,96 @@ Apollo validation errors, or from a live read-back.
   timezone or the recipient's. Until known, noon to 6pm Eastern keeps every
   timezone inside 9am to 6pm local.
 
+## Land campaigns (live 2026-11-10: 1,999 touch 1 texts, 0 refunded)
+
+Land texts name the parcel, because 405 of the 1,119 Knox pilot lots have no
+house number ("the lot on Rutledge Pike" is not something an owner recognizes).
+Smarter Contact has land merge tags (`findMergeTags`, read live): `<APN>`,
+`<Parcel acres>`, `<Parcel county>`, `<Parcel state>`. **But the DataSift push
+writes its RECORD UUID into APN and leaves acres and county empty**, so a land
+template would print a uuid until the contacts are patched.
+
+Templates: 94 land variants in `src/smarter_contact_templates.py` (`LAND_LOT`,
+`LAND_TRACT`, `LAND_LATE`), checked on a land profile (same gates as Priority 1,
+except "vacant" is allowed because on a land list it names the asset; tracts
+never say vacant because some carry a farmhouse). Titles `Land Lot T1 Named 01`
+and `Land Tract T1 ...`. Paste-ready: `output/smarter_contact/sc_land_templates.csv`.
+
+What actually ran on 2026-11-10 (first land campaigns, 1,860 contacts):
+
+1. Land records into ty+2 with `src/pull_by_ids.py` (lists `Land - Builder Lots`,
+   `Land - Entitlement Tracts`, tag `Land Pilot 1`; 1,268 new records, 25 existing).
+2. **DataSift's push did not work.** `POST /api/internal/property/smarter_contact/`
+   (what the Send To button calls) answered `{"count": 1}` on a one-record probe
+   list and created the Smarter Contact group at once, but no contact ever arrived
+   (two probes, 30 minutes, none of the probe owner's 9 numbers anywhere in
+   Smarter Contact). Groups `Land SC Probe` / `Land SC Probe 2` are those probes.
+3. So contacts are created directly: `python src/smarter_contact_land.py --phase
+   create` (dry), `--commit`. It reads each record, applies the Priority 1 audit's
+   exclusions BEFORE anyone is texted (Smarter Contact suppressions, any number
+   already a Smarter Contact contact, DNC/wrong/dead phone status, landlines, the
+   registry DNC flag off the search row, the DNC list, Do Not Market, deceased or
+   opted-out owners, a dead status) and writes APN, acres, county, state and Sift
+   Record at creation. Max 3 numbers an owner, best Trestle tier first.
+   **Never wrap it in `timeout`**: a killed run stops before grouping;
+   `--phase group --commit` rebuilds every group from Smarter Contact itself.
+4. Templates: `--phase templates --commit` (HTTP, no browser). Smarter Contact
+   refuses a template too similar to one already in the account
+   (TEMPLATE_DUPLICATE_ERROR at 0.95, accepted at 0.88); the audit's
+   `SC_SIMILAR` guard is 0.90.
+5. Test text first: `--phase test --phone <your number> --commit`, then a
+   one-person campaign on group `Land Test`.
+6. `python src/smarter_contact_launch.py --phase campaign --http --land lot|tract
+   --wave 1 (0 = no-name) --tz east|other --group "<group>" --per-min N
+   --start "YYYY-MM-DD HH:MM" --commit --schedule`. `--http` uses the agent's
+   own login, so the browser session lapsing does not block a launch.
+
+Reply routing: `sc_client.contact_record_uuid` reads `Sift Record` first, then
+APN, so patched land contacts and old Priority 1 contacts both route to the
+right record. `smarter_contact_audit.py` resolves the record the same way (APN
+holds the parcel on a land contact, so an APN-only audit flags every one).
+
+Late contacts (owners added after the groups were already sending) go into their
+own groups via `create --group-suffix "Late 1110"`, so a running campaign never
+picks up a contact mid-send.
+
+### Deal cards: the numbers behind every land reply
+
+`python src/smarter_contact_land.py --phase deals --commit` (`--first <uuid>` to
+probe one, `--refresh` to rewrite fields already written) puts the land model's
+numbers on every land record, for the team and never for the agent:
+
+- A **pinned Sift note** starting `Land deal card`: lane, how we make money on it,
+  offer range, what it could sell for and why, the spread, and the buyers.
+- Smarter Contact fields **Land Offer / Land Value / Land Notes**, so the number
+  is in front of whoever opens the conversation.
+- **Buyers** (`BuyerIndex`, three reads): builders who fit (from builder_land's
+  `analysis.json` matches, top 3 with distance, buys in 12 months, price paid,
+  resale and whether we hold phones), land buyers nearby (scored.jsonl sales in
+  3 years inside the lane's radius, 1 mi lot to 10 mi tract, size 0.4x to 2.5x,
+  houses and BUILT parcels excluded, because they put a $237,000 median on a 0.14
+  acre lot), and new homes built within 2 mi since 2023.
+
+Live 2026-11-10: 1,293 records, 1,984 contacts, read back on the first of each.
+
+**The Slack hot lead carries the card.** `worker.py` calls
+`crm.land_deal_card(record)` for every non-dispo escalation and `escalate.hot_lead`
+adds it as its own block under "internal numbers, never quote them by text".
+A record with no card posts exactly as before. The agent itself never sees it,
+so a price can still never reach a text.
+
+### Touch 2 (day 2, 9am East / noon Other TZ)
+
+Per group, Late 1110 groups included:
+
+1. `python src/smarter_contact_launch.py --phase followup --http --land lot|tract
+   --group "<group>" --source-date 2026-11-10 --commit` (drafts, no `--schedule`).
+2. `python src/smarter_contact_audit.py --drafts ...` on every draft.
+3. `--phase touch ... --commit --schedule`.
+
+`--group` is required for land: followup and touch otherwise build the Priority 1
+group names and find nothing.
+
 ## Sources
 
 - Smarter Contact help center (support.smartercontact.com): message templates,

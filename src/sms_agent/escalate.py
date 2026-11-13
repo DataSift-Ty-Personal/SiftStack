@@ -83,8 +83,13 @@ def hot_lead(
     record_uuid: str = "",
     note: str = "",
     program: str = "",
+    land_card: str = "",
 ) -> bool:
-    """The one that matters: a positive response needs a human on it now."""
+    """The one that matters: a positive response needs a human on it now.
+
+    `land_card` is the record's pinned land deal card (crm.land_deal_card): the lane, how we make money
+    on it, the offer range, what it could sell for, and the builders and land buyers near it. It rides as
+    its own block, because a section holds 3,000 characters and the card alone runs about 1,500."""
     ctx = context or {}
     who = ctx.get("owner_first") or "Unknown owner"
     where = ", ".join(x for x in (ctx.get("street"), ctx.get("city"), ctx.get("state")) if x)
@@ -120,6 +125,8 @@ def hot_lead(
                      "The agent has stopped texting this one.")
     if record_uuid:
         lines.append(RECORD_URL.format(uuid=record_uuid))
+    if land_card:
+        lines.append("Land deal card below: internal numbers, never quote them by text.")
 
     text = "\n".join(lines)
     blocks = [
@@ -133,6 +140,10 @@ def hot_lead(
         blocks.append(
             {"type": "context", "elements": [{"type": "mrkdwn", "text": f"```{convo[:2500]}```"}]}
         )
+    if land_card:
+        body = land_card.split("\n", 1)
+        blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": (
+            f"*{body[0]}*\n" + (body[1] if len(body) > 1 else ""))[:2990]}})
     return _post(text, blocks, program=program)
 
 

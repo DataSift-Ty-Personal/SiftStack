@@ -212,6 +212,9 @@ def flush_escalations() -> int:
         # channel, which is where the handoff quietly dies.
         conv = store.get_conversation(phone) or {}
         program = sender_pool.program_for(conv.get("from_number") or "")
+        # A land record carries a pinned deal card; the handoff shows it to the person calling, never
+        # to the responder.
+        land_card = crm.land_deal_card(record_uuid) if program not in ("buyer", "dispo") else ""
         ok = escalate.hot_lead(
             phone,
             "\n".join(inbound[-4:]) or "(no message body)",
@@ -221,6 +224,7 @@ def flush_escalations() -> int:
             record_uuid,
             note="",
             program=program,
+            land_card=land_card,
         )
         if ok:
             store.mark_escalation_posted(phone)

@@ -981,6 +981,37 @@ def reassert_handoff_assignment(assignee_uuid: str, limit: int = 200) -> dict:
     return {"checked": len(rows), "reassigned": len(moved)}
 
 
+LAND_CARD_MARKER = "Land deal card"
+
+
+def land_deal_card(record_uuid: str) -> str:
+    """The pinned land deal card on a record ('' when it has none or the read fails).
+
+    Written by smarter_contact_land.py --phase deals: the offer range, what the parcel could sell for,
+    the builders and land buyers near it. Read ONLY for the Slack handoff, never for the responder: it
+    carries prices, and the agent's prompt is built from deal_context, which never reads notes.
+    """
+    if not record_uuid:
+        return ""
+    c = client()
+    if c is None:
+        return ""
+    try:
+        if hasattr(c, "get_messages"):
+            msgs = c.get_messages(record_uuid, limit=50)
+        else:
+            resp = c._request(f"/api/internal/property/{record_uuid}/message/", params={"limit": 50})
+            msgs = resp.get("results", []) if isinstance(resp, dict) else resp
+    except Exception as exc:  # noqa: BLE001 - a missing card must never block a handoff
+        log.warning("land deal card read failed on %s: %s", record_uuid[:8], exc)
+        return ""
+    for m in msgs or []:
+        text = str(m.get("message") or "")
+        if text.startswith(LAND_CARD_MARKER):
+            return text
+    return ""
+
+
 def post_note(record_uuid: str, message: str, pinned: bool = False) -> dict:
     c = client()
     if not c:

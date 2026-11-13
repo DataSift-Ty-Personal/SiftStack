@@ -27,6 +27,8 @@ import os
 import re
 import sys
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 from playwright.async_api import async_playwright
@@ -191,6 +193,43 @@ class Session:
             body["operationName"] = name
         resp = await self.ctx.request.post(GQL, headers=self.headers, data=json.dumps(body))
         return await resp.json()
+
+
+class TokenSession:
+    """The agent's own Smarter Contact login, for when the browser profile is signed out.
+
+    The Firebase refresh token in .env that sms_agent.sc_client (and the Fly box)
+    already reply with. Same call() contract as Session: the RAW response, errors
+    included, because the build's validation probe depends on reading a rejection.
+    A GraphQL validation error arrives as HTTP 400 with its JSON body, so a 4xx
+    is returned as data rather than raised.
+    """
+
+    def __init__(self):
+        sys.path.insert(0, str(ROOT / "src"))
+        from sms_agent import sc_client
+        if not sc_client.configured():
+            raise RuntimeError("there is no agent login in .env (SMARTERCONTACT_REFRESH_TOKEN / _FIREBASE_API_KEY)")
+        self.sc, self.headers = sc_client, None
+
+    def _post(self, body: dict) -> dict:
+        req = urllib.request.Request(self.sc.GQL, data=json.dumps(body).encode(), headers={
+            "content-type": "application/json", "authorization": f"Bearer {self.sc._id_token()}"})
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                return json.loads(r.read() or b"{}")
+        except urllib.error.HTTPError as e:
+            raw = e.read()
+            try:
+                return json.loads(raw)
+            except ValueError:
+                return {"errors": [{"message": f"HTTP {e.code}: {raw[:200]!r}"}]}
+
+    async def call(self, query: str, variables: dict | None = None, name: str | None = None) -> dict:
+        body = {"query": query, "variables": variables or {}}
+        if name:
+            body["operationName"] = name
+        return await asyncio.to_thread(self._post, body)
 
 
 async def gql_map() -> int:
@@ -406,7 +445,7 @@ async def _server_validates(s: Session, doc: str, variables: dict) -> list[str]:
     return [e for e in errs if mine not in e]
 
 
-async def build(commit: bool, sender: str) -> int:
+async def build(commit: bool, sender: str, land: bool = False) -> int:
     sys.path.insert(0, str(ROOT / "src"))
     import smarter_contact_templates as T
     ops = json.loads((DISCOVER_DIR / "gql_ops.json").read_text(encoding="utf-8"))
@@ -417,11 +456,21 @@ async def build(commit: bool, sender: str) -> int:
         page = ctx.pages[0] if ctx.pages else await ctx.new_page()
         s = Session(ctx, page)
         await page.goto(APP + "/campaigns/message-template", wait_until="domcontentloaded")
-        await page.wait_for_timeout(4000)
-        if not _signed_in(page.url):
-            print("NOT SIGNED IN: run --phase login first")
+        for _ in range(10):  # a signed-in page fires its first GraphQL call within a few seconds
+            await page.wait_for_timeout(1000)
+            if s.headers:
+                break
+        if not (_signed_in(page.url) and s.headers):
+            # A signed-out profile renders the login form AT the app URL, so the URL alone
+            # read "signed in" and the run died later on a missing header (2026-11-10).
             await ctx.close()
-            return 2
+            ctx = None
+            try:
+                s = TokenSession()
+            except RuntimeError as e:
+                print(f"NOT SIGNED IN: the browser profile is signed out and {e}. Run --phase login first")
+                return 2
+            print("browser profile is signed out; building on the agent's Smarter Contact login instead")
 
         async def write(kind: str, name: str, doc: str, variables: dict, check) -> dict | None:
             bad = await _server_validates(s, doc, variables)
@@ -525,10 +574,17 @@ async def build(commit: bool, sender: str) -> int:
         # A template whose copy changed in the module is updated in place (same
         # name, same id), so a rewrite never leaves a stale variant in rotation.
         names = {t["name"].casefold(): t for t in await _list(s, ops, "FindMessageTemplates")}
-        for n, arm, named, noname in T._arms():
+        def _sets():
+            for n, arm, named, noname in T._arms():
+                yield n, (lambda aud, i, n=n, arm=arm: T.title(n, arm.title(), aud, i)), named, noname
+            if land:  # the land lanes (--land): same create, compare and read-back path
+                for lane, n, named, noname in T.land_arms():
+                    yield n, (lambda aud, i, n=n, lane=lane: T.land_title(lane, n, aud, i)), named, noname
+
+        for n, title_of, named, noname in _sets():
             for aud, pool in (("named", named), ("noname", noname)):
                 for i, body in enumerate(pool, 1):
-                    title = T.title(n, arm.title(), aud, i)
+                    title = title_of(aud, i)
                     content = T.to_sc(body, sender)
                     have = names.get(title.casefold())
                     tpl = (have or {}).get("template") or {}
@@ -581,7 +637,8 @@ async def build(commit: bool, sender: str) -> int:
                              "updateContactWorkflowId": have["id"]}, check)
                 continue
             await write("workflow", name, M_WORKFLOW, {"input": {"name": name, "sequences": seqs}}, check)
-        await ctx.close()
+        if ctx:
+            await ctx.close()
 
     print(f"{'COMMITTED' if commit else 'DRY RUN'}: {len(created)} to create, {len(skipped)} already there")
     for c in created:
@@ -599,6 +656,7 @@ def main() -> int:
                     required=True)
     ap.add_argument("--commit", action="store_true", help="build: write (default is a dry run)")
     ap.add_argument("--sender", default="Adriana", help="build: first name that signs the texts")
+    ap.add_argument("--land", action="store_true", help="build: also create the land lot and tract templates")
     ap.add_argument("--names", default="", help="probe: comma-separated mutation names")
     ap.add_argument("--inputs", default="{}", help="probe: '|'-separated JSON inputs")
     ap.add_argument("--timeout", type=int, default=20, help="minutes to wait for sign-in")
@@ -612,7 +670,7 @@ def main() -> int:
     if a.phase == "probe":
         return asyncio.run(probe(a.names.split(","), a.inputs.split("|")))
     if a.phase == "build":
-        return asyncio.run(build(a.commit, a.sender))
+        return asyncio.run(build(a.commit, a.sender, a.land))
     return asyncio.run(discover())
 
 

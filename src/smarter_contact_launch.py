@@ -68,6 +68,20 @@ M_CAMPAIGN = "mutation CreateCampaign($input: CreateCampaignInput!) { createCamp
 M_START = "mutation StartCampaign($id: String!) { startCampaign(id: $id) { success } }"
 
 
+LAND = {"lane": ""}   # set by --land: campaigns use a land lane's templates instead of Priority 1's
+
+
+def _titles(touch: int, aud: str) -> list[str]:
+    """Template titles for a touch and audience: Priority 1's, or a land lane's (lot or tract) under --land."""
+    if LAND["lane"]:
+        named, noname = next((nm, nn) for lane, n, nm, nn in T.land_arms()
+                             if lane == LAND["lane"] and n == touch)
+        pool = noname if aud == "noname" else named
+        return [T.land_title(LAND["lane"], touch, aud, i) for i in range(1, len(pool) + 1)]
+    pool = _touch_pool(touch, 0 if aud == "noname" else 1)
+    return [T.title(touch, "", aud, i) for i in range(1, len(pool) + 1)]
+
+
 def _group_name(wave: int, tz: str = "") -> str:
     base = "P1 No Name" if wave == 0 else f"P1 Wave {wave}"
     return f"{base} {TZ_SPLITS[tz][0]}" if tz else base
@@ -96,7 +110,50 @@ def _address_key(row: dict, field_ids: dict[str, str]) -> str:
     return f"addr:{key}" if key else f"phone:{row.get('phone')}"  # nothing: the phone stands alone
 
 
+HTTP = {"on": False}   # --http: the SMS agent's own login over plain HTTP, no browser session needed
+
+
+class _HttpCtx:
+    async def close(self):
+        return None
+
+
+class _HttpSession:
+    """smarter_contact_setup.Session's call() contract over HTTP with the agent's Firebase login (the route
+    the Fly box uses). Returns the server's JSON body whatever the status, because the validation probe
+    reads Apollo's 400 errors."""
+
+    async def call(self, query: str, variables: dict | None = None, name: str | None = None) -> dict:
+        import urllib.error
+        import urllib.request
+        from sms_agent import sc_client
+        req = urllib.request.Request(
+            sc_client.GQL, data=json.dumps({"query": query, "variables": variables or {}}).encode(),
+            headers={"content-type": "application/json", "authorization": f"Bearer {sc_client._id_token()}"})
+        try:
+            with urllib.request.urlopen(req, timeout=60) as r:
+                return json.loads(r.read() or b"{}")
+        except urllib.error.HTTPError as e:
+            try:
+                return json.loads(e.read() or b"{}")
+            except ValueError:
+                return {"errors": [{"message": f"HTTP {e.code}"}]}
+
+
+def _load_env() -> None:
+    import os
+    env = ROOT / ".env"
+    if env.exists():
+        for line in env.read_text(encoding="utf-8").splitlines():
+            if "=" in line and not line.lstrip().startswith("#"):
+                k, v = line.split("=", 1)
+                os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+
+
 async def _session(pw, route: str = "/contacts/all-contacts"):
+    if HTTP["on"]:
+        _load_env()
+        return _HttpCtx(), _HttpSession()
     ctx = await scs._context(pw, headless=True)
     page = ctx.pages[0] if ctx.pages else await ctx.new_page()
     s = scs.Session(ctx, page)
@@ -220,8 +277,7 @@ async def campaign(wave: int, start: str, commit: bool, schedule: bool, tz: str 
     if start_local <= datetime.now(TZ):
         raise SystemExit(f"start {start_local:%Y-%m-%d %H:%M %Z} is not in the future")
     aud = "noname" if wave == 0 else "named"
-    pool = T.TOUCH1_NONAME if wave == 0 else T.TOUCH1
-    titles = [T.title(1, "", aud, i) for i in range(1, len(pool) + 1)]
+    titles = _titles(1, aud)
     from_hour = TZ_SPLITS[tz][1] if tz else 12
     if start_local.hour < from_hour:
         raise SystemExit(f"{tz or 'this'} campaign cannot start before {from_hour}:00 Eastern")
@@ -294,7 +350,7 @@ def _touch_pool(touch: int, wave: int) -> list:
 
 
 async def followup(wave: int, touch: int, source_date: str, start: str, commit: bool, schedule: bool,
-                   tz: str = "") -> int:
+                   tz: str = "", group_name: str = "") -> int:
     """Touch N to everyone in touch N-1 who never replied.
 
     Built off the finished source campaign with Smarter Contact's own
@@ -309,9 +365,10 @@ async def followup(wave: int, touch: int, source_date: str, start: str, commit: 
     if start_local.hour < from_hour:
         raise SystemExit(f"{tz or 'this'} campaign cannot start before {from_hour}:00 Eastern")
     aud = "noname" if wave == 0 else "named"
-    titles = [T.title(touch, "", aud, i) for i in range(1, len(_touch_pool(touch, wave)) + 1)]
-    source_name = f"{_group_name(wave, tz)} T{touch - 1} {source_date}"
-    name = f"{_group_name(wave, tz)} T{touch} {start_local:%Y-%m-%d}"
+    titles = _titles(touch, aud)
+    base = group_name or _group_name(wave, tz)   # land groups are named, not numbered waves
+    source_name = f"{base} T{touch - 1} {source_date}"
+    name = f"{base} T{touch} {start_local:%Y-%m-%d}"
     window = {"from": {"hour": from_hour, "minute": 0}, "to": {"hour": WINDOW_END, "minute": 0}}
     ops = json.loads((scs.DISCOVER_DIR / "gql_ops.json").read_text(encoding="utf-8"))
     async with async_playwright() as pw:
@@ -387,7 +444,7 @@ Q_MSGS = ("query M($c: String!, $p: Pagination) { findConversationMessages(conta
 
 
 async def touch(wave: int, touch_n: int, source_date: str, start: str, commit: bool, schedule: bool,
-                tz: str = "") -> int:
+                tz: str = "", group: str = "") -> int:
     """Touch N as a STANDARD campaign to an audited group, not a follow-up.
 
     Smarter Contact's follow-up snapshots its recipients into a hidden group
@@ -406,10 +463,11 @@ async def touch(wave: int, touch_n: int, source_date: str, start: str, commit: b
     if start_local.hour < from_hour:
         raise SystemExit(f"{tz or 'this'} campaign cannot start before {from_hour}:00 Eastern")
     aud = "noname" if wave == 0 else "named"
-    titles = [T.title(touch_n, "", aud, i) for i in range(1, len(_touch_pool(touch_n, wave)) + 1)]
-    source_name = f"{_group_name(wave, tz)} T{touch_n - 1} {source_date}"
-    name = f"{_group_name(wave, tz)} T{touch_n} {start_local:%Y-%m-%d}"
-    group_name = f"{_group_name(wave, tz)} T{touch_n}"
+    titles = _titles(touch_n, aud)
+    base = group or _group_name(wave, tz)   # land groups are named, not numbered waves
+    source_name = f"{base} T{touch_n - 1} {source_date}"
+    name = f"{base} T{touch_n} {start_local:%Y-%m-%d}"
+    group_name = f"{base} T{touch_n}"
     audits = sorted((ROOT / "output" / "smarter_contact" / "audits").glob("followup_audit_*.json"))
     flagged, audited = {}, False
     for f in audits:   # newest audit per campaign name wins
@@ -521,12 +579,18 @@ def main() -> int:
     ap.add_argument("--tz", choices=["", "east", "other"], default="",
                     help="split by recipient timezone: east starts 9am, other noon")
     ap.add_argument("--commit", action="store_true")
+    ap.add_argument("--http", action="store_true",
+                    help="use the SMS agent's own login over HTTP instead of the saved browser session")
+    ap.add_argument("--land", choices=["", "lot", "tract"], default="",
+                    help="use the land templates for this lane (pair with --group and --wave 0 for no-name groups)")
     ap.add_argument("--schedule", action="store_true", help="campaign: also start it (sends at --start)")
     ap.add_argument("--group", default="", help="campaign: send to this group instead of the wave's own "
                     "(a make-up Touch 1 for contacts pulled out of a campaign already sending)")
     ap.add_argument("--per-min", type=int, default=0,
                     help="texts per minute for this campaign (default %d; the A2P approval shows maxTpm 6)" % PER_BATCH)
     a = ap.parse_args()
+    LAND["lane"] = a.land
+    HTTP["on"] = a.http
     if a.per_min:
         if a.per_min > 6:
             raise SystemExit("--per-min above 6 exceeds the account's approved A2P throughput (maxTpm 6)")
@@ -540,9 +604,9 @@ def main() -> int:
     if a.phase in ("followup", "touch") and not a.source_date:
         raise SystemExit("--source-date is required for --phase followup and touch")
     if a.phase == "touch":
-        return asyncio.run(touch(a.wave, a.touch, a.source_date, a.start, a.commit, a.schedule, a.tz))
+        return asyncio.run(touch(a.wave, a.touch, a.source_date, a.start, a.commit, a.schedule, a.tz, a.group))
     if a.phase == "followup":
-        return asyncio.run(followup(a.wave, a.touch, a.source_date, a.start, a.commit, a.schedule, a.tz))
+        return asyncio.run(followup(a.wave, a.touch, a.source_date, a.start, a.commit, a.schedule, a.tz, a.group))
     return asyncio.run(campaign(a.wave, a.start, a.commit, a.schedule, a.tz, a.group))
 
 

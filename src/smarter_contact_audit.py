@@ -83,7 +83,7 @@ def _names(items) -> list[str]:
 
 
 def audit_draft(draft: dict, sc_supp: dict, agent_supp: dict, apn_field: str,
-                listings: ActiveListings) -> dict:
+                listings: ActiveListings, sift_field: str = "") -> dict:
     camp = C.gql(Q_CAMP, {"id": draft["id"]})["getCampaign"]
     parent_id = (camp.get("parentCampaign") or {}).get("ids", [None])[0]
     parent = C.gql(Q_CAMP, {"id": parent_id})["getCampaign"]
@@ -105,7 +105,11 @@ def audit_draft(draft: dict, sc_supp: dict, agent_supp: dict, apn_field: str,
             why.append(f"sc_suppressed:{sc_supp[phone]}")
         if phone in agent_supp:
             why.append(f"agent_suppressed:{agent_supp[phone].split(':')[0]}")
-        record = next((a["value"] for a in ct.get("attrs") or [] if a["fieldId"] == apn_field), "")
+        # Sift Record first, then a uuid in APN: land contacts carry the PARCEL NUMBER in APN, and
+        # reading it as a record id would flag every land contact "sift_record_missing" (2026-11-10).
+        vals = {a["fieldId"]: (a.get("value") or "").strip() for a in ct.get("attrs") or []}
+        record = next((vals.get(f, "") for f in (sift_field, apn_field)
+                       if f and C._is_uuid(vals.get(f, ""))), "")
         rec = crm.get_record(record, fresh=True) if record else None
         if rec:
             _, obj = crm.find_phone_object(record, phone)
@@ -149,15 +153,17 @@ def main() -> int:
         raise SystemExit(f"drafts not found: {missing}")
     agent_supp = json.loads(Path(a.suppression).read_text(encoding="utf-8")) if a.suppression else {}
     sc_supp = suppressions()
-    fields = C.gql("query { findFields { id key } }")["findFields"]
+    fields = C.gql("query { findFields { id key name } }")["findFields"]
     apn = next(f["id"] for f in fields if f["key"] == "ASSESSOR_PARCEL_NUMBER")
+    sift = next((f["id"] for f in fields
+                 if (f.get("name") or "").strip().casefold() == C.SIFT_RECORD_FIELD.casefold()), "")
     listings = ActiveListings()
     OUT.mkdir(parents=True, exist_ok=True)
     results = []
     for n in names:
         if camps[n]["state"]["status"] != "DRAFT":
             raise SystemExit(f"{n} is {camps[n]['state']['status']}, not a draft; audit before it starts")
-        r = audit_draft(camps[n], sc_supp, agent_supp, apn, listings)
+        r = audit_draft(camps[n], sc_supp, agent_supp, apn, listings, sift)
         results.append(r)
         print(f"{n}: draft {r['draft_contacts']} | group {r['group_contacts']} - replied {r['responders']} = "
               f"{r['rebuilt_recipients']} | keep {r['keep']} | flagged {len(r['flagged'])} {r['reasons']}", flush=True)
