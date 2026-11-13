@@ -573,11 +573,19 @@ def _observations(rows: dict, details: dict) -> list:
                 seller = (last.get("seller") or "").strip()
                 if not seller:
                     continue
+                # What the flipper PAID is the deed before the exit, where they are the buyer.
+                # The exit deed's price is what a homebuyer paid them, and pricing a flipper at it
+                # turned a book of $100K-$200K purchases into a $307,500 "buy box" (found
+                # 2026-10-27 on a real buyer). When the earlier deed is not in the history the
+                # purchase price is unknown, and unknown is what gets recorded.
+                buy = next((s for s in sh[1:] if norm_name(s.get("buyer") or "") == norm_name(seller)), None)
                 obs.append({
                     "name": seller, "mail": "", "county": county, "txn": txn,
                     "role": "exited", "prop": r.get("address"),
-                    "date": last.get("date"), "price": last.get("price"),
-                    "cash": last.get("cash"), "portfolio_n": None,
+                    "date": last.get("date"), "price": buy.get("price") if buy else None,
+                    "buy_date": buy.get("date") if buy else None,
+                    "exit_price": last.get("price"),
+                    "cash": buy.get("cash") if buy else None, "portfolio_n": None,
                     "portfolio_value": None, "saved_uuid": None, "secondary": [],
                     **_phys(r),
                 })
