@@ -1364,7 +1364,7 @@ def apply_plan(crm, plan: dict, *, commit: bool = False, only: list[str] | None 
     the write it is read back and its filter must equal what was sent, exactly. The first
     difference stops the run."""
     allowed = may_write(commit)
-    done = {"allowed": allowed, "created": [], "patched": [], "skipped": [], "would": []}
+    done = {"allowed": allowed, "created": [], "patched": [], "already": [], "skipped": [], "would": []}
     want = {t.strip().lower() for t in only or []}
 
     def chosen(title: str) -> bool:
@@ -1384,10 +1384,25 @@ def apply_plan(crm, plan: dict, *, commit: bool = False, only: list[str] | None 
         if any("already exists" in f for f in c.get("flags") or []):
             done["skipped"].append("%s: a preset with this title already exists" % c["title"])
             continue
+        # A run that stopped part way has already made some of these. A preset of this title that
+        # reads exactly as planned is finished work, not a conflict; one that reads differently is
+        # somebody else's preset and stops the run.
+        there = next((r for r in rows_of(crm.call("/api/internal/filter-preset-folder/%s/filter-preset/?limit=999"
+                                                  % c["folder_uuid"])) if r.get("title") == c["title"]), None)
+        if there is not None:
+            if ((there.get("filters") or {}).get("must") or {}) == c["must_after"]:
+                done["already"].append(c["title"])
+                out("already  %s" % c["title"])
+                continue
+            raise Refused("stopped: a preset named %s already exists with a different filter" % c["title"])
         src = by_title.get(c["clone_of"]) or {}
         live = crm.call("/api/internal/filter-preset/%s/" % src["uuid"]) if src.get("uuid") else {}
         if sha(((live or {}).get("filters") or {}).get("must") or {}) != c["source_sha"]:
-            raise Refused("stopped: %s changed since the plan was written; run plan again" % c["clone_of"])
+            # The source may already have been patched by an earlier, interrupted run of this same
+            # plan. That is fine: the new preset is built from the plan's own filter, not from the
+            # source as it stands. Anything else means the account moved under the plan.
+            if (((live or {}).get("filters") or {}).get("must") or {}) != (src.get("must_after") or object()):
+                raise Refused("stopped: %s changed since the plan was written; run plan again" % c["clone_of"])
         filters = {"must": c["must_after"]}
         if c.get("account"):
             filters["account"] = c["account"]
@@ -1408,6 +1423,10 @@ def apply_plan(crm, plan: dict, *, commit: bool = False, only: list[str] | None 
         path = "/api/internal/filter-preset/%s/" % e["uuid"]
         live = crm.call(path) or {}
         filters = copy.deepcopy(live.get("filters") or {})
+        if (filters.get("must") or {}) == e["must_after"]:
+            done["already"].append(e["title"])          # an earlier run of this plan got this far
+            out("already  %s" % e["title"])
+            continue
         if sha(filters.get("must") or {}) != e["before_sha"]:
             raise Refused("stopped: %s changed since the plan was written; run plan again" % e["title"])
         filters["must"] = e["must_after"]            # the PATCH replaces the whole filters object

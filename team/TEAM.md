@@ -48,7 +48,7 @@ The whole team also listens in #ai-team.
 | ftm_death_screen | New first-to-market records checked for a death before any text or assignment, and held for research when one may have happened. | schedule (every 30 min 07:00-19:00 daily), ask in Slack | free | live |
 | ftm_native_trace | Records that land with no trace get DataSift's own skip trace, scoped to exactly them, estimate first. | schedule (every 30 min 07:00-19:00 daily), ask in Slack | free | live |
 | ftm_retrace | Records DataSift traced with no number found, traced again with the next source nobody has tried. | schedule (11:00 Mon-Fri), ask in Slack | paid, inside the caps | live |
-| ftm_exhausted | Called three times with nothing left to dial, traced with a source not yet tried, then Diggs. | schedule (11:30 Mon-Fri), ask in Slack | paid, inside the caps | live |
+| ftm_exhausted | Called through with nothing left to dial, traced with a source not yet tried, then Diggs. | schedule (11:30 Mon-Fri), ask in Slack | paid, inside the caps | live |
 | ftm_score | Every unscored number in the FTM call lane tiered before the callers start. | schedule (08:30 Mon-Fri), ask in Slack | paid, inside the caps | live |
 | ftm_deep_prospect | First-to-market records whose owner has died go to Diggs for the full heir and signer research, two a day. | schedule (13:00 Mon-Fri), ask in Slack | paid, inside the caps | live |
 | ftm_return_mail | First-to-market records whose mail came back go to Diggs, one a day. | schedule (13:15 Mon-Fri), ask in Slack | paid, inside the caps | live |

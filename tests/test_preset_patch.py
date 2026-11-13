@@ -731,6 +731,34 @@ def test_a_second_plan_over_a_patched_account_proposes_nothing():
     assert build(fake)["summary"]["changed"] == 0
 
 
+def test_a_run_that_stopped_part_way_is_finished_by_running_it_again():
+    fake = FakeCRM()
+    plan = build(fake)
+    first_new = plan["creates"][0]["title"]
+    first_change = next(e["title"] for e in plan["presets"] if e["action"] == "change")
+    with allowed("1"):
+        part = pp.apply_plan(fake, plan, commit=True, only=[first_new.lower(), first_change.lower()], out=lambda *_: None)
+        assert part["created"] == [first_new] and part["patched"] == [first_change]
+        fake.log.clear()
+        rest = pp.apply_plan(fake, plan, commit=True, out=lambda *_: None)
+    assert first_new in rest["already"] and first_change in rest["already"]
+    assert len(rest["created"]) == plan["summary"]["to_create"] - 1 and len(rest["patched"]) == plan["summary"]["changed"] - 1
+    sent_titles = [b.get("title") for m, b in fake.log if m == "POST" and isinstance(b, dict)]
+    assert first_new not in sent_titles, "a preset that already reads as planned was created again"
+    assert build(fake)["summary"]["changed"] == 0
+    # a preset of the same name with a different filter is not ours: the run stops
+    fake2 = FakeCRM()
+    plan2 = build(fake2)
+    with allowed("1"):
+        pp.apply_plan(fake2, plan2, commit=True, only=[plan2["creates"][0]["title"].lower()], out=lambda *_: None)
+        fake2.preset(plan2["creates"][0]["title"])["filters"]["must"]["predictivecall_attempts"] = [9, 9]
+        try:
+            pp.apply_plan(fake2, plan2, commit=True, out=lambda *_: None)
+            raise AssertionError("a same-named preset with another filter was accepted")
+        except pp.Refused as stop:
+            assert "already exists with a different filter" in str(stop)
+
+
 def test_apply_stops_on_the_first_read_back_that_differs():
     fake = FakeCRM()
     plan = build(fake)

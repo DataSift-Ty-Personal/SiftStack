@@ -125,6 +125,17 @@ def test_a_researched_record_keeps_its_owner():
     assert notes and "Morgan Borrower" in notes[0] and "kept" in notes[0], notes
 
 
+def test_the_same_notice_sent_again_does_not_repeat_its_note():
+    # The county stage re-sends the same rows every morning. The note was written the first time.
+    rec = {"tags": ["FTM", "Deep Prospected"], "owner": {"first_name": "Dana", "last_name": "Heir"}}
+    body = {"address": {"street": "1 A St"}, "owner": {"first_name": "Morgan", "last_name": "Borrower"}, "tags": ["FTM"]}
+    _, first = _attach(rec, body)
+    assert len(first) == 1
+    again = dict(rec, notes="Older note.\n" + first[0])
+    patches, notes = _attach(again, body)
+    assert not notes and not any("owner" in p for p in patches), (patches, notes)
+
+
 def test_a_deceased_owner_is_not_replaced_by_a_notice():
     rec = {"tags": [], "owner": {"first_name": "Morgan", "last_name": "Borrower", "deceased": True}}
     body = {"address": {"street": "1 A St"}, "owner": {"first_name": "Riley", "last_name": "Guess"}}

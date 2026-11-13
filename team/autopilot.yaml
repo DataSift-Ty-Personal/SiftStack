@@ -109,6 +109,7 @@ stages:
       - FTM - 03 Call Attempt 1
       - FTM - 04 Call Attempt 2
       - FTM - 05 Call Attempt 3
+      - FTM - 06 Call Attempt 4    # created 2026-11-13 with the preset change list; the round ends at 5
     floor_days: 45
     first_run: staged
 
@@ -221,6 +222,7 @@ stages:
       - FTM - 03 Call Attempt 1
       - FTM - 04 Call Attempt 2
       - FTM - 05 Call Attempt 3
+      - FTM - 06 Call Attempt 4
     strategy: balanced      # fewest records waiting to start; round_robin also works
     caller_cap: 2000        # one caller tops out near 2,000 open records; past it the stage says so every run
     backlog: false          # records already unassigned on the first run stay as they are
@@ -306,9 +308,11 @@ stages:
     covers: [tracerfy]   # the org-chart agent whose job this stage does
     mode: "plan"
     schedule: "11:30 Mon-Fri"
-    summary: Called three times with nothing left to dial, traced with a source not yet tried, then Diggs.
+    summary: Called through with nothing left to dial, traced with a source not yet tried, then Diggs.
     # Challenge C11.2: every number called through with no contact, or the 6-attempt maximum, means exhausted: deep prospect.
-    presets: ["03 Exhausted Call -> DP"]
+    # Since 2026-11-13 the exhausted preset starts at 5 call days, and "03b" holds the records whose
+    # every number is marked wrong or dead before the round is over. Both mean nothing is left to dial.
+    presets: ["03 Exhausted Call -> DP", "03b No Live Number -> DP"]
     require_tags: [FTM]
     sources: [smartskip, tracerfy]   # a source this record has already had is skipped, so the three-pass rule holds
     callable_tiers: [Dial First, Dial Second]
@@ -334,6 +338,7 @@ stages:
       - FTM - 03 Call Attempt 1
       - FTM - 04 Call Attempt 2
       - FTM - 05 Call Attempt 3
+      - FTM - 06 Call Attempt 4
     max_records: 200
     recheck_days: 7
     daily_usd: 5
@@ -442,7 +447,7 @@ stages:
     covers: [phone]   # the org-chart agent whose job this stage does
     mode: "off"
     schedule: "08:45 Mon-Fri"
-    presets: [Hottest - 02 Ready to Call, Hottest - 03 Call Attempt 1, Hottest - 04 Call Attempt 2, Hottest - 05 Call Attempt 3]
+    presets: [Hottest - 02 Ready to Call, Hottest - 03 Call Attempt 1, Hottest - 04 Call Attempt 2, Hottest - 05 Call Attempt 3, Hottest - 06 Call Attempt 4]
     max_records: 200
     daily_usd: 5
 

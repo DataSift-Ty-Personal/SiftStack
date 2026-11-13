@@ -359,7 +359,9 @@ def attach_to_record(api: "Api", uuid: str, body: dict) -> None:
                             % (_owner_label(owner) or "unnamed", before or "none"))
     if patch:
         api.call("/api/internal/property/%s/" % uuid, "PATCH", patch)
-    if note:
+    # The county stage re-sends the same rows every morning, so the same sentence would otherwise be
+    # added to the record's notes every day. Said once is enough.
+    if note and note not in str(rec.get("notes") or ""):
         api.call("/api/internal/property/%s/add-notes/" % uuid, "POST", {"notes": note})
 
 
