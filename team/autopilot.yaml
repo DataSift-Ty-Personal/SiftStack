@@ -757,6 +757,7 @@ stages:
     mode: "plan"
     schedule: "08:45 Mon-Fri"       # after the death screen (07:00 on) and the scrub (08:20), before the window opens at 9
     summary: New first-to-market owners loaded for text 1 the day they land and texts 2 and 3 on the next two days, staged for a person to release.
+    covers: [sccampaign, texttouch]   # the org-chart agents whose job this stage does (sms_campaign retired 2026-11-13)
     # Plan 1.4. The stage never sends: it stages a batch, a person releases it, and the release
     # writes the load file for the Smarter Contact loader. The days come from lanes.ftm.timeline.
     series: opening
@@ -784,6 +785,7 @@ stages:
     mode: "plan"
     schedule: "10:15 Mon-Fri"
     summary: After the call round, the follow-up texts on the lane's timeline, ending with the breakup text, staged for a person to release.
+    covers: [scaudit]   # the pre-send audit of a follow-up: the stage checks each owner when it stages and again at release
     # Plan 4.5 (decision D20). Count, first day and last day come from lanes.ftm.timeline.followup_texts.
     series: followup
     system: smarter_contact
@@ -1113,6 +1115,7 @@ stages:
     mode: "plan"
     schedule: "09:40 Mon-Fri"
     summary: Obituary records held a month, one soft letter before month three, researched at three months, mailed monthly until then, matched against probate filings.
+    covers: [obitcamp, obitmail]   # the org-chart agents whose job this stage does (obituary_mail retired 2026-11-13)
     presets: ["Obituary - All"]
     gate_allow: [deceased]
     call_presets: ["06 Obituary - Ready to Call", "07 Obituary - Call Attempt 1", "08 Obituary - Call Attempt 2", "09 Obituary - Call Attempt 3"]

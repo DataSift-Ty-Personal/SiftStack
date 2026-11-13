@@ -46,16 +46,18 @@ def handoff(task: dict, roster, to: str, need: str, known: str = "") -> int:
     return tid
 
 
-def resume(waiting: dict, answer: str, user: str = "") -> int:
+def resume(waiting: dict, answer: str, user: str = "", not_before: str = "") -> int:
     """The operator answered a waiting employee in its thread: queue the continuation, same thread,
-    same Claude session, and close the waiting task so a second reply cannot resume it twice."""
+    same Claude session, and close the waiting task so a second reply cannot resume it twice.
+    `not_before` holds the continuation back while more files are still arriving on the thread."""
     payload = {"text": (answer or "").strip(), "question": waiting.get("question") or "", "user": user,
                "original": store.payload_of(waiting)}
     tid, _ = store.enqueue(waiting["agent"], "resume", waiting.get("record_uuid") or "",
                            subject=(waiting.get("subject") or "")[:120], payload=payload,
                            thread_id=waiting["thread_id"], parent_id=waiting["id"], hop=int(waiting.get("hop") or 0),
                            source="slack", mode="agent", slack_channel=waiting.get("slack_channel") or "",
-                           slack_thread=waiting.get("slack_thread") or "", session_id=waiting.get("session_id") or "")
+                           slack_thread=waiting.get("slack_thread") or "", session_id=waiting.get("session_id") or "",
+                           not_before=not_before)
     store.mark(waiting["id"], "answered")
     return tid
 

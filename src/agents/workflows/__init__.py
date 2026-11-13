@@ -30,6 +30,23 @@ import importlib
 REGISTRY: dict[str, str] = {
     "book_appointment": "book_appointment",
     "release_batch": "release_batch",    # queued only by a named person's confirm in Slack (agents/release.py)
+    # Atlas, Analysis (wave 4, 2026-11-13)
+    "market_report": "market_report",  # Market Finder over the documented API, scored, the county workbook
+    "idle_records": "idle_records",    # one list's idle records ranked, with the owners who hold several
+    "list_pull": "list_pull",          # ids pulled in by id: quoted first, the first record read back
+    "land_desk": "land_desk",          # the Builder Land Desk rendered from a finished analysis on the box
+    "account_setup": "account_setup",  # the blueprint planned, checked or applied on the install's own key
+    # Diggs, Research (wave 4, 2026-11-13)
+    "skip_trace": "skip_trace",                # the autopilot's own retrace waterfall, scoped to one ask
+    "phone_score": "phone_score",              # the autopilot's own scorer, scoped to one ask
+    "entity_principals": "entity_principals",  # the person behind a company: reverse address, then BusinessV2
+    "probate_property": "probate_property",    # the decedent's house on the county roll, owner-of-record guard
+    "buyer_registry": "buyer_registry",        # deed-verified buyers, one bounded slice per ask
+    # Quinn, Operations (wave 4, 2026-11-13)
+    "call_coaching": "call_coaching",      # graded review packs (plan 6.7): queued by coaching_picks or an ask
+    "kpi_report": "kpi_report",            # the week's KPIs against team/kpi.yaml, with a workbook
+    "qa_batch": "qa_batch",                # a staged batch checked before release; it never releases
+    "outreach_health": "outreach_health",  # limits broken, touch audit, caller ID lines to rest, batches waiting
 }
 
 

@@ -84,11 +84,44 @@ from enterprise_prospects import (  # noqa: E402
     ENTITY_RX, ORG_RX, SearchClient, WORLD, _match_candidate, classify_one,
     county_address, norm_name, strip_unit,
 )
+# The principal rules live beside the BusinessV2 client (both principal finders use them); they
+# are imported back here so every phase and test reads them by the same names as before.
+from enformion_business import (  # noqa: E402,F401
+    AGENT_FRONT_RX, FIRM_RX, OWNER_TITLES, PLACEHOLDER_NAMES, STATUS_TOKENS,
+    _is_human, _officer_in_state, person_first_last, principal_confidence, rank_officers, split_mail,
+)
 
 log = logging.getLogger("dispo_buyers")
 
-OUT = OUTPUT_ROOT / "dispo_buyers"
+# The registry's folder is a setting (DISPO_BUYERS_DIR) with the repo's output/ as the default. The
+# agents brain keeps it on its own volume through use_dir(): output/ inside the image is wiped by
+# every deploy, and losing details.json means reading thousands of deeds again.
+OUT = Path(os.environ.get("DISPO_BUYERS_DIR") or (OUTPUT_ROOT / "dispo_buyers"))
 STATE_PATH = OUT / "state.json"
+
+
+def use_dir(path) -> Path:
+    """Point every phase at another folder. Phases read OUT and STATE_PATH when they run, so
+    rebinding the two is all it takes (the tests have always done the same)."""
+    global OUT, STATE_PATH
+    OUT = Path(path)
+    STATE_PATH = OUT / "state.json"
+    OUT.mkdir(parents=True, exist_ok=True)
+    return OUT
+
+
+class KeyOnlySearch(SearchClient):
+    """The SiftMap search with no password fallback.
+
+    SearchClient answers a refused key by minting a token from DATASIFT_EMAIL and the password.
+    The agents brain carries no password and a user's install never will, so a refused key here is
+    an error that names the key, never a quiet switch to another login."""
+
+    def _bearer(self):
+        raise RuntimeError("SiftMap refused the Open API key (REISIFT_API_KEY); this client does not "
+                           "fall back to a password token")
+
+
 
 K_TXN = "extra_last_sale_investor_transaction_type"
 
@@ -336,7 +369,7 @@ def _year_filter_proven(sc, fips: str, name: str, st: str, txn: str, collapse: b
 
 
 def phase_sweep(args) -> None:
-    sc = SearchClient(min_interval=args.min_interval)
+    sc = getattr(args, "search_client", None) or KeyOnlySearch(min_interval=args.min_interval)
     rows_path = OUT / "rows.json"
     store = _load(rows_path, {})
     counts: dict = {}
@@ -437,7 +470,7 @@ def _since(days: int) -> str:
 
 
 def phase_recent(args) -> None:
-    sc = SearchClient(min_interval=args.min_interval)
+    sc = getattr(args, "search_client", None) or KeyOnlySearch(min_interval=args.min_interval)
     since = _since(args.recent_days)
     details = _load(OUT / "details.json", {})
     rows_path = OUT / "recent_rows.json"
@@ -574,22 +607,38 @@ def _hydrate_one(smc: SiftMapClient, rid: str) -> dict:
     }
 
 
-def phase_hydrate(args) -> None:
-    require("sweep")
-    rows = _load(OUT / "rows.json", {})
-    # The date-bounded qualification sweep finds properties the unbounded one
-    # missed, and they need owners too. Reading only rows.json left 28 of them
-    # permanently unhydrated while the phase reported "nothing to do".
-    recent = _load(OUT / "recent_rows.json", {})
-    det_path = OUT / "details.json"
-    details = _load(det_path, {})
-
+def hydrate_todo(rows: dict | None = None, recent: dict | None = None, details: dict | None = None) -> list:
+    """Every swept property whose deed has not been read yet, from both sweeps. The date-bounded
+    qualification sweep finds properties the unbounded one missed, and they need owners too:
+    reading only rows.json left 28 of them permanently unhydrated while the phase reported
+    "nothing to do"."""
+    rows = _load(OUT / "rows.json", {}) if rows is None else rows
+    recent = _load(OUT / "recent_rows.json", {}) if recent is None else recent
+    details = _load(OUT / "details.json", {}) if details is None else details
     todo = []
     for source in (rows, recent):
         for seg_rows in source.values():
             for r in seg_rows:
                 if r["id"] not in details:
                     todo.append(r["id"])
+    return sorted(set(todo))
+
+
+def unmask_left(floor: int = 0) -> int:
+    """Entities still waiting for the free reverse-address check, at or above a purchase floor."""
+    reg = _load(OUT / "registry.json", [])
+    found = _load(OUT / "principals.json", {})
+    return sum(1 for b in unmask_targets(reg, found) if int(b.get("n_buys") or 0) >= floor)
+
+
+def phase_hydrate(args) -> None:
+    require("sweep")
+    rows = _load(OUT / "rows.json", {})
+    recent = _load(OUT / "recent_rows.json", {})
+    det_path = OUT / "details.json"
+    details = _load(det_path, {})
+
+    todo = hydrate_todo(rows, recent, details)
     if getattr(args, "reread_unpriced", False):
         # A detail read before the loans were kept cannot fill a missing price. Read again only
         # the properties whose purchase has no deed price and whose cached read carries no loans.
@@ -613,7 +662,7 @@ def phase_hydrate(args) -> None:
     def work(rid: str):
         tid = threading.get_ident()
         if tid not in clients:
-            clients[tid] = SiftMapClient(min_interval=args.min_interval)
+            clients[tid] = getattr(args, "detail_client", None) or SiftMapClient(min_interval=args.min_interval)
         return _hydrate_one(clients[tid], rid)
 
     # Detail throughput caps near 2-4 req/s AGGREGATE regardless of worker
@@ -1069,186 +1118,51 @@ def rule_lines(rules: dict, stats: dict, by_count: list, each_purchase: bool) ->
 # do not send to Enformion at $0.10, which is why this phase runs first and on
 # its own.
 
-# Registered-agent and corporate-front names that must never become a
-# "principal". Without this scrub the dial sheet fills up with C T Corporation
-# System and US Bank Trust, which are 800-numbers, not buyers.
-AGENT_FRONT_RX = re.compile(
-    r"SERVICE OF PROCESS|CORPORATION SYSTEM|REGISTERED AGENT|NORTHWEST|"
-    r"CORPORATION AGENTS|CORPORATE DIRECT|COGENCY|INCORP|NATIONAL ASSOC",
-    re.I)
+# Who counts as a principal (AGENT_FRONT_RX, FIRM_RX, OWNER_TITLES, STATUS_TOKENS,
+# PLACEHOLDER_NAMES, _is_human, _officer_in_state, rank_officers, principal_confidence) moved to
+# enformion_business on 2026-11-13, with every measured trap it carries, and is imported at the top
+# of this file. The free reverse-address check below and the team's entity_principals workflow
+# both read the rules from there.
 
 
-# A professional firm wearing a person-shaped name. The stock AGENT_FRONTS list
-# only knows the national commercial agents (CT Corporation, Northwest), so it
-# waves through the LOCAL law firms that actually appear on Knox filings.
-# Measured live: "DRYER AND ASSOCIATES P C" and "CHAMBLISS BAHNER & STOPHEL"
-# both came back as the "principal" of a real buying LLC.
-#
-# An ampersand ALONE is not the tell. Deed and filing names are full of married
-# couples ("Oneal Brian A & Ethel L", "Ciminieri Louis & Colleen"), and a first
-# pass that dropped every "&" threw away 7 real co-owning couples to catch 5
-# firms. `clean_owner_name` already splits a couple down to one person, so the
-# only thing worth rejecting is an explicit professional marker.
-FIRM_RX = re.compile(
-    r"\bAND ASSOCIATES\b|\bASSOCIATES\b|\bP\.?\s?C\.?\s*$|\bPLLC\b|\bLLP\b|"
-    r"\bLAW\b|\bATTORNEY|\bLEGAL\b|\bFIRM\b|\bCPA\b|\bACCOUNTAN|"
-    r"&\s*CO\b|\bLIMITED PARTNERSHIP\b|\bHOSPITAL\b|\bCLINIC\b|\bOFFICE\b",
-    re.I)
+def _unmask_one(client, buyer: dict) -> dict:
+    """The free principal for one buyer: who owns the house its mail goes to
+    (buyer_sweep.reverse_address). This used to find the house through SiftMap's
+    autocomplete, which DataSift's Acceptable use names as prohibited in volume;
+    the address search does the same job. `client` is a buyer_sweep.MapClient.
 
-# Titles that mean the person actually runs the company, as opposed to merely
-# receiving its mail.
-OWNER_TITLES = ("MANAGER", "MGR", "MEMBER", "ORGANIZER", "OFFICER", "PRESIDENT",
-                "CEO", "SECRETARY", "TREASURER", "PARTNER", "DIRECTOR", "OWNER",
-                "INCORPORATOR", "CONTACT")
-
-# Legal status and credential tokens that a name parser can mistake for a
-# surname. "Morales Family Trust" resolved to first=Morales last=Tr.
-STATUS_TOKENS = {
-    "TR", "TRUSTEE", "TTEE", "TRUST", "EST", "ESTATE", "LIFE", "ETAL", "ET",
-    "AL", "UX", "JR", "SR", "II", "III", "IV", "V", "MD", "DC", "PC", "DDS",
-    "DVM", "ESQ", "CPA", "REV", "LLC", "INC", "CORP", "CO", "LP", "LLP",
-}
-
-
-# Placeholder strings that arrive where a name should be. SiftMap returned the
-# literal "UNKNOWN" as the owner of one LLC's mailing address, and it sailed
-# through every entity and firm check because it is neither. Left alone it
-# reaches a text as "Hi UNKNOWN".
-PLACEHOLDER_NAMES = {
-    "UNKNOWN", "UNKNOWN OWNER", "NONE", "N A", "NA", "TBD", "OWNER",
-    "CURRENT OWNER", "OCCUPANT", "CURRENT RESIDENT", "RESIDENT", "TAXPAYER",
-    "NOT AVAILABLE", "NO OWNER", "VACANT", "ESTATE OF",
-}
-
-
-def _is_human(name: str) -> bool:
-    n = norm_name(name or "")
-    if not n or n in PLACEHOLDER_NAMES:
-        return False
-    # A person has a first name and a surname. One bare token is a placeholder,
-    # a company fragment, or a surname with no one attached to it.
-    if len(n.split()) < 2:
-        return False
-    if ORG_RX.search(n) or AGENT_FRONT_RX.search(name or ""):
-        return False
-    return not FIRM_RX.search(name or "")
-
-
-# BUSINESSV2 CANNOT BE CONSTRAINED GEOGRAPHICALLY, AND THAT IS THE WHOLE
-# PROBLEM WITH IT. Verified live 2026-08-28: searching "SMITHBILT LLC" with no
-# anchor, with Addresses[{AddressLine2: "Knoxville, TN"}], and with
-# Addresses[{State: "TN"}] all return byte-identical results. It fuzzy-matches
-# company names nationally, so a Knoxville LLC resolves to officers of a
-# same-named company in another state. Measured on 12 cohort entities, only 2
-# had ANY Tennessee officer, which means most of what the first pass bought was
-# a stranger who shares a company name.
-#
-# The officer's own address is the only geographic control available, and it is
-# only available because extract_officers() returns it. Filtering to the
-# buyer's own state is therefore mandatory, not a refinement.
-def _officer_in_state(officer: dict, state: str) -> bool:
-    """Is this officer physically in the buyer's state.
-
-    Tokenized rather than regexed on purpose. The first version used word
-    boundaries and the escape did not survive being written to the file: the
-    pattern compiled with literal backspace characters, matched nothing, and
-    reported 0 of 153 entities verified as though it were a finding about the
-    data. Splitting the address into alphanumeric tokens has no escaping to
-    get wrong.
-    """
-    addr = (officer.get("address") or "").upper()
-    if not addr:
-        return False
-    st = (state or "TN").upper()
-    tokens = "".join(c if c.isalnum() else " " for c in addr).split()
-    if st in tokens:
-        return True
-    return st == "TN" and "TENNESSEE" in tokens
-
-
-def rank_officers(entity: str, officers: list, state: str) -> list:
-    """State-verified officers first, then the ones who actually run the place.
-
-    Ty's rule (2026-08-28): prefer an ownership title, fall back to any officer
-    rather than giving up on the entity. But an officer in the wrong state is
-    not a fallback, it is a different person, so those are dropped entirely.
-    """
-    keep = [o for o in officers if _officer_in_state(o, state)]
-    def rank(o):
-        conf = principal_confidence(entity, o.get("name") or "", o.get("title") or "")
-        title = (o.get("title") or "").upper()
-        owner_title = any(k in title for k in OWNER_TITLES)
-        return (0 if owner_title else 1, 0 if conf == "high" else 1)
-    return sorted(keep, key=rank)
-
-
-def principal_confidence(entity: str, person: str, title: str) -> str:
-    """How much to trust a BusinessV2 officer as the person to actually text.
-
-    THE REGISTERED AGENT IS OFTEN THE COMPANY'S LAWYER, NOT ITS OWNER. On the
-    live run 135 of 193 resolved officers carried the title AGENT or REGISTERED
-    AGENT, and texting a firm's attorney a deal blast is the litigation bait
-    this program is built to avoid.
-
-    But an agent title is not automatically wrong: plenty of small operators are
-    their own registered agent. The tell is the SURNAME. "Turner Homes LLC ->
-    Michael L Turner" and "Smithbilt LLC -> Smith Kenneth" are obviously the
-    owner; "New Season Properties LLC -> Dryer and Associates" is obviously not.
-
-    So: an ownership title is trusted outright, an agent title is trusted only
-    when a name token also appears in the company name, and everything else is
-    low confidence and held back from the text list.
-    """
-    t = (title or "").upper()
-    if any(k in t for k in OWNER_TITLES):
-        return "high"
-    ent_tokens = {w for w in norm_name(entity).split() if len(w) > 2}
-    per_tokens = {w for w in norm_name(person).split() if len(w) > 2}
-    if ent_tokens & per_tokens:
-        return "high"
-    return "low"
-
-
-def _unmask_one(smc: SiftMapClient, buyer: dict) -> dict:
+    The unit is dropped from the street first ("Ste D200" confuses the search)
+    and the full line is tried only when that finds no house. A match needs the
+    same house number, street and ZIP, because a bare "123 Main St" exists in
+    every county and the owner of the wrong one is a stranger, not a principal."""
+    from buyer_sweep import MapError, drop_unit, reverse_address
     out = {"principal": None, "principal_source": None, "miss": None}
     mail = buyer.get("mail") or ""
-    if not mail:
-        out["miss"] = "no mailing address"
-        return out
-    if re.search(r"\bP\.?\s?O\.?\s+BOX\b", mail, re.I):
-        # A PO box reverses to nothing; it is not a residence.
-        out["miss"] = "PO box mailing address"
-        return out
     try:
-        stripped = strip_unit(mail)
-        hits = smc.autocomplete(stripped)
-        hit = _match_candidate(hits, stripped)
-        if not hit and stripped != mail:
-            hits = smc.autocomplete(mail)
-            hit = _match_candidate(hits, mail)
-        if not hit:
-            out["miss"] = "no autocomplete match on mailing address"
-            return out
-        d = smc.get_detail(hit["id"])
-        oi = d.get("owner_info") or {}
-        owner = _owner_name(oi)
-        if owner and _is_human(owner):
-            out["principal"] = owner
-            out["principal_source"] = "siftmap-reverse-address"
-            return out
-        for s in (oi.get("secondary_owner_names") or []):
-            if _is_human(str(s)):
-                out["principal"] = str(s)
-                out["principal_source"] = "siftmap-secondary-owner"
-                return out
-        out["miss"] = "mailing address owner is an organization"
-    except SiftMapError as e:
-        if "401" in str(e):
+        got = reverse_address(drop_unit(mail), client)
+        if got["miss"] == "no property at the mailing address" and drop_unit(mail) != mail:
+            got = reverse_address(mail, client)
+    except MapError as e:
+        if "401" in str(e) or "not set" in str(e):
             raise
         out["miss"] = str(e)[:160]
+        return out
     except Exception as e:  # noqa: BLE001
         out["miss"] = str(e)[:160]
+        return out
+    if got["principal"]:
+        out["principal"], out["principal_source"] = got["principal"], got["source"]
+    else:
+        out["miss"] = got["miss"]
     return out
+
+
+def unmask_targets(reg: list, found: dict) -> list:
+    """Entities still waiting for the free check, most valuable first: buyers active in the
+    window, then by purchase count. A bounded run (the agents brain reads a few dozen a night)
+    then spends its reads on the buyers a dispo blast would actually text."""
+    todo = [b for b in reg if b["is_entity"] and b["tier"] not in ("EXCLUDE",) and b["buyer_key"] not in found]
+    return sorted(todo, key=lambda b: (0 if b.get("active_365d") else 1, -int(b.get("n_buys") or 0)))
 
 
 def phase_unmask(args) -> None:
@@ -1257,23 +1171,24 @@ def phase_unmask(args) -> None:
     path = OUT / "principals.json"
     found = _load(path, {})
 
-    targets = [b for b in reg
-               if b["is_entity"] and b["tier"] not in ("EXCLUDE",)
-               and b["buyer_key"] not in found]
+    floor = int(getattr(args, "unmask_floor", 0) or 0)
+    targets = [b for b in unmask_targets(reg, found) if int(b.get("n_buys") or 0) >= floor]
     if args.limit:
         targets = targets[:args.limit]
     log.info("unmasking %s entities (%s already done)", len(targets), len(found))
     if not targets:
-        mark_done("unmask", principals=len(found))
+        mark_done("unmask", principals=len(found), remaining=0)
         print("unmask: nothing to do, " + str(len(found)) + " cached")
         return
 
     clients: dict = {}
+    shared = getattr(args, "map_client", None)
 
     def work(b: dict):
         tid = threading.get_ident()
         if tid not in clients:
-            clients[tid] = SiftMapClient(min_interval=args.min_interval)
+            from buyer_sweep import MapClient
+            clients[tid] = shared or MapClient(min_interval=args.min_interval)
         return b["buyer_key"], _unmask_one(clients[tid], b)
 
     done = 0
@@ -1290,7 +1205,8 @@ def phase_unmask(args) -> None:
     _save(path, found)
     hits = sum(1 for v in found.values() if v.get("principal"))
     gate(len(found) > 0, "unmask produced nothing")
-    mark_done("unmask", attempted=len(found), resolved=hits)
+    mark_done("unmask", attempted=len(found), resolved=hits,
+              remaining=sum(1 for b in unmask_targets(reg, found) if int(b.get("n_buys") or 0) >= floor))
     print("unmask: " + str(hits) + " principals from " + str(len(found))
           + " entities, all free")
     misses = Counter(v.get("miss") for v in found.values() if not v.get("principal"))
@@ -1346,10 +1262,14 @@ def phase_principals(args) -> None:
           + "+ buys still unresolved after the free unmask")
     print("            up to $%.2f at $0.10 per match (misses are free)" % cost)
     if not args.commit:
+        # What a paid run would buy, kept so a caller (the agents brain's nightly job) can say it
+        # without re-deriving the selection above.
+        mark_done("principals_plan", todo=len(todo), usd=round(cost, 2))
         print("DRY RUN. Re-run with --commit to spend.")
         return
 
     hits = 0
+    billed = 0           # searches that returned a record: those cost $0.10, a miss is free
     cleared: list = []
     for i, key in enumerate(todo, 1):
         b = by_key[key]
@@ -1360,7 +1280,8 @@ def phase_principals(args) -> None:
         if len(parts) >= 3:
             city_state = parts[-2] + ", " + parts[-1].split()[0]
         try:
-            officers = eb.find_principals(b["name"], city_state)
+            officers, paid = eb.search_officers(b["name"], city_state)
+            billed += 1 if paid else 0
         except Exception as e:  # noqa: BLE001
             found[key]["miss"] = "businessv2: " + str(e)[:120]
             continue
@@ -1406,8 +1327,9 @@ def phase_principals(args) -> None:
 
     _save(OUT / "principals.json", found)
     mark_done("principals", attempted=len(todo), resolved=hits,
-              cleared_unverified=len(cleared))
+              cleared_unverified=len(cleared), billed=billed, usd=round(billed * eb.UNIT_USD, 2))
     print("principals: %d of %d resolved and state verified" % (hits, len(todo)))
+    print("  billed searches: %d ($%.2f)" % (billed, billed * eb.UNIT_USD))
     print("  cleared as unverifiable (wrong state): %d" % len(cleared))
     for n in [c for c in cleared if c][:8]:
         print("      dropped: %s" % n)
@@ -1419,61 +1341,14 @@ def phase_principals(args) -> None:
 # billed: submit/map/calculate are all free and print the exact quote, so the
 # decision to spend happens after seeing the row count and price.
 
-def split_mail(mail: str) -> tuple:
-    """"1007 Andover View Ln, Knoxville, TN 37919" -> its four parts.
-
-    SiftMap hands the mailing address back as ONE string, but SmartSkip's
-    contract is `mailingAddress` = the STREET, with mailingCity / mailingState /
-    mailingZip as separate optional fields (its own synonym list calls the
-    field "mailingstreet"). Passing the whole line as the street matches worse,
-    and on a 1,900-row batch that is real money spent on a degraded input.
-    """
-    raw = (mail or "").strip().rstrip(",")
-    if not raw:
-        return "", "", "", ""
-    # TWO ADDRESS FORMATS REACH THIS FUNCTION. SiftMap writes
-    # "1007 Andover View Ln, Knoxville, TN 37919" but Enformion officer records
-    # write "4300 Hiawatha; Knoxville, TN 37919" with a SEMICOLON before the
-    # city. Splitting on commas alone glued the city onto the street and left
-    # Mailing City empty, and SmartSkip returned nothing for all 33 rows of a
-    # paid batch as a result.
-    # The semicolon is the street/city delimiter, so it takes precedence over
-    # commas rather than being flattened into one. "2099 Thunderhead, Ste 204;
-    # Knoxville, TN 37922" has a comma INSIDE the street, and treating both
-    # separators alike made the city read "Ste 204".
-    head = ""
-    if ";" in raw:
-        head, raw = raw.split(";", 1)
-        head, raw = head.strip().rstrip(","), raw.strip()
-    parts = [p.strip() for p in raw.split(",") if p.strip()]
-    if head:
-        # Everything before the semicolon is the street; what follows is
-        # city, state and zip.
-        parts = [head] + parts
-    street = parts[0] if parts else ""
-    city = parts[1] if len(parts) > 2 else (parts[1] if len(parts) == 2 else "")
-    tail = parts[-1] if len(parts) > 1 else ""
-    m = re.match(r"^([A-Za-z]{2})\s+(\d{5})(?:-\d{4})?$", tail)
-    if m:
-        state, zip_code = m.group(1).upper(), m.group(2)
-        if len(parts) < 3:
-            city = ""
-    else:
-        # No trailing "ST 12345": fall back to whatever we can see.
-        state, zip_code = "", ""
-        m2 = re.search(r"\b(\d{5})(?:-\d{4})?\b", tail)
-        if m2:
-            zip_code = m2.group(1)
-        m3 = re.search(r"\b([A-Za-z]{2})\b", tail)
-        if m3 and not zip_code:
-            state = m3.group(1).upper()
-    return street, city, state, zip_code
+# split_mail (SiftMap's comma and Enformion's semicolon address formats) moved to
+# enformion_business on 2026-11-13 and is imported at the top of this file.
 
 
 def phase_skipinput(args) -> None:
     require("aggregate")
     import csv
-    from enformion_ftm import clean_owner_name
+    clean_owner_name = person_first_last
 
     reg = _load(OUT / "registry.json", [])
     principals = _load(OUT / "principals.json", {})
@@ -2295,7 +2170,7 @@ def phase_phones(args) -> None:
     # Build the bridge from the REGISTRY, not from smartskip_input.csv. That
     # file is regenerated on every skipinput run, so a download from an earlier
     # batch loses its join the moment the cohort changes.
-    from enformion_ftm import clean_owner_name
+    clean_owner_name = person_first_last
     reg = _load(OUT / "registry.json", [])
     principals = _load(OUT / "principals.json", {})
     bridge = {}
@@ -2397,15 +2272,29 @@ def phase_phones(args) -> None:
 def phase_crm_phones(args) -> None:
     require("profiles")
     import time
-    from sms_agent import crm
-    from sms_agent.seed import SKIP_PHONE_STATUSES
+    # The agents brain passes a key-only client in args.crm; the workstation keeps its own.
+    crm = getattr(args, "crm", None)
+    if crm is None:
+        from sms_agent import crm
+    from sms_agent.gate_rules import BAD_PHONE as SKIP_PHONE_STATUSES
 
     profiles = _load(OUT / "buyer_profiles.json", [])
     reg = {b["buyer_key"]: b for b in _load(OUT / "registry.json", [])}
     out = _load(OUT / "phones.json", {})
 
     targets = [p for p in profiles if reg.get(p["buyer_key"], {}).get("saved_uuid")]
+    # A capped run resumes instead of re-reading the same first records: with skip_read_days set,
+    # a buyer whose record was read inside that window is skipped, and each read is remembered.
+    skip_days = int(getattr(args, "skip_read_days", 0) or 0)
+    read_path = OUT / "crm_read.json"
+    read_at = _load(read_path, {}) if skip_days else {}
+    if skip_days:
+        from datetime import timedelta
+        cutoff = (datetime.now() - timedelta(days=skip_days)).isoformat(timespec="seconds")
+        targets = [p for p in targets if str(read_at.get(p["buyer_key"]) or "") < cutoff]
+    left_over = 0
     if args.limit:
+        left_over = max(0, len(targets) - args.limit)
         targets = targets[:args.limit]
     log.info("reading %s CRM records for numbers already on file", len(targets))
 
@@ -2414,6 +2303,8 @@ def phase_crm_phones(args) -> None:
     for i, p in enumerate(targets, 1):
         key = p["buyer_key"]
         rec = _get_record(crm, reg[key]["saved_uuid"])
+        if skip_days and rec:
+            read_at[key] = datetime.now().isoformat(timespec="seconds")
         if not rec:
             stats["record unreadable after retries"] += 1
             continue
@@ -2467,10 +2358,12 @@ def phase_crm_phones(args) -> None:
             log.info("read %s/%s records", i, len(targets))
 
     _save(OUT / "phones.json", out)
+    if skip_days:
+        _save(read_path, read_at)
     uniq = {q["number"] for v in out.values() for q in v["phones"]}
     gate(stats["number added"] > 0 or added_buyers == 0,
          "harvest read records but added no numbers; check crm auth")
-    mark_done("crm_phones", records=len(targets), buyers_added=added_buyers,
+    mark_done("crm_phones", records=len(targets), buyers_added=added_buyers, left_over=left_over,
               **{k.replace(" ", "_"): v for k, v in stats.items()})
     print("crm-phones: read %d records" % len(targets))
     for k, v in stats.most_common():
@@ -2526,13 +2419,28 @@ def _tag_names(p: dict) -> list:
 
 
 def _score_numbers(pv, numbers: list, cache: dict, cache_path: Path,
-                   commit: bool) -> dict:
-    """Trestle-score whatever is not already cached. Returns the cache."""
+                   commit: bool, scorer=None, limit: int = 0) -> dict:
+    """Trestle-score whatever is not already cached. Returns the cache.
+
+    `scorer` is the agents brain's (agents.autopilot.sources.Scorer): the same Trestle call with
+    the litigator check, which this loop never asked for, so a known TCPA litigator could reach a
+    buyer list unmarked. `limit` caps how many new numbers one run may buy."""
     unscored = [n for n in numbers if n not in cache]
+    if limit:
+        unscored = unscored[:limit]
     print("  unique numbers needing a score      %d" % len(unscored))
     print("  estimated Trestle cost              $%.2f" % (len(unscored) * 0.015))
     if not commit:
         print("\nDRY RUN. Re-run with --commit to score.")
+        return cache
+    if scorer is not None:
+        for num, r in (scorer.score(unscored) or {}).items():
+            if r.get("error"):
+                cache[num] = {"error": str(r["error"])[:120]}
+            else:
+                cache[num] = {"score": r.get("score"), "tier": r.get("tier"),
+                              "litigator": bool(r.get("litigator")), "line_type": r.get("line_type") or ""}
+        _save(cache_path, cache)
         return cache
     key = os.getenv("TRESTLE_PAID_API_KEY") or os.getenv("TRESTLE_API_KEY")
     if not key:
@@ -2567,12 +2475,16 @@ def phase_score(args) -> None:
         gate(bool(phones), "no phones.json; run --phase phones first")
         nums = sorted({p["number"] for v in phones.values() for p in v["phones"]})
         print("registry: %d buyers, %d unique numbers" % (len(phones), len(nums)))
-        cache = _score_numbers(pv, nums, cache, cache_path, args.commit)
+        before = {n for n in nums if (cache.get(n) or {}).get("tier")}
+        cache = _score_numbers(pv, nums, cache, cache_path, args.commit,
+                               scorer=getattr(args, "scorer", None), limit=int(getattr(args, "score_limit", 0) or 0))
         if not args.commit:
             return
         got = [n for n in nums if (cache.get(n) or {}).get("tier")]
         by_tier = Counter((cache[n] or {}).get("tier") for n in got)
-        mark_done("score_registry", scored=len(got), by_tier=dict(by_tier))
+        newly = len(set(got) - before)
+        mark_done("score_registry", scored=len(got), by_tier=dict(by_tier), newly_scored=newly,
+                  left=sum(1 for n in nums if n not in cache))
         print("score: %d numbers scored" % len(got))
         print("  by tier: " + str(dict(by_tier)))
         reachable = sum(1 for v in phones.values()
@@ -2730,7 +2642,7 @@ def phase_writeback(args) -> None:
     require("profiles")
     import time
     from sms_agent import crm
-    from sms_agent.seed import SKIP_PHONE_STATUSES
+    from sms_agent.gate_rules import BAD_PHONE as SKIP_PHONE_STATUSES
     import phone_validator as pv
 
     profiles = _load(OUT / "buyer_profiles.json", [])

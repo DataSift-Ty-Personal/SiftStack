@@ -18,4 +18,5 @@ pillow>=10.0
 openpyxl>=3.1
 gender-guesser>=0.4.0
 scrapfly-sdk>=0.8
+beautifulsoup4>=4.12   # property_lookup (probate_property): parses the county pages
 websockets>=15.0    # Slack Socket Mode (src/agents/slack_socket.py); the brain starts without it

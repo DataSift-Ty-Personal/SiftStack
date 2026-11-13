@@ -86,6 +86,15 @@ PLAN_POSTS = (os.environ.get("AGENTS_PLAN_POSTS") or "digest").strip().lower()
 # goes there whoever on the team is speaking, and the per-employee channel names in the roster are
 # not needed. Unset, each employee posts in its own channel and the team shares one.
 SLACK_CHANNEL = (os.environ.get("AGENTS_SLACK_CHANNEL") or "").strip()
+# Files dropped in Slack (walkthrough photos, a KML or CSV boundary, a PDF). Saved into the working
+# employee's own workspace at the start of its turn (agents/attachments.py); the app needs files:read.
+# A message with files starts its turn FILE_SETTLE_S later, and every further file message on the same
+# thread pushes the start back, so a walkthrough posted ten photos at a time becomes ONE turn.
+FILE_SETTLE_S = _f("AGENTS_FILE_SETTLE_S", 40.0)
+MAX_FILES = int(_f("AGENTS_MAX_FILES", 60))              # files saved for one thread
+MAX_FILE_MB = _f("AGENTS_MAX_FILE_MB", 20.0)             # a larger file is listed, not saved
+FILES_KEEP_DAYS = _f("AGENTS_FILES_KEEP_DAYS", 14.0)     # saved files are deleted after this
+FILE_TURN_USD = _f("AGENTS_FILE_TURN_USD", 4.0)          # turn cap when the turn carries files
 
 # Claude for conversational asks. On whenever a key exists; AGENTS_USE_LLM=0 forces the stub, which
 # answers honestly without spending. Meet-the-team never uses the model, so it is the free smoke test.

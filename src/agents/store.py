@@ -87,6 +87,7 @@ TEAM_COLUMNS = (
     ("slack_thread", "TEXT DEFAULT ''"),
     ("session_id", "TEXT DEFAULT ''"),
     ("question", "TEXT DEFAULT ''"),
+    ("not_before", "TEXT DEFAULT ''"),       # a queued task is not claimed before this (files settling)
 )
 
 # queued -> running -> done | failed | waiting (asked the operator) -> answered (a reply resumed it)
@@ -171,7 +172,7 @@ def seen_once(key: str) -> bool:
 def enqueue(agent: str, workflow: str, record_uuid: str = "", subject: str = "", event_id: int = 0,
             force: bool = False, *, payload: dict | None = None, thread_id: str = "", parent_id: int = 0,
             hop: int = 0, source: str = "", mode: str = "direct", slack_channel: str = "",
-            slack_thread: str = "", session_id: str = "") -> tuple[int, bool]:
+            slack_thread: str = "", session_id: str = "", not_before: str = "") -> tuple[int, bool]:
     """(task id, created). A record already queued, running, or finished inside the dedupe window
     is not queued again: one status flip that DataSift delivers twice must not pay twice. Tasks
     with no record (a Slack ask) are never deduped this way."""
@@ -186,17 +187,59 @@ def enqueue(agent: str, workflow: str, record_uuid: str = "", subject: str = "",
                 return row["id"], False
         cur = c.execute(
             "INSERT INTO tasks (created, agent, workflow, record_uuid, subject, status, event_id, thread_id, "
-            "parent_id, hop, source, mode, payload, slack_channel, slack_thread, session_id) "
-            "VALUES (?,?,?,?,?,'queued',?,?,?,?,?,?,?,?,?,?)",
+            "parent_id, hop, source, mode, payload, slack_channel, slack_thread, session_id, not_before) "
+            "VALUES (?,?,?,?,?,'queued',?,?,?,?,?,?,?,?,?,?,?)",
             (now(), agent, workflow, record_uuid, subject, event_id, thread_id or new_thread(), parent_id,
-             hop, source, mode, json.dumps(payload or {}, default=str), slack_channel, slack_thread, session_id))
+             hop, source, mode, json.dumps(payload or {}, default=str), slack_channel, slack_thread, session_id,
+             not_before))
         return cur.lastrowid, True
+
+
+def later(seconds: float) -> str:
+    """A not_before stamp `seconds` from now, in the same form as now() so the two compare as text."""
+    return (datetime.now(timezone.utc) + timedelta(seconds=seconds)).isoformat(timespec="seconds")
+
+
+def queued_ask(channel: str, thread_ts: str, agent: str) -> dict | None:
+    """The employee turn on this Slack thread that has not started yet, if there is one. A second
+    message that arrives while it waits joins it instead of starting a turn of its own."""
+    if not (channel and thread_ts):
+        return None
+    with _LOCK, _db() as c:
+        row = c.execute("SELECT * FROM tasks WHERE slack_channel=? AND slack_thread=? AND agent=? AND "
+                        "status='queued' AND mode='agent' ORDER BY id DESC LIMIT 1",
+                        (channel, thread_ts, agent)).fetchone()
+        return dict(row) if row else None
+
+
+def join_ask(task_id: int, text: str, not_before: str) -> bool:
+    """Add a follow-up message to a task that has not started, and push its start back. False when
+    the worker claimed it in the meantime (the caller then queues a turn of its own)."""
+    with _LOCK, _db() as c:
+        c.execute("BEGIN IMMEDIATE")
+        row = c.execute("SELECT payload, not_before FROM tasks WHERE id=? AND status='queued'", (task_id,)).fetchone()
+        if not row:
+            c.execute("COMMIT")
+            return False
+        try:
+            payload = json.loads(row["payload"] or "{}")
+        except ValueError:
+            payload = {}
+        extra = (text or "").strip()
+        if extra:
+            payload["text"] = ((payload.get("text") or "").rstrip() + "\n" + extra).strip()
+        start = max(row["not_before"] or "", not_before or "")
+        c.execute("UPDATE tasks SET payload=?, not_before=? WHERE id=?",
+                  (json.dumps(payload, default=str), start, task_id))
+        c.execute("COMMIT")
+        return True
 
 
 def claim_next() -> dict | None:
     with _LOCK, _db() as c:
         c.execute("BEGIN IMMEDIATE")
-        row = c.execute("SELECT * FROM tasks WHERE status='queued' ORDER BY id LIMIT 1").fetchone()
+        row = c.execute("SELECT * FROM tasks WHERE status='queued' AND (not_before IS NULL OR not_before='' "
+                        "OR not_before<=?) ORDER BY id LIMIT 1", (now(),)).fetchone()
         if not row:
             c.execute("COMMIT")
             return None

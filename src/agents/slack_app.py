@@ -134,6 +134,63 @@ def react(channel: str, ts: str, emoji: str = "eyes") -> None:
         _api("reactions.add", {"channel": channel, "timestamp": ts, "name": emoji})
 
 
+_SCOPES: dict = {"at": 0.0, "set": None}
+SCOPES_TTL_S = 600
+
+
+def scopes() -> set | None:
+    """The bot token's granted scopes, read off the X-OAuth-Scopes header Slack puts on every Web
+    API answer (auth.test is the cheapest call). None when unknown; cached ten minutes."""
+    if not config.SLACK_BOT_TOKEN:
+        return None
+    if _SCOPES["set"] is not None and time.time() - _SCOPES["at"] < SCOPES_TTL_S:
+        return _SCOPES["set"]
+    try:
+        r = _http.post("%s/auth.test" % API, timeout=15, headers={"Authorization": "Bearer %s" % config.SLACK_BOT_TOKEN})
+        raw = str((getattr(r, "headers", None) or {}).get("x-oauth-scopes") or "")
+    except Exception as exc:  # noqa: BLE001
+        log.warning("slack auth.test unreachable: %s", exc)
+        return None
+    got = {s.strip() for s in raw.split(",") if s.strip()} or None
+    _SCOPES.update(at=time.time(), set=got)
+    return got
+
+
+def forget_scopes() -> None:
+    """A download came back as a sign-in page: read the scopes again next time instead of trusting
+    the cache (the operator may have just reinstalled the app)."""
+    _SCOPES.update(at=0.0, set=None)
+
+
+def can_read_files() -> bool:
+    """False only when Slack says the token lacks files:read. Unknown counts as yes: the download
+    itself then shows a sign-in page instead of the file, and that is caught there."""
+    got = scopes()
+    return got is None or "files:read" in got
+
+
+def fetch(url: str):
+    """The bytes of a private Slack file (files.slack.com), with the bot token. May raise."""
+    return _http.get(url, timeout=60, headers={"Authorization": "Bearer %s" % config.SLACK_BOT_TOKEN})
+
+
+def file_info(file_id: str) -> dict:
+    """The full file object for a file Slack sent only as a stub; {} when it cannot be read."""
+    if not (config.SLACK_BOT_TOKEN and file_id):
+        return {}
+    try:
+        r = _http.get("%s/files.info" % API, params={"file": file_id}, timeout=15,
+                      headers={"Authorization": "Bearer %s" % config.SLACK_BOT_TOKEN})
+        data = r.json()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("slack files.info unreachable: %s", exc)
+        return {}
+    if not data.get("ok"):
+        log.warning("slack files.info: %s", data.get("error"))
+        return {}
+    return data.get("file") or {}
+
+
 def channel_name(channel_id: str) -> str:
     """Slack events carry channel IDs (C0123...), never names, so routing by channel needs the
     name. Cached for the life of the process; "" for a DM or when the lookup fails."""

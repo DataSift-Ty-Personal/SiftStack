@@ -1592,7 +1592,10 @@ def phase_export(args):
     sheet("Sources and caveats", ["Item", "Detail"], caveats(a), {"Item": 30, "Detail": 120}, wrap=("Detail",))
 
     slug = "_".join(p.upper() if len(p) <= 2 else p.title() for p in args.market.split("_"))
-    path = _save(wb, w / ("%s_Builder_Land_Desk_%s.xlsx" % (slug, NOW.strftime("%Y%m%d"))))
+    # args.out_dir: where the team's land_desk workflow wants the workbook (its task folder); the
+    # command line has none and writes beside the analysis, as it always has.
+    out = Path(getattr(args, "out_dir", None) or w)
+    path = _save(wb, out / ("%s_Builder_Land_Desk_%s.xlsx" % (slug, NOW.strftime("%Y%m%d"))))
     print("wrote %s" % path)
     return 0
 

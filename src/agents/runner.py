@@ -21,7 +21,7 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import bus, config, store, team
+from . import attachments, bus, config, store, team
 from . import tools as team_tools
 
 log = logging.getLogger(__name__)
@@ -86,12 +86,15 @@ def make_guard(allowed: set, ws: Path):
     return guard
 
 
-def budget_now() -> float:
+def budget_now(files: bool = False) -> float:
+    """The lesser of the turn cap and what is left today. A turn that carries files (a walkthrough's
+    photos) gets FILE_TURN_USD instead of the plain cap, since every photo it reads is input."""
     left_today = config.DAILY_CAP_USD - store.spent(day=store.today())
-    return max(0.0, min(config.AGENT_BUDGET_USD, left_today))
+    cap = max(config.AGENT_BUDGET_USD, config.FILE_TURN_USD) if files else config.AGENT_BUDGET_USD
+    return max(0.0, min(cap, left_today))
 
 
-def prompt_for(task: dict, roster, emp) -> str:
+def prompt_for(task: dict, roster, emp, files: list | None = None) -> str:
     p = store.payload_of(task)
     src = task.get("source") or ""
     if task["workflow"] == "resume":
@@ -103,7 +106,10 @@ def prompt_for(task: dict, roster, emp) -> str:
             lines += ["", "What they already know:", p["known"]]
     else:
         where = ("#" + p["channel_name"]) if p.get("channel_name") else "a direct message"
-        lines = ["The operator wrote in %s:" % where, p.get("text") or task.get("subject") or ""]
+        said = p.get("text") or ("(no message, only files)" if files else task.get("subject") or "")
+        lines = ["The operator wrote in %s:" % where, said]
+    lines += attachments.prompt_lines(files or [], attachments.over(task.get("slack_channel") or "",
+                                                                    task.get("slack_thread") or ""))
     hist = bus.thread_summary(task["thread_id"], roster, exclude=task["id"], limit=8)
     if hist:
         lines += ["", "Earlier on this thread (oldest first):"]
@@ -172,13 +178,14 @@ def run(task: dict, roster) -> tuple[Turn, "team_tools.RunContext"]:
     tool_list = team_tools.build(ctx)
     if not config.USE_LLM:
         return stub_turn(ctx, tool_list), ctx
-    budget = budget_now()
+    ws = team.materialize(roster, emp.id)
+    files = attachments.fetch_for_turn(task, ws)      # the thread's photos and files, into the workspace
+    budget = budget_now(files=any(f["path"] for f in files))
     if budget < 0.05:
         return Turn(error="today's spend cap ($%.0f) is used up, so nothing ran" % config.DAILY_CAP_USD), ctx
-    ws = team.materialize(roster, emp.id)
     resume = (task.get("session_id") or "") if task["workflow"] == "resume" else ""
     opts = options(sdk(), ctx, tool_list, ws, emp.model, budget, resume=resume)
-    turn = asyncio.run(_turn(sdk(), prompt_for(task, roster, emp), opts))
+    turn = asyncio.run(_turn(sdk(), prompt_for(task, roster, emp, files), opts))
     if turn.cost_usd:
         store.add_spend(task["id"], turn.cost_usd, "claude %s" % emp.model)
     return turn, ctx

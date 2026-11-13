@@ -1059,7 +1059,14 @@ def _coachpick(check) -> None:
     thu = K.go("coaching_picks", crm, THU, task={"id": 71}, enqueue=enq)
     check(thu.acted == 0 and not coachpick.picks() and "No pick is due today" in thu.head,
           "on a day that is not the weekly day, with nobody in a first week, nothing is picked")
-    fri = K.go("coaching_picks", crm, FRI, task={"id": 72}, enqueue=enq)
+    # The unwired path, kept under test now that call_coaching is registered (wave 4): taken out for this run.
+    from . import workflows as _wf
+    _wired = _wf.REGISTRY.pop("call_coaching", None)
+    try:
+        fri = K.go("coaching_picks", crm, FRI, task={"id": 72}, enqueue=enq)
+    finally:
+        if _wired:
+            _wf.REGISTRY["call_coaching"] = _wired
     mine = {(p["caller"], p["kind"]): [] for p in coachpick.picks()}
     for p in coachpick.picks():
         mine[(p["caller"], p["kind"])].append(p["call_id"])

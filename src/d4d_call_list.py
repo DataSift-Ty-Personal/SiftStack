@@ -14,7 +14,7 @@ Phases, in order. DRY by default; anything that writes or spends needs --commit.
 
     python src/d4d_call_list.py --phase cohort              # top N + live CRM membership
     python src/d4d_call_list.py --phase pull --commit       # pull the missing ones into the CRM
-    python src/d4d_call_list.py --phase skiptrace --commit  # list-scoped DataSift skip trace (browser)
+    python src/d4d_call_list.py --phase skiptrace           # how far the add's own skip trace reached
     python src/d4d_call_list.py --phase harvest             # read every record's phones
     python src/d4d_call_list.py --phase score --commit      # Trestle, $0.015 per unscored number
     python src/d4d_call_list.py --phase writeback --commit  # dial tiers onto the CRM phones
@@ -28,9 +28,12 @@ Contracts this leans on (all verified live before this was written):
     "type": "ids"}]` returns the search row for exactly those ids, including
     `saved` and `saved_uuid`, so CRM membership is read live rather than off a
     week-old sweep file.
-  * `POST /api/internal/property/skip-trace/` IGNORES scoping and traces the
-    whole account, so the skip trace here goes through the list-scoped browser
-    wizard (`datasift_uploader.skip_trace_records`).
+  * `POST /api/internal/property/skip-trace/` IGNORES a uuid scope and traces the
+    whole account. The SiftMap add skip traces new records on its own on the
+    unlimited plan, so this module submits no trace; a list-scoped trace with a
+    free estimate as its guard is pull_by_ids.py --phase skiptrace. (The browser
+    wizard this used to drive is retired: it selected every record when its list
+    filter missed.)
   * `POST /api/internal/owner/{uuid}/upsert-phones/` upserts BY NUMBER and
     replaces the object, so type / tags / status / is_connected are carried
     through, and any other Dial tier is stripped before the new one is added.
@@ -39,7 +42,6 @@ Contracts this leans on (all verified live before this was written):
 from __future__ import annotations
 
 import argparse
-import asyncio
 import csv
 import json
 import os
@@ -53,10 +55,34 @@ from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from datasift_api_upload import Api, ApiError, attach_to_record, env  # noqa: E402
 import phone_validator as pv  # noqa: E402
 
-_API_CLIENTS = Path(r"C:\Users\Tyrus\OneDrive\Desktop\Deal Room Coaching Call\_api\clients")
+
+# The uploader's client (datasift_api_upload) logs in with a password whenever a workstation carries
+# one, so importing it at the top made every reader of this module a password module, the agents'
+# idle_records ranking among them, which never constructs it. It loads on first use instead; the
+# three names below behave exactly as the imported ones did.
+
+def Api(*args, **kwargs):  # noqa: N802  (keeps the class's name for every caller)
+    from datasift_api_upload import Api as _Api  # noqa: PLC0415
+    return _Api(*args, **kwargs)
+
+
+def attach_to_record(*args, **kwargs):
+    from datasift_api_upload import attach_to_record as _attach  # noqa: PLC0415
+    return _attach(*args, **kwargs)
+
+
+def env() -> dict:
+    from datasift_api_upload import env as _env  # noqa: PLC0415
+    return _env()
+
+
+# The Trestle router (the free key first, then the paid one) lives outside this repo. Where it is
+# was a path on one desktop; it is a setting now. Without it, the score phase calls Trestle through
+# phone_validator on the paid key, exactly as it always did when the router could not be imported.
+_API_CLIENTS = Path(os.environ.get("TRESTLE_ROUTER_DIR")
+                    or Path(__file__).resolve().parents[1] / "vendor" / "trestle_router")
 
 OUT = Path("output/d4d_call_list")
 STATE_PATH = OUT / "state.json"
@@ -132,6 +158,7 @@ def _call(api: Api, path: str, method: str = "GET", body=None, headers=None,
     it also 502s in bursts. Neither is an answer. Writes ARE retried here on a
     429 only (nothing was applied), never on a 5xx.
     """
+    from datasift_api_upload import ApiError  # noqa: PLC0415  (see Api above)
     last = None
     for attempt in range(tries):
         gap = time.time() - _last_call[0]
@@ -310,18 +337,25 @@ def _map_post(api: Api, path: str, body: dict):
     return sp.Map(api)._post(path, body)
 
 
+def add_query_body(ids: list, list_name: str, tag: str) -> dict:
+    """Route A's body: add-properties-by-query with an ids-typed address list (the verified search
+    shape: 1,714 records on 2026-09-11, 30,000 on 2026-09-30). Its `query` is also exactly what the
+    matching quote route (add-properties-by-query/quote/) is asked about, so a quote and the add it
+    prices can never differ."""
+    import siftmap_pull as sp
+    return {"auto_add_enabled": False, "lists": [list_name], "tags": [tag],
+            "replace_owners": False,
+            "query": {"result_index": 1, "with_boundaries": False, "filters": {},
+                      "addresses": [{"search": str(i), "type": "ids"} for i in ids],
+                      "polygon": sp.WORLD}}
+
+
 def add_by_ids(api: Api, ids: list, list_name: str, tag: str, route: str):
     """Pull dataflik_ids into the account. Route A = add-properties-by-query
     with an ids-typed address list (the verified search shape); route B = the
     documented-only /properties/add-properties/ body."""
-    import siftmap_pull as sp
     if route == "A":
-        return _map_post(api, "/properties/add-properties-by-query/", {
-            "auto_add_enabled": False, "lists": [list_name], "tags": [tag],
-            "replace_owners": False,
-            "query": {"result_index": 1, "with_boundaries": False, "filters": {},
-                      "addresses": [{"search": str(i), "type": "ids"} for i in ids],
-                      "polygon": sp.WORLD}})
+        return _map_post(api, "/properties/add-properties-by-query/", add_query_body(ids, list_name, tag))
     return _map_post(api, "/properties/add-properties/", {
         "ids": [str(i) for i in ids], "lists": [list_name], "tags": [tag],
         "replace_owners": False})
@@ -444,63 +478,38 @@ def phase_pull(args) -> None:
 
 # -------------------------------------------------------------- skiptrace --
 
-async def _run_wizard(list_name: str, headless: bool) -> dict:
-    from playwright.async_api import async_playwright
-    from datasift_core import login
-    from datasift_uploader import skip_trace_records
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=headless)
-        ctx = await browser.new_context(viewport={"width": 1280, "height": 720})
-        page = await ctx.new_page()
-        try:
-            ok = await login(page)
-            if not ok:
-                return {"success": False, "message": "DataSift login failed"}
-            return await skip_trace_records(page, list_name)
-        finally:
-            await browser.close()
-
-
 def _phone_count(api: Api, uuid: str) -> int:
     rec = _call(api, "/api/internal/property/%s/" % uuid)
     return len(((rec.get("owner") or {}).get("phones")) or [])
 
 
 def phase_skiptrace(args) -> None:
+    """How far DataSift's own skip trace has reached the records the pull added.
+
+    This phase used to submit a list-scoped skip trace through the DataSift web app. That browser
+    wizard is retired. On the 2026-09-11 run its list filter no longer matched the page and it went
+    on to select every record, which would have traced the whole account, and the run was stopped by
+    hand. It was never needed either: the SiftMap add skip traces new records on its own on the
+    unlimited plan (37 of 40 sampled carried phones minutes after landing). The phase now measures
+    that trace on a sample, waiting up to --wait-min for it (--no-wait reads once). A trace scoped to
+    the list, guarded by a free estimate, is pull_by_ids.py --phase skiptrace."""
     require("pull")
-    import datasift_skiptrace as ds
     api = Api()
-    before = ds.stats(api)
-    print("skip trace stats before: traced %s, value spent $%s, saved by unlimited $%s" % (
-        before.get("total_properties"), before.get("value_spent"), before.get("saved_by_unlimited_skiptracing")))
-    gate(float(before.get("value_spent") or 0) == 0, "value_spent is not zero; this is not the unlimited plan")
     new = state()["pull"].get("new_uuids") or {}
     sample = random.sample(sorted(new.values()), min(25, len(new))) if new else []
-    if sample:
-        pre = sum(1 for u in sample if _phone_count(api, u) > 0)
-        print("  %d of %d sampled new records already carry phones" % (pre, len(sample)))
-    if not args.commit:
-        print("DRY RUN. Would run the list-scoped wizard on %r (headed=%s). Re-run with --commit."
-              % (args.list_name, not args.headless))
-        return
-    res = asyncio.run(_run_wizard(args.list_name, args.headless))
-    print("  wizard: %s" % res.get("message"))
-    gate(bool(res.get("success")), "the skip trace wizard did not submit")
-    got = 0
+    got = sum(1 for u in sample if _phone_count(api, u) > 0) if sample else 0
+    print("  %d of %d sampled new records already carry phones" % (got, len(sample)))
     if sample and not args.no_wait:
         deadline = time.time() + args.wait_min * 60
-        while time.time() < deadline:
+        while got < 0.8 * len(sample) and time.time() < deadline:
+            time.sleep(60)
             got = sum(1 for u in sample if _phone_count(api, u) > 0)
             print("    %d of %d sampled new records have phones" % (got, len(sample)))
-            if got >= 0.8 * len(sample):
-                break
-            time.sleep(60)
-    after = ds.stats(api)
-    mark_done("skiptrace", submitted=True, sample=len(sample), sample_with_phones=got,
-              traced_before=before.get("total_properties"), traced_after=after.get("total_properties"),
-              value_spent_after=after.get("value_spent"))
-    print("skip trace: traced %s -> %s, value spent $%s" % (
-        before.get("total_properties"), after.get("total_properties"), after.get("value_spent")))
+    mark_done("skiptrace", submitted=False, sample=len(sample), sample_with_phones=got)
+    print("skip trace: %d of %d sampled new records carry phones from the add's own trace" % (got, len(sample)))
+    if sample and got < 0.8 * len(sample):
+        print("  under 80%%. For a list-scoped trace: python src/pull_by_ids.py --ids <ids file> --list %r "
+              "--phase skiptrace" % args.list_name)
 
 
 # ---------------------------------------------------------------- harvest --
@@ -1152,7 +1161,7 @@ def main(argv=None) -> int:
     ap.add_argument("--probe-wait", type=float, default=5.0, help="minutes to wait for the probe id")
     ap.add_argument("--wait-min", type=float, default=30.0, help="minutes to wait for a batch to land")
     ap.add_argument("--no-wait", action="store_true")
-    ap.add_argument("--headless", action="store_true", help="skiptrace: run the wizard headless")
+    ap.add_argument("--headless", action="store_true", help="no longer used: the browser wizard is retired")
     ap.add_argument("--refresh", action="store_true", help="harvest: re-read cached records")
     ap.add_argument("--refresh-pulled", action="store_true",
                     help="harvest: re-read records this run pulled (after the skip trace lands)")

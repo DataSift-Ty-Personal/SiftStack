@@ -22,14 +22,14 @@ The whole team also listens in #ai-team.
 | Workflow | What it does | Runs on | Spend | Status |
 |---|---|---|---|---|
 | ftm_pull | First-to-market notices (foreclosure, probate) pulled, filtered, enriched and uploaded. | schedule (06:30 America/New_York), ask in Slack | paid, inside the caps | by hand today |
-| county_pull | Register of Deeds liens and trustee deeds, condemnations and evictions, matched to parcels. | schedule (07:00 America/New_York), ask in Slack | free | by hand today |
+| county_pull | Register of Deeds liens and trustee deeds, condemnations and evictions, matched to parcels. | schedule (06:30 America/New_York), ask in Slack | free | by hand today |
 | courthouse_import | Courthouse terminal photos and scanned PDFs read, parsed and turned into records. | schedule (every 15 min), ask in Slack | paid, inside the caps | by hand today |
-| market_report | Market Finder pulled for a county, ZIPs and neighborhoods scored, report built. | ask in Slack | free | by hand today |
-| list_pull | Pull a ranked list into the account (doors-per-deal ladder, AI pools, by id). | ask in Slack | asks first (record allowance) | by hand today |
-| idle_records | Idle records worth working again, by AI score, lists, last activity and no recent sale. | schedule (Mon 07:00 America/New_York), ask in Slack | free | by hand today |
-| sold_cleanup | Recently sold properties tagged and pulled out of marketing. | schedule (Sun 06:00 America/New_York) | free | by hand today |
-| account_setup | Presets, sequences, boards, fields and statuses cloned from the blueprint and kept at parity. | ask in Slack | free | by hand today |
-| land_desk | Buildable lots and land tracts matched to the builders who buy them. | ask in Slack | free | by hand today |
+| market_report | Market Finder pulled for a county over the API, ZIPs and neighborhoods scored, the county workbook built. | ask in Slack | free | live |
+| list_pull | Pull a ranked list of property ids into the account by id, quoted first, the first record read back. | ask in Slack | asks first (record allowance) | live |
+| idle_records | Idle records on one list worth working again, ranked (AI scores, lists, attempts, no recent sale), with the owners who hold several. | schedule (Mon 07:00 America/New_York), ask in Slack | free | live |
+| sold_cleanup | Recently sold properties tagged and pulled out of marketing. | schedule (06:30 America/New_York) | free | by hand today |
+| account_setup | The account blueprint planned, checked or applied on this install's own Open API key, with statuses, sequences and board columns listed as by-hand steps. | ask in Slack | free | live |
+| land_desk | Buildable lots and land tracts matched to the builders who buy them, rendered from a finished analysis on the box. | ask in Slack | free | live |
 | ftm_assign | New first-to-market records handed to a caller within 30 minutes of landing, balanced by open workload. | schedule (every 30 min 08:00-18:00 Mon-Fri), ask in Slack | free | live |
 | ftm_auction | Auction Soon kept true on every courthouse foreclosure, so the Hot Auction preset is the real hot list. | schedule (07:45 daily), ask in Slack | free | live |
 | ftm_reactivate | Not-interested first-to-market records whose wait is over handed back to a caller. | schedule (Mon 08:15), ask in Slack | free | live |
@@ -45,11 +45,11 @@ The whole team also listens in #ai-team.
 | Workflow | What it does | Runs on | Spend | Status |
 |---|---|---|---|---|
 | deep_prospect | One record deep prospected end to end (decedent, heirs, signers, live numbers) and written back. | DataSift sequence (deep-prospect), ask in Slack | paid, inside the caps | live |
-| skip_trace | Phones and emails for a record or a list, merged onto the owners. | after list_pull, after ftm_pull, ask in Slack | paid, inside the caps | by hand today |
-| phone_score | Every unscored number tiered (Dial First to Drop) and written back to the phone. | after skip_trace, ask in Slack | paid, inside the caps | by hand today |
-| entity_principals | The human behind an LLC or trust (free reverse address first, BusinessV2 second). | after skip_trace, ask in Slack | paid, inside the caps | by hand today |
-| probate_property | The decedent's property found for a probate filing that names no address. | after ftm_pull | free | by hand today |
-| buyer_registry | Deed-verified local buyers, their principals and scored phones, refreshed monthly. | schedule (1st 07:00 America/New_York), ask in Slack | paid, inside the caps | by hand today |
+| skip_trace | Phones for one record or a small preset, through the autopilot's own waterfall, merged onto the owner. | after list_pull, after ftm_pull, ask in Slack | paid, inside the caps | live |
+| phone_score | Every unscored number on a record or a small preset tiered (Dial First to Drop) and written back to the phone. | after skip_trace, ask in Slack | paid, inside the caps | live |
+| entity_principals | The person behind an LLC or trust that owns a house (free reverse address first, BusinessV2 second), named on the record. | after skip_trace, ask in Slack | paid, inside the caps | live |
+| probate_property | The decedent's house found on the county roll for a probate filing that names no address. | after ftm_pull, ask in Slack | free | live |
+| buyer_registry | Deed-verified local buyers, their principals and scored phones, refreshed one bounded slice when asked. | ask in Slack | paid, inside the caps | live |
 | vendor_directory | A vetted contractor and vendor directory for a market, every field verified. | ask in Slack | free | by hand today |
 | ftm_death_screen | New first-to-market records checked for a death before any text or assignment, and held for research when one may have happened. | schedule (every 30 min 07:00-19:00 daily), ask in Slack | free | live |
 | ftm_native_trace | Records that land with no trace get DataSift's own skip trace, scoped to exactly them, estimate first. | schedule (every 30 min 07:00-19:00 daily), ask in Slack | free | live |
@@ -91,14 +91,11 @@ The whole team also listens in #ai-team.
 
 | Workflow | What it does | Runs on | Spend | Status |
 |---|---|---|---|---|
-| daily_digest | The two-line morning readout (new records, what the team did, spend, anything broken). | schedule (08:00 America/New_York) | free | by hand today |
-| kpi_report | Dials, connects, leads and appointments against the benchmarks. | schedule (Mon 08:00 America/New_York), ask in Slack | free | by hand today |
-| qa_batch | QA a batch before outreach (read-back, junk names, DNC, duplicates, landlines). | after dispo_blast, ask in Slack | free | by hand today |
-| call_coaching | Calls pulled, transcribed with tonality notes and graded on the team rubric. | schedule (Fri 16:00 America/New_York), ask in Slack | paid, inside the caps | by hand today |
+| kpi_report | The week's dials, connects, conversations, leads and appointments against the KPI catalog, with a workbook. | schedule (Mon 08:00 America/New_York), ask in Slack | free | live |
+| qa_batch | A staged batch checked before a person releases it (first record read back, junk names, numbers the gate refuses, duplicates, landlines, the registry flag, the house limits); it never releases anything. | schedule (every 60 min 08:00-18:00 Mon-Fri America/New_York), ask in Slack | free | live |
+| call_coaching | The calls the coaching picks chose, transcribed with tonality notes and graded on the team's rubrics; the notes go to the owner first. | after coaching_picks, ask in Slack | paid, inside the caps | live |
 | sop_writer | SOPs, step guides and training manuals from a narrated video or notes. | ask in Slack | free | by hand today |
-| outreach_health | Deliverability and caller reputation readout, with what to rest or replace. | schedule (08:05 America/New_York), ask in Slack | free | by hand today |
-| sms_campaign | A text campaign built, audited and staged (Smarter Contact groups, text touches, sender pool); a human releases it. | ask in Slack | staged, a human releases | by hand today |
-| obituary_mail | Obituary-list mail campaign (letters to the family) exported to the mail house; a human releases it. | ask in Slack | staged, a human releases | by hand today |
+| outreach_health | What the brain can see of outreach health (limits broken, the touch audit, caller ID lines to rest, the registry scrub, batches waiting), and where to read what only the texting side sees. | schedule (08:05 Mon-Fri America/New_York), ask in Slack | free | live |
 | ftm_attempts | The call counter written from the account's own call log, so a record moves on whichever dialer made the call. | schedule (every 60 min 09:00-19:00 Mon-Fri), ask in Slack | free | live |
 | owner_lanes | Each owner placed in one lane across all of their records; an owner sitting in two lanes is listed. | schedule (02:30 daily), ask in Slack | free | live |
 | sequence_watchdog | Yesterday's sequence triggers checked against what each sequence should have produced; only failures are posted. | schedule (07:20 daily), ask in Slack | free | live |

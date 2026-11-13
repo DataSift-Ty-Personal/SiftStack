@@ -511,8 +511,11 @@ def materialize(roster: Roster, emp_id: str, root: Path | None = None) -> Path:
 
 # channels:join lets the app join a PUBLIC channel by id on its own (slack_app.join), so nobody has
 # to invite it before it can post or hear there. A private channel still needs the invite.
+# files:read lets an employee open what the operator drops in a thread (walkthrough photos, a
+# boundary file); an app created before it was added needs the scope added and one reinstall.
 BOT_SCOPES = ["app_mentions:read", "channels:history", "channels:join", "channels:read", "chat:write",
-              "chat:write.customize", "groups:history", "groups:read", "im:history", "reactions:write"]
+              "chat:write.customize", "files:read", "groups:history", "groups:read", "im:history",
+              "reactions:write"]
 BOT_EVENTS = ["app_mention", "message.channels", "message.groups", "message.im"]
 
 

@@ -24,7 +24,7 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
 
-from . import config, hello, intake, router, slack, slack_app, slack_socket, store, team, worker
+from . import attachments, config, hello, intake, router, slack, slack_app, slack_socket, store, team, worker
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("agents.brain")
@@ -197,6 +197,7 @@ def health() -> dict:
             "slack_one_channel": bool(config.SLACK_CHANNEL), "slack_first_hello": store.kv_get(FIRST_HELLO_KEY),
             "slack_socket": slack_socket.status() if config.SLACK_APP_TOKEN else {"state": "off"},
             "slack_heard": store.kv_get(intake.HEARD_KEY), "slack_hearing": store.kv_get(DEAF_KEY),
+            "slack_files": store.kv_get(attachments.LAST_KEY),
             "team": {e.id: e.display_name for e in roster.employees.values()} if roster else None,
             "live_workflows": sorted(w.name for w in roster.workflows.values() if w.live) if roster else [],
             "worker_alive": bool(_worker.get("thread") and _worker["thread"].is_alive()),

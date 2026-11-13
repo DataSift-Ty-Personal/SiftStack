@@ -45,13 +45,11 @@ from openpyxl.utils import get_column_letter
 
 # ── account wiring ────────────────────────────────────────────────────
 
-CLIENTS = Path(
-    r"C:\Users\Tyrus\OneDrive\Desktop\Deal Room Coaching Call\_api\clients"
-)
 BASE = "https://apiv2.reisift.io"
 OBIT_LIST_TITLE = "Obituary"
 DEFAULT_ACCOUNT = "datasift-apikey"  # ty+2 Open API key, no expiry
 CACHE = Path("output") / "obituary_raw.json"
+ROOT = Path(__file__).resolve().parents[1]
 
 NAVY, BLUE, GREEN, GOLD, RED = "0A1130", "316AFF", "1B9E5A", "B8860B", "CC0000"
 
@@ -131,23 +129,52 @@ def ramp(x, lo, hi):
 
 # ── API layer (read-only, 429-aware) ──────────────────────────────────
 
-class Reader:
-    """Minimal read-only reisift client that respects the server rate limit."""
+def _api_key() -> str:
+    """The Open API key: the environment first (a Fly secret), then the repo's .env (a workstation)."""
+    key = (os.environ.get("REISIFT_API_KEY") or "").strip()
+    if key:
+        return key
+    try:
+        for line in (ROOT / ".env").read_text(encoding="utf-8", errors="replace").splitlines():
+            if line.strip().startswith("REISIFT_API_KEY=") and not line.lstrip().startswith("#"):
+                return line.split("=", 1)[1].strip().strip('"').strip("'")
+    except OSError:
+        pass
+    return ""
 
-    def __init__(self, account: str, gap: float = 0.45):
-        sys.path.insert(0, str(CLIENTS))
-        os.environ["REISIFT_ACCOUNT"] = account
-        from reisift_auth import get_headers  # noqa: E402
-        self._headers = get_headers
+
+class Reader:
+    """Minimal read-only reisift client on the Open API key that respects the server rate limit.
+
+    It used to take its token from the Deal Room store on one Windows desktop, keyed by account
+    name. The default name, datasift-apikey, IS the Open API key, so the key is read directly now:
+    every caller keeps working and the reader runs anywhere the key is set (the agents box, a
+    customer's install). `call` hands it a transport instead (the agents pass their budgeted
+    client), and then it makes no request of its own."""
+
+    def __init__(self, account: str = DEFAULT_ACCOUNT, gap: float = 0.45, *, call=None, key: str = ""):
         self.gap = gap
+        self._transport = call
+        self._key = ""
+        if call is None:
+            if account not in ("", DEFAULT_ACCOUNT):
+                raise SystemExit("This reader runs on the Open API key only (REISIFT_API_KEY). Account %r "
+                                 "named a token in the old desktop store, which is no longer read: put that "
+                                 "account's Open API key in REISIFT_API_KEY instead." % account)
+            self._key = (key or _api_key()).strip()
+            if not self._key:
+                raise SystemExit("REISIFT_API_KEY is not set: the reader needs the account's Open API key")
 
     def _call(self, path, *, method="GET", body=None, override=None, tries=6):
+        if self._transport is not None:
+            return self._transport(path, method, body, {"x-http-method-override": override} if override else None)
         for _ in range(tries):
             time.sleep(self.gap)
-            hdrs = self._headers(
-                content_type="application/json" if body is not None else None,
-                method_override=override,
-            )
+            hdrs = {"Authorization": "Api-Key " + self._key, "Accept": "application/json"}
+            if body is not None:
+                hdrs["Content-Type"] = "application/json"
+            if override:
+                hdrs["x-http-method-override"] = override
             data = json.dumps(body).encode() if body is not None else None
             req = urllib.request.Request(BASE + path, data=data, headers=hdrs, method=method)
             try:
@@ -165,12 +192,15 @@ class Reader:
                 raise RuntimeError(f"HTTP {e.code} on {path}: {txt[:200]}")
         raise RuntimeError(f"rate-limit retries exhausted on {path}")
 
-    def obituary_list_uuid(self):
+    def list_uuid(self, title: str):
         r = self._call("/api/internal/list/?limit=999")
         for l in (r.get("results") or r.get("data") or []):
-            if (l.get("title") or "").strip().lower() == OBIT_LIST_TITLE.lower():
+            if (l.get("title") or "").strip().lower() == title.strip().lower():
                 return l["uuid"]
-        raise RuntimeError(f"No '{OBIT_LIST_TITLE}' list on this account")
+        raise RuntimeError(f"No '{title}' list on this account")
+
+    def obituary_list_uuid(self):
+        return self.list_uuid(OBIT_LIST_TITLE)
 
     def list_records(self, list_uuid, ptype):
         out, offset = [], 0
@@ -207,44 +237,72 @@ class Reader:
         return out
 
 
-def pull(account: str, cache: Path = CACHE):
-    """Pull the whole obituary list to a JSON cache. Resumable: reruns only refill gaps."""
-    rd = Reader(account)
+def pull(account: str, cache: Path = CACHE, *, reader=None, list_title: str = OBIT_LIST_TITLE,
+         max_reads: int | None = None, refresh_days: int | None = None, today: date | None = None):
+    """Pull the whole obituary list to a JSON cache. Resumable: reruns only refill gaps.
+
+    The command line reads everything it is missing, as it always has. The agents run it inside a
+    shared request budget, so they pass `max_reads` (records hydrated this run; the rest are marked
+    pending and read next run, never shown as a failed read) and `refresh_days` (a cached record
+    older than this is read again, oldest first, because a weekly ranking of month-old records
+    would rank houses that have since sold)."""
+    rd = reader or Reader(account)
     cache.parent.mkdir(parents=True, exist_ok=True)
+    today = today or date.today()
     existing = {}
     if cache.exists():
         for x in json.loads(cache.read_text(encoding="utf-8")).get("records", []):
             existing[x["uuid"]] = x
 
-    print(f"Paginating the {OBIT_LIST_TITLE} list...", flush=True)
-    lu = rd.obituary_list_uuid()
+    print(f"Paginating the {list_title} list...", flush=True)
+    lu = rd.list_uuid(list_title)
     thin = rd.list_records(lu, "clean") + rd.list_records(lu, "incomplete")
     rows, seen = [], set()
     for r in thin:
         if r["uuid"] not in seen:
             seen.add(r["uuid"])
             rows.append(r)
-    print(f"  {len(rows)} unique obituary records\n", flush=True)
+    print(f"  {len(rows)} unique {list_title.lower()} records\n", flush=True)
 
+    def stale(prev: dict) -> bool:
+        if refresh_days is None or prev.get("record") is None:
+            return False
+        got = parse_date(prev.get("fetched"))
+        return got is None or (today - got).days > refresh_days
+
+    # Oldest reads first, so a capped run always spends its reads where they matter most.
+    order = sorted(rows, key=lambda r: (existing.get(r["uuid"], {}).get("record") is not None,
+                                        str(existing.get(r["uuid"], {}).get("fetched") or "")))
     print("Hydrating detail + custom fields...", flush=True)
-    out, t0 = [], time.time()
-    for i, r in enumerate(rows, 1):
+    out, t0, reads = {}, time.time(), 0
+    for i, r in enumerate(order, 1):
         u = r["uuid"]
         prev = existing.get(u, {})
-        rec = prev.get("record")
-        cf = prev.get("custom_fields")
+        rec = None if stale(prev) else prev.get("record")
+        cf = None if stale(prev) else prev.get("custom_fields")
         err = None
+        fetched = prev.get("fetched")
+        if (rec is None or cf is None) and max_reads is not None and reads >= max_reads:
+            out[u] = {"uuid": u, "thin": r, "record": rec, "custom_fields": cf, "error": None, "pending": True}
+            continue
         try:
+            if rec is None or cf is None:
+                reads += 1
             if rec is None:
                 rec = rd.detail(u)
+                fetched = today.isoformat()
             if cf is None:
                 cf = rd.custom_fields(u)
         except Exception as e:
             err = str(e)[:200]
-        out.append({"uuid": u, "thin": r, "record": rec, "custom_fields": cf, "error": err})
+        entry = {"uuid": u, "thin": r, "record": rec, "custom_fields": cf, "error": err}
+        if fetched and (refresh_days is not None or max_reads is not None):
+            entry["fetched"] = fetched
+        out[u] = entry
         if i % 25 == 0:
             cache.write_text(json.dumps(
-                {"pulled": date.today().isoformat(), "account": account, "records": out},
+                {"pulled": date.today().isoformat(), "account": account,
+                 "records": [out[x["uuid"]] for x in rows if x["uuid"] in out]},
                 default=str), encoding="utf-8")
             print(f"    {i}/{len(rows)}  ({time.time()-t0:.0f}s)", flush=True)
 
@@ -254,11 +312,16 @@ def pull(account: str, cache: Path = CACHE):
     except Exception as e:
         print("  (option labels unavailable:", str(e)[:80], ")")
 
-    cache.write_text(json.dumps(
-        {"pulled": date.today().isoformat(), "account": account,
-         "option_labels": opts, "records": out}, default=str), encoding="utf-8")
-    ok = sum(1 for x in out if x["record"])
-    print(f"\nWrote {cache} — {ok}/{len(out)} hydrated, {time.time()-t0:.0f}s")
+    records = [out[x["uuid"]] for x in rows]          # the listing's own order: it decides ties downstream
+    blob = {"pulled": date.today().isoformat(), "account": account, "option_labels": opts, "records": records}
+    if max_reads is not None or refresh_days is not None:
+        # A capped run says what it spent, so a caller sharing one read budget across lists can count it.
+        blob["last_run"] = {"reads": reads, "at": today.isoformat()}
+    cache.write_text(json.dumps(blob, default=str), encoding="utf-8")
+    ok = sum(1 for x in records if x["record"])
+    waiting = sum(1 for x in records if x.get("pending"))
+    print(f"\nWrote {cache}: {ok}/{len(records)} hydrated, {time.time()-t0:.0f}s"
+          + (f", {waiting} left for the next run" if waiting else ""))
     return cache
 
 
@@ -663,12 +726,19 @@ def assemble(cache: Path, min_months: int, today: date):
         opts = blob.get("option_labels") or {}
         pulled = blob.get("pulled")
 
-    qualified, excluded, unhydrated = [], [], 0
+    qualified, excluded, unhydrated, pending = [], [], 0, 0
     for e in entries:
         if not e.get("record"):
-            unhydrated += 1
+            # A capped run (the agents read inside a shared budget) leaves some records for the next
+            # run. Calling those "could not load" would read like an API failure.
+            if e.get("pending"):
+                pending += 1
+                reason = "Not read yet: the next run reads it"
+            else:
+                unhydrated += 1
+                reason = "Could not load the record from the API"
             excluded.append({"street": (e.get("thin") or {}).get("address", {}).get("street"),
-                             "uuid": e["uuid"], "reason": "Could not load the record from the API"})
+                             "uuid": e["uuid"], "reason": reason})
             continue
         r = flatten(e, opts)
         why_not = gate(r, today, min_months)
@@ -711,6 +781,8 @@ def assemble(cache: Path, min_months: int, today: date):
     qualified.sort(key=lambda x: -x["score"])
     meta = {"pulled": pulled, "total": len(entries), "unhydrated": unhydrated,
             "qualified": len(qualified), "excluded": len(excluded)}
+    if pending:
+        meta["pending"] = pending
     return qualified, excluded, meta
 
 

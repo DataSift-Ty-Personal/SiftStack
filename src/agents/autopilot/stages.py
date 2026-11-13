@@ -1413,6 +1413,11 @@ def run_retrace(ctx: Ctx) -> None:
         if status_of(rec) in DEAD_STATUSES:
             continue
         subj = subject_of(rec)
+        if subj.kind == "entity" and entity_to == "principals":
+            from ..workflows.entity_principals import as_principal_record
+            named = as_principal_record(rec)
+            if named is not None:
+                rec, subj = named, subject_of(named)   # plan 1.15: the named person is traced; numbers land on the company's owner
         if subj.kind in ("deceased", "probate") and deceased_to == "deep_prospect":
             _handoff(ctx, rec, subj, "%s owner" % subj.kind, death=True)
             continue

@@ -96,6 +96,10 @@ EXTRA_SECTIONS: list[tuple[str, str]] = [
     ("kpi, alarms and measurement", "selftest_kpi"),
     ("research lane", "selftest_research"),
     ("research write-back", "selftest_writeback"),
+    ("files dropped in slack", "selftest_files"),
+    ("quinn's operations workflows", "selftest_wf_ops"),
+    ("people workflows", "selftest_wf_people"),
+    ("atlas's data workflows", "selftest_wf_data"),
 ]
 
 

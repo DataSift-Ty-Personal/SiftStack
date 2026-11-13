@@ -65,6 +65,14 @@ OPTIONAL = [
     ("SLACK_APP_TOKEN", "the team's Slack app, Socket Mode (xapp-...): hear replies with no signing secret or URL check"),
     ("AGENTS_RELEASERS", "Slack user ids allowed to release a staged batch from the channel (empty: command line only)"),
     ("AGENTS_SLACK_WEBHOOK", "the agents' Slack channel (post-only fallback without the app)"),
+    # Quinn's call coaching and batch QA (src/agents/workflows/call_coaching.py, qa_batch.py)
+    ("AGENTS_COACH_RUN_CAP_USD", "call coaching: spend cap for one review pack (default 4.00)"),
+    ("AGENTS_COACH_MAX_CALLS", "call coaching: calls graded in one pack (default 16)"),
+    ("AGENTS_COACH_ROLES", "call coaching: Name=pipeline pins a caller to one rubric"),
+    ("AGENTS_COACH_MODEL", "call coaching: the grading model (default the team model)"),
+    ("AGENTS_COACH_EFFORT", "call coaching: grading effort (default high)"),
+    ("AGENTS_COACH_GRADE_EST_USD", "call coaching: estimated cost of one grade, for the cap"),
+    ("AGENTS_QA_MAX_READS", "batch QA: record reads in one check (default 60)"),
     ("SLACK_WEBHOOK_URL", "fallback Slack channel"),
 ]
 

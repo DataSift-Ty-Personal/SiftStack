@@ -10,12 +10,22 @@ In order:
      answered with a short "which of us?" only when the bot was mentioned or messaged directly.
 
 The operator's message gets an :eyes: reaction when it is picked up, rather than another message.
+
+Files (walkthrough photos, a boundary file, a PDF) ride along with any of the above
+(agents/attachments.py): they are recorded on the thread here and saved into the employee's
+workspace when its turn starts. A message carrying files starts its turn FILE_SETTLE_S later, and a
+further message on the same thread while that turn waits joins it, so a walkthrough posted ten
+photos at a time is ONE turn that sees every photo. Files posted with no ask are held for the same
+person's next ask in that channel.
 """
 from __future__ import annotations
 
-from . import bus, hello, release, slack_app, store, team
+from . import attachments, bus, config, hello, release, slack_app, store, team
 
 HEARD_KEY = "slack:last_event"      # when Slack last delivered anything, by either way in
+# Message subtypes a person produces by writing: a post with files, and a thread reply also sent to
+# the channel. Every other subtype (edits, deletes, joins, the bot's own posts) is not an ask.
+HUMAN_SUBTYPES = {"file_share", "thread_broadcast"}
 
 
 def handle_body(body: dict, retry: bool, roster_fn) -> dict:
@@ -28,7 +38,7 @@ def handle_body(body: dict, retry: bool, roster_fn) -> dict:
     event = body.get("event") or {}
     if body.get("event_id") and not store.seen_once("slack:%s" % body["event_id"]):
         return {"ok": True, "duplicate": True}
-    if event.get("bot_id") or event.get("subtype"):
+    if event.get("bot_id") or (event.get("subtype") and event["subtype"] not in HUMAN_SUBTYPES):
         return {"ok": True, "ignored": True}   # our own posts, edits, joins
     roster = roster_fn()
     if not roster:
@@ -52,10 +62,16 @@ def slack_event(event: dict, roster) -> dict:
     if cmd:
         return release.slack_command(cmd, user, channel, thread or ts)
 
+    files = attachments.from_event(event)
+    if files and thread:
+        attachments.add(channel, thread, files)
+        attachments.unreadable_notice(channel, thread, len(files))
+    settle = store.later(config.FILE_SETTLE_S) if files else ""
+
     if thread:
         waiting = store.waiting_on(channel, thread)
         if waiting:
-            tid = bus.resume(waiting, team.clean(text), user)
+            tid = bus.resume(waiting, team.clean(text), user, not_before=settle)
             slack_app.react(channel, ts)
             return {"resumed": waiting["id"], "task": tid}
 
@@ -70,14 +86,31 @@ def slack_event(event: dict, roster) -> dict:
     if route["kind"] == "hello":
         return {"hello": hello.start(roster, channel, thread or ts, team.clean(text))}
     if route["kind"] == "which":
+        if files and not thread:
+            # Photos first, the ask second: held for this person's next ask in this channel.
+            return {"which": False, "held": attachments.hold(channel, user, files)}
         direct = event.get("type") == "app_mention" or event.get("channel_type") == "im"
         if direct:
             slack_app.post(channel, roster.which_text(), thread_ts=thread or ts)
         return {"which": direct}
 
-    tid, _ = store.enqueue(route["agent"], "ask", "", subject=route["text"][:120],
+    if not thread:
+        # A new ask in the channel: its own files, plus any this person posted just before it.
+        held = attachments.claim(channel, user)
+        mine = files + [f for f in held if f.get("id") not in {g.get("id") for g in files}]
+        if mine:
+            attachments.add(channel, ts, mine)
+            attachments.unreadable_notice(channel, ts, len(mine))
+
+    # A turn on this thread that has not started yet takes the new message instead of a second turn.
+    waiting_turn = store.queued_ask(channel, thread or ts, route["agent"])
+    if waiting_turn and store.join_ask(waiting_turn["id"], route["text"], settle):
+        slack_app.react(channel, ts)
+        return {"joined": waiting_turn["id"], "agent": route["agent"]}
+
+    tid, _ = store.enqueue(route["agent"], "ask", "", subject=(route["text"] or "files")[:120],
                            payload={"text": route["text"], "user": user, "channel_name": name},
                            thread_id=on_thread[-1]["thread_id"] if on_thread else "", mode="agent", source="slack",
-                           slack_channel=channel, slack_thread=thread or ts)
+                           slack_channel=channel, slack_thread=thread or ts, not_before=settle)
     slack_app.react(channel, ts)
     return {"queued": tid, "agent": route["agent"]}

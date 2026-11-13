@@ -124,10 +124,14 @@ MAP_SQ = re.compile(r"'(/(?:properties|filters)/[^'\n]*)'")
 # Verdicts a person checked against the code, where the static scan under-reads a dependency
 # (usually the main write path living behind a function-scope import). Each says what to change.
 REVIEWED = {
+    "list_pull": ("needs work", "the pull itself (workflows/list_pull, pull_by_ids) runs on published routes and the key; "
+                  "agency_call_list, knox_blount_top15k and franklin_top30k load the uploader, siftmap_pull's allowance "
+                  "read and SiftMap autocomplete at module scope"),
+    "account_setup": ("needs work", "the install path (workflows/account_setup) runs on published routes and the key; "
+                      "the staff export and pasted-token apply (account_blueprint), datasift_schema_setup and the browser "
+                      "preset manager keep the covered agents off the key"),
     "courthouse_import": ("needs work", "uploads through the browser wizard with the password "
                           "(dropbox_watcher -> datasift_uploader); switch to datasift_api_upload.upload_csv as ftm_runner does"),
-    "skip_trace": ("needs work", "merges phones through the Add-Data browser wizard (tracerfy_ftm --finish -> "
-                   "sift_upload_wizard); write them with POST /api/internal/owner/{uuid}/upsert-phones/ as the autopilot does"),
 }
 
 # ------------------------------------------------------------------------------------- specs

@@ -93,7 +93,7 @@ workflows:
     status: planned
     spend: paid
     triggers: [schedule:06:30 America/New_York, slack]
-    manual: Runs today on the siftstack-ftm Fly app (src/ftm_runner.py, src/ftm_schedule.py).
+    manual: "Runs on its own Fly app, siftstack-ftm, every day at 06:30 America/New_York (up to 10 minutes of jitter): src/ftm_schedule.py runs src/ftm_runner.py --stages notices,capture,liens,county,sold --commit and posts the health digest at 08:00. The brain cannot reach that machine. By hand: fly ssh console -a siftstack-ftm -C 'python /app/src/ftm_runner.py --doctor' (credentials, egress, searches); --max-notices 2 is a bounded dry run, --commit the real thing. Runbook: deploy/FTM_RUNBOOK.md."
     sources: [ftm_runner, ftm_schedule, scraper, captcha_solver, notice_parser, foreclosure_filter, proxy_resolver]
     covers: [ftmrun, ftmsched, proxy, scraper, gate, parser, fcfilter, addr, prop, tax, obit, apiupload]
   county_pull:
@@ -101,8 +101,8 @@ workflows:
     summary: Register of Deeds liens and trustee deeds, condemnations and evictions, matched to parcels.
     status: planned
     spend: free
-    triggers: [schedule:07:00 America/New_York, slack]
-    manual: python src/knox_ftm_pull.py and src/knox_lien_resolve.py (Knox only today).
+    triggers: [schedule:06:30 America/New_York, slack]
+    manual: "Runs as the capture, liens and county stages of the daily first-to-market run on siftstack-ftm (06:30 America/New_York): Knox Register of Deeds liens and releases, the condemnation agendas, the county upload. Knox only. By hand on that box: fly ssh console -a siftstack-ftm -C 'python /app/src/ftm_runner.py --stages capture,liens,county --commit' (liens before county). The recorder is a paid monthly subscription; a lapse fails the stage by name."
     sources: [knox_ftm_pull, knox_lien_resolve]
     covers: [knoxftm, lien, consolidate, apiupload]
   courthouse_import:
@@ -111,62 +111,67 @@ workflows:
     status: planned
     spend: paid
     triggers: [schedule:every 15 min, slack]
-    manual: python src/main.py photo-import / dropbox-watch / pdf import.
+    manual: "Not on any server: python src/main.py photo-import --folder <dir> --photo-county Knox --photo-type <type>, or python src/main.py dropbox-watch, on a workstation. It uploads through the DataSift browser wizard with a password, which the brain does not have; moving it to datasift_api_upload.upload_csv (as ftm_runner does) is what would let it run here."
     sources: [photo_importer, dropbox_watcher, pdf_importer, image_utils, llm_parser]
     covers: [photo, pdfimp, dropbox]
   market_report:
     owner: analysis
-    summary: Market Finder pulled for a county, ZIPs and neighborhoods scored, report built.
-    status: planned
+    summary: Market Finder pulled for a county over the API, ZIPs and neighborhoods scored, the county workbook built.
+    status: live
     spend: free
     triggers: [slack]
-    manual: "python src/extract_market_finder.py then the county report generator. python src/market_analyzer.py --compare --market-finder <json> prints the top ZIPs on today's weights and on the taught ones."
-    sources: [extract_market_finder, market_analyzer]
+    inputs: {county: "County name without the word County, for example Knox", state: "State, two letters or the full name, for example TN"}
+    manual: "python src/extract_market_finder.py --state TN --county Knox (the browser; --source api pulls over the API), then python src/county_market_report.py --sift <json> --county Knox --state TN --out <xlsx>. python src/market_analyzer.py --compare --market-finder <json> prints the top ZIPs on today's weights and on the taught ones."
+    sources: [agents.workflows.market_report, extract_market_finder, market_analyzer, county_market_report]
     covers: [finder, report]
   list_pull:
     owner: analysis
-    summary: Pull a ranked list into the account (doors-per-deal ladder, AI pools, by id).
-    status: planned
+    summary: Pull a ranked list of property ids into the account by id, quoted first, the first record read back.
+    status: live
     spend: records
     triggers: [slack]
+    inputs: {ids: "The dataflik ids: comma-separated, or the file name of a JSON or CSV of rows with dataflik_id that an earlier task left on the box", list: "The DataSift list the records go on (created if missing)", approved_count: "How many NEW records the operator approved from this workflow's own quote; 0 asks for the quote only"}
     manual: python src/pull_by_ids.py with an ai_pools or ladder export.
-    sources: [pull_by_ids, ai_pools, knox_blount_top15k, franklin_top30k]
+    sources: [agents.workflows.list_pull, pull_by_ids, ai_pools, knox_blount_top15k, franklin_top30k]
     covers: [ladderpull, aipools]
   idle_records:
     owner: analysis
-    summary: Idle records worth working again, by AI score, lists, last activity and no recent sale.
-    status: planned
+    summary: Idle records on one list worth working again, ranked (AI scores, lists, attempts, no recent sale), with the owners who hold several.
+    status: live
     spend: free
     triggers: [schedule:Mon 07:00 America/New_York, slack]
+    inputs: {list: "The DataSift list to rank, by its title (Obituary, Tired Landlord, D4D Top 3000)"}
     manual: "python src/dream100.py and src/obituary_opportunity.py (per-list today). dream100 --phase compare prints both weight sets side by side; --weights taught builds on the taught set in its own folder."
-    sources: [dream100, obituary_opportunity, d4d_call_list]
+    sources: [agents.workflows.idle_records, dream100, dream100_build, obituary_opportunity, d4d_call_list]
     covers: [obitrank, dream100, d4dcalls]
   sold_cleanup:
     owner: analysis
     summary: Recently sold properties tagged and pulled out of marketing.
     status: planned
     spend: free
-    triggers: [schedule:Sun 06:00 America/New_York]
-    manual: The Recently Sold SiftMap preset plus the sold sequence (sops/remove-sold-properties-from-marketing.sop.md).
-    sources: [siftmap_standalone, datasift_uploader]
+    triggers: [schedule:06:30 America/New_York]
+    manual: "Runs as the sold stage of the daily first-to-market run on siftstack-ftm (src/sold_guard.py daily --commit, last, after the day's uploads). By hand: python src/sold_guard.py audit (read only), daily (dry) or daily --commit; undo --commit replays changes.jsonl backwards. Never switch the Recently Sold SiftMap presets back on: they re-tag every restored record the same night."
+    sources: [sold_guard, ftm_runner]
     covers: [siftmap]
   account_setup:
     owner: analysis
-    summary: Presets, sequences, boards, fields and statuses cloned from the blueprint and kept at parity.
-    status: planned
+    summary: The account blueprint planned, checked or applied on this install's own Open API key, with statuses, sequences and board columns listed as by-hand steps.
+    status: live
     spend: free
     triggers: [slack]
+    inputs: {phase: "plan (read only, the default), verify (a read-only parity check) or apply (writes only on a live box with ACCOUNT_SETUP_ALLOW_APPLY=1)", account_email: "The email of the DataSift user whose Open API key this box runs on"}
     manual: python src/clone_account.py --phase plan / apply / verify.
-    sources: [clone_account, account_blueprint, datasift_schema_setup]
+    sources: [agents.workflows.account_setup, clone_account, account_blueprint, datasift_schema_setup]
     covers: [schema, presets, sequences, bpexport, bpapply, wizard]
   land_desk:
     owner: analysis
-    summary: Buildable lots and land tracts matched to the builders who buy them.
-    status: planned
+    summary: Buildable lots and land tracts matched to the builders who buy them, rendered from a finished analysis on the box.
+    status: live
     spend: free
     triggers: [slack]
-    manual: python src/vacant_land.py, src/builder_land.py, src/land_market.py.
-    sources: [vacant_land, builder_land, land_market]
+    inputs: {market: "The land desk market, the folder its analysis was built in (knox_blount, union_oh, franklin_oh)"}
+    manual: "python src/vacant_land.py, src/builder_land.py, src/land_market.py on the workstation; copy output/builder_land/<market>/analysis.json to the box's builder_land folder for the team to render it."
+    sources: [agents.workflows.land_desk, builder_land, vacant_land, land_market]
     covers: [builderland, vacantland]
 
   # ---------------------------------------------------------------- Diggs, Research
@@ -182,48 +187,52 @@ workflows:
     covers: [researchagent, dprecord, dream100dp, dp5]
   skip_trace:
     owner: research
-    summary: Phones and emails for a record or a list, merged onto the owners.
-    status: planned
+    summary: Phones for one record or a small preset, through the autopilot's own waterfall, merged onto the owner.
+    status: live
     spend: paid
     triggers: [chain:list_pull, chain:ftm_pull, slack]
-    manual: SmartSkip / Tracerfy today; Tyler's skip trace plugin replaces both.
-    sources: [smartskip_trace, tracerfy_ftm]
+    inputs: {target: "One record (its uuid or street line) or the exact title of a saved preset; a preset is cut to 25 records"}
+    manual: SmartSkip and Tracerfy by hand; the autopilot's retrace stages run the same waterfall on their presets.
+    sources: [agents.workflows.skip_trace, agents.autopilot]
     covers: [tracerfy]
   phone_score:
     owner: research
-    summary: Every unscored number tiered (Dial First to Drop) and written back to the phone.
-    status: planned
+    summary: Every unscored number on a record or a small preset tiered (Dial First to Drop) and written back to the phone.
+    status: live
     spend: paid
     triggers: [chain:skip_trace, slack]
+    inputs: {target: "One record (its uuid or street line) or the exact title of a saved preset; a preset is cut to 25 records"}
     manual: python src/d4d_call_list.py --phase score / writeback (per cohort today).
-    sources: [phone_validator, trestle_router]
+    sources: [agents.workflows.phone_score, agents.autopilot, phone_validator]
     covers: [phone]
   entity_principals:
     owner: research
-    summary: The human behind an LLC or trust (free reverse address first, BusinessV2 second).
-    status: planned
+    summary: The person behind an LLC or trust that owns a house (free reverse address first, BusinessV2 second), named on the record.
+    status: live
     spend: paid
     triggers: [chain:skip_trace, slack]
-    manual: buyer_sweep unmask and enformion_business.find_principals.
-    sources: [buyer_sweep, enformion_business]
+    inputs: {record: "Record uuid or full street line of a house a company or trust owns"}
+    manual: buyer_sweep.reverse_address, then enformion_business.search_officers with rank_officers.
+    sources: [agents.workflows.entity_principals, buyer_sweep, enformion_business]
     covers: [entity]
   probate_property:
     owner: research
-    summary: The decedent's property found for a probate filing that names no address.
-    status: planned
+    summary: The decedent's house found on the county roll for a probate filing that names no address.
+    status: live
     spend: free
-    triggers: [chain:ftm_pull]
-    manual: property_lookup (Knox Tax API, executor family search, people search).
-    sources: [property_lookup, obituary_enricher]
+    triggers: [chain:ftm_pull, slack]
+    inputs: {decedent: "The person who died, as the notice prints the name", county: "Knox, Blount, or both"}
+    manual: property_lookup (TPAD for Blount) and the Knox tax API, through the owner-of-record guard.
+    sources: [agents.workflows.probate_property, property_lookup]
     covers: [probfind]
   buyer_registry:
     owner: research
-    summary: Deed-verified local buyers, their principals and scored phones, refreshed monthly.
-    status: planned
+    summary: Deed-verified local buyers, their principals and scored phones, refreshed one bounded slice when asked.
+    status: live
     spend: paid
-    triggers: [schedule:1st 07:00 America/New_York, slack]
+    triggers: [slack]   # nightly 02:15 slice waits on Ty: it reads SiftMap detail without adding records
     manual: "python src/dispo_buyers.py --phase sweep ... score. --phase rules previews the taught deed rules from the cache; --rules taught applies them."
-    sources: [dispo_buyers, dispo_skiptrace, buyer_sweep]
+    sources: [agents.workflows.buyer_registry, dispo_buyers, dispo_skiptrace, buyer_sweep]
     covers: [sweep, dispobuyers, disposkip, prospector]
   vendor_directory:
     owner: research
@@ -307,77 +316,55 @@ workflows:
     triggers: [slack]
     manual: Runs live on the siftstack Fly app today (src/sms_agent for smrtPhone, sc_inbound for Smarter Contact), outside the team.
     sources: [sms_agent.respond, sms_agent.sc_inbound, sms_agent.engine]
-    covers: [classifier, responder, scinbound]
+    covers: [classifier, responder, scinbound, sender, mms]
 
   # ---------------------------------------------------------------- Quinn, Operations
-  daily_digest:
-    owner: ops
-    summary: The two-line morning readout (new records, what the team did, spend, anything broken).
-    status: planned
-    spend: free
-    triggers: [schedule:08:00 America/New_York]
-    manual: python src/ftm_health.py on the FTM box.
-    sources: [ftm_health, agents.store]
   kpi_report:
     owner: ops
-    summary: Dials, connects, leads and appointments against the benchmarks.
-    status: planned
+    summary: The week's dials, connects, conversations, leads and appointments against the KPI catalog, with a workbook.
+    status: live
     spend: free
     triggers: [schedule:Mon 08:00 America/New_York, slack]
-    manual: The kpi-engine skill.
-    sources: [kpi-engine]
-    covers: [kpi]
+    inputs:
+      week: "Which week: last (Monday to Sunday before this one, the default), this (Monday to today), or any day inside the week wanted, written YYYY-MM-DD"
+    manual: Ask Quinn in Slack. On a workstation the kpi-engine skill pulls the same numbers with a pasted token.
+    sources: [agents.workflows.kpi_report]
   qa_batch:
     owner: ops
-    summary: QA a batch before outreach (read-back, junk names, DNC, duplicates, landlines).
-    status: planned
+    summary: A staged batch checked before a person releases it (first record read back, junk names, numbers the gate refuses, duplicates, landlines, the registry flag, the house limits); it never releases anything.
+    status: live
     spend: free
-    triggers: [chain:dispo_blast, slack]
-    manual: python src/smarter_contact_audit.py and the uploader's one-record read-back.
-    sources: [smarter_contact_audit, datasift_api_upload]
-    covers: [scaudit]
+    triggers: [schedule:every 60 min 08:00-18:00 Mon-Fri America/New_York, slack]
+    inputs:
+      batch: "The staged batch number to check (from the morning digest or the stage's post), or all for every batch waiting"
+    manual: Ask Quinn in Slack. python src/agents/cli.py autopilot batches lists what waits; each release checks every item again.
+    sources: [agents.workflows.qa_batch]
   call_coaching:
     owner: ops
-    summary: Calls pulled, transcribed with tonality notes and graded on the team rubric.
-    status: planned
+    summary: The calls the coaching picks chose, transcribed with tonality notes and graded on the team's rubrics; the notes go to the owner first.
+    status: live
     spend: paid
-    triggers: [schedule:Fri 16:00 America/New_York, slack]
-    manual: src/call_coaching/pull_calls.py and transcribe.py, then the coach skills.
-    sources: [call_coaching]
-    covers: [callpull, transcribe, coldcoach, lmcoach, closercoach]
+    triggers: [chain:coaching_picks, slack]
+    inputs:
+      scope: "Which picked calls to grade: latest (the newest review pack), a caller's first name, or a period as the picks stage keeps it, such as week:2026-11-13"
+    manual: Ask Quinn in Slack. On a workstation, src/call_coaching/pull_calls.py and transcribe.py, then the coach skills.
+    sources: [agents.workflows.call_coaching, call_coaching.grade, call_coaching.transcribe]
+    covers: [transcribe, coldcoach, lmcoach, closercoach]
   sop_writer:
     owner: ops
     summary: SOPs, step guides and training manuals from a narrated video or notes.
     status: planned
     spend: free
     triggers: [slack]
-    manual: The playbook-creator skill.
+    manual: Not a queued job. Ask Quinn in the thread; she writes it with the playbook-creator skill in the conversation.
     sources: [playbook-creator]
     covers: [playbookgen]
   outreach_health:
     owner: ops
-    summary: Deliverability and caller reputation readout, with what to rest or replace.
-    status: planned
+    summary: What the brain can see of outreach health (limits broken, the touch audit, caller ID lines to rest, the registry scrub, batches waiting), and where to read what only the texting side sees.
+    status: live
     spend: free
-    triggers: [schedule:08:05 America/New_York, slack]
-    manual: python src/sms_agent/cli.py deliverability and the caller-reputation monitor.
-    sources: [sms_agent, caller-reputation]
+    triggers: [schedule:08:05 Mon-Fri America/New_York, slack]
+    manual: Ask Quinn in Slack. Delivery and carrier refusals live on the texting side, python src/sms_agent/cli.py deliverability on the siftstack app.
+    sources: [agents.workflows.outreach_health]
     covers: [deliver, callerrep]
-  sms_campaign:
-    owner: ops
-    summary: A text campaign built, audited and staged (Smarter Contact groups, text touches, sender pool); a human releases it.
-    status: planned
-    spend: outreach
-    triggers: [slack]
-    manual: python src/smarter_contact_launch.py for campaigns, the text-touch-builder skill for copy, src/sms_agent/cli.py seed then release for smrtPhone.
-    sources: [smarter_contact_launch, smarter_contact_templates, sms_agent.sender_pool, mms_sender]
-    covers: [sccampaign, texttouch, sender, mms]
-  obituary_mail:
-    owner: ops
-    summary: Obituary-list mail campaign (letters to the family) exported to the mail house; a human releases it.
-    status: planned
-    spend: outreach
-    triggers: [slack]
-    manual: python src/obituary_campaign.py then src/obituary_mail_export.py.
-    sources: [obituary_campaign, obituary_mail_export]
-    covers: [obitcamp, obitmail]
