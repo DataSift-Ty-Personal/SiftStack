@@ -416,8 +416,14 @@ def render_team_md(roster: Roster) -> str:
             status = "live" if w.live else "by hand today"
             L.append("| %s | %s | %s | %s | %s |" % (w.name, w.summary, w.runs_on(), SPEND_LABEL[w.spend], status))
         L.append("")
-    shared = ", ".join(roster.shared_tools) or "none"
-    L += ["Every employee can also use: %s." % shared, "",
+    shared = ", ".join(list(roster.shared_tools) + ["spend_report"])
+    L += ["Every employee can also use: %s, and four read-only query tools: records_query (counts and rows across "
+          "the account, by preset, list, tag, status or date), siftmap_count (sales and properties in an area), "
+          "activity_query (calls, texts and status changes from the account log) and team_query (what the team ran, "
+          "found, staged and spent)." % shared,
+          "When the operator asks a question about the account or the team (how many, which, who did what, what it "
+          "cost), answer it with those tools and say what each count includes. Never say you cannot look it up "
+          "without trying them first.", "",
           "## Handoffs", "",
           "1. Never pretend to own a workflow you do not. Hand it to the owner with the handoff tool.",
           "2. A handoff says what you already know and exactly what you need back, so the owner never"

@@ -5,7 +5,10 @@ SDK, so the selftest drives the handlers directly. Four kinds:
 
   * team tools     handoff, ask_operator, thread_history (every employee),
   * shared tools   record_lookup (free, read-only, every employee), spend_report (what the team
-                   paid for, from the brain's own ledger: every employee),
+                   paid for, from the brain's own ledger: every employee), and the four query
+                   tools in query.py (records_query, siftmap_count, activity_query, team_query:
+                   read-only counts over the account and the brain's own tables, every employee,
+                   AGENTS_QUERY_TOOLS=0 removes them),
   * workflow tools one per workflow the employee OWNS in roster.yaml. A teammate's workflow is
                    never exposed: that work is a handoff, which is how ownership is enforced.
 
@@ -210,6 +213,35 @@ def spend_report_tool(ctx: RunContext) -> Tool:
                                 "description": "thread (this job), today, or week"}}, []), handler, read_only=True)
 
 
+# ------------------------------------------------------------------------------- query tools
+
+def _query_handler(name: str):
+    """One query tool's handler. The query runs in a thread (the record search waits on the shared
+    request budget, which must not stall the SDK's event loop) and a refusal comes back as one plain
+    sentence the employee can repeat, never as a crash of the turn."""
+    from . import query
+
+    async def handler(args: dict) -> dict:
+        try:
+            res = await asyncio.to_thread(query.answer, name, dict(args or {}))
+        except query.Refused as exc:
+            return _text(str(exc), error=True)
+        except Exception as exc:  # noqa: BLE001  (query.answer turns errors into Refused; this is the backstop)
+            return _text("The %s query failed: %s" % (name, str(exc)[:300]), error=True)
+        return _text(json.dumps(res, default=str, separators=(",", ":")))
+    return handler
+
+
+def query_tools(ctx: RunContext) -> list[Tool]:
+    """The read-only questions every employee can ask in Slack (query.py): counts over the records
+    search and SiftMap, and over the brain's own log copy and tables."""
+    from . import query
+    if not query.enabled():
+        return []
+    return [Tool(t["name"], t["description"], t["schema"], _query_handler(t["name"]), read_only=True)
+            for t in query.tools()]
+
+
 # ------------------------------------------------------------------------------- workflow tools
 
 def workflow_tool(ctx: RunContext, wf) -> Tool:
@@ -267,5 +299,6 @@ def build(ctx: RunContext) -> list[Tool]:
     if "record_lookup" in ctx.roster.shared_tools:
         tools.append(record_lookup_tool(ctx))
     tools.append(spend_report_tool(ctx))
+    tools += query_tools(ctx)
     tools += [workflow_tool(ctx, wf) for wf in ctx.roster.owned(ctx.employee.id)]
     return tools

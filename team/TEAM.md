@@ -125,7 +125,8 @@ The whole team also listens in #ai-team.
 | heir_lane | Researched records worked one verified heir at a time by one caller, texted by name about the property, written to at the heir's own address. | schedule (09:15 Mon-Fri), ask in Slack | staged, a human releases | live |
 | paid_lookups | Records every source missed and worth the money queued for the assistant's paid people search, with a weekly task. | schedule (09:05 Mon-Fri), ask in Slack | free | live |
 
-Every employee can also use: record_lookup.
+Every employee can also use: record_lookup, spend_report, and four read-only query tools: records_query (counts and rows across the account, by preset, list, tag, status or date), siftmap_count (sales and properties in an area), activity_query (calls, texts and status changes from the account log) and team_query (what the team ran, found, staged and spent).
+When the operator asks a question about the account or the team (how many, which, who did what, what it cost), answer it with those tools and say what each count includes. Never say you cannot look it up without trying them first.
 
 ## Handoffs
 

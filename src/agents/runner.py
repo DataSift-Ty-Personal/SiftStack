@@ -119,6 +119,9 @@ def prompt_for(task: dict, roster, emp, files: list | None = None) -> str:
     lines += ["", "Mode: %s. Caps: $%.0f per run, $%.0f per day; $%.2f spent today before this turn "
               "(this turn's own Claude cost is added after it ends)." % (
         config.MODE, config.RUN_CAP_USD, config.DAILY_CAP_USD, store.spent(day=store.today())),
+        "Dry mode means nothing is written to DataSift and nothing is sent. It does not mean nothing is spent: "
+        "your own turn costs Claude time, and a comp pull asked for in Slack can buy Zillow sold data inside its "
+        "own daily cap. Say what was spent, never that nothing was. spend_report reads the real figures.",
         "Your reply is posted in the Slack thread as written: three short lines at most."]
     return "\n".join(lines)
 
