@@ -24,11 +24,20 @@ from zoneinfo import ZoneInfo
 import yaml
 
 from .. import config
+from . import gate as gate_mod
+from . import lanes as lanes_mod
 
-KINDS = ("assign", "native_trace", "retrace", "score", "auction", "mail", "reactivate", "handoff", "digest")
+KINDS = ("assign", "native_trace", "retrace", "score", "auction", "mail", "reactivate", "handoff", "digest",
+         "attempts", "screen", "lanes", "revoke", "watchdog", "audit", "capture", "leadcheck", "fullattempt")
 MODES = ("off", "plan", "live")
 SPEND_BY_KIND = {"assign": "free", "native_trace": "free", "retrace": "paid", "score": "paid",
-                 "auction": "free", "mail": "outreach", "reactivate": "free", "handoff": "paid", "digest": "free"}
+                 "auction": "free", "mail": "outreach", "reactivate": "free", "handoff": "paid", "digest": "free",
+                 "attempts": "free", "screen": "free", "lanes": "free", "revoke": "free", "watchdog": "free",
+                 "audit": "free", "capture": "free", "leadcheck": "free", "fullattempt": "free"}
+# Kinds that read the account without a preset of their own.
+NO_PRESETS = ("digest", "mail", "lanes", "revoke", "watchdog", "audit", "capture", "leadcheck", "fullattempt")
+ALLOW_WORDS = ("not_interested", "deceased", "heir", "lead", "in_research", "unknown_status", "listed", "mail_only",
+               "exhausted")
 SUMMARY_BY_KIND = {
     "assign": "New records handed to a caller the moment they land, balanced by open workload.",
     "native_trace": "Records waiting on a skip trace get DataSift's own (free on the unlimited plan).",
@@ -39,6 +48,15 @@ SUMMARY_BY_KIND = {
     "reactivate": "Not-interested records whose wait is over handed back to a caller.",
     "handoff": "Records in a preset handed to a teammate's workflow (a deep prospect, a quick screen), a few a day.",
     "digest": "The morning readout: what moved, what it cost, what waits on a person.",
+    "attempts": "The call counter written from the account's own call log, so a record moves on whichever dialer made the call.",
+    "screen": "New records checked for a death before any text or assignment, and held for research when one may have happened.",
+    "lanes": "Each owner placed in one lane across all of their records; an owner sitting in two lanes is listed.",
+    "revoke": "An opt-out, a death, a sale or a new lead pulls the owner out of everything already queued.",
+    "watchdog": "Yesterday's sequence triggers checked against what each sequence should have produced; only failures are posted.",
+    "audit": "Every call, text and mail piece in the day's log checked against the gate; anything that should not have gone out is named.",
+    "capture": "Each caller's day written down from the call log: dials, answers, conversations and talk time, whichever dialer was used.",
+    "leadcheck": "Every lead checked for an open task, an assignee and a confirmed number; what is missing goes to the lead manager.",
+    "fullattempt": "The owners dialed today who still have a top-tier number nobody tried, listed while there is time to finish them.",
 }
 SOURCES = ("smartskip", "tracerfy", "enformion")
 AFTER = ("mail_only", "deep_prospect", "none")
@@ -81,6 +99,8 @@ class Policy:
     stages: dict[str, Stage]
     path: str = ""
     outreach_daily_usd: float = 60.0
+    gate: object = None          # gate.GateConfig: the tags, lists and fields the suppression gate reads
+    lanes: object = None         # lanes.Lanes: how a lane is recognised, and each lane's timeline
 
     def in_business_hours(self, now: datetime) -> bool:
         local = now.astimezone(ZoneInfo(self.tz))
@@ -146,9 +166,31 @@ def _check_stage(st: Stage, problems: list[str]) -> None:
             scheduler.parse(s)
         except scheduler.ScheduleError as exc:
             p.append("stage %s: %s" % (st.id, exc))
-    if st.kind not in ("digest", "mail") and not st.presets and not (st.kind == "auction" and st.get("scope_tags")):
+    if st.kind not in NO_PRESETS and not st.presets and not (st.kind == "auction" and st.get("scope_tags")):
         p.append("stage %s (%s) needs at least one preset title%s" % (
             st.id, st.kind, " or scope_tags" if st.kind == "auction" else ""))
+    lane = st.get("lane")
+    if lane is not None and str(lane) not in lanes_mod.ORDER:
+        p.append("stage %s: lane %r is not a lane (%s)" % (st.id, lane, ", ".join(lanes_mod.ORDER)))
+    bad = [a for a in _list(st.get("gate_allow")) if str(a) not in ALLOW_WORDS]
+    if bad:
+        p.append("stage %s: gate_allow has %s (words are %s)" % (st.id, bad, ", ".join(ALLOW_WORDS)))
+    if st.kind == "attempts":
+        c = st.get("counters")
+        if c is not None and (not isinstance(c, dict) or any(not isinstance(v, int) or v < 0 for v in c.values())):
+            p.append("stage %s: counters must map a preset title to the call counter it holds (0, 1, 2 ...)" % st.id)
+        if st.get("first_run", "staged") not in ("staged", "auto"):
+            p.append("stage %s: first_run must be staged or auto" % st.id)
+    if st.kind == "watchdog":
+        rules = _list(st.get("expect"))
+        if not rules:
+            p.append("stage %s: list what each trigger should produce under expect" % st.id)
+        for i, r in enumerate(rules, 1):
+            if not isinstance(r, dict) or not isinstance(r.get("when"), dict) or not isinstance(r.get("then"), dict):
+                p.append("stage %s: expect %d needs a `when` (the trigger) and a `then` (what the record should show)" % (st.id, i))
+    if st.kind == "screen":
+        if st.get("on_hit", "tag") not in ("tag", "report"):
+            p.append("stage %s: on_hit must be tag or report" % st.id)
     if st.kind == "assign":
         if st.get("strategy", "balanced") not in ("balanced", "round_robin"):
             p.append("stage %s: strategy must be balanced or round_robin" % st.id)
@@ -168,6 +210,9 @@ def _check_stage(st: Stage, problems: list[str]) -> None:
         days = st.get("soon_days", 21)
         if not isinstance(days, int) or not 1 <= days <= 120:
             p.append("stage %s: soon_days must be a whole number from 1 to 120" % st.id)
+        crit = st.get("critical_days", 14)
+        if not isinstance(crit, int) or not 1 <= crit <= (days if isinstance(days, int) else 120):
+            p.append("stage %s: critical_days must be a whole number no larger than soon_days" % st.id)
         bad = [f for f in _list(st.get("date_fields", ["auction_date", "foreclosure_date", "tax_auction_date"]))
                if f not in ("auction_date", "foreclosure_date", "tax_auction_date")]
         if bad:
@@ -229,7 +274,8 @@ def parse(data: dict, employees: set[str] | None = None, path: str = "") -> Poli
                  days=_days(biz.get("days"), problems),
                  daily_usd=float(caps.get("daily_usd") or 25), record_usd=float(caps.get("record_usd") or 1.0),
                  callers=[str(c) for c in _list((data.get("people") or {}).get("callers"))],
-                 stages=stages, path=path, outreach_daily_usd=float(caps.get("outreach_daily_usd") or 60))
+                 stages=stages, path=path, outreach_daily_usd=float(caps.get("outreach_daily_usd") or 60),
+                 gate=gate_mod.parse(data.get("gate"), problems), lanes=lanes_mod.parse(data.get("lanes"), problems))
     if problems:
         raise PolicyError("autopilot.yaml has %d problem(s):\n  - %s" % (len(problems), "\n  - ".join(problems)))
     return pol

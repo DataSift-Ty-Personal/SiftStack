@@ -13,18 +13,46 @@ import uuid
 from datetime import datetime, timezone
 
 from .. import config, store
+from . import budget
 from . import policy as policy_mod
 from . import stages
 
 log = logging.getLogger(__name__)
 
-REPORT_KINDS = {"digest", "auction"}
+REPORT_KINDS = {"digest", "auction", "capture"}
 
 
 def _runner(kind: str):
     if kind == "mail":
         from . import mail
         return mail.run_mail
+    if kind == "attempts":
+        from . import attempts
+        return attempts.run_attempts
+    if kind == "screen":
+        from . import screen
+        return screen.run_screen
+    if kind == "lanes":
+        from . import lanecheck
+        return lanecheck.run_lanes
+    if kind == "revoke":
+        from . import revoke
+        return revoke.run_revoke
+    if kind == "watchdog":
+        from . import watchdog
+        return watchdog.run_watchdog
+    if kind == "audit":
+        from . import audit
+        return audit.run_audit
+    if kind == "capture":
+        from . import capture
+        return capture.run_capture
+    if kind == "leadcheck":
+        from . import leadcheck
+        return leadcheck.run_leadcheck
+    if kind == "fullattempt":
+        from . import fullattempt
+        return fullattempt.run_fullattempt
     return {"assign": stages.run_assign, "native_trace": stages.run_native_trace, "retrace": stages.run_retrace,
             "score": stages.run_score, "auction": stages.run_auction, "reactivate": stages.run_reactivate,
             "handoff": stages.run_handoff, "digest": stages.run_digest}[kind]
@@ -64,7 +92,12 @@ def run(stage_id: str, task: dict | None = None, *, plan: bool = False, crm=None
     ctx = stages.Ctx(policy=pol, stage=st, crm=crm, run_id=uuid.uuid4().hex[:12],
                      now=now or datetime.now(timezone.utc), live=live, out=out, sources=sources, scorer=scorer,
                      mailer=mailer, task_id=int((task or {}).get("id") or 0), enqueue=enqueue)
-    _runner(st.kind)(ctx)
+    try:
+        _runner(st.kind)(ctx)
+    except budget.BudgetExhausted as exc:
+        # The hour's share of the account's request limit is used. Say so and stop: whatever this
+        # run already did is in the ledger, and the stage picks up at its next slot.
+        out.problem("stopped early: %s" % exc)
     store.kv_set("autopilot:last:%s" % st.id, json.dumps({
         "at": ctx.now.isoformat(timespec="seconds"), "live": live, "found": out.found, "acted": out.acted,
         "usd": round(out.usd, 2), "would_usd": round(out.would_usd, 2), "problems": out.problems[:5],

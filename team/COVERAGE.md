@@ -32,6 +32,7 @@ Every agent on docs/agents.json (the public org chart), the team workflow that r
 | probate_property | by hand today | Probate Property Finder (probfind) |
 | buyer_registry | by hand today | Buyer Sweep (sweep), Dispo Buyer Registry (dispobuyers), Dispo Skiptrace (disposkip), Buyer Prospector (prospector) |
 | vendor_directory | by hand today | Vendor Directory Builder (vendordir), Contractor Call Sheet (callsheet) |
+| ftm_death_screen | autopilot stage | none: not on the org chart yet |
 | ftm_native_trace | autopilot stage | none: not on the org chart yet |
 | ftm_retrace | autopilot stage | Tracerfy Skip Trace (tracerfy) |
 | ftm_exhausted | autopilot stage | Tracerfy Skip Trace (tracerfy) |
@@ -53,6 +54,9 @@ Every agent on docs/agents.json (the public org chart), the team workflow that r
 | dispo_blast | by hand today | Dispo Deal Blast (dispoblast), Dispo Buyer Phonebook (dispobook), Dispo Sequential Flow (dispoflow) |
 | lender_package | by hand today | Lender Analysis (lender), Lender Package Builder (lenderpkg), Lender Document Set (lenderdocs) |
 | sms_replies | by hand today | Reply Classifier (classifier), Reply Drafter (responder), Smarter Contact Reply Agent (scinbound) |
+| revocation | autopilot stage | none: not on the org chart yet |
+| full_attempt | autopilot stage | none: not on the org chart yet |
+| lead_check | autopilot stage | none: not on the org chart yet |
 
 ## Quinn (Operations)
 
@@ -66,6 +70,11 @@ Every agent on docs/agents.json (the public org chart), the team workflow that r
 | outreach_health | by hand today | Deliverability Readout (deliver), Caller Reputation Monitor (callerrep) |
 | sms_campaign | by hand today | Smarter Contact Campaign Builder (sccampaign), Text Touch Builder (texttouch), Sender Pool Manager (sender), MMS Screenshot Sender (mms) |
 | obituary_mail | by hand today | Obituary Mail Campaign (obitcamp), Obituary Mail Export (obitmail) |
+| ftm_attempts | autopilot stage | none: not on the org chart yet |
+| owner_lanes | autopilot stage | none: not on the org chart yet |
+| sequence_watchdog | autopilot stage | none: not on the org chart yet |
+| touch_audit | autopilot stage | none: not on the org chart yet |
+| daily_capture | autopilot stage | none: not on the org chart yet |
 | ftm_mail | autopilot stage | none: not on the org chart yet |
 | autopilot_digest | autopilot stage | none: not on the org chart yet |
 

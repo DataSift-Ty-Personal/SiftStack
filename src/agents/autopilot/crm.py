@@ -19,8 +19,9 @@ A saved preset nests ownerPropertiesOwned.show_properties, which the search want
 relative date windows are converted by windows.resolve.
 
 Rate limits (published 2026-09-15, enforced per account across EVERY key-based tool on it):
-120 requests a minute and 5,000 an hour. The sustained pace here is 80 a minute, and a 429's
-"available in N seconds" (or Retry-After) is honored.
+120 requests a minute and 5,000 an hour. This app keeps to its own share of that (budget.py),
+counted across every process it runs, and a 429's "available in N seconds" (or Retry-After) is
+honored.
 """
 from __future__ import annotations
 
@@ -73,16 +74,26 @@ def search_shape(must: dict) -> dict:
     return m
 
 
-SUSTAINED_GAP_S = float(os.environ.get("AUTOPILOT_API_GAP_S") or 0.75)   # 80 a minute, under 5,000 an hour
+# Pacing. The account-wide limit is shared with the first-to-market box and the texting app, so
+# this app paces to its own share (budget.py: 45 a minute by day, more at night) and counts every
+# request against a budget all of its processes share. AUTOPILOT_API_GAP_S pins a slower pace.
+_GAP_ENV = os.environ.get("AUTOPILOT_API_GAP_S")
+SUSTAINED_GAP_S = float(_GAP_ENV) if _GAP_ENV else None
 
 
 class CRM:
-    def __init__(self, api=None, min_gap: float = SUSTAINED_GAP_S):
+    def __init__(self, api=None, min_gap: float | None = SUSTAINED_GAP_S, priority: bool = False):
         if api is None:
-            from datasift_api_upload import Api
-            api = Api()
+            # The Open API key first, always. The shared uploader client logs in with a password
+            # when the box carries one (this workstation's .env does), which made every local run
+            # a different client from the one on Fly: a stage proven here on a login token was not
+            # proven on the key. A user's install has only the key, so that is what gets tested.
+            from datasift_api_upload import Api, env
+            key = (env().get("REISIFT_API_KEY") or "").strip()
+            api = Api(api_key=key) if key else Api()
         self.api = api
         self.min_gap = min_gap
+        self.priority = priority      # reply dispositions and speed to lead: may use the whole minute
         self._last = 0.0
         self._presets: dict | None = None
         self._tags: dict | None = None
@@ -92,10 +103,13 @@ class CRM:
     # ---------------------------------------------------------------- transport
     def call(self, path: str, method: str = "GET", body=None, headers=None, _tries: int = 6):
         from datasift_api_upload import ApiError
+        from . import budget
         for attempt in range(_tries):
+            budget.acquire(priority=self.priority)
+            min_gap = self.min_gap if self.min_gap is not None else budget.gap()
             gap = time.time() - self._last
-            if gap < self.min_gap:
-                time.sleep(self.min_gap - gap)
+            if gap < min_gap:
+                time.sleep(min_gap - gap)
             self._last = time.time()
             self.calls += 1
             try:
@@ -109,6 +123,16 @@ class CRM:
                     continue
                 if exc.code in (502, 503, 504) and attempt < 2:
                     time.sleep(3 + attempt * 5)
+                    continue
+                raise
+            except OSError as exc:
+                # A dropped connection or a timeout (seen live 2026-11-13: one reset ended a 20,000-row
+                # lane scan). A READ is safe to ask again; a write is not, because the server may have
+                # applied it before the connection died, so a write surfaces the error instead.
+                read_only = method == "GET" or (headers or {}).get("x-http-method-override") == "GET"
+                if read_only and attempt < 3:
+                    log.info("network error on %s (%s), trying again", path.split("?")[0], str(exc)[:80])
+                    time.sleep(2 + attempt * 4)
                     continue
                 raise
         raise RuntimeError("unreachable")
@@ -169,6 +193,50 @@ class CRM:
     def record(self, uuid: str) -> dict:
         return self.call("/api/internal/property/%s/" % uuid) or {}
 
+    def owner(self, owner_uuid: str) -> dict:
+        return self.call("/api/internal/owner/%s/" % owner_uuid) or {}
+
+    def owner_records(self, owner_uuid: str, cap: int = 250) -> list:
+        """Every record this owner holds (search rows). `owners` is the one filter key the records
+        search accepts for it, proven by count on 2026-11-12: an owner with 5 properties returns 5,
+        and every other spelling is dropped as an unknown key."""
+        return self.rows({"owners": [owner_uuid]}, cap=cap)
+
+    def custom_fields(self, uuid: str) -> dict:
+        """label -> value for the record's custom fields that hold a value."""
+        r = self.call("/api/internal/property/%s/custom-field/" % uuid)
+        items = r if isinstance(r, list) else rows_of(r)
+        out = {}
+        for it in items:
+            cf = it.get("custom_field") if isinstance(it.get("custom_field"), dict) else {}
+            label = (cf.get("label") or cf.get("name") or cf.get("title") or "").strip()
+            if label and it.get("value") not in (None, ""):
+                out[label] = it["value"]
+        return out
+
+    # ---------------------------------------------------------------- activity log
+    def logs(self, must: dict, limit: int = 100, cursor: str = "", include_owner: bool = False) -> dict:
+        """One page of the ACCOUNT's activity log, newest first (GET /property/logs/, documented).
+        `must` takes timestamp [from, to] (either may be null), source, and any_event_type [..];
+        any_event_type is the only event filter the route honors (event_type and event_types are
+        silently ignored, proven 2026-11-12). Paging is by cursor, with no 10,000 row wall."""
+        import json as _json
+        import urllib.parse
+        q = {"query": _json.dumps({"must": must}), "limit": str(max(1, min(int(limit), 100)))}
+        if cursor:
+            q["cursor"] = cursor
+        if include_owner:
+            q["include_owner"] = "true"
+        return self.call("/api/internal/property/logs/?" + urllib.parse.urlencode(q)) or {}
+
+    def record_logs(self, uuid: str, event_types: list[str] | None = None, limit: int = 250) -> list:
+        """One record's own log, newest first. The log is per OWNER for owner events: calls and
+        texts on the owner's other properties show up here too."""
+        path = "/api/internal/property/%s/logs/?limit=%d&offset=0" % (uuid, limit)
+        if event_types:
+            path += "&any_event_type=" + ",".join(event_types)
+        return rows_of(self.call(path))
+
     def users(self) -> list:
         if self._users is None:
             r = self.call("/api/internal/account/user/?offset=0&limit=999")
@@ -182,6 +250,12 @@ class CRM:
             for t in rows:
                 self._tags.setdefault((t.get("title") or "").strip().lower(), t.get("uuid") or "")
         return self._tags.get((title or "").strip().lower(), "")
+
+    def list_uuid(self, title: str) -> str:
+        if getattr(self, "_lists", None) is None:
+            rows = rows_of(self.call("/api/internal/list/?offset=0&limit=1000"))
+            self._lists = {(r.get("title") or "").strip().lower(): r.get("uuid") or "" for r in rows}
+        return self._lists.get((title or "").strip().lower(), "")
 
     def skiptrace_stats(self) -> dict:
         """Skip trace counters. NOT in the published reference: used only to refuse the account-wide
@@ -219,6 +293,22 @@ class CRM:
 
     def upsert_phones(self, owner_uuid: str, phones: list[dict]) -> None:
         self.call("/api/internal/owner/%s/upsert-phones/" % owner_uuid, "POST", {"phones": phones})
+
+    # The three counters below are documented routes. Each takes the new TOTAL, never a step.
+    def call_attempts(self, uuid: str, total: int) -> None:
+        """The record's call counter, which is what moves it from Ready to Call to Call Attempt 1."""
+        self.call("/api/internal/property/%s/predictivecall-attempts/" % uuid, "POST",
+                  {"predictivecall_attempts": int(total)})
+
+    def sms_attempts(self, uuid: str, total: int) -> None:
+        self.call("/api/internal/property/%s/sms-attempts/" % uuid, "POST", {"sms_attempts": int(total)})
+
+    def skiptrace_attempts(self, owner_uuid: str, total: int) -> None:
+        """The owner's skip trace counter. Numbers from an outside source land through upsert-phones,
+        which does not count as a trace, so the record keeps reading 'never skip traced' and stays
+        out of every Ready to Call preset until this is written (plan 0.10)."""
+        self.call("/api/internal/owner/%s/skiptrace-attempts/" % owner_uuid, "POST",
+                  {"skiptrace_attempts": int(total)})
 
     def message(self, uuid: str, text: str, pin: bool = False) -> str:
         """A provenance note on the record, through the documented add-notes route. (The property

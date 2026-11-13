@@ -22,7 +22,7 @@ from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from .. import config, store
-from . import ledger, windows
+from . import gate, lanes, ledger, windows
 from .sources import Subject, digits, subject_of
 
 log = logging.getLogger(__name__)
@@ -102,6 +102,46 @@ class Ctx:
             return None
         return fn(*args, **kw)
 
+    def change(self, record_uuid: str, what: str, before, after) -> None:
+        """Remember what a live write replaced, so the run can be put back (plan 0.15). Call it
+        BEFORE the write: a write that then fails leaves a change that undo simply re-applies."""
+        if self.live:
+            ledger.change(self.run_id, self.stage.id, record_uuid, what, before, after)
+
+    # --- the gate
+    def passes(self, rec: dict, channel: str, row: dict | None = None, allow=None) -> bool:
+        """Run the suppression gate on a full record for this stage. A record that fails is counted
+        under its reason ("held back: ...") and the caller skips it."""
+        v = self.verdict(rec, channel, row=row, allow=allow)
+        if not v.ok:
+            self.out.tally["held back: %s" % v.reason()] += 1
+        return v.ok
+
+    def verdict(self, rec: dict, channel: str, row: dict | None = None, allow=None):
+        cfg = getattr(self.policy, "gate", None) or gate.GateConfig()
+        lanes_cfg = getattr(self.policy, "lanes", None)
+        allow = set(_list(self.stage.get("gate_allow"))) | set(allow or ())
+        ow = (rec or {}).get("owner") or {}
+        custom = None
+        if cfg.read_fields and (rec or {}).get("uuid") and self.stage.get("read_fields", True):
+            custom = ledger.fact(rec["uuid"], "custom_fields", max_age=timedelta(days=7))
+            if custom is None:
+                try:
+                    custom = self.crm.custom_fields(rec["uuid"])
+                except Exception:  # noqa: BLE001  (a failed field read must be said out loud, not passed over)
+                    custom = {}
+                    self.out.problem("could not read the custom fields on a record, so the Owner Deceased field was not checked")
+                ledger.set_fact(rec["uuid"], "custom_fields", custom)
+        lit = set()
+        for p in ow.get("phones") or []:
+            n = digits(p.get("number"))
+            c = ledger.phone(n) if n else None
+            if c and c.get("litigator"):
+                lit.add(n)
+        return gate.check(rec, channel, cfg=cfg, lane=str(self.stage.get("lane") or ""), allow=allow, row=row,
+                          custom=custom, owner=lanes.owner_lane(ow.get("uuid") or ""), litigators=lit,
+                          lanes_cfg=lanes_cfg)
+
     # --- money
     def budget(self, usd: float, record_uuid: str = "", record_usd: float | None = None) -> tuple[bool, str]:
         """May `usd` more be spent today? `record_usd` (default `usd`) is what lands on the one record,
@@ -121,7 +161,7 @@ class Ctx:
             return True, ""
         if ledger.spent(d, exclude_action="mail") + pending + usd > self.policy.daily_usd:
             return False, "autopilot cap $%.2f/day" % self.policy.daily_usd
-        if store.spent(day=datetime.now(timezone.utc).isoformat()[:10]) + pending + usd > config.DAILY_CAP_USD:
+        if store.spent(day=datetime.now(timezone.utc).isoformat()[:10], research=False) + pending + usd > config.DAILY_CAP_USD:
             return False, "brain cap $%.2f/day" % config.DAILY_CAP_USD
         one = usd if record_usd is None else record_usd
         if record_uuid and ledger.spent(record_uuid=record_uuid) + one > self.policy.record_usd:
@@ -171,6 +211,52 @@ def _list(v) -> list:
     if v is None:
         return []
     return list(v) if isinstance(v, (list, tuple)) else [v]
+
+
+def assignee_of(rec: dict) -> str:
+    a = (rec or {}).get("assigned_to")
+    return (a.get("uuid") if isinstance(a, dict) else a) or ""
+
+
+def lane_entry(ctx: "Ctx", rec: dict, lane: str) -> datetime:
+    """When this record entered its lane: the moment a lane marker (the FTM tag, the Obituary list)
+    first landed on it, else the day the record was created. Read once from the record's own log
+    and remembered. It is what the timeline counts days from and what the attempt keeper counts
+    dials from, so a call made months ago under another list never counts toward this lane."""
+    u = rec.get("uuid") or ""
+    key = "lane_entry:%s" % (lane or "any")
+    v = ledger.fact(u, key)
+    if v:
+        return datetime.fromisoformat(v)
+    lanes_cfg = getattr(ctx.policy, "lanes", None) or lanes.Lanes()
+    marks = lanes_cfg.markers.get(lane) or {}
+    want = {t.lower() for t in (marks.get("tags") or []) + (marks.get("lists") or [])}
+    entry = created = None
+    try:
+        log_rows = ctx.crm.record_logs(u, ["property.created", "property.tags.added", "property.lists.added"])
+    except Exception as exc:  # noqa: BLE001
+        ctx.out.problem("could not read a record's log for its lane entry date (%s)" % str(exc)[:100])
+        log_rows = []
+    from . import activity
+    for e in log_rows:
+        at = activity.parse_ts(e.get("timestamp") or "")
+        if not at:
+            continue
+        et = e.get("event_type")
+        p = e.get("payload") or {}
+        if et == "property.created":
+            created = at if created is None else min(created, at)
+        else:
+            names = {str(x).lower() for x in (p.get("tags") or []) + (p.get("lists") or []) + (p.get("system_lists") or [])}
+            if want and names & want:
+                entry = at if entry is None else min(entry, at)
+    when = entry or created
+    if when is None:
+        # Older than the log reaches: the record has been here a long time. Use a far-back date
+        # (callers clamp to their own look-back) and do not cache a guess as if it were known.
+        return datetime(2000, 1, 1, tzinfo=timezone.utc)
+    ledger.set_fact(u, key, when.isoformat(timespec="seconds"))
+    return when
 
 
 def merge_must(must: dict, extra: dict | None) -> dict:
@@ -275,6 +361,15 @@ def run_assign(ctx: Ctx) -> None:
         return
     load = {p["uuid"]: ctx.crm.count({"assigned_to": p["uuid"], "must_not": {"any_property_status": WORKLOAD_EXCLUDE}})
             for p in people}
+    # A caller past the cap is said out loud every run (plan 1.5). First-to-market records are still
+    # assigned: they are the one thing that never waits. Which records leave an over-full queue is
+    # the owner's decision (D2), so the stage reports the number and moves nothing.
+    cap = int(st.get("caller_cap", 0) or 0)
+    if cap:
+        for person in people:
+            if load.get(person["uuid"], 0) > cap:
+                ctx.out.problem("%s holds %d open records, %d over the cap of %d" % (
+                    person["name"], load[person["uuid"]], load[person["uuid"]] - cap, cap))
     routes = {str(k).lower(): [str(n).lower() for n in _list(v)] for k, v in (st.get("routes") or {}).items()}
     strategy = st.get("strategy", "balanced")
     rr = int(store.kv_get("autopilot:rr:%s" % st.id) or 0)
@@ -299,11 +394,12 @@ def run_assign(ctx: Ctx) -> None:
         if not backlog and ledger.first_seen(u, st.id, ctx.now).isoformat(timespec="seconds") <= baseline:
             ctx.out.tally["backlog left as is (set backlog: true to hand these out)"] += 1
             continue
+        rec = ctx.crm.record(u)
+        if not ctx.passes(rec, "assign", row=row):
+            continue
         pool = people
         if routes:
-            tags = {t.lower() for t in tag_titles(row)}
-            if not tags:
-                tags = {t.lower() for t in tag_titles(ctx.crm.record(u))}
+            tags = {t.lower() for t in tag_titles(rec)}
             for tag, names in routes.items():
                 if tag in tags:
                     pool = [p for p in people if p["name"].lower() in names] or people
@@ -313,6 +409,7 @@ def run_assign(ctx: Ctx) -> None:
             rr += 1
         else:
             who = balanced_pick(pool, load)
+        ctx.change(u, "assign", assignee_of(rec), who["uuid"])
         ctx.write("assign", ctx.crm.assign, u, who["uuid"])
         if ctx.live:
             if readback < 2 or sum(given.values()) % 25 == 0:
@@ -346,6 +443,15 @@ def run_native_trace(ctx: Ctx) -> None:
     st = ctx.stage
     rows = stage_rows(ctx)
     ctx.out.found = len(rows)
+    # A bulk trace never opens each record, so only the row's own status can be checked here.
+    kept = []
+    for title, r in rows:
+        v = gate.check_row(r, "trace", cfg=getattr(ctx.policy, "gate", None), allow=_list(st.get("gate_allow")))
+        if v.ok:
+            kept.append((title, r))
+        else:
+            ctx.out.tally["held back: %s" % v.reason()] += 1
+    rows = kept
     if not rows:
         ctx.out.head = "Nothing is waiting on a skip trace."
         return
@@ -460,7 +566,7 @@ def score_numbers(ctx: Ctx, numbers: list[str], record_uuid: str = "") -> dict:
     for n in dict.fromkeys(numbers):
         c = ledger.phone(n)
         if c and c.get("tier"):
-            out[n] = {"tier": c["tier"], "score": c.get("score"), "cached": True}
+            out[n] = {"tier": c["tier"], "score": c.get("score"), "cached": True, "litigator": bool(c.get("litigator"))}
         else:
             need.append(n)
     if not need:
@@ -501,6 +607,47 @@ def score_numbers(ctx: Ctx, numbers: list[str], record_uuid: str = "") -> dict:
     return out
 
 
+def phone_tier(p: dict) -> str:
+    return next((t for t in tag_titles(p) if t in TIER_NAMES), "")
+
+
+def litigator_tag(ctx: Ctx) -> str:
+    cfg = getattr(ctx.policy, "gate", None) or gate.GateConfig()
+    return (cfg.litigator_tags or ["Litigator"])[0]
+
+
+def suppress_litigator(ctx: Ctx, rec: dict) -> None:
+    """A litigator's number is a RECORD problem, not a phone problem (plan 0.3): the record, and
+    every other record the same owner holds, is tagged Litigator and Do Not Market for good, with
+    a note. Marking only the one phone left the owner's other numbers, the mail lane and the
+    owner's other houses open."""
+    cfg = getattr(ctx.policy, "gate", None) or gate.GateConfig()
+    add = [(cfg.litigator_tags or ["Litigator"])[0], (cfg.do_not_market_tags or ["Do Not Market"])[0]]
+    u = rec.get("uuid") or ""
+    targets = [(u, rec)]
+    owner_uuid = (rec.get("owner") or {}).get("uuid") or ""
+    if owner_uuid:
+        try:
+            for r in ctx.crm.owner_records(owner_uuid):
+                if r.get("uuid") and r["uuid"] != u:
+                    targets.append((r["uuid"], None))
+        except Exception as exc:  # noqa: BLE001
+            ctx.out.problem("could not list a litigator's other records (%s); only the one record was tagged" % str(exc)[:100])
+    for uu, full in targets:
+        have = set(tag_titles(full)) if full else set()
+        need = [t for t in add if t not in have]
+        if not need:
+            continue
+        ctx.change(uu, "add_tags", None, need)
+        ctx.write("litigator", ctx.crm.add_tags, uu, need, full)
+        ctx.write("litigator note", ctx.crm.message, uu,
+                  "A number on this owner belongs to a known TCPA litigator. Do not call, text or mail, on any record this owner holds.")
+        if ctx.live:
+            ledger.event(ctx.run_id, ctx.stage.id, uu, "litigator", {"tags": need}, now=ctx.now, tz=ctx.policy.tz)
+        ctx.out.tally["records suppressed for a litigator"] += 1
+    ctx.out.line("%s: a litigator's number, record%s tagged %s" % (addr(rec), "s" if len(targets) > 1 else "", " and ".join(add)))
+
+
 def run_score(ctx: Ctx) -> None:
     st = ctx.stage
     rows = stage_rows(ctx, extra=required_tags(ctx))
@@ -509,6 +656,15 @@ def run_score(ctx: Ctx) -> None:
     max_records = int(st.get("max_records", 200))
     done = 0
     checked = 0
+    # Finding a record's unscored numbers means reading the record, and a lane of 568 records is
+    # about 750 requests: twenty minutes of this app's share that the next assignment run then waits
+    # behind. So one run reads at most max_reads records, the ones never read first and then the
+    # ones read longest ago, and says how many it left. In plan mode nothing is ever marked scored,
+    # so without the cap every run would read the whole lane again.
+    max_reads = int(st.get("max_reads", 250))
+    reads = 0
+    read_at = {r["uuid"]: ledger.fact(r["uuid"], "score_read") for _, r in rows}
+    rows = sorted(rows, key=lambda tr: str(read_at.get(tr[1]["uuid"]) or ""))
     for _, row in rows:
         if done >= max_records:
             ctx.out.tally["left for the next run"] += 1
@@ -516,7 +672,14 @@ def run_score(ctx: Ctx) -> None:
         u = row["uuid"]
         if ledger.fact(u, "scored", max_age=recheck):
             continue
+        if reads >= max_reads:
+            ctx.out.tally["not read this run (read cap %d)" % max_reads] += 1
+            continue
+        reads += 1
         rec = ctx.crm.record(u)
+        ledger.set_fact(u, "score_read", ctx.now.isoformat(timespec="seconds"))   # the autopilot's own note, kept in plan mode too
+        if not ctx.passes(rec, "score", row=row):
+            continue
         ow = rec.get("owner") or {}
         elig = [p for p in (ow.get("phones") or []) if eligible(p)]
         if not elig:
@@ -524,10 +687,15 @@ def run_score(ctx: Ctx) -> None:
                 ledger.set_fact(u, "scored", ctx.now.isoformat(timespec="seconds"))
             continue
         tiers = score_numbers(ctx, [digits(p["number"]) for p in elig], u)
-        payload = [phone_payload(p, (tiers.get(digits(p["number"])) or {}).get("tier", "")) for p in elig
-                   if (tiers.get(digits(p["number"])) or {}).get("tier") not in (None, "", "Unknown")]
+        lit_tag = litigator_tag(ctx)
+        payload = [phone_payload(p, (tiers.get(digits(p["number"])) or {}).get("tier", ""),
+                                 [lit_tag] if (tiers.get(digits(p["number"])) or {}).get("litigator") else None)
+                   for p in elig if (tiers.get(digits(p["number"])) or {}).get("tier") not in (None, "", "Unknown")]
         done += 1
+        if any((tiers.get(digits(p["number"])) or {}).get("litigator") for p in elig):
+            suppress_litigator(ctx, rec)
         if payload and ow.get("uuid"):
+            ctx.change(u, "phones", [phone_payload(p, phone_tier(p)) for p in elig], [ph["number"] for ph in payload])
             ctx.write("tier phones", ctx.crm.upsert_phones, ow["uuid"], payload)
             if ctx.live and checked < 1:
                 back = {digits(p.get("number")): p for p in ((ctx.crm.record(u).get("owner") or {}).get("phones") or [])}
@@ -554,6 +722,8 @@ def _handoff(ctx: Ctx, rec: dict, subj: Subject, why: str) -> None:
     u = subj.record_uuid
     if ledger.handed_off(u, "deep_prospect"):
         return
+    if not ctx.passes(rec, "research"):
+        return
     d = ledger.day(ctx.now, ctx.policy.tz)
     today_n = sum(1 for e in ledger.events(action="handoff", stage=st.id) if e["day"] == d)
     cap = int(st.get("deep_prospect_per_day", 3))
@@ -577,6 +747,7 @@ def _after(ctx: Ctx, rec: dict, subj: Subject, why: str) -> None:
         tag = ctx.stage.get("mail_only_tag", "Mail Only")
         if tag in tag_titles(rec):
             return
+        ctx.change(subj.record_uuid, "add_tags", None, [tag])
         ctx.write("mail only", ctx.crm.add_tags, subj.record_uuid, [tag], rec)
         if ctx.live:
             ledger.event(ctx.run_id, ctx.stage.id, subj.record_uuid, "after", {"to": "mail_only", "why": why},
@@ -593,16 +764,31 @@ def _write_numbers(ctx: Ctx, rec: dict, subj: Subject, nums: list[dict], source:
     tiers = score_numbers(ctx, [n["number"] for n in nums], subj.record_uuid)
     tag = {"smartskip": "SmartSkip"}.get(source, source.capitalize())
     reached = set(_list(ctx.stage.get("callable_tiers"))) or CALLABLE_TIERS
-    phones, callable_n = [], 0
+    lit_tag = litigator_tag(ctx)
+    phones, callable_n, litigator = [], 0, False
     for n in nums:
-        t = (tiers.get(n["number"]) or {}).get("tier", "")
-        phones.append(phone_payload({"number": n["number"], "type": n.get("type") or "UNKNOWN", "tags": []}, t, [tag]))
+        res = tiers.get(n["number"]) or {}
+        t = res.get("tier", "")
+        is_lit = bool(res.get("litigator"))
+        litigator = litigator or is_lit
+        phones.append(phone_payload({"number": n["number"], "type": n.get("type") or "UNKNOWN", "tags": []}, t,
+                                    [tag] + ([lit_tag] if is_lit else [])))
         # Unscored (no Trestle key, an Unknown score) cannot be judged, so it counts as a hit: the
         # waterfall must not keep paying the next source for a record that already has numbers.
-        if t in reached or t in ("", "Unknown"):
+        if not is_lit and (t in reached or t in ("", "Unknown")):
             callable_n += 1
     if subj.owner_uuid:
+        ctx.change(subj.record_uuid, "add_numbers", None, [p["number"] for p in phones])
         ctx.write("add numbers", ctx.crm.upsert_phones, subj.owner_uuid, phones)
+        if ctx.stage.get("count_as_traced", True):
+            # Numbers from an outside source land through the phone route, which DataSift does not
+            # count as a skip trace: the record keeps reading "never skip traced" and stays out of
+            # every Ready to Call preset until the owner's counter says otherwise (plan 0.10).
+            total = int((rec.get("owner") or {}).get("skiptrace_attempts") or 0) + 1
+            ctx.change(subj.record_uuid, "skiptrace_attempts", total - 1, total)
+            ctx.write("skip trace counter", ctx.crm.skiptrace_attempts, subj.owner_uuid, total)
+    if litigator:
+        suppress_litigator(ctx, rec)
     return callable_n
 
 
@@ -637,6 +823,15 @@ def run_retrace(ctx: Ctx) -> None:
                 ctx.out.tally["entity owners (need a principal)"] += 1
                 if ctx.live:
                     _after(ctx, rec, subj, "entity owner, no person to trace")
+            continue
+        v = ctx.verdict(rec, "trace", row=row, allow={"deceased"} if deceased_to == "retrace" else None)
+        if not v.ok:
+            if v.code == "deceased" and deceased_to == "deep_prospect":
+                # The gate reads death from more places than the owner flag (the Obituary list, the
+                # Owner Deceased field), and a possible death goes to research, never to a blind trace.
+                _handoff(ctx, rec, subj, "the owner may have died (%s)" % v.reasons[0][1])
+            else:
+                ctx.out.tally["held back: %s" % v.reason()] += 1
             continue
         rem = [s for s in order if s not in ledger.tried_sources(u)]
         if not rem:
@@ -791,25 +986,54 @@ def run_auction(ctx: Ctx) -> None:
     tagged = {r["uuid"]: r for r in ctx.crm.rows({"all_tags": [tag_uuid]}, cap=2000)} if tag_uuid else {}
     for u, r in tagged.items():
         cands.setdefault(u, r)
+    # A second, tighter tier (plan 1.8): hot inside soon_days, critical inside critical_days. The
+    # critical tag is what a priority package or a door-knock route keys on.
+    crit_tag = str(st.get("critical_tag") or "")
+    crit_days = int(st.get("critical_days", 14))
+    crit_uuid = ctx.crm.tag_uuid(crit_tag) if crit_tag else ""
+    if crit_tag and not crit_uuid:
+        ctx.out.problem("there is no %r tag in this account yet; create it and the critical tier starts" % crit_tag)
+    crit_tagged = {r["uuid"] for r in ctx.crm.rows({"all_tags": [crit_uuid]}, cap=2000)} if crit_uuid else set()
+    # The day after the sale every channel stops (decision D39): the record takes this status, which
+    # the gate treats as finished. Unset, the stage only untags.
+    after_status = str(st.get("after_sale_status") or "")
+    after_window = int(st.get("after_sale_window_days", 60))
     ctx.out.found = len(cands)
     hot = []
-    for u, row in cands.items():
-        dates = ledger.fact(u, "auction_dates", max_age=refresh)
+    # Reading a sale date costs two requests a record (the record, then its custom fields), so one
+    # run reads at most max_reads of them: records never read come first, then the stalest. The rest
+    # are judged on the date already known, and a record whose date is not known yet waits a run.
+    max_reads = int(st.get("max_reads", 400))
+    reads = 0
+    known = {u: ledger.fact(u, "auction_dates") for u in cands}
+    order = sorted(cands, key=lambda u: (known[u] is not None, u in tagged))
+    for u in order:
+        row = cands[u]
+        dates = ledger.fact(u, "auction_dates", max_age=refresh) if known[u] is not None else None
         if dates is None:
-            rec = ctx.crm.record(u)
-            dates = {f: rec.get(f) for f in fields if rec.get(f)}
-            if trust_builtin_fc and rec.get("foreclosure_date"):
-                dates["foreclosure_date"] = rec["foreclosure_date"]
-            dates.update(_custom_dates(ctx, u, custom))
-            ledger.set_fact(u, "auction_dates", dates)
+            if reads >= max_reads:
+                if known[u] is None:
+                    ctx.out.tally["sale date not read yet (read cap, next run)"] += 1
+                    continue
+                dates = known[u]
+            else:
+                reads += 1
+                rec = ctx.crm.record(u)
+                dates = {f: rec.get(f) for f in fields if rec.get(f)}
+                if trust_builtin_fc and rec.get("foreclosure_date"):
+                    dates["foreclosure_date"] = rec["foreclosure_date"]
+                dates.update(_custom_dates(ctx, u, custom))
+                ledger.set_fact(u, "auction_dates", dates)
         upcoming = sorted(d for d in (_as_date(v) for v in dates.values()) if d and d >= today)
         nxt = upcoming[0] if upcoming else None
         want = nxt is not None and (nxt - today).days <= soon
         has = u in tagged
         if want and not has:
+            ctx.change(u, "add_tags", None, [tag])
             ctx.write("tag auction", ctx.crm.add_tags, u, [tag], None)
             ctx.out.tally["tagged %s" % tag] += 1
         elif has and not want:
+            ctx.change(u, "remove_tags", [tag], None)
             ctx.write("untag auction", ctx.crm.remove_tags, u, [tag])
             ctx.out.tally["untagged (date passed or moved out)"] += 1
         if want:
@@ -817,13 +1041,35 @@ def run_auction(ctx: Ctx) -> None:
         if ctx.live and (want != has):
             ledger.event(ctx.run_id, st.id, u, "auction_tag", {"add": want, "date": str(nxt) if nxt else ""},
                          now=ctx.now, tz=ctx.policy.tz)
+        if crit_uuid:
+            want_c = nxt is not None and (nxt - today).days <= crit_days
+            has_c = u in crit_tagged
+            if want_c and not has_c:
+                ctx.change(u, "add_tags", None, [crit_tag])
+                ctx.write("tag critical", ctx.crm.add_tags, u, [crit_tag], None)
+                ctx.out.tally["tagged %s" % crit_tag] += 1
+            elif has_c and not want_c:
+                ctx.change(u, "remove_tags", [crit_tag], None)
+                ctx.write("untag critical", ctx.crm.remove_tags, u, [crit_tag])
+                ctx.out.tally["untagged %s" % crit_tag] += 1
+        if after_status and nxt is None:
+            past = sorted(d for d in (_as_date(v) for v in dates.values()) if d and d < today)
+            cur = status_of(row)
+            if past and 1 <= (today - past[-1]).days <= after_window and cur in ("", "prospecting", "exhausted"):
+                ctx.change(u, "status", cur or None, after_status)
+                ctx.write("after sale", ctx.crm.set_status, u, after_status)
+                ctx.out.tally["sale date passed: set %s" % after_status] += 1
+                if ctx.live:
+                    ledger.event(ctx.run_id, st.id, u, "after_sale", {"date": str(past[-1]), "status": after_status},
+                                 now=ctx.now, tz=ctx.policy.tz)
     hot.sort(key=lambda x: x[0])
     for d, row in hot:
         ctx.out.line("%s (%d days): %s" % (d.strftime("%b %d"), (d - today).days, addr(row)))
-    ctx.out.acted = ctx.out.tally.get("tagged %s" % tag, 0) + ctx.out.tally.get("untagged (date passed or moved out)", 0)
-    ctx.out.head = "%d sale(s) inside %d days%s." % (
-        len(hot), soon, "" if not ctx.out.acted else ", %s %d tag change(s)" % ("made" if ctx.live else "would make",
-                                                                               ctx.out.acted))
+    ctx.out.acted = sum(n for k, n in ctx.out.tally.items() if k.startswith(("tagged ", "untagged", "sale date passed")))
+    critical = sum(1 for d, _ in hot if (d - today).days <= crit_days) if crit_tag else 0
+    ctx.out.head = "%d sale(s) inside %d days%s%s." % (
+        len(hot), soon, (", %d of them inside %d" % (critical, crit_days)) if crit_tag else "",
+        "" if not ctx.out.acted else ", %s %d change(s)" % ("made" if ctx.live else "would make", ctx.out.acted))
 
 
 # ---------------------------------------------------------------------- reactivate
@@ -843,11 +1089,14 @@ def run_reactivate(ctx: Ctx) -> None:
             if ledger.events(u, "reactivate", since=ctx.now - timedelta(days=float(st.get("every_days", 30)))):
                 continue
             rec = ctx.crm.record(u)
-            cur = rec.get("assigned_to")
-            cur = cur.get("uuid") if isinstance(cur, dict) else cur
+            cur = assignee_of(rec)
             if cur in active:
                 continue
+            # The second-chance lane is the one place a Not Interested record may be touched.
+            if not ctx.passes(rec, "assign", row=row, allow={"not_interested"}):
+                continue
             who = balanced_pick(people, load)
+            ctx.change(u, "assign", cur, who["uuid"])
             ctx.write("reassign", ctx.crm.assign, u, who["uuid"])
             if ctx.live:
                 ledger.event(ctx.run_id, st.id, u, "reactivate", {"to": who["name"], "preset": title}, now=ctx.now,
@@ -881,6 +1130,8 @@ def run_handoff(ctx: Ctx) -> None:
             continue
         if today_n + sent >= per_day:
             ctx.out.tally["waiting for a later day (%d a day)" % per_day] += 1
+            continue
+        if not ctx.passes(ctx.crm.record(u), "research", row=row):
             continue
         tid = ctx.write("handoff", enqueue, agent, to, u, addr(row), source="autopilot:%s" % st.id)
         if ctx.live:
@@ -930,6 +1181,16 @@ def run_digest(ctx: Ctx) -> None:
         delta = n - prev[title] if title in prev else None
         ctx.out.line("%s: %d%s" % (title, n, "" if delta in (None, 0) else " (%+d)" % delta))
     if staged:
-        ctx.out.line("Waiting on a person: %s" % ", ".join("batch %d (%d pieces, $%.2f)" % (b["id"], b["count"], b["usd"])
-                                                            for b in staged[:4]))
+        ctx.out.line("Waiting on a person: %s" % ", ".join("batch %d (%d %s, $%.2f)" % (
+            b["id"], b["count"], "counter corrections" if b["kind"] == "attempts" else "pieces", b["usd"]) for b in staged[:4]))
+    try:
+        from . import budget, capture
+        for ln in capture.recent_lines(1)[:4]:
+            ctx.out.line(ln)
+        use = budget.usage()
+        if use["minute_waits_today"] or use["hour_refusals_today"]:
+            ctx.out.line("Request budget today: waited for a free minute %d time(s), refused for the hour %d time(s)" % (
+                use["minute_waits_today"], use["hour_refusals_today"]))
+    except Exception:  # noqa: BLE001  (the digest must post even when an extra line cannot be built)
+        log.exception("digest extras failed")
     ctx.out.acted = 0

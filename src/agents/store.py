@@ -50,6 +50,29 @@ CREATE TABLE IF NOT EXISTS ap_facts (
 CREATE TABLE IF NOT EXISTS ap_batches (
     id INTEGER PRIMARY KEY AUTOINCREMENT, created TEXT, stage TEXT, kind TEXT, status TEXT,
     items TEXT, usd REAL DEFAULT 0, released TEXT, result TEXT);
+-- Phase 0 of the build plan (2026-11-13). ap_log: one shared copy of the account's activity log
+-- (calls, texts, status and tag changes), read once and used by every stage. ap_changes: what a
+-- live stage changed and the value before, so a run can be put back. ap_owner_lane: the one lane
+-- each owner sits in, worked out across all of that owner's records. ap_rate: the request budget
+-- every process of this app shares.
+CREATE TABLE IF NOT EXISTS ap_log (
+    id TEXT PRIMARY KEY, at TEXT, event_type TEXT, resource TEXT, resource_type TEXT, source TEXT,
+    author TEXT, data TEXT);
+CREATE INDEX IF NOT EXISTS ap_log_res ON ap_log(resource, event_type, at);
+CREATE INDEX IF NOT EXISTS ap_log_type ON ap_log(event_type, at);
+CREATE TABLE IF NOT EXISTS ap_changes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT, run_id TEXT, stage TEXT, record_uuid TEXT,
+    what TEXT, before TEXT, after TEXT, undone TEXT DEFAULT '');
+CREATE INDEX IF NOT EXISTS ap_changes_run ON ap_changes(run_id);
+CREATE INDEX IF NOT EXISTS ap_changes_record ON ap_changes(record_uuid);
+CREATE TABLE IF NOT EXISTS ap_owner_lane (
+    owner_uuid TEXT PRIMARY KEY, lane TEXT, records TEXT, at TEXT);
+CREATE TABLE IF NOT EXISTS ap_rate (
+    app TEXT, win TEXT, n INTEGER DEFAULT 0, PRIMARY KEY (app, win));
+-- One row per caller per day, written from the call log each evening (build plan 6.2).
+CREATE TABLE IF NOT EXISTS ap_capture (
+    day TEXT, caller TEXT, dials INTEGER, answered INTEGER, conversations INTEGER, talk_s INTEGER,
+    owners INTEGER, numbers INTEGER, PRIMARY KEY (day, caller));
 """
 
 # (column, declaration). Order matters only for readability; each is added if missing.
@@ -266,12 +289,22 @@ def add_spend(task_id: int, usd: float, what: str) -> None:
                   (now(), now()[:10], task_id, round(usd, 4), what))
 
 
-def spent(task_id: int | None = None, day: str | None = None) -> float:
+RESEARCH_WORKFLOWS = ("deep_prospect",)
+
+
+def spent(task_id: int | None = None, day: str | None = None, research: bool | None = None) -> float:
+    """Dollars spent. `research` splits the day's total: True is only what deep prospects spent,
+    False is everything else. Research has its own daily budget (build plan 0.9), so a morning of
+    research cannot starve the skip traces, and a day of traces cannot stop the research."""
     q, args = "SELECT COALESCE(SUM(usd),0) FROM spend WHERE 1=1", []
     if task_id is not None:
         q, args = q + " AND task_id=?", args + [task_id]
     if day is not None:
         q, args = q + " AND day=?", args + [day]
+    if research is not None:
+        marks = ",".join("?" * len(RESEARCH_WORKFLOWS))
+        q += " AND task_id %s (SELECT id FROM tasks WHERE workflow IN (%s))" % ("IN" if research else "NOT IN", marks)
+        args = args + list(RESEARCH_WORKFLOWS)
     with _LOCK, _db() as c:
         return float(c.execute(q, args).fetchone()[0])
 

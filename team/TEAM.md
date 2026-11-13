@@ -45,6 +45,7 @@ The whole team also listens in #ai-team.
 | probate_property | The decedent's property found for a probate filing that names no address. | after ftm_pull | free | by hand today |
 | buyer_registry | Deed-verified local buyers, their principals and scored phones, refreshed monthly. | schedule (1st 07:00 America/New_York), ask in Slack | paid, inside the caps | by hand today |
 | vendor_directory | A vetted contractor and vendor directory for a market, every field verified. | ask in Slack | free | by hand today |
+| ftm_death_screen | New first-to-market records checked for a death before any text or assignment, and held for research when one may have happened. | schedule (every 30 min 07:00-19:00 daily), ask in Slack | free | live |
 | ftm_native_trace | Records that land with no trace get DataSift's own skip trace, scoped to exactly them, estimate first. | schedule (every 30 min 07:00-19:00 daily), ask in Slack | free | live |
 | ftm_retrace | Records DataSift traced with no number found, traced again with the next source nobody has tried. | schedule (11:00 Mon-Fri), ask in Slack | paid, inside the caps | live |
 | ftm_exhausted | Called three times with nothing left to dial, traced with a source not yet tried, then Diggs. | schedule (11:30 Mon-Fri), ask in Slack | paid, inside the caps | live |
@@ -66,6 +67,9 @@ The whole team also listens in #ai-team.
 | dispo_blast | A deal blast staged to the matched buyers; a human releases it. | ask in Slack | staged, a human releases | by hand today |
 | lender_package | The eight-piece private lender set for one property. | ask in Slack | free | by hand today |
 | sms_replies | Seller and buyer text replies read, classified, written back to the record, hot leads handed to a person. | ask in Slack | free | by hand today |
+| revocation | An opt-out, a death, a sale or a new lead pulls the owner out of mail that is staged and campaigns that are still sending. | schedule (every 60 min 08:00-19:00 daily), ask in Slack | free | live |
+| full_attempt | The owners dialed today who still have a top-tier number nobody tried, listed while there is time to finish them. | schedule (16:30 Mon-Fri), ask in Slack | free | live |
+| lead_check | Every lead checked for an open task, an assignee and a confirmed number; what is missing goes to the lead manager. | schedule (08:10 Mon-Fri), ask in Slack | free | live |
 
 ### Quinn (Operations)
 
@@ -79,6 +83,11 @@ The whole team also listens in #ai-team.
 | outreach_health | Deliverability and caller reputation readout, with what to rest or replace. | schedule (08:05 America/New_York), ask in Slack | free | by hand today |
 | sms_campaign | A text campaign built, audited and staged (Smarter Contact groups, text touches, sender pool); a human releases it. | ask in Slack | staged, a human releases | by hand today |
 | obituary_mail | Obituary-list mail campaign (letters to the family) exported to the mail house; a human releases it. | ask in Slack | staged, a human releases | by hand today |
+| ftm_attempts | The call counter written from the account's own call log, so a record moves on whichever dialer made the call. | schedule (every 60 min 09:00-19:00 Mon-Fri), ask in Slack | free | live |
+| owner_lanes | Each owner placed in one lane across all of their records; an owner sitting in two lanes is listed. | schedule (02:30 daily), ask in Slack | free | live |
+| sequence_watchdog | Yesterday's sequence triggers checked against what each sequence should have produced; only failures are posted. | schedule (07:20 daily), ask in Slack | free | live |
+| touch_audit | Every dial and mail piece from yesterday checked against the gate; anything that should not have gone out is named. | schedule (07:30 daily), ask in Slack | free | live |
+| daily_capture | Each caller's day written down from the call log, dials, answers, conversations and talk time, whichever dialer was used. | schedule (19:15 Mon-Fri), ask in Slack | free | live |
 | ftm_mail | The FTM mail lane dropped a month apart through DataSift's own mail, staged for a person to release. | schedule (10:00 Mon-Fri), ask in Slack | staged, a human releases | live |
 | autopilot_digest | The morning readout of the FTM lane, what the autopilot did, what it cost, what waits on a person. | schedule (08:00 Mon-Fri), ask in Slack | free | live |
 

@@ -83,6 +83,14 @@ class FakeCRM:
             have = {t.lower() for t in r["tags"]}
             if not {x.replace("tag-", "") for x in must["all_tags"]} <= have:
                 return False
+        if "owners" in must and r["owner"]["uuid"] not in must["owners"]:
+            return False
+        if "any_tags" in must and not {x.replace("tag-", "") for x in must["any_tags"]} & {t.lower() for t in r["tags"]}:
+            return False
+        if "any_lists" in must and not {x.replace("list-", "") for x in must["any_lists"]} & {t.lower() for t in r.get("lists", [])}:
+            return False
+        if "any_property_status" in must and r.get("status") not in must["any_property_status"]:
+            return False
         mn = must.get("must_not") or {}
         if r.get("status") in (mn.get("any_property_status") or []):
             return False
@@ -90,6 +98,7 @@ class FakeCRM:
 
     def _row(self, r):
         return {"uuid": r["uuid"], "address": r["address"], "status": r.get("status"),
+                "owner": {"uuid": r["owner"]["uuid"]}, "phone": r.get("row_phone"),
                 "do_not_mail_ever": r.get("do_not_mail_ever", False), "owner_do_not_mail_ever": False}
 
     def search(self, must, limit=250, offset=0):
@@ -173,6 +182,57 @@ class FakeCRM:
     def set_status(self, u, s):
         self.writes.append(("status", u, s))
         self.recs[u]["status"] = s
+
+    # ---- phase 0: the documented counters, an owner's records, the logs
+    def call_attempts(self, u, total):
+        self.writes.append(("call_attempts", u, total))
+        if not self.counter_broken:
+            self.recs[u]["predictivecall_attempts"] = total
+
+    def sms_attempts(self, u, total):
+        self.writes.append(("sms_attempts", u, total))
+        self.recs[u]["sms_attempts"] = total
+
+    def skiptrace_attempts(self, owner_uuid, total):
+        self.writes.append(("skiptrace_attempts", owner_uuid, total))
+        for r in self.recs.values():
+            if r["owner"]["uuid"] == owner_uuid:
+                r["owner"]["skiptrace_attempts"] = total
+
+    def owner(self, owner_uuid):
+        for r in self.recs.values():
+            if r["owner"]["uuid"] == owner_uuid:
+                return copy.deepcopy(r["owner"])
+        return {}
+
+    def owner_records(self, owner_uuid, cap=250):
+        return [self._row(r) for r in self.recs.values() if r["owner"]["uuid"] == owner_uuid]
+
+    def custom_fields(self, u):
+        return dict(self.custom.get(u, {}))
+
+    def list_uuid(self, title):
+        return "list-" + title.lower()
+
+    log_rows = ()        # the account log, any order: dicts shaped like the real route's rows
+    rec_logs = {}        # record uuid -> that record's own log rows
+
+    def logs(self, must, limit=100, cursor="", include_owner=False):
+        types = set(must.get("any_event_type") or [])
+        lo, hi = (list(must.get("timestamp") or [None, None]) + [None, None])[:2]
+        out = []
+        for e in self.log_rows:
+            ts = e["timestamp"].replace(" ", "T") + "Z"
+            if types and e["event_type"] not in types:
+                continue
+            if (lo and ts < lo) or (hi and ts > hi):
+                continue
+            out.append(e)
+        self.log_calls = getattr(self, "log_calls", 0) + 1
+        return {"results": out, "next_cursor": None}
+
+    def record_logs(self, u, event_types=None, limit=250):
+        return [e for e in self.rec_logs.get(u, []) if not event_types or e["event_type"] in event_types]
 
     def upsert_phones(self, owner_uuid, phones):
         self.writes.append(("upsert", owner_uuid, len(phones)))
@@ -531,7 +591,7 @@ def run(check, tmp: Path) -> None:
         check(False, "a CSV batch is not marked mailed before it was uploaded")
     except SystemExit:
         check(True, "a CSV batch is not marked mailed before it was uploaded")
-    rel = mail.release(lm.batch, crm=crm_m2, pol=pol, commit=True, uploaded=True)
+    rel = mail.release(lm.batch, crm=crm_m2, pol=pol, commit=True, uploaded=True, now=T0)
     check(rel["sent"] == 1 and crm_m2.msgs and ledger.events("m1", "mail"), "release logs the piece on the record and in the ledger")
     check("Mailed 2026-11" in crm_m2.recs["m1"]["tags"] and ("field", "m1", "f-last-mailed", "2026-11-11") in crm_m2.writes
           and crm_m2.recs["m1"]["directmail_attempts"] == 0,

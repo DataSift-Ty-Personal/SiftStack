@@ -70,8 +70,22 @@ def health() -> dict:
             "autopilot": _autopilot_health()}
 
 
+PUBLIC_LAST = ("at", "live", "found", "acted", "usd", "would_usd")
+
+
+def public_last(last: dict) -> dict:
+    """What the PUBLIC health page may say about a stage's last run: when, and numbers. Never the
+    run's own sentences. A headline or a problem line names streets ("no confirmed number, for
+    example 12 Oak St"), and this page answers anyone who asks. The sentences are one command
+    away for the operator: `cli.py autopilot last`."""
+    out = {k: last[k] for k in PUBLIC_LAST if k in last}
+    if "problems" in last:
+        out["problems"] = len(last.get("problems") or [])
+    return out
+
+
 def _autopilot_health() -> dict:
-    """Each playbook stage: its mode and what its last run found, did and tripped on. A stage that
+    """Each playbook stage: its mode and when its last run was, with its counts. A stage that
     stopped running shows an old `at`, which is what an outside watchdog looks for."""
     try:
         from .autopilot import policy
@@ -81,13 +95,20 @@ def _autopilot_health() -> dict:
     if pol is None:
         return {}
     out = {}
+    try:
+        from .autopilot import activity, budget
+        out["_requests"] = budget.usage()
+        out["_log_read_through"] = {g: (activity.synced_through(g).isoformat(timespec="minutes")
+                                         if activity.synced_through(g) else "") for g in activity.GROUPS}
+    except Exception as exc:  # noqa: BLE001
+        out["_requests"] = {"error": str(exc)[:120]}
     for sid, st in pol.stages.items():
         raw = store.kv_get("autopilot:last:%s" % sid)
         try:
             last = json.loads(raw) if raw else {}
         except ValueError:
             last = {}
-        out[sid] = {"mode": st.mode, "owner": st.owner, "last": last}
+        out[sid] = {"mode": st.mode, "owner": st.owner, "last": public_last(last)}
     return out
 
 

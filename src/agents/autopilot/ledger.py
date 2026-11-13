@@ -6,7 +6,8 @@ already happened: a record that was only planned for Tracerfy has not been trace
     events   what was done to which record, by which stage, at what cost
     phones   every number ever scored, so the same number on another record is not bought twice
     facts    small things learned about a record (its auction dates, its assignee, first seen)
-    batches  outreach staged for a person to release (mail drops)
+    batches  outreach staged for a person to release (mail drops, the first counter correction)
+    changes  each live change with the value before it, so one command puts a run back
 """
 from __future__ import annotations
 
@@ -100,6 +101,53 @@ def counts_since(since: datetime) -> dict:
         return {(r["stage"], r["action"]): (r["n"], float(r["usd"])) for r in rows}
 
 
+# ------------------------------------------------------------------ changes (what a live run changed, and the value before)
+def change(run_id: str, stage: str, record_uuid: str, what: str, before, after) -> int:
+    """One live change, with the value it replaced, so `autopilot undo <run>` can put it back
+    (plan 0.15). Written only by live runs, like every other table here."""
+    with store._LOCK, store._db() as c:
+        cur = c.execute("INSERT INTO ap_changes (at, run_id, stage, record_uuid, what, before, after) VALUES (?,?,?,?,?,?,?)",
+                        (store.now(), run_id, stage, record_uuid or "", what, json.dumps(before, default=str),
+                         json.dumps(after, default=str)))
+        return cur.lastrowid
+
+
+def changes(run_id: str = "", record_uuid: str = "", include_undone: bool = False) -> list[dict]:
+    q, args = "SELECT * FROM ap_changes WHERE 1=1", []
+    if run_id:
+        q += " AND run_id=?"
+        args.append(run_id)
+    if record_uuid:
+        q += " AND record_uuid=?"
+        args.append(record_uuid)
+    if not include_undone:
+        q += " AND undone=''"
+    with store._LOCK, store._db() as c:
+        out = []
+        for r in c.execute(q + " ORDER BY id", args).fetchall():
+            d = dict(r)
+            for k in ("before", "after"):
+                try:
+                    d[k] = json.loads(d[k]) if d[k] not in (None, "") else None
+                except ValueError:
+                    pass
+            out.append(d)
+        return out
+
+
+def change_undone(change_id: int, note: str = "") -> None:
+    with store._LOCK, store._db() as c:
+        c.execute("UPDATE ap_changes SET undone=? WHERE id=?", ((store.now() + " " + note).strip(), change_id))
+
+
+def runs(limit: int = 20) -> list[dict]:
+    """The most recent live runs that changed something: run id, stage, when, how many changes."""
+    with store._LOCK, store._db() as c:
+        rows = c.execute("SELECT run_id, stage, MIN(at) AS at, COUNT(*) AS n, SUM(CASE WHEN undone='' THEN 0 ELSE 1 END) AS undone "
+                         "FROM ap_changes GROUP BY run_id, stage ORDER BY MIN(id) DESC LIMIT ?", (int(limit),)).fetchall()
+        return [dict(r) for r in rows]
+
+
 # ------------------------------------------------------------------ facts
 def fact(record_uuid: str, key: str, max_age: timedelta | None = None):
     with store._LOCK, store._db() as c:
@@ -184,6 +232,16 @@ def batches(status: str = "", stage: str = "") -> list[dict]:
             d["count"] = len(json.loads(d.pop("items") or "[]"))
             out.append(d)
         return out
+
+
+def batch_items_set(batch_id: int, items: list[dict], usd: float | None = None) -> None:
+    """Rewrite a staged batch's items (a record that no longer passes the gate is taken out before
+    release, plan 0.17)."""
+    with store._LOCK, store._db() as c:
+        if usd is None:
+            c.execute("UPDATE ap_batches SET items=? WHERE id=?", (json.dumps(items, default=str), batch_id))
+        else:
+            c.execute("UPDATE ap_batches SET items=?, usd=? WHERE id=?", (json.dumps(items, default=str), round(usd, 2), batch_id))
 
 
 def batch_set(batch_id: int, status: str, result: dict | None = None) -> None:

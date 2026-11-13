@@ -18,6 +18,9 @@
     python src/agents/cli.py autopilot run <stage>       # one stage now, obeying its mode (plan writes nothing)
     python src/agents/cli.py autopilot batches           # outreach batches waiting on a person
     python src/agents/cli.py autopilot release <id> [--commit] [--uploaded]
+    python src/agents/cli.py autopilot runs | undo <run id> [--commit]   # put a live run back
+    python src/agents/cli.py autopilot lanes | budget | log              # timelines, request budget, log reach
+    python src/agents/cli.py autopilot calibrate [days]                  # do the phone tiers predict what callers find
     python src/agents/cli.py schedule [--next 3]         # when every scheduled workflow fires next
 
 AGENTS_MODE=dry (default) spends nothing and writes nothing to the CRM; AGENTS_MODE=live spends
@@ -299,7 +302,78 @@ def cmd_autopilot(a) -> int:
         if not a.stages:
             print("name the batch id")
             return 2
+        b = ledger.batch(int(a.stages[0]))
+        if b and b["kind"] == "attempts":
+            from agents.autopilot import attempts
+            print(json.dumps(attempts.release(int(a.stages[0]), commit=a.commit), indent=1, default=str))
+            return 0
         print(json.dumps(mail.release(int(a.stages[0]), commit=a.commit, uploaded=a.uploaded), indent=1, default=str))
+        return 0
+    if a.action == "runs":
+        for r in ledger.runs(int(a.stages[0]) if a.stages else 20):
+            print("%-22s %-18s %s  %d change(s)%s" % (r["run_id"], r["stage"], r["at"][:16], r["n"],
+                                                     "  (%d put back)" % r["undone"] if r["undone"] else ""))
+        return 0
+    if a.action == "undo":
+        if not a.stages:
+            print("name the run id (cli.py autopilot runs lists them)")
+            return 2
+        from agents.autopilot import undo
+        r = undo.run(a.stages[0], commit=a.commit)
+        print(json.dumps(r, indent=1, default=str))
+        if r.get("dry"):
+            print("DRY RUN, nothing changed. Re-run with --commit to put %d change(s) back." % r["would_undo"])
+        return 0
+    if a.action == "budget":
+        from agents.autopilot import budget
+        print(json.dumps(budget.usage(), indent=1))
+        return 0
+    if a.action == "lanes":
+        from agents.autopilot import lanes
+        pol = policy.load()
+        for lane in lanes.ORDER:
+            if pol.lanes.timeline(lane):
+                print("%s" % lane)
+                for line in lanes.describe(pol.lanes, lane):
+                    print("  %s" % line)
+        two = lanes.owners_in_two_lanes()
+        print("%d owner(s) sit in two lanes (from the last owner_lanes run)" % len(two))
+        return 0
+    if a.action == "calibrate":
+        from agents.autopilot import calibration
+        from agents.autopilot.crm import CRM
+        out = calibration.run(CRM(), days=int(a.stages[0]) if a.stages else 45)
+        print(calibration.text(out))
+        return 0
+    if a.action == "last":
+        # Each stage's last run in its own words. The public health page carries only the counts,
+        # because these lines name streets; this is the operator's view (run it on the box over
+        # `fly ssh console`, or locally for local runs).
+        pol = policy.load()
+        wanted = set(a.stages)
+        for sid, st in pol.stages.items():
+            if wanted and sid not in wanted:
+                continue
+            raw = store.kv_get("autopilot:last:%s" % sid)
+            try:
+                last = json.loads(raw) if raw else {}
+            except ValueError:
+                last = {}
+            if not last:
+                print("%-20s %-5s never run here" % (sid, st.mode))
+                continue
+            print("%-20s %-5s %s  found %s, %s %s" % (sid, st.mode, str(last.get("at", ""))[:16], last.get("found", 0),
+                                                      "did" if last.get("live") else "would do", last.get("acted", 0)))
+            if last.get("head"):
+                print("    %s" % last["head"])
+            for line in last.get("problems") or []:
+                print("    ! %s" % line)
+        return 0
+    if a.action == "log":
+        from agents.autopilot import activity
+        for g in activity.GROUPS:
+            thr = activity.synced_through(g)
+            print("%-7s read through %s" % (g, thr.isoformat(timespec="minutes") if thr else "never"))
         return 0
     return 2
 
@@ -320,13 +394,14 @@ def main(argv=None) -> int:
     sub = ap.add_subparsers(dest="cmd", required=True)
     au = sub.add_parser("autopilot")
     au.add_argument("action", choices=["check", "plan", "run", "batches", "release", "mail-designs",
-                                       "backfill-sale-dates"])
+                                       "backfill-sale-dates", "runs", "undo", "budget", "lanes", "log", "calibrate",
+                                       "last"])
     au.add_argument("--csv", action="append", default=[], help="backfill-sale-dates: run CSV glob (repeatable)")
     au.add_argument("stages", nargs="*")
     au.add_argument("--live", action="store_true", help="check: confirm every preset title exists in the account")
     au.add_argument("--plan", action="store_true", help="run: force plan mode")
     au.add_argument("--json", default="", help="plan: also write the summaries to this file")
-    au.add_argument("--commit", action="store_true", help="release: actually send or record the batch")
+    au.add_argument("--commit", action="store_true", help="release, undo: actually write")
     au.add_argument("--uploaded", action="store_true", help="release: the CSV was uploaded to the mail house")
     sc = sub.add_parser("schedule")
     sc.add_argument("--next", type=int, default=3)

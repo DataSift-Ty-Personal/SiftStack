@@ -81,12 +81,22 @@ def main() -> int:
     ap.add_argument("--app", default=DEFAULT_APP)
     ap.add_argument("--env-file", default=str(REPO_ROOT / ".env"))
     ap.add_argument("--commit", action="store_true")
+    ap.add_argument("--exclude", action="append", default=[],
+                    help="an optional name NOT to send even though .env holds it (repeatable). The first deploy "
+                         "leaves the Slack names out so a brain in plan mode posts nowhere until its own channel exists.")
     args = ap.parse_args()
     env_file = Path(args.env_file)
     env = load_env(env_file)
     for key, _ in REQUIRED + OPTIONAL:
         if os.environ.get(key):
             env[key] = os.environ[key]
+    required_names = {k for k, _ in REQUIRED}
+    for key in args.exclude:
+        if key in required_names:
+            print("%s is required and cannot be excluded." % key)
+            return 2
+        if env.pop(key, None) is not None:
+            print("excluded (not sent): %s" % key)
     ensure_webhook_secret(env_file, env)
 
     send, missing = {}, []

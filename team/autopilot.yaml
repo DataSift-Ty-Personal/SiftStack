@@ -29,12 +29,187 @@ people:
   # ty+2 on 2026-11-11: Adriana is active (lead manager); Tinaa is inactive.
   callers: [Adriana]
 
+# The suppression gate (src/agents/autopilot/gate.py): the one check before any assignment, call,
+# text, mail piece, trace or research handoff, run when a record is picked up and again when a
+# staged batch is released. These are the tags, lists and fields it reads in THIS account; the
+# defaults are shown, so delete a line to keep the default. Nothing lifts Do Not Market, a
+# litigator, an opt-out or a sold house.
+gate:
+  do_not_market_tags: [Do Not Market]     # the texting agent's opt-out tag
+  litigator_tags: [Litigator]             # written by the scoring stage on the record AND the owner's other records
+  suppress_lists: [DNC]                   # Smarter Contact's "stop" lands on this list
+  deceased_tags: [deceased, Verify Deceased]
+  deceased_lists: [Obituary]              # an obituary on a record: hold for research (it is often a spouse's)
+  deceased_fields: [Owner Deceased]
+  probate_marks: [Probate]                # a probate record's owner is the court's representative, so the list does not hold it
+  heir_tags: [Heir Identified]
+  sold_tags: [recently sold, Sold]
+  mail_only_tags: [Mail Only]
+  not_sfr_tags: [Not Single Family]
+  read_fields: true                       # also read the Owner Deceased custom field (one more read per record acted on, cached a week)
+
+# Lanes (src/agents/autopilot/lanes.py). An owner sits in ONE lane across all of their records:
+# lead > heirs > hot_auction > ftm > obituary > priority1 > strong > bulk. The highest wins and the
+# owner's other records are held. Each lane with a timeline is worked on that timeline only, so no
+# two stages can disagree about what happens after the call round (decisions D1, D3, D6).
+lanes:
+  heirs:       {tags: [Heir Identified]}
+  hot_auction: {tags: [Auction Soon]}
+  ftm:
+    tags: [FTM]
+    timeline:
+      round_ends_at: 5            # five full call attempts end the round (D1)
+      opening_texts: [0, 1, 2]    # business days for texts 1, 2 and 3 (D3)
+      call_days: [1, 2, 3, 4, 5]
+      mail_first_day: 8           # mail starts when the round ends (D6)
+      mail_every_days: 30
+      mail_pieces: 12             # twelve monthly pieces on first-to-market records (D7)
+      mail_at_once: [no_number, foreclosure]   # no usable number, or a sale a median 34 days out
+      followup_texts: {first_day: 8, last_day: 18, count: 4}
+  obituary:    {tags: [Obituary], lists: [Obituary]}
+  priority1:   {tags: [Priority 1]}
+  strong:      {tags: [Priority 2]}
+
 stages:
+
+  # ------------------------------------------------------------------ Phase 0: safe before anything goes live
+  # Every stage below reads, checks or corrects. None of them contacts a homeowner.
+  ftm_death_screen:
+    kind: screen
+    owner: research
+    mode: "plan"
+    schedule: "every 30 min 07:00-19:00 daily"    # ahead of assign and the first text
+    summary: New first-to-market records checked for a death before any text or assignment, and held for research when one may have happened.
+    # Between a fifth and a third of distressed owners have died. The screen reads the record, the
+    # notice words in its notes and, for Knox, the county library's obituary index (free). A hit is
+    # not a verdict: it tags the record and research decides who died.
+    lane: ftm
+    presets:
+      - FTM - 00 Needs Skipped
+      - FTM - 01 Skipped No Numbers
+      - FTM - 02 Ready to Call
+    tag: Verify Deceased
+    index_counties: [knox]      # Blount has no index: those records rely on the notice and the trace
+    years: 3
+    on_hit: tag
+    max_records: 60
+
+  ftm_attempts:
+    kind: attempts
+    owner: ops
+    mode: "plan"
+    schedule: "every 60 min 09:00-19:00 Mon-Fri"
+    summary: The call counter written from the account's own call log, so a record moves on whichever dialer made the call.
+    # Measured 2026-11-12: 18 of 130 Ready to Call records had been dialed through Kixie and still
+    # read zero. An attempt is a DAY with at least one outbound dial, counted only since the record
+    # entered the lane. The first live run is staged for a person to approve.
+    lane: ftm
+    presets:                    # in lane order: the first holds counter 0, the next 1, and so on
+      - FTM - 02 Ready to Call
+      - FTM - 03 Call Attempt 1
+      - FTM - 04 Call Attempt 2
+      - FTM - 05 Call Attempt 3
+    floor_days: 45
+    first_run: staged
+
+  owner_lanes:
+    kind: lanes
+    owner: ops
+    mode: "plan"
+    schedule: "02:30 daily"     # the night list: a long scan, off the daytime request budget
+    summary: Each owner placed in one lane across all of their records; an owner sitting in two lanes is listed.
+
+  revocation:
+    kind: revoke
+    owner: sales
+    mode: "plan"
+    schedule: "every 60 min 08:00-19:00 daily"
+    summary: An opt-out, a death, a sale or a new lead pulls the owner out of mail that is staged and campaigns that are still sending.
+    smarter_contact: true       # needs Smarter Contact's login on this box; without it the stage says so
+    first_window_hours: 336     # the first run looks back two weeks, so going live catches up on what plan runs only listed
+    floor_days: 14
+
+  sequence_watchdog:
+    kind: watchdog
+    owner: ops
+    mode: "plan"
+    schedule: "07:20 daily"
+    summary: Yesterday's sequence triggers checked against what each sequence should have produced; only failures are posted.
+    # A sequence that does not fire leaves no error anywhere. The sold sequence missed about half of
+    # the newest tags before anyone noticed (2026-11-12).
+    window_hours: 24
+    settle_minutes: 30
+    expect:
+      - name: Recently Sold to Sold Status
+        when: {event: property.tags.added, tag: recently sold}
+        then: {status: sold}
+      - name: Lead Flow
+        when: {event: property.tags.added, tag: leadflowrei}
+        then: {status: new_lead}
+      - name: Call New Lead
+        when: {event: property.status.updated, to: new_lead}
+        then: {assigned: true, task: true, card: true}
+      - name: "[NEW] Hot Lead"
+        when: {event: card.moved, column: "HOT Leads (Qualified)"}
+        then: {task: true}
+      - name: "[NEW] Warm Lead"
+        when: {event: card.moved, column: "WARM Leads (Qualified)"}
+        then: {task: true}
+      - name: "[NEW] Cold Lead"
+        when: {event: card.moved, column: "COLD Leads (Qualified)"}
+        then: {task: true}
+      - name: "[NEW] No Contact New Lead"
+        when: {event: card.moved, column: "No Contact New Lead (Unqualified)"}
+        then: {task: true}
+
+  touch_audit:
+    kind: audit
+    owner: ops
+    mode: "plan"
+    schedule: "07:30 daily"
+    summary: Every dial and mail piece from yesterday checked against the gate; anything that should not have gone out is named.
+    call_hours: "09:00-19:00"   # people call until 7pm Eastern (plan 4.6)
+    repeat_dials: 3
+    line_cap: 25                # dials one caller ID line may carry in a day (plan 4.6); past it the line gets flagged as spam
+    max_owners: 150
+
+  daily_capture:
+    kind: capture
+    owner: ops
+    mode: "plan"
+    schedule: "19:15 Mon-Fri"   # after calling hours end at 7pm
+    summary: Each caller's day written down from the call log, dials, answers, conversations and talk time, whichever dialer was used.
+    # Plan 6.2 and 6.3. A conversation is an answered call of a minute or more. The floors are the
+    # newest teaching (decision D30 is yours: 150 dials a day); an alarm names what to check.
+    conversation_seconds: 60
+    floors: {dials: 150}
+    floor_slack: 0.7            # only a day under 70% of the floor is called out
+    dials_without_a_lead: 500
+
+  full_attempt:
+    kind: fullattempt
+    owner: sales
+    mode: "plan"
+    schedule: "16:30 Mon-Fri"
+    summary: The owners dialed today who still have a top-tier number nobody tried, listed while there is time to finish them.
+    # Plan 1.3. A full attempt dials every Dial First and Second number. Reads only; shows the last
+    # four digits of a number.
+    short_by: 2
+
+  lead_check:
+    kind: leadcheck
+    owner: sales
+    mode: "plan"
+    schedule: "08:10 Mon-Fri"
+    summary: Every lead checked for an open task, an assignee and a confirmed number; what is missing goes to the lead manager.
+    # Plan 2.7. Reads only. Creating the missing task is the live half and waits on one staging proof.
+    new_lead_hours: 24
 
   # ------------------------------------------------------------------ Atlas, Analysis
   ftm_assign:
     kind: assign
     owner: analysis
+    lane: ftm
     mode: "plan"
     schedule: "every 30 min 08:00-18:00 Mon-Fri"
     summary: New first-to-market records handed to a caller within 30 minutes of landing, balanced by open workload.
@@ -47,6 +222,7 @@ stages:
       - FTM - 04 Call Attempt 2
       - FTM - 05 Call Attempt 3
     strategy: balanced      # fewest records waiting to start; round_robin also works
+    caller_cap: 2000        # one caller tops out near 2,000 open records; past it the stage says so every run
     backlog: false          # records already unassigned on the first run stay as they are
     max_per_run: 200
     routes: {}              # e.g. {Probate: [Adriana]} sends probate to one caller
@@ -60,7 +236,12 @@ stages:
     presets: []
     scope_tags: [FTM, Courthouse Data]
     tag: Auction Soon
-    soon_days: 21
+    soon_days: 45               # hot inside 45 days (D9): a notice lands a median 34 days before its sale
+    critical_tag: Auction Critical
+    critical_days: 14           # critical inside 14: the tier a priority package and a door knock key on
+    # The day after the sale every channel stops (decision D39, yours). Uncomment to have the stage
+    # set the status; until then it only removes the tags.
+    # after_sale_status: Auction Date Passed
     # The courthouse sale date lives in the custom field. The built-in foreclosure_date on bulk
     # records is a stale public-record artifact (2022 batch defaults), so it is not trusted.
     custom_date_fields: [Foreclosure Date]
@@ -71,6 +252,7 @@ stages:
   ftm_reactivate:
     kind: reactivate
     owner: analysis
+    lane: ftm
     mode: "plan"
     schedule: "Mon 08:15"
     summary: Not-interested first-to-market records whose wait is over handed back to a caller.
@@ -85,6 +267,7 @@ stages:
   ftm_native_trace:
     kind: native_trace
     owner: research
+    lane: ftm
     mode: "plan"
     schedule: "every 30 min 07:00-19:00 daily"   # challenge C2.2 (Oct 6 workshop): trace no-number records every 30 minutes
     summary: Records that land with no trace get DataSift's own skip trace, scoped to exactly them, estimate first.
@@ -96,6 +279,7 @@ stages:
   ftm_retrace:
     kind: retrace
     owner: research
+    lane: ftm
     covers: [tracerfy]   # the org-chart agent whose job this stage does
     mode: "plan"
     schedule: "11:00 Mon-Fri"
@@ -118,6 +302,7 @@ stages:
   ftm_exhausted:
     kind: retrace
     owner: research
+    lane: ftm
     covers: [tracerfy]   # the org-chart agent whose job this stage does
     mode: "plan"
     schedule: "11:30 Mon-Fri"
@@ -138,6 +323,7 @@ stages:
   ftm_score:
     kind: score
     owner: research
+    lane: ftm
     covers: [phone]   # the org-chart agent whose job this stage does
     mode: "plan"
     schedule: "08:30 Mon-Fri"
@@ -155,6 +341,7 @@ stages:
   ftm_deep_prospect:
     kind: handoff
     owner: research
+    lane: ftm
     mode: "plan"
     schedule: "13:00 Mon-Fri"
     summary: First-to-market records whose owner has died go to Diggs for the full heir and signer research, two a day.
@@ -171,6 +358,7 @@ stages:
   ftm_return_mail:
     kind: handoff
     owner: research
+    lane: ftm
     mode: "plan"
     schedule: "13:15 Mon-Fri"
     summary: First-to-market records whose mail came back go to Diggs, one a day.
@@ -183,6 +371,7 @@ stages:
   ftm_no_numbers:
     kind: handoff
     owner: research
+    lane: ftm
     mode: "plan"
     schedule: "13:30 Mon-Fri"
     summary: First-to-market records still without a number after every trace go to Diggs, one a day.
@@ -196,6 +385,7 @@ stages:
   ftm_mail:
     kind: mail
     owner: ops
+    lane: ftm
     mode: "plan"
     schedule: "10:00 Mon-Fri"
     summary: The FTM mail lane dropped a month apart through DataSift's own mail, staged for a person to release.

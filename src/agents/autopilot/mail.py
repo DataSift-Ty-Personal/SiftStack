@@ -27,7 +27,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from .. import config
-from . import ledger, windows
+from . import lanes, ledger, windows
 from .stages import Ctx, addr, status_of, DEAD_STATUSES
 
 SRC = Path(__file__).resolve().parents[2]
@@ -272,6 +272,26 @@ def _due(ctx: Ctx, spec: dict, step: int, staged: set, already: set) -> list[tup
     return out
 
 
+def mail_open(ctx: Ctx, rec: dict) -> tuple[bool, str]:
+    """Is the mail channel open for this record today, by its lane's timeline (plan 0.20)? A stage
+    with no `lane` set is not restricted: the table rules only the lanes it describes."""
+    lane = str(ctx.stage.get("lane") or "")
+    cfg = getattr(ctx.policy, "lanes", None)
+    if not lane or cfg is None or not cfg.timeline(lane):
+        return True, ""
+    from . import gate
+    from .stages import lane_entry
+    from zoneinfo import ZoneInfo
+    zone = ZoneInfo(ctx.policy.tz)
+    entered = lane_entry(ctx, rec, lane).astimezone(zone).date()
+    today = ctx.now.astimezone(zone).date()
+    low = {str(t).lower() for t in (rec.get("tags") or []) + (rec.get("lists") or []) if isinstance(t, str)}
+    facts = {"no_number": not gate.usable_numbers(rec, "call", getattr(ctx.policy, "gate", None) or gate.GateConfig()),
+             "foreclosure": "foreclosure" in low}
+    return lanes.channel_open(cfg, lane, "mail", lanes.business_days(entered, today),
+                              int(rec.get("predictivecall_attempts") or 0), facts, today.weekday())
+
+
 def run_mail(ctx: Ctx) -> None:
     st = ctx.stage
     if getattr(ctx.mailer, "refused", ""):
@@ -285,6 +305,10 @@ def run_mail(ctx: Ctx) -> None:
     already: set = set()
     usd = 0.0
     blocked: dict[str, list[str]] = {}
+    # Once the day's mail budget has refused a piece at some price, every later piece at that price
+    # or more is refused too (the day's total only grows). Those records are counted and NOT read:
+    # reading 600 records to tell each one "tomorrow" is 1,200 requests that buy nothing.
+    refused_from: float | None = None
     for step, spec in enumerate(specs, 1):
         if getattr(ctx.mailer, "batch", False):
             _, why = ctx.mailer.touch(spec, sender)
@@ -298,7 +322,16 @@ def run_mail(ctx: Ctx) -> None:
             if len(picked) >= cap_n:
                 ctx.out.tally["left for tomorrow (daily cap %d)" % cap_n] += 1
                 continue
+            if refused_from is not None and ctx.mailer.price(spec["piece"]) >= refused_from:
+                ctx.out.tally["left for tomorrow (the day's mail budget is used)"] += 1
+                continue
             rec = ctx.crm.record(row["uuid"])
+            if not ctx.passes(rec, "mail", row=row):
+                continue
+            ok, why = mail_open(ctx, rec)
+            if not ok:
+                ctx.out.tally["not yet: %s" % why] += 1
+                continue
             piece, why = build_piece(rec, spec["piece"], title, step, st)
             if not piece:
                 ctx.out.tally["not mailable: %s" % why] += 1
@@ -307,6 +340,7 @@ def run_mail(ctx: Ctx) -> None:
             ok, why = ctx.budget(usd + piece.price, piece.record_uuid, record_usd=0)
             if not ok:
                 ctx.out.tally["left for tomorrow (%s)" % why] += 1
+                refused_from = piece.price if refused_from is None else min(refused_from, piece.price)
                 continue
             if spec.get("copy"):
                 text, prob = render_copy(spec["copy"], piece, sender)
@@ -366,6 +400,21 @@ def deliver(ctx: Ctx, pieces: list[Piece], sender: dict, label: str, uploaded: b
     v = ctx.mailer
     sent, paid = 0, 0.0
     state: dict = {}
+    # The gate runs a second time here, at release (plan 0.1, 0.17): a homeowner who opted out, died,
+    # sold or became a lead after the batch was staged must not get the piece. A CSV batch that was
+    # already uploaded to a mail house cannot be pulled back, so there it is only said out loud.
+    kept = []
+    for p in pieces:
+        verdict = ctx.verdict(ctx.crm.record(p.record_uuid), "mail")
+        if verdict.ok or uploaded:
+            kept.append(p)
+        if not verdict.ok:
+            ctx.out.tally["%s: %s" % ("mailed anyway, already at the mail house" if uploaded else "held back at release",
+                                      verdict.reason())] += 1
+            if uploaded:
+                ctx.out.problem("%s was in the uploaded file but no longer passes the gate (%s)" % (
+                    p.property_street or "a record", verdict.reason()))
+    pieces = kept
     if getattr(v, "batch", False):
         specs = [p for p in (ctx.stage.get("pieces") or []) if isinstance(p, dict)]
         groups: dict[int, list[Piece]] = {}
@@ -425,7 +474,8 @@ def deliver(ctx: Ctx, pieces: list[Piece], sender: dict, label: str, uploaded: b
     return sent, round(paid, 2)
 
 
-def release(batch_id: int, *, crm=None, pol=None, commit: bool = False, uploaded: bool = False) -> dict:
+def release(batch_id: int, *, crm=None, pol=None, commit: bool = False, uploaded: bool = False,
+            now: datetime | None = None) -> dict:
     """Release a staged batch: send it through the stage's vendor, or (export-only vendor, after the
     CSV was uploaded to the mail house) record it as mailed. Dry unless commit."""
     from datetime import timezone
@@ -449,7 +499,7 @@ def release(batch_id: int, *, crm=None, pol=None, commit: bool = False, uploaded
     if crm is None:
         from .crm import CRM
         crm = CRM()
-    ctx = Ctx(policy=pol, stage=st, crm=crm, run_id="release-%d" % batch_id, now=datetime.now(timezone.utc),
+    ctx = Ctx(policy=pol, stage=st, crm=crm, run_id="release-%d" % batch_id, now=now or datetime.now(timezone.utc),
               live=True, out=out, mailer=vendor)
     sent, paid = deliver(ctx, pieces, sender_block(st), "batch %d" % batch_id, uploaded=uploaded)
     ledger.batch_set(batch_id, "sent" if sent else "failed", {"sent": sent, "usd": paid, "problems": out.problems})

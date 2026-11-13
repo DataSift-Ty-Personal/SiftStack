@@ -48,7 +48,9 @@ KNOWN = {
     "/api/internal/property/{x}/message/": ("replace", "POST /api/internal/owner/{owner_uuid}/message/ (the board is per owner; the property mirror was unlisted 2026-11-01)"),
     "/api/internal/property/{x}/message/{x}/": ("replace", "/api/internal/owner/{owner_uuid}/message/{uuid}/"),
     "/api/internal/property/{x}/message/{x}/pin/": ("replace", "POST /api/internal/owner/{owner_uuid}/message/{uuid}/pin/"),
-    "/api/internal/status/": ("replace", "GET /api/internal/global-status/ (reading; creating a custom status is not in the API)"),
+    # Measured 2026-11-13 on the key: global-status answers 7 rows, one per lead pipeline heading, naming
+    # 8 of the account's 30 statuses. It is a spelling check, not a list of every status.
+    "/api/internal/status/": ("absent", "no published route lists every status: GET /api/internal/global-status/ names only the lead pipeline's (8 of 30 on ty+2); keep a table of the stored spellings and check it against global-status"),
     "/api/internal/account/user/": ("absent", "listing the account's users is not in the API (GET /api/internal/user/ is the key's own user only); name people by uuid"),
     "/api/internal/account/users/": ("absent", "listing the account's users is not in the API; name people by uuid"),
     "/api/internal/users/": ("absent", "listing the account's users is not in the API; name people by uuid"),

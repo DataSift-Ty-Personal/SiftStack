@@ -264,6 +264,17 @@ def main() -> int:
     finally:
         config.MODE = "dry"
 
+    print("phase 0")
+    from . import selftest_phase0
+    try:
+        selftest_phase0.run(check, tmp)
+    except Exception as exc:  # noqa: BLE001
+        import traceback
+        traceback.print_exc()
+        check(False, "phase 0 checks crashed: %s: %s" % (type(exc).__name__, exc))
+    finally:
+        config.MODE = "dry"
+
     print("source hygiene")
     src = Path(__file__).resolve().parent
     check(all("\x08" not in f.read_text(encoding="utf-8") for f in src.rglob("*.py")), "no backspace byte in the agents source")

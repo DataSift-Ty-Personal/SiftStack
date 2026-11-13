@@ -44,6 +44,13 @@ MODE = (os.environ.get("AGENTS_MODE") or "dry").strip().lower()
 RUN_CAP_USD = _f("AGENTS_RUN_CAP_USD", 5.0)
 DAILY_CAP_USD = _f("AGENTS_DAILY_CAP_USD", 25.0)
 DEDUPE_HOURS = _f("AGENTS_DEDUPE_HOURS", 24.0)
+# Research (the deep prospect) has its own daily budget, apart from data spend and mail. Unset, it
+# is the same figure as the daily cap, counted separately.
+RESEARCH_DAILY_CAP_USD = _f("AGENTS_RESEARCH_DAILY_CAP_USD", DAILY_CAP_USD)
+# Held back inside each run for the final analysis, the pass that turns the research into who signs
+# and who to call first. Without it a file with three heirs spent its whole cap on traces and
+# scoring and then skipped the one step that makes the file usable.
+FINAL_RESERVE_USD = _f("AGENTS_FINAL_RESERVE_USD", 1.0)
 
 SLACK_WEBHOOK = os.environ.get("AGENTS_SLACK_WEBHOOK") or os.environ.get("SLACK_WEBHOOK_URL", "")
 MODEL = os.environ.get("AGENTS_MODEL") or "claude-opus-5-5"

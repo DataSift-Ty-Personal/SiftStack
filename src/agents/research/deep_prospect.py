@@ -45,13 +45,17 @@ class Budget:
         self.task_id = task_id
         self.skipped: list[str] = []
 
-    def allows(self, usd: float, what: str) -> bool:
+    def allows(self, usd: float, what: str, reserve: float = 0.0) -> bool:
+        """May this step spend about `usd`? `reserve` is what must still be left in the run
+        afterwards (the final analysis). The day is counted against research's own budget."""
         day = datetime.now(timezone.utc).isoformat()[:10]
-        run_total = store.spent(task_id=self.task_id) + usd
-        day_total = store.spent(day=day) + usd
-        if run_total > config.RUN_CAP_USD or day_total > config.DAILY_CAP_USD:
-            self.skipped.append("%s skipped: about $%.2f would pass the cap (run $%.0f, day $%.0f)"
-                                % (what, usd, config.RUN_CAP_USD, config.DAILY_CAP_USD))
+        run_total = store.spent(task_id=self.task_id) + usd + reserve
+        day_total = store.spent(day=day, research=True) + usd
+        if run_total > config.RUN_CAP_USD or day_total > config.RESEARCH_DAILY_CAP_USD:
+            self.skipped.append("%s skipped: about $%.2f would pass the cap (run $%.0f%s, research day $%.0f)"
+                                % (what, usd, config.RUN_CAP_USD,
+                                   " with $%.2f held for the final analysis" % reserve if reserve else "",
+                                   config.RESEARCH_DAILY_CAP_USD))
             return False
         return True
 
@@ -108,7 +112,7 @@ def run(task: dict) -> dict:
         if not live:
             lines.append("== %s skipped (dry mode: no vendor spend)" % name)
             return False
-        if not budget.allows(estimate, name):
+        if not budget.allows(estimate, name, reserve=config.FINAL_RESERVE_USD):
             lines.append("== " + budget.skipped[-1])
             return False
         before = _ledger_total(rn)
@@ -132,7 +136,7 @@ def run(task: dict) -> dict:
     # The Claude researcher unless AGENTS_RESEARCH_ENGINE=open (two low-cost models, cross-checked).
     eng = open_research.engine()
     llm_cap = eng.cap
-    if budget.allows(llm_cap, "research"):
+    if budget.allows(llm_cap, "research", reserve=config.FINAL_RESERVE_USD if live else 0.0):
         _, usd = eng.research(rn, row)
         budget.charge(usd, eng.label)
         lines.append("== research ok ($%.2f, %s engine)" % (usd, eng.name))
