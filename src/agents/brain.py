@@ -49,7 +49,7 @@ def _startup() -> None:
         _worker["socket"], _worker["socket_stop"] = slack_socket.start_thread(_slack_body)
         log.info("slack socket mode on: events arrive over a connection the brain opens")
     first_hello()
-    if slack_app.mode() == "bot" and not store.kv_get(DEAF_KEY):
+    if slack_app.mode() == "bot" and not store.kv_get(DEAF_KEY).startswith("heard"):
         # Until the hello has landed AND Slack has been heard from, something is still to check.
         _worker["hello_stop"] = threading.Event()
         _worker["hello"] = threading.Thread(target=slack_watch, args=(_worker["hello_stop"],),
@@ -94,23 +94,29 @@ def hearing_notice(now: datetime | None = None) -> str:
     minutes later, the app can speak and cannot hear, which looks fine until somebody talks to it.
     Say so once, in the channel, with the one setting that fixes it. Returns "" while it is too
     early to tell, "heard" when events are arriving, or the notice that was posted."""
-    said = store.kv_get(FIRST_HELLO_KEY)
-    if not said or store.kv_get(DEAF_KEY):
+    said, state = store.kv_get(FIRST_HELLO_KEY), store.kv_get(DEAF_KEY)
+    if not said or state.startswith("heard"):
         return ""
     try:
         hello_at = datetime.fromisoformat(said)
     except ValueError:
         return ""
     now = now or datetime.now(timezone.utc)
-    if (now - hello_at).total_seconds() < HEARING_GRACE_S:
-        return ""
     heard = store.kv_get(intake.HEARD_KEY)
     try:
         if heard and datetime.fromisoformat(heard) >= hello_at:
+            if state.startswith("notice"):
+                # It said it could not hear. Now it can: say that once too, so nobody has to ask.
+                roster = _roster_or_none()
+                sales = roster.employees.get("sales") if roster else None
+                slack_app.notice(":white_check_mark: I can hear this channel now. Ask any of us by name, for example: "
+                                 "%s, quick screen 123 Main St" % (sales.display_name if sales else "Roma"), roster)
             store.kv_set(DEAF_KEY, "heard %s" % heard)
             return "heard"
     except ValueError:
         pass
+    if state.startswith("notice") or (now - hello_at).total_seconds() < HEARING_GRACE_S:
+        return ""                      # already said, or too early to tell
     if config.SLACK_APP_TOKEN:
         fix = ("Switch on Socket Mode for this app: api.slack.com/apps, open the app, Socket Mode, "
                "Enable Socket Mode. Nothing else is needed.")
@@ -128,16 +134,20 @@ def hearing_notice(now: datetime | None = None) -> str:
     return text
 
 
-def slack_watch(stop, every_s: float | None = None, checks: int = 40) -> str:
-    """The one-time start-up watch: get the hello to land, then make sure the app can hear."""
+def slack_watch(stop, every_s: float | None = None, checks: int = 5760) -> str:
+    """The start-up watch: get the hello to land, then make sure the app can hear. If it cannot, the
+    notice goes out once and the watch stays (a day, at 15 seconds a look) for the first event, so
+    the moment the setting is fixed the channel is told that too. Returns how it ended."""
     hello_until_landed(stop, every_s)
     for _ in range(checks):
-        out = hearing_notice()
-        if out or not store.kv_get(FIRST_HELLO_KEY):
-            return out
-        if stop.wait(every_s if every_s is not None else 30.0):
-            break
-    return ""
+        if not store.kv_get(FIRST_HELLO_KEY):
+            return "no hello"
+        hearing_notice()
+        if store.kv_get(DEAF_KEY).startswith("heard"):
+            return "heard"
+        if stop.wait(every_s if every_s is not None else 15.0):
+            return "stopped"
+    return "still deaf"
 
 
 def first_hello() -> int:

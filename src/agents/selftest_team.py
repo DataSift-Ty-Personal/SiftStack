@@ -650,6 +650,13 @@ def run(check, tmp: Path) -> None:
               "nothing heard three minutes after the hello: the channel is told once, with the setting that fixes it")
         check(brain.hearing_notice(t_hello + _td(seconds=400)) == "" and len(fake_slack.posts()) == n0 + 1,
               "it is said once")
+        store.kv_set(intake.HEARD_KEY, (t_hello + _td(seconds=500)).isoformat(timespec="seconds"))
+        check(brain.hearing_notice(t_hello + _td(seconds=510)) == "heard" and len(fake_slack.posts()) == n0 + 2
+              and "I can hear this channel now" in fake_slack.posts()[-1]["text"],
+              "once the setting is fixed and the first event arrives, the channel is told it can be heard")
+        check(brain.hearing_notice(t_hello + _td(seconds=600)) == "" and len(fake_slack.posts()) == n0 + 2,
+              "and that is said once as well")
+        store.kv_set(intake.HEARD_KEY, (t_hello - _td(seconds=30)).isoformat(timespec="seconds"))
         store.kv_set(brain.DEAF_KEY, "")
         config.SLACK_APP_TOKEN, config.SLACK_SIGNING_SECRET = "", "sign-secret"
         check("Request URL" in brain.hearing_notice(t_hello + _td(seconds=200)),
@@ -660,6 +667,24 @@ def run(check, tmp: Path) -> None:
         check(brain.hearing_notice(t_hello + _td(seconds=200)) == "heard" and len(fake_slack.posts()) == n0
               and store.kv_get(brain.DEAF_KEY).startswith("heard"),
               "an event after the hello means the app can hear, and nothing is posted")
+
+        class Tick:                       # a stop flag never set; the third look is when Slack starts sending
+            n = 0
+
+            def wait(self, seconds):
+                Tick.n += 1
+                if Tick.n == 3:
+                    store.kv_set(intake.HEARD_KEY, store.now())
+                return False
+
+        store.kv_set(brain.DEAF_KEY, "notice earlier")
+        store.kv_set(brain.FIRST_HELLO_KEY, (_dt.now(_tz.utc) - _td(hours=1)).isoformat(timespec="seconds"))
+        store.kv_set(intake.HEARD_KEY, "")
+        n0 = len(fake_slack.posts())
+        check(brain.slack_watch(Tick(), every_s=0, checks=10) == "heard" and Tick.n == 3 and len(fake_slack.posts()) == n0 + 1,
+              "the watch waits through a deaf spell and confirms in the channel the moment an event arrives")
+        store.kv_set(brain.DEAF_KEY, "")
+        store.kv_set(brain.FIRST_HELLO_KEY, "")
         config.SLACK_SIGNING_SECRET = ""
     finally:
         config.SLACK_CHANNEL = config.SLACK_APP_TOKEN = ""
