@@ -30,6 +30,12 @@ import importlib
 REGISTRY: dict[str, str] = {
     "book_appointment": "book_appointment",
     "release_batch": "release_batch",    # queued only by a named person's confirm in Slack (agents/release.py)
+    # Roma, Sales Assistant (wave 4, 2026-11-13)
+    "quick_screen": "quick_screen",      # a lead screened: comps inside a pasted boundary or a radius, a go or no-go
+    "underwrite": "underwrite",          # the walkthrough package; photos and no comps = the rehab on its own
+    "offer_sheet": "offer_sheet",        # the one-tab wholesale offer from a saved pack and a walk
+    "deal_buyers": "deal_buyers",        # the top buyers for one contracted house, with the decision maker
+    "lender_package": "lender_package",  # the eight-piece private lender set from a deal spec
     # Atlas, Analysis (wave 4, 2026-11-13)
     "market_report": "market_report",  # Market Finder over the documented API, scored, the county workbook
     "idle_records": "idle_records",    # one list's idle records ranked, with the owners who hold several

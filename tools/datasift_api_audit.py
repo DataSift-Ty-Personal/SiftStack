@@ -124,6 +124,8 @@ MAP_SQ = re.compile(r"'(/(?:properties|filters)/[^'\n]*)'")
 # Verdicts a person checked against the code, where the static scan under-reads a dependency
 # (usually the main write path living behind a function-scope import). Each says what to change.
 REVIEWED = {
+    "quick_screen": ("ready on the key", "siftmap_standalone keeps autocomplete() for other modules; this workflow calls only POST /properties/search/ and capped /properties/detail/"),
+    "deal_buyers": ("ready on the key", "siftmap_standalone keeps autocomplete() for other modules; this workflow calls only POST /properties/search/ and capped /properties/detail/"),
     "list_pull": ("needs work", "the pull itself (workflows/list_pull, pull_by_ids) runs on published routes and the key; "
                   "agency_call_list, knox_blount_top15k and franklin_top30k load the uploader, siftmap_pull's allowance "
                   "read and SiftMap autocomplete at module scope"),

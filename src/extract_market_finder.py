@@ -864,9 +864,11 @@ def save_result(result: dict, output_dir: str | Path) -> Path:
 # ── The published API (DataSift API 2.0, Market Map) ──────────────────
 #
 # The routes and their responses are documented (developers.datasift.ai, read 2026-11-13); the
-# query parameters are not (every Market Map route lists `parameters: []`). The names below are read
-# off the response shape (the paginated listing echoes `geoGroup`) and can be changed without a code
-# change: MARKET_FINDER_API_PARAMS='{"county": "fips", ...}' and MARKET_FINDER_API_GROUPS. A name
+# query parameters are not (every Market Map route lists `parameters: []`). The names below are the
+# ones DataSift's own Market Finder page sends (read from the app's code and proven live on the key,
+# 2026-11-13): a county is `fips`, a page is `offset` + `limit`. `county=` and `page=` are SILENTLY
+# ignored (county= returned all 33,784 ZIPs in the country). They can be changed without a code
+# change: MARKET_FINDER_API_PARAMS='{"county": "...", ...}' and MARKET_FINDER_API_GROUPS. A name
 # the server does not know is silently ignored, which reads exactly like a real answer, so the pull
 # proves each filter by what comes back instead of trusting that it was accepted.
 
@@ -878,7 +880,7 @@ API_ROUTES = {
     "metrics": "/api/internal/market-finder/metrics/",
     "paginated": "/api/internal/market-finder/paginated/",
 }
-API_PARAMS = {"state": "state", "county": "county", "group": "geo_group", "page": "page", "size": "limit"}
+API_PARAMS = {"state": "state", "county": "fips", "group": "geo_group", "offset": "offset", "size": "limit"}
 API_GROUPS = {"zip": "zip", "neighborhood": "neighborhood"}
 API_PAGE_SIZE = 100
 API_MAX_PAGES = 200          # 20,000 rows: no county has that many ZIPs or neighborhoods
@@ -1008,11 +1010,13 @@ def _find_county(rows: list, county: str, st: dict) -> dict:
 
 def _page_all(call, query: dict, params: dict, page_size: int, label: str) -> tuple[list, int | None, str | None]:
     """Every page of one paginated listing: (rows, the total the server reports, its geoGroup echo).
-    A page that adds nothing new ends the walk, so a page parameter the server ignores (it sends page
-    one again) is caught by the total check instead of looping."""
+    A page that adds nothing new ends the walk, so a paging parameter the server ignores (it sends the
+    first page again) is caught by the total check instead of looping. Pages by offset, as the app
+    does; a `page` name set in MARKET_FINDER_API_PARAMS pages by number instead."""
     rows, seen, total, echo = [], set(), None, None
     for page in range(1, API_MAX_PAGES + 1):
-        r = _get(call, "paginated", dict(query, **{params["page"]: page, params["size"]: page_size}))
+        at = {params["page"]: page} if params.get("page") else {params.get("offset", "offset"): (page - 1) * page_size}
+        r = _get(call, "paginated", dict(query, **at, **{params["size"]: page_size}))
         if not isinstance(r, dict) or not isinstance(r.get("data"), list):
             raise MarketFinderApiError("%s: the paginated listing came back as %s, not {data, total}"
                                        % (label, type(r).__name__))

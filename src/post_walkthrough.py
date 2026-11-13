@@ -65,7 +65,11 @@ logger = logging.getLogger(__name__)
 
 NAVY, BLUE, GREEN, GOLD, RED, GREY = "0A1130", "316AFF", "1B9E5A", "B8860B", "C0392B", "666666"
 
-_API_CLIENTS = Path(r"C:\Users\Tyrus\OneDrive\Desktop\Deal Room Coaching Call\_api\clients")
+# The Deal Room dossier is an opt-in for a staff workstation that has the checkout
+# (--deal-room-clients or SIFTSTACK_DEAL_ROOM_CLIENTS). It used to be a hardcoded
+# Desktop path, which made this module unusable on the agents box and on any
+# install but Ty's. With nothing set, the lead is read over the Open API key.
+DEAL_ROOM_ENV = "SIFTSTACK_DEAL_ROOM_CLIENTS"
 
 # Deal-math constants. Kept here (not buried in the sheet builders) so the
 # Sources block can print them and the team can argue with them in one place.
@@ -216,79 +220,99 @@ def _kv(ws, start, rows, wrap_col=2):
 DEFAULT_SIFT_ACCOUNT = "datasift-apikey"   # Open API key: no expiry, no refresh dance
 
 
-def load_lead(address: str, city: str = "", zip_code: str = "",
-              account: str = DEFAULT_SIFT_ACCOUNT) -> dict:
-    """Pull the live CRM record so the package is about a LEAD, not an address.
+class KeyReads:
+    """The CRM reads a lead needs, over the Open API key alone.
 
-    Auth goes through the shared Deal Room auth store. It defaults to the
-    Api-Key account (no expiry) via REISIFT_ACCOUNT, which reisift_auth honors
-    ahead of the configured active_account; pass account= to use a JWT account
-    when the lead lives outside the key's account.
-
-    Returns a flat dict of everything the Overview sheet needs. Never raises:
-    no creds, no record, or no _api checkout all degrade to {"available": False}
-    with the reason, and the workbook still builds.
+    `call(path, method, body, headers)` is the same signature the agents'
+    budgeted client (agents.autopilot.crm.CRM) exposes, so the brain hands its
+    own client in and every read counts against the shared request budget.
+    The command line builds this one from REISIFT_API_KEY.
     """
-    import os
 
-    out = {"available": False, "reason": "", "address": address}
-    if not _API_CLIENTS.exists():
-        out["reason"] = f"Deal Room _api clients not found at {_API_CLIENTS}"
-        return out
-    sys.path.insert(0, str(_API_CLIENTS))
-    try:
-        from dossier import build_dossier  # noqa: E402
-    except Exception as exc:  # noqa: BLE001 - any import problem is non-fatal
-        out["reason"] = f"could not import the CRM clients: {exc}"
-        return out
+    def __init__(self, client=None):
+        if client is None:
+            import crm_key_client
+            client = crm_key_client.from_env()
+        self._c = client
 
-    prior = os.environ.get("REISIFT_ACCOUNT")
-    if account:
-        os.environ["REISIFT_ACCOUNT"] = account
-    try:
-        d = build_dossier(address, flow="A")
-    except Exception as exc:  # noqa: BLE001 - auth/network are expected failures
-        out["reason"] = f"CRM lookup failed on account '{account}': {exc}"
-        return out
-    finally:
-        if prior is None:
-            os.environ.pop("REISIFT_ACCOUNT", None)
-        else:
-            os.environ["REISIFT_ACCOUNT"] = prior
+    def call(self, path: str, method: str = "GET", body=None, headers=None):
+        override = (headers or {}).get("x-http-method-override")
+        return self._c._request(path, method=method, body=body, method_override=override)
 
-    det = d.get("detail") or {}
-    if not d.get("uuid"):
-        out["reason"] = f"no Sift record matched '{address}' (flow {d.get('flow')})"
-        return out
 
+def _rows(r) -> list:
+    if isinstance(r, list):
+        return r
+    if isinstance(r, dict):
+        return r.get("results") or r.get("data") or []
+    return []
+
+
+def _street_norm(s: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", str(s or "").lower())
+
+
+def find_record(crm, address: str, zip_code: str = "") -> tuple[dict | None, str]:
+    """(search row, "") for the one record at this street line, else (None, why).
+
+    The records search matches the street as a prefix, so "12 Oak St" also
+    finds "12 Oak Street Ext"; a record counts only when its street is the same
+    once punctuation and case are gone, and its ZIP agrees when one is given.
+    Two records that both qualify are refused rather than guessed between.
+    """
+    body = {"limit": 5, "offset": 0, "ordering": "-list_count",
+            "query": {"must": {"property_type": "clean", "search": "address_prefix:%s" % address}}}
+    rows = _rows(crm.call("/api/internal/property/", "POST", body, headers={"x-http-method-override": "GET"}))
+    want = _street_norm(address)
+    keep = []
+    for r in rows:
+        a = r.get("address") or {}
+        street = a.get("street") if isinstance(a, dict) else str(a).split(",")[0]
+        z = str((a.get("postal_code") if isinstance(a, dict) else "") or "")[:5]
+        if _street_norm(street) == want and (not zip_code or not z or z == str(zip_code)[:5]):
+            keep.append(r)
+    if not keep:
+        return None, f"no Sift record matched '{address}'"
+    if len(keep) > 1:
+        return None, f"{len(keep)} Sift records match '{address}'; give the record uuid"
+    return keep[0], ""
+
+
+def lead_from_record(det: dict, custom_fields: dict | None = None, messages: list | None = None,
+                     activity: list | None = None, siftmap: dict | None = None, address: str = "",
+                     city: str = "", zip_code: str = "", cards: list | None = None) -> dict:
+    """The flat lead dict the Overview sheet reads, from a record already in hand.
+
+    One mapping for both sources (the key reads and the Deal Room dossier), so
+    the sheet cannot drift between them. `messages` are owner message board rows
+    (created, message, author, source), `activity` is the record's own log,
+    newest first.
+    """
     addr = det.get("address") or {}
     owner = det.get("owner") or {}
     owner_addr = owner.get("address") or {}
     assignee = det.get("assignee") or det.get("assigned_to") or {}
     if isinstance(assignee, str):                # the record stores a bare uuid
         assignee = {}
-    summary = d.get("activity_summary") or {}
-    smap = d.get("siftmap_detail") or {}
+    smap = siftmap or {}
     owner_info = (smap.get("owner_info") or {}) if isinstance(smap, dict) else {}
-
-    cf = {}
-    for item in d.get("custom_fields") or []:
-        label = ((item.get("custom_field") or {}).get("label") or "").strip()
-        if label and item.get("value") not in (None, ""):
-            cf[label] = item["value"]
-
-    messages = []
-    for m in (d.get("messages") or [])[:12]:
+    cf = {k: v for k, v in (custom_fields or {}).items() if v not in (None, "")}
+    notes = []
+    for m in (messages or [])[:12]:
         a = m.get("author") or {}
-        who = f"{a.get('first_name', '')} {a.get('last_name', '')}".strip() or m.get("source", "")
-        messages.append({"date": str(m.get("created", ""))[:10], "who": who,
-                         "text": (m.get("message") or "").strip()})
-
-    out.update({
+        who = (f"{a.get('first_name', '')} {a.get('last_name', '')}".strip() if isinstance(a, dict) else str(a)) \
+            or m.get("source", "")
+        notes.append({"date": str(m.get("created", ""))[:10], "who": who,
+                      "text": (m.get("message") or "").strip()})
+    top = (activity or [{}])[0] if activity else {}
+    uuid = det.get("uuid") or ""
+    return {
         "available": True,
-        "uuid": d["uuid"],
-        "dataflik_id": d.get("dataflik_id"),
-        "url": f"https://app.reisift.io/records/{d['uuid']}",
+        "reason": "",
+        "address": address or addr.get("street") or "",
+        "uuid": uuid,
+        "dataflik_id": det.get("dataflik_id"),
+        "url": f"https://app.reisift.io/records/{uuid}",
         "street": addr.get("street") or address,
         "city": addr.get("city") or city,
         "state": addr.get("state") or "",
@@ -304,16 +328,15 @@ def load_lead(address: str, city: str = "", zip_code: str = "",
         "mailing": ", ".join(str(x) for x in [owner_addr.get("street"), owner_addr.get("city"),
                                               f"{owner_addr.get('state', '')} {owner_addr.get('postal_code', '')}".strip()]
                              if x) or owner_info.get("mailing_address") or "",
-        "status": det.get("status") or (d.get("chosen") or {}).get("status") or "",
+        "status": det.get("status") or "",
         "lists": det.get("lists") or [],
         "tags": det.get("tags") or [],
         "assignee": f"{assignee.get('first_name', '') or ''} {assignee.get('last_name', '') or ''}".strip(),
-        "last_contact": summary.get("last_event_date") or "",
-        "last_contact_type": summary.get("last_event_type") or "",
-        "cards": [f"{(c.get('board') or {}).get('title')} / {(c.get('column') or {}).get('title')}"
-                  for c in d.get("cards") or []],
+        "last_contact": str(top.get("timestamp") or "")[:19],
+        "last_contact_type": top.get("event_type") or "",
+        "cards": list(cards or []),
         "custom_fields": cf,
-        "messages": messages,
+        "messages": notes,
         # Subject facts the record already knows. These beat a Zillow lookup
         # (the CRM carries the county-sourced numbers) but still lose to an
         # explicit CLI override off the county card.
@@ -338,8 +361,139 @@ def load_lead(address: str, city: str = "", zip_code: str = "",
         "personal_representative": det.get("personal_representative") or "",
         "portfolio_size": owner_info.get("portfolio_size") or owner_info.get("property_count"),
         "siftmap": smap,
-    })
+    }
+
+
+def custom_field_map(raw) -> dict:
+    """label -> value from GET /property/{uuid}/custom-field/ (a list, or a page of one)."""
+    out = {}
+    for item in _rows(raw):
+        cfd = item.get("custom_field") if isinstance(item.get("custom_field"), dict) else {}
+        label = (cfd.get("label") or cfd.get("name") or "").strip()
+        if label and item.get("value") not in (None, ""):
+            out[label] = item["value"]
     return out
+
+
+def load_lead_key(address: str = "", city: str = "", zip_code: str = "", *, record_uuid: str = "",
+                  crm=None, siftmap=None) -> dict:
+    """The live lead over the Open API key, documented routes only.
+
+    Reads: the record (GET /property/{uuid}/, or the records search by street),
+    its custom fields, the owner's message board (GET /owner/{uuid}/message/,
+    the documented board; the property mirror was unlisted 2026-11-01) and the
+    record's log. SIFTline cards are not read: the API lists no cards by record.
+    `siftmap` (an object with get_detail) adds the deed and owner portfolio for
+    the record's own dataflik_id, one read of a house already in the account.
+    Never raises: every miss degrades to {"available": False} with the reason.
+    """
+    out = {"available": False, "reason": "", "address": address}
+    try:
+        crm = crm or KeyReads()
+        if record_uuid:
+            det = crm.call("/api/internal/property/%s/" % record_uuid) or {}
+        else:
+            row, why = find_record(crm, address, zip_code)
+            if not row:
+                out["reason"] = why
+                return out
+            det = crm.call("/api/internal/property/%s/" % row["uuid"]) or {}
+        if not det.get("uuid"):
+            out["reason"] = f"no Sift record {record_uuid or address}"
+            return out
+        cf = custom_field_map(crm.call("/api/internal/property/%s/custom-field/?limit=1000&offset=0" % det["uuid"]))
+        owner_uuid = (det.get("owner") or {}).get("uuid") or ""
+        msgs = _rows(crm.call("/api/internal/owner/%s/message/?limit=12&offset=0" % owner_uuid)) if owner_uuid else []
+        logs = _rows(crm.call("/api/internal/property/%s/logs/?limit=25&offset=0" % det["uuid"]))
+    except Exception as exc:  # noqa: BLE001 - no key, network or a refused read are all non-fatal here
+        out["reason"] = f"CRM read over the Open API key failed: {str(exc)[:200]}"
+        return out
+    smap = {}
+    if siftmap is not None and det.get("dataflik_id"):
+        try:
+            smap = siftmap.get_detail(det["dataflik_id"]) or {}
+        except Exception as exc:  # noqa: BLE001
+            logger.info("SiftMap detail for the subject skipped: %s", exc)
+    return lead_from_record(det, cf, msgs, logs, smap, address=address, city=city, zip_code=zip_code)
+
+
+def deal_room_clients(path: str = "") -> Path | None:
+    """The Deal Room `_api/clients` checkout, only when a person names it."""
+    import os
+    p = path or os.environ.get(DEAL_ROOM_ENV, "")
+    return Path(p) if p else None
+
+
+def load_lead(address: str, city: str = "", zip_code: str = "",
+              account: str = DEFAULT_SIFT_ACCOUNT, *, record_uuid: str = "", crm=None,
+              siftmap=None, deal_room: str = "") -> dict:
+    """Pull the live CRM record so the package is about a LEAD, not an address.
+
+    The Open API key is the default and the only path the agents box runs.
+    The Deal Room dossier (cards, cross-account JWT pulls) runs only when a
+    person points --deal-room-clients / SIFTSTACK_DEAL_ROOM_CLIENTS at a checkout.
+    """
+    clients = deal_room_clients(deal_room)
+    if clients:
+        return load_lead_dossier(address, city, zip_code, account=account, clients=clients)
+    return load_lead_key(address, city, zip_code, record_uuid=record_uuid, crm=crm, siftmap=siftmap)
+
+
+def load_lead_dossier(address: str, city: str = "", zip_code: str = "",
+                      account: str = DEFAULT_SIFT_ACCOUNT, *, clients: Path) -> dict:
+    """The lead through the Deal Room dossier, for a staff workstation only.
+
+    Auth goes through the shared Deal Room auth store. It defaults to the
+    Api-Key account (no expiry) via REISIFT_ACCOUNT, which the store honors
+    ahead of the configured active_account; pass account= to use a JWT account
+    when the lead lives outside the key's account.
+
+    Returns a flat dict of everything the Overview sheet needs. Never raises:
+    no creds, no record, or no checkout all degrade to {"available": False}
+    with the reason, and the workbook still builds.
+    """
+    import os
+
+    out = {"available": False, "reason": "", "address": address}
+    if not clients.exists():
+        out["reason"] = f"Deal Room clients not found at {clients}"
+        return out
+    sys.path.insert(0, str(clients))
+    try:
+        from dossier import build_dossier  # noqa: E402
+    except Exception as exc:  # noqa: BLE001 - any import problem is non-fatal
+        out["reason"] = f"could not import the CRM clients: {exc}"
+        return out
+
+    prior = os.environ.get("REISIFT_ACCOUNT")
+    if account:
+        os.environ["REISIFT_ACCOUNT"] = account
+    try:
+        d = build_dossier(address, flow="A")
+    except Exception as exc:  # noqa: BLE001 - auth/network are expected failures
+        out["reason"] = f"CRM lookup failed on account '{account}': {exc}"
+        return out
+    finally:
+        if prior is None:
+            os.environ.pop("REISIFT_ACCOUNT", None)
+        else:
+            os.environ["REISIFT_ACCOUNT"] = prior
+
+    det = dict(d.get("detail") or {})
+    if not d.get("uuid"):
+        out["reason"] = f"no Sift record matched '{address}' (flow {d.get('flow')})"
+        return out
+    det["uuid"] = d["uuid"]
+    det["dataflik_id"] = d.get("dataflik_id")
+    det["status"] = det.get("status") or (d.get("chosen") or {}).get("status") or ""
+    summary = d.get("activity_summary") or {}
+    activity = [{"timestamp": summary.get("last_event_date") or "",
+                 "event_type": summary.get("last_event_type") or ""}]
+    cards = [f"{(c.get('board') or {}).get('title')} / {(c.get('column') or {}).get('title')}"
+             for c in d.get("cards") or []]
+    return lead_from_record(det, custom_field_map(d.get("custom_fields") or []), d.get("messages") or [],
+                            activity, d.get("siftmap_detail") or {}, address=address, city=city,
+                            zip_code=zip_code, cards=cards)
 
 
 def lead_motivation(lead: dict, walk: dict) -> str:
@@ -2311,14 +2465,155 @@ def build_workbook(pack: dict, out_path: str) -> str:
     return out_path
 
 
+# ══ 6b. Rehab only: a walkthrough with no comps asked for ══════════════
+
+NO_COMPS = ("No comps were asked for. This request carried a walkthrough and no boundary, so nothing "
+            "was pulled and there is no value (ARV) here. Paste a boundary, or write radius, to add "
+            "comps and an offer.")
+NO_OFFER = ("No offer. An offer is 70% of the value less this rehab, less the fee, and the value needs "
+            "comps, which this request did not ask for.")
+
+
+def one_plan(subject: dict, walk: dict) -> tuple[dict, bool]:
+    """(walk, defaulted). A walk with no single_scenario gets the engine's own mid plan under the
+    same key, "mid", so every flag and credit that targets the mid column still applies and the
+    one number equals that column. Ty never wants the four-scenario menu (2026-08-27)."""
+    if walk.get("single_scenario"):
+        return walk, False
+    mid = next(d for d in scenario_defs(subject, walk) if d["key"] == "mid")
+    plan = {"key": "mid", "label": mid["label"], "tier": mid["tier"], "scope": mid["scope"],
+            "gut": mid["gut"], "drop": list(mid["drop"]), "beds": mid["beds"], "baths": mid["baths"]}
+    return dict(walk, single_scenario=plan), True
+
+
+def dropped_walk_items(walk: dict) -> list[str]:
+    """Credits and flags the single plan silently leaves out: a non-empty `scenarios` list that
+    does not name the plan's key. build_rehab_matrix drops those without a word (on 1342 Grainger
+    that would have deleted $19,900 of real work), so they are named out loud."""
+    key = (walk.get("single_scenario") or {}).get("key") or "reno"
+    out = []
+    for section, amount in (("work_done", "credit"), ("flags", "cost")):
+        for i in walk.get(section) or []:
+            names = i.get("scenarios") or []
+            if names and key not in names and _num(i.get(amount)):
+                out.append(f"{i.get('item', 'an item')} ({_money(_num(i.get(amount)))}) names {', '.join(names)}, "
+                           f"not the plan '{key}'")
+    return out
+
+
+def photo_rows(walk: dict) -> list[dict]:
+    """One row per photo the walk describes, then one per walk item that carries a finding.
+
+    `photo_notes` is the shape an employee writes from walkthrough photos:
+        [{"file", "room", "finding", "condition", "scope_line", "quote"}]
+    `quote` is the evidence sentence; a note without one quotes its own finding, so every row
+    points back at something the walk actually says. The photos themselves are never opened here.
+    """
+    rows = []
+    for p in walk.get("photo_notes") or []:
+        if isinstance(p, dict):
+            rows.append({"source": str(p.get("file") or "photo"), "room": str(p.get("room") or ""),
+                         "finding": str(p.get("finding") or ""), "condition": str(p.get("condition") or ""),
+                         "scope": str(p.get("scope_line") or ""),
+                         "quote": str(p.get("quote") or p.get("finding") or "")})
+    for section, label, amount in (("work_done", "already done (a credit)", "credit"),
+                                   ("still_open", "still open", ""), ("flags", "walk flag (priced)", "cost")):
+        for i in walk.get(section) or []:
+            if not isinstance(i, dict):
+                continue
+            amt = _num(i.get(amount)) if amount else 0.0
+            rows.append({"source": "walk: " + section.replace("_", " "), "room": str(i.get("room") or ""),
+                         "finding": str(i.get("item") or ""), "condition": label,
+                         "scope": _money(-amt if section == "work_done" else amt) if amt else "",
+                         "quote": str(i.get("detail") or i.get("note") or "")})
+    return rows
+
+
+def build_rehab_workbook(subject: dict, walk: dict, out_path: str, *, soft_pct: float = SOFT_COST_PCT,
+                         materials: str = "", operator_notes: str = "", notes: list | None = None) -> dict:
+    """The rehab side of an underwrite on its own: the photo findings, ONE rehab number and the
+    repair detail. The comp and offer tabs say in a sentence that no comps were asked for, because
+    an empty tab reads like a thin market rather than a choice."""
+    walk, defaulted = one_plan(subject, walk)
+    rehab = build_rehab_matrix(subject, walk, soft_pct=soft_pct)
+    pick = rehab["scenarios"][0]
+    rows = photo_rows(walk)
+    dropped = dropped_walk_items(walk)
+    wb = Workbook()
+    wb.remove(wb.active)
+
+    ws = wb.create_sheet("Rehab")
+    where = subject.get("full_address") or subject.get("address") or "This house"
+    _title(ws, f"{where}: rehab from the walkthrough",
+           f"Built {datetime.now():%m/%d/%Y}" + (f". Walked {walk['walk_date']}." if walk.get("walk_date") else "."))
+    spec = (f"{subject.get('beds', '')} bed {_ba(subject.get('baths', 0))} bath, "
+            f"{int(subject.get('sqft') or 0):,} sqft, built {subject.get('year_built') or 'unknown'}")
+    lines = [["THE REHAB NUMBER", ""],
+             ["Rehab, general contractor model", _money(pick["grand"])],
+             [(rehab.get("sp_label") or "self-perform")[:1].upper() + (rehab.get("sp_label") or "self-perform")[1:]
+              + " estimate", _money(pick["self_perform"])],
+             ["Plan", pick["label"] + (" (the walk named no single plan, so this is the engine's mid plan; "
+                                       "set single_scenario for the real number)" if defaulted else "")],
+             ["Timeline", f"{pick['weeks']} weeks"],
+             ["House", spec],
+             ["Materials", materials or "rehab engine"],
+             ["", ""],
+             ["WHAT IT IS BUILT ON", ""],
+             ["Photo findings", f"{len(rows)} row(s) on the Photo Findings tab"],
+             ["Placeholders", f"{len(rehab.get('placeholders') or [])} line(s) in red pending a sub bid"
+              if rehab.get("placeholders") else "none"],
+             ["Operator notes", (operator_notes + " (these win over what a photo suggests)") if operator_notes else "none"]]
+    lines += [["Note", n] for n in (notes or [])]
+    lines += [["Left out", d] for d in dropped]
+    lines += [["", ""], ["COMPS AND OFFER", ""], ["Comps", NO_COMPS], ["Offer", NO_OFFER]]
+    if walk.get("gates"):
+        lines += [["", ""], ["GATE ITEMS: verify before the contract goes hard", ""]]
+        lines += [["Gate", g] for g in walk["gates"]]
+    _kv(ws, 4, lines)
+    _widths(ws, [36, 110])
+
+    ws = wb.create_sheet("Photo Findings")
+    _title(ws, "What the walkthrough shows, and the scope line each finding drives",
+           "photo_notes from the walkthrough file, then its work done, still open and flags")
+    heads = ["Photo or source", "Room", "What it shows", "Condition", "Scope line it drives", "Evidence (from the walk)"]
+    _header(ws, 4, heads)
+    for i, row in enumerate(rows):
+        for j, key in enumerate(("source", "room", "finding", "condition", "scope", "quote"), 1):
+            ws.cell(row=5 + i, column=j, value=row[key]).alignment = Alignment(wrap_text=True, vertical="top")
+    if not rows:
+        ws.cell(row=5, column=1, value="The walkthrough file carries no photo_notes and no findings.")
+    _widths(ws, [26, 14, 40, 18, 34, 60])
+
+    before = set(wb.sheetnames)
+    sheet_repair_numbers(wb, {"rehab": rehab, "subject": subject})
+    for name in set(wb.sheetnames) - before:
+        wb[name].title = "Repair Detail"
+
+    for title, text in (("Comps", NO_COMPS), ("Offer", NO_OFFER)):
+        ws = wb.create_sheet(title)
+        _title(ws, title)
+        ws.cell(row=3, column=1, value=text).alignment = Alignment(wrap_text=True, vertical="top")
+        _widths(ws, [120])
+    wb.save(out_path)
+    return {"out": out_path, "rehab": pick["grand"], "self_perform": pick["self_perform"], "label": pick["label"],
+            "key": pick["key"], "defaulted": defaulted, "findings": len(rows), "weeks": pick["weeks"],
+            "placeholders": len(rehab.get("placeholders") or []), "dropped": dropped, "walk": walk}
+
+
 # ══ 7. Assembly ════════════════════════════════════════════════════════
 
 def assemble(args, spec: dict, walk: dict) -> dict:
     """Pull every source and hand the sheet builders one finished pack."""
     lead = {"available": False, "reason": "--no-sift"}
-    if not args.no_sift:
-        logger.info("Pulling the live Sift lead (account %s) ...", args.sift_account)
-        lead = load_lead(args.address, args.city, args.zip_code, account=args.sift_account)
+    if getattr(args, "_lead", None):
+        # A caller that already read the record (the agents box) hands the lead
+        # in, so the record is not read twice against the shared request budget.
+        lead = args._lead
+    elif not args.no_sift:
+        logger.info("Pulling the live Sift lead ...")
+        lead = load_lead(args.address, args.city, args.zip_code, account=args.sift_account,
+                         record_uuid=getattr(args, "record_uuid", "") or "",
+                         deal_room=getattr(args, "deal_room_clients", "") or "")
         logger.info("Sift lead: %s", "linked" if lead["available"] else lead["reason"])
 
     zdata = None
@@ -2356,6 +2651,8 @@ def assemble(args, spec: dict, walk: dict) -> dict:
                 f"{subject['sqft']:,}", subject["beds"], _ba(subject["baths"]), subject["year_built"])
 
     deeds = load_deeds(args.buyers)
+    # Deeds the caller read itself (SiftMap deed comps) join the buyer sweep's.
+    deeds.update(getattr(args, "_deeds", None) or {})
     sold, active, arv = load_comps(subject, args, spec)
 
     # Refine the condition buckets BEFORE the ARV runs. dual_track_arv calls
@@ -2438,6 +2735,28 @@ def assemble(args, spec: dict, walk: dict) -> dict:
             "finished": finished, "arv_comp_ids": sorted(str(i) for i in arv_ids)}
 
 
+def pack_to_json(pack: dict) -> dict:
+    """The pack in the --save-pack shape offer_sheet.py reads: comps serialized
+    as sold_comps / land_comps / active_comps, tuple keys joined with '|', and
+    the SiftMap detail left off the lead. One definition for the command line
+    and the agents, so a pack saved on the box re-renders exactly like one
+    saved here."""
+    def _json_safe(obj):
+        if isinstance(obj, dict):
+            return {("|".join(str(p) for p in k) if isinstance(k, tuple) else k): _json_safe(v)
+                    for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [_json_safe(v) for v in obj]
+        return obj
+
+    serial = {k: v for k, v in pack.items() if k not in ("sold", "active", "land")}
+    serial["sold_comps"] = [vars(l) | {"raw": {}} for l in pack["sold"] if isinstance(l, MarketListing)]
+    serial["land_comps"] = [vars(l) | {"raw": {}} for l in (pack.get("land") or []) if isinstance(l, MarketListing)]
+    serial["active_comps"] = [vars(l) | {"raw": {}} for l in pack["active"] if isinstance(l, MarketListing)]
+    serial["lead"] = {k: v for k, v in pack["lead"].items() if k != "siftmap"}
+    return _json_safe(serial)
+
+
 WALKTHROUGH_TEMPLATE = {
     "_comment": ("Anything you fill in here OVERRIDES the live Sift record, so leave a field "
                  "empty unless the walk proved the record wrong. work_done credits and flags "
@@ -2510,8 +2829,13 @@ def main() -> int:
     ap.add_argument("--soft-pct", type=float, default=SOFT_COST_PCT,
                     help=f"Permits + contingency rate (default {SOFT_COST_PCT})")
     ap.add_argument("--no-sift", action="store_true", help="Skip the live CRM lookup")
+    ap.add_argument("--record", dest="record_uuid", default="",
+                    help="The Sift record uuid (else the record is found by street line)")
+    ap.add_argument("--deal-room-clients", default="",
+                    help=f"Deal Room client checkout folder for the dossier lead pull (or {DEAL_ROOM_ENV}); "
+                         "unset, the lead is read over the Open API key")
     ap.add_argument("--sift-account", default=DEFAULT_SIFT_ACCOUNT,
-                    help=f"reisift_auth account for the lead pull (default {DEFAULT_SIFT_ACCOUNT})")
+                    help=f"Deal Room auth account for the dossier pull (default {DEFAULT_SIFT_ACCOUNT})")
     ap.add_argument("--no-api", action="store_true", help="Skip Zillow property details")
     ap.add_argument("--save-pack", help="Write the assembled pack JSON here")
     ap.add_argument("--out", help="Output .xlsx path")
@@ -2543,21 +2867,7 @@ def main() -> int:
     build_workbook(pack, out)
 
     if args.save_pack:
-        def _json_safe(obj):
-            if isinstance(obj, dict):
-                return {("|".join(str(p) for p in k) if isinstance(k, tuple) else k): _json_safe(v)
-                        for k, v in obj.items()}
-            if isinstance(obj, list):
-                return [_json_safe(v) for v in obj]
-            return obj
-
-        serial = {k: v for k, v in pack.items() if k not in ("sold", "active", "land")}
-        serial["sold_comps"] = [vars(l) | {"raw": {}} for l in pack["sold"] if isinstance(l, MarketListing)]
-        serial["land_comps"] = [vars(l) | {"raw": {}} for l in (pack.get("land") or []) if isinstance(l, MarketListing)]
-        serial["active_comps"] = [vars(l) | {"raw": {}} for l in pack["active"] if isinstance(l, MarketListing)]
-        serial["lead"] = {k: v for k, v in pack["lead"].items() if k != "siftmap"}
-        Path(args.save_pack).write_text(
-            json.dumps(_json_safe(serial), indent=1, default=str), encoding="utf-8")
+        Path(args.save_pack).write_text(json.dumps(pack_to_json(pack), indent=1, default=str), encoding="utf-8")
         print(f"pack saved: {args.save_pack}")
 
     e, inp = pack["exits"], pack["exits"]["inputs"]

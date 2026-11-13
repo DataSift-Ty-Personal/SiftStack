@@ -34,6 +34,7 @@ import csv
 import json
 import logging
 import math
+import os
 import sys
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -48,19 +49,63 @@ except Exception:
     pass
 
 from siftmap_standalone import SiftMapClient  # noqa: E402
-from enterprise_prospects import (  # noqa: E402
-    ENTITY_RX, SearchClient, county_address, norm_name,
-)
-from dispo_buyers import (  # noqa: E402
-    ALL_TYPES, HOLD_TYPES, K_TXN, PAGE_SIZE, _hydrate_one, local_tier,
-)
-from sms_agent.dispo_campaign import is_named_exclusion  # noqa: E402
 
 log = logging.getLogger("deal_buyer_match")
 
 ROOT = Path(__file__).resolve().parent.parent
-REG_DIR = ROOT / "output" / "dispo_buyers"
+# The dispo registry (registry.json, buyer_profiles.json, phones.json, details.json).
+# DISPO_REGISTRY_DIR points at a copy on a box whose image has no output/ folder;
+# without one the rank still runs, with no lifetime counts or principals.
+REG_DIR = Path(os.environ.get("DISPO_REGISTRY_DIR") or ROOT / "output" / "dispo_buyers")
 NOMINAL = 10_000          # a deed under this is paper, not a purchase
+
+# The dispo registry's labels (dispo_buyers.py), held here so this module does not
+# load the registry at import. The four HOLD types mean the current owner IS the
+# buyer; a flip means the buyer is the last-sale SELLER. The selftest pins both
+# tuples and the page size to dispo_buyers so the two cannot drift.
+K_TXN = "extra_last_sale_investor_transaction_type"
+HOLD_TYPES = ["pending", "wholesale", "wholetail", "rental"]
+EXIT_TYPES = ["flip"]
+ALL_TYPES = HOLD_TYPES + EXIT_TYPES
+PAGE_SIZE = 250
+
+# Firms verifiable as production builders, iBuyers or SFR funds, never a dispo
+# buyer (Ty: no institutional buyers, no iBuyers). The list is
+# sms_agent/dispo_campaign.py NAMED_EXCLUSIONS; importing that module loads the
+# whole texting app and its CRM client, so the names are held here and the
+# selftest pins them to that file.
+NAMED_EXCLUSIONS = (
+    "BALL HOMES",
+    "CLAYTON PROPERTIES", "CLAYTON HOMES",
+    "D R HORTON", "DR HORTON", "DHI ",
+    "LENNAR", "PULTE", "NVR ", "RYAN HOMES", "MERITAGE",
+    "SMITH DOUGLAS", "DREAM FINDERS", "DFH ",
+    "OPENDOOR", "OP SPE", "OFFERPAD", "ZILLOW HOMES", "HOMEGO", "SUNDAE",
+    "HOMEVESTORS",
+    "PROGRESS RESIDENTIAL", "FREO", "INVITATION HOMES", "TRICON",
+    "SFR JV", "AMHERST", "ARMM ", "MAIN STREET RENEWAL", "MSR ",
+    "FIRSTKEY", "FKH SFR", "TRUEHOLD", "CPT-ASL",
+)
+KNOX = ("47093", "Knox", "TN")
+
+
+def is_named_exclusion(name: str) -> str:
+    """The matched firm name, or empty (same test as the dispo blast)."""
+    up = (name or "").upper()
+    return next((n for n in NAMED_EXCLUSIONS if n in up), "")
+
+
+def norm_name(raw: str) -> str:
+    """The registry's buyer-name join key (enterprise_prospects.norm_name).
+    Imported where it is used: that module carries a password fallback for its
+    own search client, which nothing here calls."""
+    from enterprise_prospects import norm_name as _norm
+    return _norm(raw)
+
+
+def _is_entity(name: str) -> bool:
+    from enterprise_prospects import ENTITY_RX
+    return bool(ENTITY_RX.search((name or "").upper()))
 
 # Owners that take title without being buyers a wholesaler can sell to: a
 # lender's REO vehicle, a foundation or housing nonprofit land-banking a
@@ -111,13 +156,27 @@ def _since(months: int) -> str:
 
 # ---------------------------------------------------------------- sweep ----
 
-def _paged(sc: SearchClient, filters: dict, poly: list, cap_pages: int = 20) -> list:
+def _paged(sc, filters: dict, poly: list, cap_pages: int = 20, county: tuple | None = KNOX,
+           size: int | None = None) -> list:
+    """Every row of one search, page by page. `sc` is anything with search(body)
+    (siftmap_standalone.SiftMapClient: the documented route, the Open API key
+    only). `county` (fips, name, state) narrows the box to one county; None
+    searches the box alone, which is what a deal outside Knox needs.
+
+    `size` sends the documented page size with zero-based offsets (the
+    published reference: default 25, keep pages to 25-100). Without it the
+    request keeps the shape measured live in August (no size, offsets 1, 251,
+    501), so the command line reads exactly what it always read."""
     out, page, total = {}, 1, None
     while page <= cap_pages:
-        r = sc.search({"result_index": 1 + (page - 1) * PAGE_SIZE,
-                       "with_boundaries": False, "filters": filters,
-                       "addresses": [county_address("47093", "Knox", "TN")],
-                       "polygon": poly})
+        body = {"result_index": ((page - 1) * size) if size else 1 + (page - 1) * PAGE_SIZE,
+                "with_boundaries": False, "filters": filters, "polygon": poly}
+        if size:
+            body["size"] = int(size)
+        if county:
+            from enterprise_prospects import county_address
+            body["addresses"] = [county_address(*county)]
+        r = sc.search(body)
         if total is None:
             total = r.get("total_results") or 0
         batch = r.get("data") or []
@@ -141,19 +200,21 @@ def _paged(sc: SearchClient, filters: dict, poly: list, cap_pages: int = 20) -> 
     return list(out.values())
 
 
-def phase_sweep(a, out: Path) -> None:
-    sc = SearchClient(min_interval=0.4)
+def phase_sweep(a, out: Path, client=None) -> None:
+    sc = client or SiftMapClient(min_interval=0.4)
+    county = getattr(a, "county", KNOX)
+    size = getattr(a, "page_size", None)
     base = {"type_single_family": True, "extra_last_sale_value_min": 1000,
             "extra_is_last_sale_interfamily": False}
     comps = _paged(sc, dict(base, extra_last_sale_date_min=_since(a.comp_months)),
-                   box(a.lat, a.lon, a.comp_mi))
+                   box(a.lat, a.lon, a.comp_mi), county=county, size=size)
     log.info("comp sweep: %d SFR sales within %.2f mi since %s",
              len(comps), a.comp_mi, _since(a.comp_months))
     inv = {}
     for txn in ALL_TYPES:
         rows = _paged(sc, dict(base, **{K_TXN: [txn],
                                         "extra_last_sale_date_min": _since(a.buyer_months)}),
-                      box(a.lat, a.lon, a.buyer_mi))
+                      box(a.lat, a.lon, a.buyer_mi), county=county, size=size)
         for r in rows:
             r["txn"] = txn
         inv[txn] = rows
@@ -166,7 +227,8 @@ def phase_sweep(a, out: Path) -> None:
 
 # -------------------------------------------------------------- hydrate ----
 
-def phase_hydrate(a, out: Path) -> None:
+def phase_hydrate(a, out: Path, client=None) -> None:
+    from dispo_buyers import _hydrate_one
     sw = _load(out / "sweep.json", None)
     if not sw:
         raise SystemExit("run --phase sweep first")
@@ -185,8 +247,19 @@ def phase_hydrate(a, out: Path) -> None:
             if sh and str(sh[0].get("date") or "") >= _since(a.comp_months):
                 local[i] = shared[i]
     todo = [i for i in ids if i not in local]
+    cap = getattr(a, "detail_cap", None)
+    if cap is not None and len(todo) > cap:
+        # Acceptable use forbids detail pulls in volume without adding the
+        # records, so a capped run reads the nearest houses first and names
+        # how many it left unread. The CLI default is no cap, as before.
+        where = {r["id"]: (r.get("lat"), r.get("lon")) for r in sw["comps"]}
+        where.update({r["id"]: (r.get("lat"), r.get("lon")) for rows in sw["investor"].values() for r in rows})
+        todo.sort(key=lambda i: (i != str(a.subject_id or ""),
+                                 miles_between(a.lat, a.lon, *(where.get(i) or (None, None)))))
+        _save(out / "unread.json", {"cap": cap, "unread": todo[cap:]})
+        todo = todo[:cap]
     log.info("%d properties, %d cached, %d to fetch", len(ids), len(ids) - len(todo), len(todo))
-    smc = SiftMapClient()
+    smc = client or SiftMapClient()
     done = 0
     with ThreadPoolExecutor(max_workers=3) as ex:
         futs = {ex.submit(_hydrate_one, smc, i): i for i in todo}
@@ -231,7 +304,7 @@ def _comps(a, sw: dict, det: dict) -> dict:
             "baths": r.get("baths"), "sqft": r.get("sqft"),
             "ppsf": round(s["price"] / r["sqft"]) if r.get("sqft") else None,
             "buyer": buyer, "seller": (s.get("seller") or "").strip(),
-            "cash": bool(s.get("cash")), "entity_buyer": bool(ENTITY_RX.search(buyer.upper())),
+            "cash": bool(s.get("cash")), "entity_buyer": _is_entity(buyer),
             "mls_sold": r.get("mls_sold"),
             "in_size": bool(r.get("sqft") and lo <= r["sqft"] <= hi),
         })
@@ -330,7 +403,7 @@ def _observations(a, sw: dict, det: dict) -> list:
             continue
         dist = miles_between(a.lat, a.lon, r["lat"], r["lon"])
         who = (sh[0].get("buyer") or "").strip()
-        if who and ENTITY_RX.search(who.upper()) and (norm_name(who), r["id"]) not in seen:
+        if who and _is_entity(who) and (norm_name(who), r["id"]) not in seen:
             seen.add((norm_name(who), r["id"]))
             obs.append({"buyer": who, "id": r["id"], "address": r["address"], "dist": dist,
                         "date": str(sh[0].get("date") or ""), "price": sh[0].get("price"),
@@ -350,7 +423,7 @@ def _observations(a, sw: dict, det: dict) -> list:
             bp, xp = sh[1].get("price") or 0, sh[0].get("price") or 0
             recent = held and held >= str(date.fromisoformat(str(sh[0]["date"])[:10])
                                           - timedelta(days=730))
-            entity = bool(ENTITY_RX.search(seller.upper()))
+            entity = _is_entity(seller)
             if recent and (entity or (_real(bp) and xp >= 1.35 * bp)):
                 seen.add((norm_name(seller), r["id"]))
                 obs.append({"buyer": seller, "id": r["id"], "address": r["address"],
@@ -395,12 +468,13 @@ def phase_rank(a, out: Path) -> None:
         n_life = max(reg.get("n_buys") or 0, len(os_))
         excl = is_named_exclusion(name) or next(
             (n for n in NOT_BUYERS if n in name.upper()), "")
+        from dispo_buyers import local_tier
         tier, why, _ = local_tier(name.upper(), n_life)
         if excl or tier == "EXCLUDE":
             dropped.append({"buyer": name, "why": excl or why, "local_buys": len(os_)})
             continue
         # A person who bought once, unlabeled, is a homebuyer paying cash.
-        if not ENTITY_RX.search(name.upper()) and n_life < 2:
+        if not _is_entity(name) and n_life < 2:
             dropped.append({"buyer": name, "why": "one purchase, person", "local_buys": len(os_)})
             continue
 
@@ -539,8 +613,13 @@ def main() -> int:
     ap.add_argument("--min-buys", type=int, default=3,
                     help="lifetime purchases required for the top N call list")
     ap.add_argument("--show", type=int, default=30)
+    ap.add_argument("--county", default="47093,Knox,TN",
+                    help="fips,name,state the sweep is held to (default Knox); 'none' = the box alone")
+    ap.add_argument("--detail-cap", type=int, default=None,
+                    help="most deed reads this run, nearest first (default: no cap)")
     ap.add_argument("-v", "--verbose", action="store_true")
     a = ap.parse_args()
+    a.county = None if a.county.lower() == "none" else tuple(x.strip() for x in a.county.split(","))
     logging.basicConfig(level=logging.DEBUG if a.verbose else logging.INFO,
                         format="%(asctime)s %(levelname)s %(message)s")
     out = ROOT / "output" / "deal_buyers" / a.slug

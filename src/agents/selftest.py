@@ -100,6 +100,7 @@ EXTRA_SECTIONS: list[tuple[str, str]] = [
     ("quinn's operations workflows", "selftest_wf_ops"),
     ("people workflows", "selftest_wf_people"),
     ("atlas's data workflows", "selftest_wf_data"),
+    ("roma's deal workflows", "selftest_wf_deals"),
 ]
 
 

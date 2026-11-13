@@ -7,16 +7,23 @@ The Deal Room `clients/siftmap_api.py` is the fuller client, but it imports
 `sms_agent/crm_standalone.py` did for the reisift CRM: same endpoints, no repo
 checkout, one env var.
 
-Auth, verified live 2026-08-19:
-    POST /properties/search-autocomplete/   NO auth required
-    GET  /properties/detail/{dataflik_id}/  needs `authorization: Api-Key <key>`
+Routes:
+    POST /properties/search/                documented (SiftMap API 1.0), Api-Key
+    GET  /properties/detail/{dataflik_id}/  documented, Api-Key
+    POST /properties/search-autocomplete/   NOT documented, no auth (verified 2026-08-19)
 
-The Open API key works here, so there is no 48 hour JWT to babysit.
+The Open API key works on all of them, so there is no 48 hour JWT to babysit.
 
     python src/siftmap_standalone.py "158 Old State Rd, Knoxville, TN"
 
 ALWAYS pass a dataflik_id to get_detail. It is SiftMap's canonical key, and it
-is what autocomplete returns as `id`. A CRM uuid or a reapi id will not resolve.
+is what search and autocomplete return as `id`. A CRM uuid or a reapi id will
+not resolve.
+
+Autocomplete is kept only for the callers that parse its rows today (the FTM ZIP
+fallback, the notice intake, the dispo sweeps). Acceptable use forbids volume
+through it, so new code looks an address up with `search_address`, which is the
+documented search route, and `resolve` does too.
 """
 
 from __future__ import annotations
@@ -46,7 +53,7 @@ class SiftMapError(RuntimeError):
 
 
 class SiftMapClient:
-    """autocomplete + get_detail, the only two calls knox_ftm_pull needs."""
+    """search + get_detail (documented), plus the legacy autocomplete."""
 
     def __init__(self, api_key: str | None = None, base: str = BASE,
                  min_interval: float = 0.35, max_retries: int = 4) -> None:
@@ -111,11 +118,35 @@ class SiftMapClient:
                 raise SiftMapError(f"Network error on {method} {path}: {e}")
         raise SiftMapError(f"exhausted retries on {method} {path}")
 
-    # ── the two calls ────────────────────────────────────────────────
+    # ── the calls ────────────────────────────────────────────────────
+    def search(self, body: dict) -> dict:
+        """POST /properties/search/, the documented SiftMap search.
+
+        `body` carries any of `addresses`, `polygon` and `filters`, plus `size`
+        and `result_index`. Unknown filter keys are IGNORED by the server, so a
+        misspelled key widens the search instead of failing: probe a new key by
+        the change in `total_results`, never by the absence of an error.
+        Rows carry no sale price and no owner name; those are on get_detail.
+        """
+        r = self._request("/properties/search/", "POST", body)
+        return r if isinstance(r, dict) else {"data": r or []}
+
+    def search_address(self, address: str, *, size: int = 3) -> list[dict]:
+        """Rows for one free-text address through the documented search route.
+
+        This is the replacement for autocomplete on a single lookup. Each row
+        carries `id` (the dataflik_id), `address` (one string) and the map
+        point, so a caller still checks the house number before trusting it.
+        """
+        body = {"addresses": [{"type": "address", "search": address}],
+                "size": max(1, int(size)), "result_index": 0}
+        return self.search(body).get("data") or []
+
     def autocomplete(self, partial: str, *, limit: int = 10) -> list[dict]:
         """Candidate properties for a partial address. No auth needed.
 
         Each row carries `id`, which IS the dataflik_id get_detail wants.
+        Legacy and undocumented: kept for the callers that parse these rows.
         """
         r = self._request("/properties/search-autocomplete/", "POST",
                           {"search": partial, "limit": limit}, auth=False)
@@ -133,26 +164,35 @@ class SiftMapClient:
 
     # ── convenience ──────────────────────────────────────────────────
     def resolve(self, address: str, *, limit: int = 3) -> dict | None:
-        """One-shot address to detail. Returns None when nothing matches."""
-        hits = self.autocomplete(address, limit=limit)
-        if not hits:
-            return None
-        pid = hits[0].get("id") or hits[0].get("dataflik_id")
-        if not pid:
-            return None
-        d = self.get_detail(pid)
-        if isinstance(d, dict):
-            d.setdefault("_autocomplete", hits[0])
-        return d
+        """One-shot address to detail. Returns None when nothing matches.
+
+        The first search row is taken only when its house number is the one
+        asked for: the search answers the same street name in another town
+        without blinking, and a detail read on the wrong house is worse than none.
+        """
+        hits = self.search_address(address, size=limit)
+        want = (address or "").strip().split(" ", 1)[0]
+        for hit in hits:
+            got = str(hit.get("address") or "").strip().split(" ", 1)[0]
+            if want.isdigit() and got != want:
+                continue
+            pid = hit.get("id") or hit.get("dataflik_id")
+            if not pid:
+                continue
+            d = self.get_detail(pid)
+            if isinstance(d, dict):
+                d.setdefault("_search", hit)
+            return d
+        return None
 
 
 def selftest(address: str) -> int:
     c = SiftMapClient()
-    print(f"autocomplete: {address!r}")
-    hits = c.autocomplete(address, limit=3)
+    print(f"search: {address!r}")
+    hits = c.search_address(address, size=3)
     print(f"  {len(hits)} hit(s)")
     for h in hits[:3]:
-        print(f"    {h.get('id')}  {h.get('title')}")
+        print(f"    {h.get('id')}  {h.get('address')}")
     if not hits:
         return 1
     d = c.get_detail(hits[0]["id"])

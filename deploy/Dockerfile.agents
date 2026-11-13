@@ -22,6 +22,9 @@ COPY src/ ./src/
 # The team (roster, briefs, generated TEAM.md) and the skill library the employees carry.
 COPY team/ ./team/
 COPY skills/ ./skills/
+# The locked Knox material list (sku_pricing): without it Knox and Blount rehab is priced from the
+# engine tables, a different number from the workstation's.
+COPY data/master_materials_locked_37914.json ./data/
 
 # State lives on the volume; the container has no .env, every key is a Fly secret.
 #   AGENTS_WORKSPACES_DIR  each employee's runtime workspace, outside /app so nothing unrelated loads

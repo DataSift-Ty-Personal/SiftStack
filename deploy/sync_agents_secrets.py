@@ -65,6 +65,8 @@ OPTIONAL = [
     ("SLACK_APP_TOKEN", "the team's Slack app, Socket Mode (xapp-...): hear replies with no signing secret or URL check"),
     ("AGENTS_RELEASERS", "Slack user ids allowed to release a staged batch from the channel (empty: command line only)"),
     ("AGENTS_SLACK_WEBHOOK", "the agents' Slack channel (post-only fallback without the app)"),
+    # Roma's comps (src/agents/workflows/quick_screen.py, underwrite.py)
+    ("OPENWEBNINJA_API_KEY", "the Zillow sold pull for comp asks in Slack (paid, capped by AGENTS_COMPS_DAILY_USD)"),
     # Quinn's call coaching and batch QA (src/agents/workflows/call_coaching.py, qa_batch.py)
     ("AGENTS_COACH_RUN_CAP_USD", "call coaching: spend cap for one review pack (default 4.00)"),
     ("AGENTS_COACH_MAX_CALLS", "call coaching: calls graded in one pack (default 16)"),

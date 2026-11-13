@@ -26,11 +26,13 @@ from __future__ import annotations
 import argparse
 import csv
 import glob
+import json
 import logging
+import math
 import re
 import statistics
 import sys
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from openpyxl import Workbook
@@ -146,6 +148,406 @@ def local_buyers(zip_code: str) -> list[dict]:
             if zip_code and zip_code in blob:
                 rows.append(row)
     return rows
+
+
+# ── Free comps: SiftMap deed sales by distance ────────────────────────
+# Ty's standing rule (2026-07-23): pull the sold universe from SiftMap's deeds
+# by distance FIRST. A deed carries the as-is, investor and cash purchases the
+# MLS never shows, and the read is free; the Zillow pull is a paid supplement.
+# The rows come back as MarketListing objects so the ARV math above (classify,
+# dual_track_arv) and post_walkthrough's tight ARV run on them unchanged.
+
+K_TXN = "extra_last_sale_investor_transaction_type"
+# The investor transaction labels SiftMap puts on a last sale (the dispo
+# registry's ALL_TYPES). The filter takes a LIST; a comma string is refused.
+INVESTOR_TXN_TYPES = ("pending", "wholesale", "wholetail", "rental", "flip")
+NOMINAL_SALE = 10_000          # a deed under this is paper (family, estate, quitclaim), not a sale
+# Candidates inside the ARV size band and within a bedroom are read first, so a
+# capped read spends itself on comps the tight ARV can actually use.
+READ_FIRST_SIZE = (0.70, 1.35)
+
+
+def box(lat: float, lon: float, miles: float) -> list[dict]:
+    """A closed square ring around a point: the polygon SiftMap's search takes."""
+    dlat = miles / 69.0
+    dlon = miles / (69.0 * math.cos(math.radians(lat)))
+    return [{"lat": lat + dlat, "lon": lon - dlon}, {"lat": lat + dlat, "lon": lon + dlon},
+            {"lat": lat - dlat, "lon": lon + dlon}, {"lat": lat - dlat, "lon": lon - dlon},
+            {"lat": lat + dlat, "lon": lon - dlon}]
+
+
+def miles_between(lat1, lon1, lat2, lon2) -> float:
+    """Great-circle miles; 99 when either point is missing, so it sorts last."""
+    if not all(isinstance(v, (int, float)) for v in (lat1, lon1, lat2, lon2)) or not (lat1 and lat2):
+        return 99.0
+    r = 3958.8
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dp, dl = p2 - p1, math.radians(lon2 - lon1)
+    a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+    return 2 * r * math.asin(math.sqrt(a))
+
+
+def since(months: int, today: date | None = None) -> str:
+    return ((today or date.today()) - timedelta(days=int(months * 30.44))).isoformat()
+
+
+def split_address(full: str) -> tuple[str, str, str, str]:
+    """'123 Main St, Knoxville, TN 37914' -> (street, city, state, zip). SiftMap
+    search rows carry the whole address as one string."""
+    parts = [p.strip() for p in str(full or "").split(",")]
+    street = parts[0] if parts else ""
+    city = parts[1] if len(parts) > 2 else ""
+    tail = parts[-1] if len(parts) > 1 else ""
+    m = re.match(r"([A-Za-z]{2})\s*(\d{5})?", tail)
+    return street, city, (m.group(1).upper() if m else ""), ((m.group(2) or "") if m else "")
+
+
+def _street_key(street: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", str(street or "").lower())
+
+
+def newest_deed(detail: dict) -> dict:
+    """The newest deed on a SiftMap detail (sale_history is newest first), in
+    the shape the dispo registry and deal_buyer_match store."""
+    sh = (detail or {}).get("sale_history") or []
+    if not sh:
+        return {}
+    s = sh[0]
+    return {"date": str(s.get("sale_date") or "")[:10], "price": s.get("sale_price"),
+            "buyer": (s.get("buyer_name") or "").strip(), "seller": (s.get("seller_name") or "").strip(),
+            "cash": bool(s.get("is_cash_sale"))}
+
+
+def siftmap_sold(subject: dict, client, *, radius_mi: float = 1.0, months: int = 12,
+                 detail_cap: int = 12, page_size: int = 100, cache: dict | None = None,
+                 today: date | None = None, polygon: list[dict] | None = None,
+                 max_rows: int | None = None) -> dict:
+    """Sold single-family comps around the subject, priced off the deed.
+
+    One search finds every single-family sale in the area inside the window (the
+    search rows carry no price), then the newest deed is read for the closest
+    candidates, at most `detail_cap` new reads a run. The area is `polygon` (a
+    closed ring of {"lat", "lon"}, a drawn boundary) when given, else a box of
+    `radius_mi` around the subject. The search is not ordered by distance, so
+    `max_rows` pages past the first page (a busy square mile holds more than 100
+    sales in 18 months, and the closest may sit on page two). Acceptable use forbids
+    SiftMap detail pulls in volume without adding the records, so the cap is
+    the point, not a tuning knob. `cache` (id -> {"deed", "at"}) is reused and
+    filled in place; a cached deed older than the window is read again, because
+    the house is only in the window now if it sold again since.
+
+    Returns {"sold": [MarketListing], "records": [deed rows in the buyer sweep
+    shape], "found", "read", "cached", "not_read", "dropped": {reason: n},
+    "why": "" or the plain reason nothing usable came back}.
+    """
+    out = {"sold": [], "records": [], "found": 0, "read": 0, "cached": 0, "not_read": 0,
+           "dropped": {}, "why": "", "radius_mi": radius_mi, "months": months}
+    lat, lon = subject.get("lat"), subject.get("lon")
+    if not lat or not lon:
+        out["why"] = "the record has no map point, so there is no area to search"
+        return out
+    cut = since(months, today)
+    body = {"polygon": polygon or box(float(lat), float(lon), radius_mi),
+            "filters": {"type_single_family": True, "extra_last_sale_date_min": cut,
+                        "extra_is_last_sale_interfamily": False, "extra_last_sale_value_min": 1000},
+            "size": int(page_size), "result_index": 0}
+    found = client.search(body) or {}
+    rows = list(found.get("data") or [])
+    out["found"] = int(found.get("total_results") or len(rows))
+    limit = min(out["found"], int(max_rows or page_size))
+    # Count only rows not seen yet: if the server's offsets overlap pages by a row, counting the
+    # repeat would stop the loop one page early and quietly drop the last sales.
+    ids = {str(r.get("id")) for r in rows}
+    while len(ids) < limit:
+        page = (client.search(dict(body, result_index=len(rows))) or {}).get("data") or []
+        new = [r for r in page if str(r.get("id")) not in ids]
+        if not new:
+            break
+        rows += new
+        ids.update(str(r.get("id")) for r in new)
+    me_id = str(subject.get("dataflik_id") or "")
+    me_street = _street_key(subject.get("address") or subject.get("street") or "")
+    sq, beds = float(subject.get("sqft") or 0), int(subject.get("beds") or 0)
+
+    def drop(reason: str) -> None:
+        out["dropped"][reason] = out["dropped"].get(reason, 0) + 1
+
+    cands, seen = [], set()
+    for r in rows:
+        rid = str(r.get("id") or "")
+        street, city, state, zip5 = split_address(r.get("address"))
+        # A row seen twice (pages that overlap by one) would count one sale twice in every median.
+        if not rid or rid in seen or (me_id and rid == me_id) or (me_street and _street_key(street) == me_street):
+            continue
+        seen.add(rid)
+        d = miles_between(float(lat), float(lon), r.get("latitude"), r.get("longitude"))
+        ratio = (float(r.get("squareFeet") or 0) / sq) if sq else 1.0
+        near = READ_FIRST_SIZE[0] <= ratio <= READ_FIRST_SIZE[1] and abs(int(r.get("bedrooms") or 0) - beds) <= 1
+        cands.append((0 if near else 1, d, rid, r, (street, city, state, zip5)))
+    cands.sort(key=lambda c: (c[0], c[1]))
+
+    cache = cache if cache is not None else {}
+    failures = 0
+    for _, dist, rid, r, (street, city, state, zip5) in cands:
+        hit = cache.get(rid) or {}
+        deed = hit.get("deed") if str((hit.get("deed") or {}).get("date") or "") >= cut else None
+        if deed is not None:
+            out["cached"] += 1
+        elif out["read"] < max(0, int(detail_cap)):
+            out["read"] += 1
+            try:
+                deed = newest_deed(client.get_detail(rid))
+            except Exception as exc:  # noqa: BLE001  (one bad read is a miss, not a failed screen)
+                failures += 1
+                drop("deed read failed")
+                logger.warning("deed read failed for %s: %s", rid, exc)
+                continue
+            cache[rid] = {"deed": deed, "at": (today or date.today()).isoformat()}
+        else:
+            out["not_read"] += 1
+            continue
+        price = float(deed.get("price") or 0)
+        if not deed:
+            drop("no deed on file")
+            continue
+        if price < NOMINAL_SALE:
+            drop("deed under $10,000 (not arm's length)")
+            continue
+        if str(deed.get("date") or "") < cut:
+            drop("newest deed is older than the window")
+            continue
+        out["sold"].append(MarketListing(
+            zpid="sm%s" % rid, address=street, city=city, state=state, zip_code=zip5,
+            latitude=float(r.get("latitude") or 0), longitude=float(r.get("longitude") or 0),
+            beds=int(r.get("bedrooms") or 0), baths=float(r.get("bathrooms") or 0),
+            sqft=int(float(r.get("squareFeet") or 0)), home_type="SINGLE_FAMILY",
+            home_status="RECENTLY_SOLD", price=price, sold_date=deed["date"],
+            zestimate=float(r.get("estimatedValue") or 0), lot_acres=float(r.get("lotAcres") or 0),
+            raw={"source": "siftmap deed", "id": rid, "miles": round(dist, 2)}))
+        out["records"].append({"address": street, "buyer": deed.get("buyer") or "", "cash": bool(deed.get("cash")),
+                               "sale_date": deed["date"], "sale_price": price})
+    if out["read"] and failures == out["read"] and not out["cached"]:
+        out["why"] = "every deed read failed, which is an access problem (REISIFT_API_KEY), not an empty market"
+    elif not out["found"]:
+        out["why"] = "no single-family sale %s in the last %d months" % (
+            "inside the boundary" if polygon else "within %.2f mi" % radius_mi, months)
+    elif not out["sold"]:
+        out["why"] = "%d sale(s) found but none with a usable deed price" % out["found"]
+    return out
+
+
+def investor_activity(client, lat: float, lon: float, *, radius_mi: float = 1.0, months: int = 6,
+                      today: date | None = None) -> int:
+    """Single-family houses near a point whose last sale SiftMap labels an
+    investor transaction inside the window. Zero means a dead area: a deal there
+    is hard to sell, because nobody who buys this kind of house is buying here
+    (build plan 2.8). One search, no detail reads."""
+    body = {"polygon": box(float(lat), float(lon), radius_mi),
+            "filters": {"type_single_family": True, K_TXN: list(INVESTOR_TXN_TYPES),
+                        "extra_last_sale_date_min": since(months, today)},
+            "size": 1, "result_index": 0}
+    r = client.search(body) or {}
+    return int(r.get("total_results") or len(r.get("data") or []))
+
+
+# ── Pasted inputs: a boundary, a street list, county card notes ───────
+# What a person pastes in Slack, read the way the CLI flags read it: --bbox or a
+# drawn polygon, --streets, and the county card overrides (--beds --baths --sqft
+# --year-built), which beat Zillow and the record. Pure functions: no network.
+
+BOUNDARY_HELP = ("I could not read that boundary. Paste a box as lat_min,lat_max,lon_min,lon_max, "
+                 "a list of lat,lon points, or the coordinates from a Google My Maps KML or GeoJSON export.")
+STREETS_HELP = ("I could not read that street list. Give street names separated by |, "
+                "like old state|nash rd|seahorn.")
+_NUM_RX = re.compile(r"[-+]?\d+(?:\.\d+)?")
+
+
+def _sign(v: float) -> int:
+    return 1 if v > 0 else (-1 if v < 0 else 0)
+
+
+def _ring_ok(points: list) -> bool:
+    return (len({(round(a, 7), round(b, 7)) for a, b in points}) >= 3
+            and all(-90 <= a <= 90 and -180 <= b <= 180 for a, b in points))
+
+
+def _open_ring(points: list) -> list:
+    """Drop the closing point a ring repeats, so each corner is listed once."""
+    return points[:-1] if len(points) > 3 and points[0] == points[-1] else points
+
+
+def _geojson_ring(obj):
+    """The first list of [lon, lat] pairs anywhere in a GeoJSON value, as (lat, lon)."""
+    if isinstance(obj, dict):
+        for key in ("geometry", "features", "geometries", "coordinates"):
+            if key in obj:
+                ring = _geojson_ring(obj[key])
+                if ring:
+                    return ring
+        return None
+    if isinstance(obj, list) and obj:
+        if all(isinstance(p, list) and len(p) >= 2 and all(isinstance(v, (int, float)) for v in p[:2]) for p in obj):
+            return [(float(p[1]), float(p[0])) for p in obj]
+        for item in obj:
+            ring = _geojson_ring(item)
+            if ring:
+                return ring
+    return None
+
+
+def _polygon(points: list, source: str) -> tuple[dict | None, str]:
+    points = _open_ring(points)
+    if not _ring_ok(points):
+        return None, BOUNDARY_HELP
+    return {"kind": "polygon", "points": points, "bbox": None, "source": source}, ""
+
+
+def _bbox(lat_lo: float, lat_hi: float, lon_lo: float, lon_hi: float, source: str) -> tuple[dict | None, str]:
+    if not (-90 <= lat_lo < lat_hi <= 90 and -180 <= lon_lo < lon_hi <= 180):
+        return None, BOUNDARY_HELP
+    corners = [(lat_lo, lon_lo), (lat_lo, lon_hi), (lat_hi, lon_hi), (lat_hi, lon_lo)]
+    return {"kind": "bbox", "points": corners, "bbox": (lat_lo, lat_hi, lon_lo, lon_hi), "source": source}, ""
+
+
+def parse_boundary(text: str) -> tuple[dict | None, str]:
+    """A pasted boundary -> ({"kind", "points", "bbox", "source"}, "") or (None, why).
+
+    Shapes it reads:
+      * a box: lat_min,lat_max,lon_min,lon_max (the --bbox form), or two corners lat,lon lat,lon;
+      * a list of lat,lon points, closed or not, apart by spaces, semicolons, new lines or commas;
+      * Google My Maps KML: a <coordinates> block, or the bare lon,lat,altitude tuples;
+      * GeoJSON: a Feature, a FeatureCollection, a geometry, or the bare coordinates array.
+    KML and GeoJSON write longitude first; plain points are read as lat,lon unless every pair is
+    plainly lon,lat (a longitude past 90, or a negative first value beside a positive second).
+    Points come back as (lat, lon). Empty text is no boundary, not an error. Anything else gets
+    one sentence naming these shapes, because a boundary guessed wrong silently moves the ARV.
+    """
+    t = (text or "").strip()
+    if not t:
+        return None, ""
+    if t[:1] in "[{":
+        try:
+            ring = _geojson_ring(json.loads(t))
+        except ValueError:
+            ring = None
+        if ring:
+            return _polygon(ring, "geojson")
+        if t[:1] == "{":
+            return None, BOUNDARY_HELP
+    tag = re.search(r"<coordinates>(.*?)</coordinates>", t, re.S | re.I)
+    body = tag.group(1) if tag else t
+    if re.search(r"[A-Za-z]", body):
+        return None, BOUNDARY_HELP
+    if tag:
+        pts = []
+        for tok in body.split():
+            vals = [float(v) for v in _NUM_RX.findall(tok)]
+            if len(vals) >= 2:
+                pts.append((vals[1], vals[0]))
+        return _polygon(pts, "kml")
+    nums = [float(v) for v in _NUM_RX.findall(body)]
+    if len(nums) >= 9 and len(nums) % 3 == 0 and all(v == 0 for v in nums[2::3]):
+        return _polygon([(nums[i + 1], nums[i]) for i in range(0, len(nums), 3)], "kml")
+    if len(nums) == 4:
+        a, b, c, d = nums
+        if _sign(a) == _sign(b) and _sign(c) == _sign(d) and a < b and c < d:
+            return _bbox(a, b, c, d, "bbox")
+        if _sign(a) == _sign(c) and _sign(b) == _sign(d):
+            return _bbox(min(a, c), max(a, c), min(b, d), max(b, d), "corners")
+        return None, BOUNDARY_HELP
+    if len(nums) >= 6 and len(nums) % 2 == 0:
+        pairs = [(nums[i], nums[i + 1]) for i in range(0, len(nums), 2)]
+        lon_first = any(abs(p[0]) > 90 for p in pairs) or all(p[0] < 0 < p[1] for p in pairs)
+        return _polygon([(q, p) for p, q in pairs] if lon_first else pairs, "points")
+    return None, BOUNDARY_HELP
+
+
+def boundary_ring(boundary: dict) -> list[dict]:
+    """A parsed boundary as the closed ring of {"lat", "lon"} SiftMap's search takes."""
+    pts = list(boundary["points"])
+    return [{"lat": a, "lon": o} for a, o in pts + pts[:1]]
+
+
+def parse_streets(text: str) -> tuple[str, str]:
+    """A street list or regex -> (pattern, "") or ("", why). Names apart by | are the --streets
+    form already; commas, semicolons or new lines between names are read as | too."""
+    t = (text or "").strip()
+    if not t:
+        return "", ""
+    if "|" not in t and re.search(r"[,;\n]", t):
+        t = "|".join(x.strip() for x in re.split(r"[,;\n]+", t) if x.strip())
+    try:
+        re.compile(t, re.I)
+    except re.error:
+        return "", STREETS_HELP
+    return t, ""
+
+
+_SQFT_RX = re.compile(r"(\d{1,2},\d{3}|\d{3,5})\s*(?:sq\.?\s*f(?:ee)?t\.?|square\s*f(?:ee|oo)t|sqft|sf)\b", re.I)
+_YEAR_RX = re.compile(r"\b(?:year\s*built|yr\.?\s*built|built(?:\s+in)?|yb)\s*:?\s*(1[89]\d{2}|20\d{2})\b", re.I)
+_SLASH_RX = re.compile(r"(?<![\d/.])([1-9])\s*/\s*([1-9](?:\.5)?)(?![\d/])")
+_BEDS_RX = re.compile(r"\b(\d{1,2})\s*-?\s*(?:bed(?:room)?s?|bdrms?|bds?|brs?)\b", re.I)
+_BATHS_RX = re.compile(r"\b(\d{1,2}(?:\.5)?)\s*-?\s*(?:bath(?:room)?s?|bths?|ba)\b", re.I)
+_BARE_YEAR_RX = re.compile(r"(?<![\d$,.])(1[89]\d{2}|20\d{2})(?![\d,])")
+
+
+def parse_card_notes(text: str, this_year: int | None = None) -> dict:
+    """County card facts in free text -> the --beds/--baths/--sqft/--year-built overrides, plus the
+    rest of what was said as `context`.
+
+    Reads "2/1, 1946 sqft, built 1938" and "3 bed 2 bath 1,400 sf 1962" alike. Square footage is
+    read first so its number is never taken for a year; a bare four-digit year counts only when it
+    is the one such number left. A value outside a plausible range is dropped, never clamped, and
+    anything it cannot place stays in `context` word for word.
+    """
+    t = text or ""
+    year_hi = (this_year or date.today().year) + 1
+    out: dict = {}
+    spans: list = []
+
+    def free(span) -> bool:
+        return not any(span[0] < e and s < span[1] for s, e in spans)
+
+    for m in _SQFT_RX.finditer(t):
+        v = int(m.group(1).replace(",", ""))
+        if "sqft" not in out and 200 <= v <= 20000 and free(m.span()):
+            out["sqft"] = v
+            spans.append(m.span())
+    for m in _YEAR_RX.finditer(t):
+        v = int(m.group(1))
+        if "year_built" not in out and 1800 <= v <= year_hi and free(m.span()):
+            out["year_built"] = v
+            spans.append(m.span())
+    for m in _SLASH_RX.finditer(t):
+        if "beds" not in out and "baths" not in out and free(m.span()):
+            out["beds"], out["baths"] = int(m.group(1)), float(m.group(2))
+            spans.append(m.span())
+    for rx, key, cast, lo, hi in ((_BEDS_RX, "beds", int, 1, 20), (_BATHS_RX, "baths", float, 0.5, 20)):
+        for m in rx.finditer(t):
+            v = cast(float(m.group(1)))
+            if key not in out and lo <= v <= hi and free(m.span()):
+                out[key] = v
+                spans.append(m.span())
+    if "year_built" not in out:
+        # A bare year counts only beside another card fact ("1,400 sf 1962"): "the roof was
+        # replaced in 2022" names a year that is not the year the house was built.
+        def beside(m) -> bool:
+            for s, e in spans:
+                gap = t[e:m.start()] if e <= m.start() else t[m.end():s]
+                if re.fullmatch(r"[\s,;|/]*", gap):
+                    return True
+            return False
+        bare = [m for m in _BARE_YEAR_RX.finditer(t) if free(m.span()) and 1800 <= int(m.group(1)) <= year_hi]
+        if len(bare) == 1 and beside(bare[0]):
+            out["year_built"] = int(bare[0].group(1))
+            spans.append(bare[0].span())
+    rest = t
+    for s, e in sorted(spans, reverse=True):
+        rest = rest[:s] + " " + rest[e:]
+    rest = re.sub(r"\s+", " ", rest)
+    rest = re.sub(r"(?:\s*[,;|/]\s*){2,}", ", ", rest).strip(" ,;|./")
+    out["context"] = rest if len(re.findall(r"[A-Za-z]", rest)) >= 3 else ""
+    return out
 
 
 # ── Workbook ──────────────────────────────────────────────────────────

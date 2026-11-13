@@ -256,39 +256,59 @@ workflows:
     sources: [agents.autopilot.appointments]
   quick_screen:
     owner: sales
-    summary: New lead screened (record, Tier 1 comps, rough ARV, go or no-go) and posted to the record.
-    status: planned
-    spend: free
+    summary: New lead screened (the record, comps inside a pasted boundary or a radius, a rough value and rehab, the most we could pay, a go or no-go); a note on the record when live.
+    status: live
+    spend: paid
     triggers: [datasift:quick-screen, slack]
     model: claude-sonnet-5-5
+    inputs:
+      address: "The record uuid or the house's street line"
+      boundary: "Where the comps come from: empty or 'radius' for a 1 mile circle, 'radius 0.75' for another size, a box lat_min,lat_max,lon_min,lon_max, a list of lat,lon points, or the coordinates from a Google My Maps KML or GeoJSON export"
+      streets: "Optional street filter on top of the area, names apart by | (old state|nash rd); empty for none"
+      notes: "Free text: county card facts beat the record (2/1, 1946 sqft, built 1938), an asking price is read (asking 95k), anything else is carried as context; empty for none"
     manual: comp_package.py for comps; the summary is written by hand today.
-    sources: [comp_package, zillow_market_api, siftmap_standalone]
+    sources: [agents.workflows.quick_screen, comp_package, zillow_market_api, siftmap_standalone, post_walkthrough]
     covers: [comp]
   underwrite:
     owner: sales
-    summary: Full underwrite (comps, rehab on the locked SKU list, MAO at each tier, buyers, offer ladder).
-    status: planned
-    spend: free
+    summary: The post-walkthrough package for one house; with a walk and no comps asked for, the rehab on its own (photo findings, one number, repair detail); with comps, value, exits and the one-tab offer sheet.
+    status: live
+    spend: paid
     triggers: [slack]
+    inputs:
+      address: "The record uuid or the street line; a house not in DataSift yet works for the rehab when the notes give its square footage"
+      walk: "The walkthrough: inline JSON, a file in your workspace (inbox/<thread>/walk.json) or 'task N', or empty for pre-walk numbers. Shape: post_walkthrough's walk (single_scenario, target_config, work_done, still_open, flags with costs, gates) plus photo_notes, one entry per photo or room: {file, room, finding, condition, scope_line, quote}. The photos stay in the inbox; only this JSON is read"
+      boundary: "Comps: empty with a walk means the rehab on its own; 'radius' or 'radius 0.75', a box lat_min,lat_max,lon_min,lon_max, lat,lon points, or a Google My Maps KML or GeoJSON pulls comps and builds the offer"
+      streets: "Optional street filter, names apart by |; empty for none"
+      notes: "Free text: county card facts (3 bed 2 bath 1,400 sf 1962) beat the record and the photos; a stated repair is carried into the workbook as the operator's word; empty for none"
     manual: post_walkthrough.py plus offer_sheet.py.
-    sources: [post_walkthrough, offer_sheet, comp_package, rehab_estimator, sku_pricing]
+    sources: [agents.workflows.underwrite, post_walkthrough, offer_sheet, comp_package, rehab_estimator, sku_pricing]
     covers: [arv, rehab, material, exits, dealanalyzer, lotsplit]
   offer_sheet:
     owner: sales
-    summary: The one-tab wholesale offer after a walkthrough.
-    status: planned
+    summary: The one-tab wholesale offer after a walkthrough, from a saved pack and a walk.
+    status: live
     spend: free
     triggers: [slack]
+    inputs:
+      pack: "The saved pack: 'task N' (the pack an underwrite run saved), or a file name in your workspace or the deals folder"
+      walk: "The walk as inline JSON, a file name or 'task N'; empty for the walk saved beside the pack"
+      fee: "The assignment fee in dollars (12000 or 12k); empty for $15,000"
+      arv: "An operator's value (ARV) in dollars that overrides the pack's; empty to keep the pack's"
     manual: python src/offer_sheet.py --pack ... --walk ....
-    sources: [offer_sheet]
+    sources: [agents.workflows.offer_sheet, offer_sheet]
   deal_buyers:
     owner: sales
-    summary: The top buyers for one contracted house, with the decision maker's number.
-    status: planned
+    summary: The top buyers for one contracted house, with the decision maker and how many numbers are on file; SmartSkip and Real Contact only on a live box inside the caps.
+    status: live
     spend: paid
     triggers: [datasift:under-contract, slack]
+    inputs:
+      address: "The record uuid or the house's street line"
+      ask: "The price we offer buyers (the assignment price) in dollars, 135000 or 135k; empty to read it off the record"
+      contract: "Our contract price in dollars; empty to read it off the record"
     manual: python src/deal_buyer_match.py then src/deal_buyer_dp.py.
-    sources: [deal_buyer_match, deal_buyer_dp]
+    sources: [agents.workflows.deal_buyers, deal_buyer_match, deal_buyer_dp]
     covers: [dealmatch]
   dispo_blast:
     owner: sales
@@ -296,17 +316,19 @@ workflows:
     status: planned
     spend: outreach
     triggers: [slack]
-    manual: python src/sms_agent/dispo_campaign.py --deal deals/<id>.json --queue, then release.
+    manual: "Runs on the texting app (the siftstack Fly app), which the brain cannot reach: on that box, python src/sms_agent/dispo_campaign.py --deal deals/<id>.json --queue stages the blast HELD, then python src/sms_agent/cli.py release --touch 1 sends it. deal_buyers gives the buyer list."
     sources: [sms_agent.dispo_campaign]
     covers: [dispoblast, dispobook, dispoflow]
   lender_package:
     owner: sales
-    summary: The eight-piece private lender set for one property.
-    status: planned
+    summary: The eight-piece private lender set for one property, built from a deal spec.
+    status: live
     spend: free
     triggers: [slack]
+    inputs:
+      spec: "The deal spec: inline JSON, or a file name in your workspace or the deals folder, in the shape of deals/EXAMPLE_lender_spec.json"
     manual: python src/lender_package.py and src/lender_docs.py --spec deals/<deal>.json.
-    sources: [lender_package, lender_docs]
+    sources: [agents.workflows.lender_package, lender_package, lender_docs]
     covers: [lender, lenderpkg, lenderdocs]
   sms_replies:
     owner: sales
@@ -314,7 +336,7 @@ workflows:
     status: planned
     spend: free
     triggers: [slack]
-    manual: Runs live on the siftstack Fly app today (src/sms_agent for smrtPhone, sc_inbound for Smarter Contact), outside the team.
+    manual: "Runs live on the texting app (the siftstack Fly app: src/sms_agent for smrtPhone, sc_inbound for Smarter Contact), outside the team; the brain can neither read nor answer those threads, and hot replies reach a person through that app's own Slack handoff."
     sources: [sms_agent.respond, sms_agent.sc_inbound, sms_agent.engine]
     covers: [classifier, responder, scinbound, sender, mms]
 

@@ -77,11 +77,12 @@ MF = "/api/internal/market-finder/"
 
 
 class FakeMarketFinder:
-    """The published Market Map routes for one invented county (Alder, TN, code 47901). Switches make it
-    misbehave the ways an unpublished parameter name would."""
+    """The published Market Map routes for one invented county (Alder, TN, code 47901), answering the way
+    the real server does (verified live 2026-11-13): a county is filtered by `fips` and a page is
+    `offset` + `limit`. Switches make it misbehave the ways an unpublished parameter name would."""
 
     def __init__(self, zips=3, ignore_state=False, stray_zip=False, ignore_page=False, echo=None, hood_zips=False,
-                 county_param="county"):
+                 county_param="fips"):
         self.zips = ["379%02d" % (90 + i) if i < 10 else "38%03d" % i for i in range(zips)]
         self.ignore_state, self.stray_zip, self.ignore_page = ignore_state, stray_zip, ignore_page
         self.echo, self.hood_zips, self.county_param = echo, hood_zips, county_param
@@ -121,8 +122,9 @@ class FakeMarketFinder:
             else:
                 codes = ["n-1", "n-2"]
             rows = [{"property_fields": {"state": "TN", "code": c}, "metrics": self._metrics(i)} for i, c in enumerate(codes)]
-            size, page = int(q.get("limit") or 20), int(q.get("page") or 1)
-            start = 0 if self.ignore_page else (page - 1) * size
+            size = int(q.get("limit") or 20)
+            at = int(q["offset"]) if "offset" in q else (int(q.get("page") or 1) - 1) * size
+            start = 0 if self.ignore_page else at
             return {"data": rows[start:start + size], "total": len(rows), "geoGroup": self.echo or group}
         raise AssertionError("the market report asked an unexpected route: %s %s" % (method, path))
 
@@ -165,13 +167,16 @@ def _market(check, mr) -> None:
     check(not echo["success"] and "group parameter" in echo["problem"], "rows of another group are refused")
     hz = emf.pull_market_finder_api("TN", "Alder", FakeMarketFinder(hood_zips=True).call)
     check(not hz["success"] and "ZIP codes" in hz["problem"], "a neighborhood listing that returns ZIP codes is refused")
-    os.environ["MARKET_FINDER_API_PARAMS"] = json.dumps({"county": "fips"})
+    check(any("fips=47901" in p for p in f.asked) and any("offset=0" in p for p in f.asked)
+          and not any("county=" in p or "page=" in p for p in f.asked),
+          "the pull filters a county by fips and pages by offset, the names the live server honors")
+    os.environ["MARKET_FINDER_API_PARAMS"] = json.dumps({"county": "county_code"})
     try:
-        f2 = FakeMarketFinder(county_param="fips")
+        f2 = FakeMarketFinder(county_param="county_code")
         renamed = emf.pull_market_finder_api("TN", "Alder", f2.call)
     finally:
         os.environ.pop("MARKET_FINDER_API_PARAMS", None)
-    check(renamed["success"] and any("fips=47901" in p for p in f2.asked),
+    check(renamed["success"] and any("county_code=47901" in p for p in f2.asked),
           "a parameter name can be changed by setting, without a code change")
     nostate = emf.pull_market_finder_api("ZZ", "Alder", FakeMarketFinder().call)
     check(not nostate["success"] and "no state" in nostate["problem"], "an unknown state is said plainly")

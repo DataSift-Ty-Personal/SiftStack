@@ -179,7 +179,15 @@ def run(check, tmp: Path) -> None:
             msg = str(exc)
             check("Bash" in msg and "nobody" in msg and "maybe" in msg, "every roster problem is reported at once")
         check(router.routes(roster).get("deep-prospect") == ("research", "deep_prospect"), "deep-prospect routes to Diggs")
-        check("quick-screen" not in router.routes(roster), "a planned workflow's webhook is not routed")
+        # quick_screen went live in wave 4 (2026-11-13): routed now, and held back again once marked planned.
+        check(router.routes(roster).get("quick-screen") == ("sales", "quick_screen"),
+              "a live workflow's webhook routes to its owner")
+        _qs_status = roster.workflows["quick_screen"].status
+        roster.workflows["quick_screen"].status = "planned"
+        try:
+            check("quick-screen" not in router.routes(roster), "a planned workflow's webhook is not routed")
+        finally:
+            roster.workflows["quick_screen"].status = _qs_status
         md = team.render_team_md(roster)
         check(md == team.render_team_md(roster), "TEAM.md renders the same every time (a stable prompt prefix)")
         check(all(w in md for w in roster.workflows) and all(e.display_name in md for e in roster.employees.values()),
@@ -323,8 +331,8 @@ def run(check, tmp: Path) -> None:
               "record lookup reads the record and keeps phone numbers out of the model")
         amb = asyncio.run(by["record_lookup"].handler({"record": "12 Oak St"}))
         check(amb.get("is_error") and U3 in _text_of(amb) and U4 in _text_of(amb), "an ambiguous address lists the matches")
-        pl = asyncio.run(by["quick_screen"].handler({"details": "x"}))
-        check(pl.get("is_error") and "not wired" in _text_of(pl) and "comp_package" in _text_of(pl),
+        pl = asyncio.run(by["sms_replies"].handler({"details": "x"}))
+        check(pl.get("is_error") and "not wired" in _text_of(pl) and "sms_agent" in _text_of(pl),
               "a planned workflow says so and how it runs by hand")
         ctx_r = tools.RunContext(task=th, roster=roster, employee=roster.employees["research"])
         dp = {t.name: t for t in tools.build(ctx_r)}["deep_prospect"]

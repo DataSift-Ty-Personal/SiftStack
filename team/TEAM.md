@@ -74,12 +74,12 @@ The whole team also listens in #ai-team.
 | Workflow | What it does | Runs on | Spend | Status |
 |---|---|---|---|---|
 | book_appointment | A walkthrough booked on a lead's record as an appointment task, with its day and time and who takes it. | ask in Slack | free | live |
-| quick_screen | New lead screened (record, Tier 1 comps, rough ARV, go or no-go) and posted to the record. | DataSift sequence (quick-screen), ask in Slack | free | by hand today |
-| underwrite | Full underwrite (comps, rehab on the locked SKU list, MAO at each tier, buyers, offer ladder). | ask in Slack | free | by hand today |
-| offer_sheet | The one-tab wholesale offer after a walkthrough. | ask in Slack | free | by hand today |
-| deal_buyers | The top buyers for one contracted house, with the decision maker's number. | DataSift sequence (under-contract), ask in Slack | paid, inside the caps | by hand today |
+| quick_screen | New lead screened (the record, comps inside a pasted boundary or a radius, a rough value and rehab, the most we could pay, a go or no-go); a note on the record when live. | DataSift sequence (quick-screen), ask in Slack | paid, inside the caps | live |
+| underwrite | The post-walkthrough package for one house; with a walk and no comps asked for, the rehab on its own (photo findings, one number, repair detail); with comps, value, exits and the one-tab offer sheet. | ask in Slack | paid, inside the caps | live |
+| offer_sheet | The one-tab wholesale offer after a walkthrough, from a saved pack and a walk. | ask in Slack | free | live |
+| deal_buyers | The top buyers for one contracted house, with the decision maker and how many numbers are on file; SmartSkip and Real Contact only on a live box inside the caps. | DataSift sequence (under-contract), ask in Slack | paid, inside the caps | live |
 | dispo_blast | A deal blast staged to the matched buyers; a human releases it. | ask in Slack | staged, a human releases | by hand today |
-| lender_package | The eight-piece private lender set for one property. | ask in Slack | free | by hand today |
+| lender_package | The eight-piece private lender set for one property, built from a deal spec. | ask in Slack | free | live |
 | sms_replies | Seller and buyer text replies read, classified, written back to the record, hot leads handed to a person. | ask in Slack | free | by hand today |
 | revocation | An opt-out, a death, a sale or a new lead pulls the owner out of mail that is staged and campaigns that are still sending. | schedule (every 60 min 08:00-19:00 daily), ask in Slack | free | live |
 | full_attempt | The owners dialed today who still have a top-tier number nobody tried, listed while there is time to finish them. | schedule (16:30 Mon-Fri), ask in Slack | free | live |

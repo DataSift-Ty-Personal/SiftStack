@@ -61,12 +61,12 @@ Every agent on docs/agents.json (the public org chart), the team workflow that r
 | Workflow | Status | Org-chart agents it runs |
 |---|---|---|
 | book_appointment | live | none: not on the org chart yet |
-| quick_screen | by hand today | Comp Package Engine (comp) |
-| underwrite | by hand today | Dual-Track ARV Engine (arv), Rehab Estimator (rehab), Master Material List (material), Exit Strategy Engine (exits), Deal Analyzer (dealanalyzer), Lot Split Underwriter (lotsplit) |
-| offer_sheet | by hand today | none: not on the org chart yet |
-| deal_buyers | by hand today | Deal Buyer Match (dealmatch) |
+| quick_screen | live | Comp Package Engine (comp) |
+| underwrite | live | Dual-Track ARV Engine (arv), Rehab Estimator (rehab), Master Material List (material), Exit Strategy Engine (exits), Deal Analyzer (dealanalyzer), Lot Split Underwriter (lotsplit) |
+| offer_sheet | live | none: not on the org chart yet |
+| deal_buyers | live | Deal Buyer Match (dealmatch) |
 | dispo_blast | by hand today | Dispo Deal Blast (dispoblast), Dispo Buyer Phonebook (dispobook), Dispo Sequential Flow (dispoflow) |
-| lender_package | by hand today | Lender Analysis (lender), Lender Package Builder (lenderpkg), Lender Document Set (lenderdocs) |
+| lender_package | live | Lender Analysis (lender), Lender Package Builder (lenderpkg), Lender Document Set (lenderdocs) |
 | sms_replies | by hand today | Reply Classifier (classifier), Reply Drafter (responder), Smarter Contact Reply Agent (scinbound), Sender Pool Manager (sender), MMS Screenshot Sender (mms) |
 | revocation | autopilot stage | none: not on the org chart yet |
 | full_attempt | autopilot stage | none: not on the org chart yet |
