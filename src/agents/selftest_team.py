@@ -626,6 +626,16 @@ def run(check, tmp: Path) -> None:
               "an event read off a live connection is acknowledged and queued")
         check(stop.pauses == [slack_socket.PAUSE_MIN_S] and slack_socket.status()["state"] == "off",
               "a connection that drops is retried after a pause, and a stopped brain leaves the loop")
+        quiet = FakeConn(['{"type":"hello"}', TimeoutError, TimeoutError])
+
+        class Never:
+            def is_set(self):
+                return False
+
+        slack_socket.refresh()
+        check(slack_socket.session(quiet, on_body, Never()) == "refresh_requested" and len(quiet.frames) == 3
+              and not slack_socket._REFRESH.is_set(),
+              "asked for a fresh connection, the session ends at once so a new one is opened")
         fake_slack.down = True
         stop2 = Stop()
         slack_socket.run(stop2, on_body, connect=lambda url: check(False, "no connection without an address"), sleep=stop2.wait)
@@ -683,6 +693,19 @@ def run(check, tmp: Path) -> None:
         n0 = len(fake_slack.posts())
         check(brain.slack_watch(Tick(), every_s=0, checks=10) == "heard" and Tick.n == 3 and len(fake_slack.posts()) == n0 + 1,
               "the watch waits through a deaf spell and confirms in the channel the moment an event arrives")
+        store.kv_set(brain.DEAF_KEY, "notice earlier")
+        store.kv_set(intake.HEARD_KEY, "")
+        config.SLACK_APP_TOKEN = "xapp-test"
+        slack_socket._REFRESH.clear()
+
+        class Deaf:
+            def wait(self, seconds):
+                return False
+
+        check(brain.slack_watch(Deaf(), every_s=0, checks=brain.REOPEN_EVERY) == "still deaf" and slack_socket._REFRESH.is_set(),
+              "while it hears nothing on an open connection, a fresh connection is asked for every couple of minutes")
+        slack_socket._REFRESH.clear()
+        config.SLACK_APP_TOKEN = ""
         store.kv_set(brain.DEAF_KEY, "")
         store.kv_set(brain.FIRST_HELLO_KEY, "")
         config.SLACK_SIGNING_SECRET = ""

@@ -86,6 +86,7 @@ def hello_until_landed(stop, every_s: float | None = None, tries: int = 300) -> 
 
 DEAF_KEY = "slack:hearing_checked"
 HEARING_GRACE_S = 180.0
+REOPEN_EVERY = 8                       # looks between fresh connections while deaf (8 x 15 s = 2 minutes)
 
 
 def hearing_notice(now: datetime | None = None) -> str:
@@ -139,12 +140,15 @@ def slack_watch(stop, every_s: float | None = None, checks: int = 5760) -> str:
     notice goes out once and the watch stays (a day, at 15 seconds a look) for the first event, so
     the moment the setting is fixed the channel is told that too. Returns how it ended."""
     hello_until_landed(stop, every_s)
-    for _ in range(checks):
+    for look in range(checks):
         if not store.kv_get(FIRST_HELLO_KEY):
             return "no hello"
         hearing_notice()
-        if store.kv_get(DEAF_KEY).startswith("heard"):
+        state = store.kv_get(DEAF_KEY)
+        if state.startswith("heard"):
             return "heard"
+        if state.startswith("notice") and config.SLACK_APP_TOKEN and look % REOPEN_EVERY == REOPEN_EVERY - 1:
+            slack_socket.refresh()     # deaf on an open connection: a fresh one, every couple of minutes
         if stop.wait(every_s if every_s is not None else 15.0):
             return "stopped"
     return "still deaf"

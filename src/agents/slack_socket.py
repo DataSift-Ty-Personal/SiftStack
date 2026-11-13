@@ -35,6 +35,13 @@ _http = requests                       # swapped for a fake in the selftest
 
 STATE = {"state": "off", "since": "", "error": "", "events": 0, "connects": 0}
 _LOCK = threading.Lock()
+_REFRESH = threading.Event()
+
+
+def refresh() -> None:
+    """Ask for a fresh connection. Used while the app hears nothing: if Socket Mode was switched on
+    for the app after this connection was opened, a new one makes sure Slack is sending to it."""
+    _REFRESH.set()
 
 
 def _set(**kw) -> None:
@@ -115,6 +122,9 @@ def session(conn, handler, stop) -> str:
     """Read one connection until Slack ends it, it breaks, or the brain stops. Returns why it ended:
     stop, a disconnect reason (warning, refresh_requested, link_disabled), or closed."""
     while not stop.is_set():
+        if _REFRESH.is_set():
+            _REFRESH.clear()
+            return "refresh_requested"
         try:
             raw = conn.recv(timeout=RECV_TIMEOUT_S)
         except TimeoutError:
