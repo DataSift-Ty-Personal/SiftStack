@@ -65,6 +65,13 @@ def handler_for(workflow: str):
     if workflow in HANDLERS:
         return HANDLERS[workflow]
     try:
+        from . import workflows
+        found = workflows.handler(workflow)
+        if found:
+            return found
+    except Exception as exc:  # noqa: BLE001
+        log.error("workflow lookup failed for %s: %s", workflow, exc)
+    try:
         from .autopilot import sweep
         if sweep.is_stage(workflow):
             return sweep.task_handler, sweep.slack_text

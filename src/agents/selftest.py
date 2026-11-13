@@ -4,6 +4,7 @@
 """
 from __future__ import annotations
 
+import importlib
 import json
 import tempfile
 from pathlib import Path
@@ -84,6 +85,10 @@ def _webhook_signer(check):
     check(webhook_sig.verify(h3, raw3, fetch=stub)[1].startswith("stale"), "an old signature is stale")
     check(webhook_sig.mode() == "require", "signatures default to require")
     return sign
+
+
+EXTRA_SECTIONS: list[tuple[str, str]] = [
+]
 
 
 class NoNetwork:
@@ -323,6 +328,24 @@ def main() -> int:
         check(False, "phase 0 checks crashed: %s: %s" % (type(exc).__name__, exc))
     finally:
         config.MODE = "dry"
+
+    # Sections added after the first build: (title, module with run(check, tmp)). One line each.
+    for title, module in EXTRA_SECTIONS:
+        print(title)
+        try:
+            importlib.import_module("%s.%s" % (__package__, module)).run(check, tmp)
+        except Exception as exc:  # noqa: BLE001  (a crash in one section is a failure, not an abort)
+            import traceback
+            traceback.print_exc()
+            check(False, "%s checks crashed: %s: %s" % (title, type(exc).__name__, exc))
+        finally:
+            config.MODE = "dry"
+
+    print("registries")
+    from .autopilot import registry
+    from . import workflows
+    check(registry.problems() == [], "every registered stage kind loads: %s" % (registry.problems() or "ok"))
+    check(workflows.problems() == [], "every registered workflow loads: %s" % (workflows.problems() or "ok"))
 
     print("source hygiene")
     src = Path(__file__).resolve().parent

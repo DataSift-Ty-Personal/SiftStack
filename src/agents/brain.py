@@ -324,6 +324,12 @@ async def datasift_hook(secret: str, workflow: str, request: Request) -> dict:
     return {"ok": True, "queued": created, "task": task_id, "event": event_id}
 
 
+FILE_KINDS = {".pdf": "application/pdf", ".csv": "text/csv", ".json": "application/json", ".txt": "text/plain",
+              ".md": "text/markdown", ".png": "image/png", ".jpg": "image/jpeg",
+              ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+              ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"}
+
+
 @app.get("/files/{task_id}/{sig}/{name}")
 def files(task_id: int, sig: str, name: str):
     if not hmac.compare_digest(sig, slack.sign(task_id, name)) or "/" in name or "\\" in name:
@@ -335,7 +341,9 @@ def files(task_id: int, sig: str, name: str):
         run_dir = json.loads(run_dir).get("run_dir", "")
     except ValueError:
         run_dir = ""
-    path = Path(run_dir) / "packs" / name if run_dir else None
-    if not path or not path.is_file():
+    # A deep prospect keeps its file under packs/; any other workflow keeps what it made under files/.
+    path = next((q for q in (Path(run_dir) / "packs" / name, Path(run_dir) / "files" / name) if q.is_file()),
+                None) if run_dir else None
+    if not path:
         raise HTTPException(status_code=404)
-    return FileResponse(path, media_type="application/pdf", filename=name)
+    return FileResponse(path, media_type=FILE_KINDS.get(path.suffix.lower(), "application/octet-stream"), filename=name)

@@ -26,16 +26,20 @@ import yaml
 from .. import config
 from . import gate as gate_mod
 from . import lanes as lanes_mod
+from . import registry
 
 KINDS = ("assign", "native_trace", "retrace", "score", "auction", "mail", "reactivate", "handoff", "digest",
-         "attempts", "screen", "lanes", "revoke", "watchdog", "audit", "capture", "leadcheck", "fullattempt")
+         "attempts", "screen", "lanes", "revoke", "watchdog", "audit", "capture", "leadcheck", "fullattempt"
+         ) + tuple(registry.EXTRA)
 MODES = ("off", "plan", "live")
 SPEND_BY_KIND = {"assign": "free", "native_trace": "free", "retrace": "paid", "score": "paid",
                  "auction": "free", "mail": "outreach", "reactivate": "free", "handoff": "paid", "digest": "free",
                  "attempts": "free", "screen": "free", "lanes": "free", "revoke": "free", "watchdog": "free",
                  "audit": "free", "capture": "free", "leadcheck": "free", "fullattempt": "free"}
+SPEND_BY_KIND.update({k: row[2] for k, row in registry.EXTRA.items()})
 # Kinds that read the account without a preset of their own.
-NO_PRESETS = ("digest", "mail", "lanes", "revoke", "watchdog", "audit", "capture", "leadcheck", "fullattempt")
+NO_PRESETS = ("digest", "mail", "lanes", "revoke", "watchdog", "audit", "capture", "leadcheck", "fullattempt"
+              ) + tuple(k for k, row in registry.EXTRA.items() if not row[3])
 ALLOW_WORDS = ("not_interested", "deceased", "heir", "lead", "in_research", "unknown_status", "listed", "mail_only",
                "exhausted")
 SUMMARY_BY_KIND = {

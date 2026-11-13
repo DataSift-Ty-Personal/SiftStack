@@ -203,7 +203,10 @@ def workflow_tool(ctx: RunContext, wf) -> Tool:
         t = ctx.task
         tid, created = store.enqueue(
             wf.owner, wf.name, record_uuid, subject=subject or (args.get("details") or "")[:120],
-            payload={"requested_by": ctx.employee.display_name, "details": args.get("details", "")},
+            payload={"requested_by": ctx.employee.display_name, "details": args.get("details", ""),
+                     # Every declared input rides along: the first version kept only the record, so a
+                     # workflow asked for a ZIP or a month never saw it.
+                     "inputs": {k: args.get(k) for k in (wf.inputs or {}) if args.get(k) not in (None, "")}},
             thread_id=t["thread_id"], parent_id=t["id"], hop=int(t.get("hop") or 0),
             source="agent:%s" % ctx.employee.id, mode="direct",
             slack_channel=t.get("slack_channel") or "", slack_thread=t.get("slack_thread") or "")

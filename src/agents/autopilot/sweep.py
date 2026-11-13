@@ -18,14 +18,17 @@ from zoneinfo import ZoneInfo
 from .. import config, store
 from . import budget
 from . import policy as policy_mod
+from . import registry
 from . import stages
 
 log = logging.getLogger(__name__)
 
-REPORT_KINDS = {"digest", "auction", "capture"}
+REPORT_KINDS = {"digest", "auction", "capture"} | {k for k, row in registry.EXTRA.items() if row[4]}
 
 
 def _runner(kind: str):
+    if kind in registry.EXTRA:
+        return registry.runner(kind)
     if kind == "mail":
         from . import mail
         return mail.run_mail
