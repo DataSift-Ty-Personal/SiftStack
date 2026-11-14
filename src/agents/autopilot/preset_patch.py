@@ -251,7 +251,10 @@ FOLDER_KINDS = [
     (r"caller queues?", "caller_queue"),
     (r"(^|[^a-z])qc([^a-z]|$)|lead management|acquisitions|transactions|my tasks", "qc_board"),
 ]
-LANE_WORDS = [("hottest", "hottest"), ("strong", "strong"), ("ftm", "ftm"), ("bulk", "bulk"), ("obituary", "obituary")]
+# "priority" is the two-track restructure's Priority folder (first-to-market plus the Top 1,000, 2026-11-13):
+# it follows the first-to-market lane's rules, which leave the Obituary-list rule off on purpose.
+LANE_WORDS = [("hottest", "hottest"), ("strong", "strong"), ("ftm", "ftm"), ("priority", "ftm"), ("bulk", "bulk"),
+              ("obituary", "obituary")]
 
 # Numbers worth knowing beside the plan. Tags and lists are named by title.
 WATCH = [

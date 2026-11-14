@@ -275,7 +275,8 @@ def _due(ctx: Ctx, spec: dict, step: int, staged: set, already: set) -> list[tup
 def mail_open(ctx: Ctx, rec: dict) -> tuple[bool, str]:
     """Is the mail channel open for this record today, by its lane's timeline (plan 0.20)? A stage
     with no `lane` set is not restricted: the table rules only the lanes it describes."""
-    lane = str(ctx.stage.get("lane") or "")
+    from .stages import record_lane
+    lane = record_lane(ctx, rec) or str(ctx.stage.get("lane") or "")
     cfg = getattr(ctx.policy, "lanes", None)
     if not lane or cfg is None or not cfg.timeline(lane):
         return True, ""

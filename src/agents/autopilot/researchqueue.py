@@ -95,7 +95,7 @@ CLASS_WORDS = {"asked": "asked for by a person", "hot_auction": "sale ahead", "p
                "trust": "trust owner", "obituary_due": "obituary at three months", "death_linked": "possible death",
                "other": "other"}
 HINTABLE = ("exhausted", "returned_mail", "vacant_mailing", "no_number")
-LANE_BONUS = {"hot_auction": 40, "ftm": 30, "obituary": 20, "priority1": 15, "strong": 5}
+LANE_BONUS = {"hot_auction": 40, "ftm": 30, "obituary": 20, "top1000": 15}
 # The backlog runner's reasons, in the words the digest uses.
 HELD_WORDS = {"auction date passed": "the sale date passed",
               "no sale date on record": "a foreclosure with no sale date on the record",
@@ -139,7 +139,7 @@ DEFAULTS = {
     "vacant_mail_tags": [],
     "obituary_min_days": 90,        # research opens three months after the obituary (decision D24)
     "no_probate_days": 180,
-    "park_lanes": ["strong", "bulk"],
+    "park_lanes": ["agency"],       # the agency track: a dead owner there waits for a second signal
     "park_score": 80,               # an investor score this high ranks a parked record in
     "park_equity_pct": 50,
     "done_calls": None,             # default: the lane's round end, else 5
@@ -433,7 +433,7 @@ def rank(sig: dict, today: date, o: dict | None = None) -> Rank:
     if held and held != "auction date passed":
         return Rank(0, "gone", HELD_WORDS.get(held, held))
 
-    lane = sig.get("lane") or "bulk"
+    lane = sig.get("lane") or lanes.DEFAULT_LANE
     inside = min(59.0, LANE_BONUS.get(lane, 0) + (sig.get("investor_score") or 0) * 0.19)
     via = [str(v) for v in (sig.get("via") or [])]
     hinted = {o["hints"][t] for t in via if o["hints"].get(t) in HINTABLE}
@@ -483,7 +483,7 @@ def rank(sig: dict, today: date, o: dict | None = None) -> Rank:
     if sig.get("no_number") or "no_number" in hinted:
         why = {"ftm": "first-to-market record with no number after every trace",
                "hot_auction": "first-to-market record with no number after every trace",
-               "priority1": "Priority 1 with no number"}.get(lane, "no number after every trace")
+               "top1000": "a Top 1,000 owner with no number after every trace"}.get(lane, "no number after every trace")
         return Rank(BASE["no_number"] + inside, "no_number", why)
     if kind == "trust":
         return Rank(BASE["trust"] + inside, "trust", "owned by a trust")
@@ -493,7 +493,7 @@ def rank(sig: dict, today: date, o: dict | None = None) -> Rank:
     if dead:
         if lane in o["park_lanes"]:
             score, equity = sig.get("investor_score"), sig.get("equity_pct")
-            where = "a %s list" % ("Strong" if lane == "strong" else "Bulk")
+            where = "the agency track" if lane == lanes.DEFAULT_LANE else "the %s lane" % lane.replace("_", " ")
             if distress:
                 by = "and %s" % _and(distress[:2])
             elif score is not None and score >= float(o["park_score"]):
@@ -501,8 +501,8 @@ def rank(sig: dict, today: date, o: dict | None = None) -> Rank:
             elif equity is not None and equity >= float(o["park_equity_pct"]):
                 by = "ranked in by %d%% equity" % round(equity)
             else:
-                return Rank(0, "parked", "a dead owner on %s with no second signal: parked" % where)
-            return Rank(BASE["death_linked"] + min(39.0, inside), "death_linked", "a dead owner on %s, %s" % (where, by))
+                return Rank(0, "parked", "a dead owner in %s with no second signal: parked" % where)
+            return Rank(BASE["death_linked"] + min(39.0, inside), "death_linked", "a dead owner in %s, %s" % (where, by))
         return Rank(BASE["death_linked"] + min(39.0, inside), "death_linked", "the owner may have died (%s)" % dead[0])
     return Rank(BASE["other"] + min(14.0, inside / 4), "other", ("sent by %s" % via[0]) if via else "in the research presets")
 
@@ -925,7 +925,7 @@ def lane_open(ctx: Ctx, rec: dict, sig: dict, r: Rank, today: date) -> tuple[boo
     """Does the record's lane allow research yet? The lane table decides when a channel opens, never
     a stage, so this only asks. A lane with no written timeline answers yes."""
     lanes_cfg = getattr(ctx.policy, "lanes", None) or lanes.Lanes()
-    lane = sig.get("lane") or "bulk"
+    lane = sig.get("lane") or lanes.DEFAULT_LANE
     if not lanes_cfg.timeline(lane):
         return True, ""
     zone = ZoneInfo(ctx.policy.tz)

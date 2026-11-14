@@ -40,8 +40,8 @@ KV_STRATEGY = "autopilot:pacing:strategy"
 KV_SAID = "autopilot:pacing:said:%s"
 # Stages that work a first-to-market record under another lane's name still belong to that list.
 FOLD = {"hot_auction": "ftm", "heirs": "ftm"}
-LADDER = ("ftm", "obituary", "priority1", "strong", "bulk")
-NAMES = {"ftm": "first-to-market", "obituary": "obituary", "priority1": "Priority 1", "strong": "Strong", "bulk": "Bulk"}
+LADDER = ("ftm", "obituary", "top1000", "agency")
+NAMES = {"ftm": "first-to-market", "obituary": "obituary", "top1000": "Top 1,000", "agency": "agency"}
 
 
 def lane_name(lane: str) -> str:
@@ -133,7 +133,7 @@ def dial_mix(env: Env):
     n = 0
     for o in owners:
         held = lanes.owner_lane(o)
-        if (held["lane"] if held else "bulk") in lower:
+        if (held["lane"] if held else lanes.DEFAULT_LANE) in lower:
             n += 1
     return n / len(owners), day
 

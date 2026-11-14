@@ -590,12 +590,10 @@ inputs:
 # rule and its number cannot drift apart. A rule with no `check` is one for people to hold.
 pacing:
   first_to_market_ready: FTM - 02 Ready to Call      # the preset that holds first-to-market records waiting for a first call
-  ai_lanes: [priority1, strong, bulk]                # the lanes fed by AI data
+  ai_lanes: [top1000, agency]                        # the lanes fed by AI data (the two tracks since 2026-11-13)
   preset_prefixes:                                   # how a stage with no `lane` is placed: by how its preset titles start
-    ftm: [FTM]
-    priority1: [Hottest]
-    strong: [Strong]
-    bulk: [Bulk]
+    ftm: [FTM, Priority]
+    agency: [Agency]
   rules:
     - id: first_to_market_first
       says: First to market first, then stacked lists, then AI data.

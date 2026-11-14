@@ -26,6 +26,7 @@ Every agent on docs/agents.json (the public org chart), the team workflow that r
 | second_chances | autopilot stage | none: not on the org chart yet |
 | caller_book | autopilot stage | none: not on the org chart yet |
 | probate_honest | autopilot stage | none: not on the org chart yet |
+| top1000_refresh | autopilot stage | none: not on the org chart yet |
 
 ## Diggs (Research)
 
@@ -112,6 +113,7 @@ Every agent on docs/agents.json (the public org chart), the team workflow that r
 | research_results | autopilot stage | none: not on the org chart yet |
 | heir_lane | autopilot stage | none: not on the org chart yet |
 | paid_lookups | autopilot stage | none: not on the org chart yet |
+| agency_export | autopilot stage | none: not on the org chart yet |
 
 ## Not workflows
 

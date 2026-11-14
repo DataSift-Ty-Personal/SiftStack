@@ -87,7 +87,7 @@ def group_of(status_before: str, rec: dict, st, lanes_cfg=None) -> str:
         lane = lanes.lane_of(dict(rec, status=None), lanes_cfg)
         if lane == "hot_auction" or marks & {str(x).lower() for x in (st.get("auction_marks") or ["Foreclosure", "Auction Soon"])}:
             return "not_interested_auction"
-        if lane in ("priority1", "strong") or marks & {str(x).lower() for x in (st.get("priority_marks") or ["Probate"])}:
+        if lane == "top1000" or marks & {str(x).lower() for x in (st.get("priority_marks") or ["Probate"])}:
             return "not_interested_priority"
         return "not_interested_other"
     if s in lanes.LEAD_STATUSES:

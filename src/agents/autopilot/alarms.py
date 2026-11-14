@@ -274,7 +274,7 @@ def working_lane(ctx: Ctx, caller: str, start: datetime, end: datetime) -> str:
         if caller not in (EVERYONE, ACCOUNT) and (d.get("caller") or "").strip() != caller:
             continue
         held = lanes.owner_lane(e["resource"])
-        seen[pacing.FOLD.get(held["lane"], held["lane"]) if held else "bulk"] += 1
+        seen[pacing.FOLD.get(held["lane"], held["lane"]) if held else lanes.DEFAULT_LANE] += 1
     return seen.most_common(1)[0][0] if seen else ""
 
 

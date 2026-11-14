@@ -104,6 +104,8 @@ EXTRA_SECTIONS: list[tuple[str, str]] = [
     ("query tools", "selftest_query"),
     ("scripts from slack", "selftest_cmd"),
     ("code sandbox", "selftest_sandbox"),
+    ("two tracks for the presets", "selftest_restructure"),
+    ("the two tracks", "selftest_tracks"),
 ]
 
 

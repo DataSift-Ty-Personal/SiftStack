@@ -43,14 +43,15 @@ RELEASE: dict[str, tuple[str, str]] = {
     "obituary_mail": ("autopilot.obituary", "release"),
     "probate": ("autopilot.probate", "release"),
     "command": ("workflows.run_script", "release"),     # a script command line that writes or pays (run_script)
+    "agency": ("autopilot.agencyexport", "release"),   # the monthly file for the calling agency
 }
 # Kinds whose release has two steps because a person uploads a file between them: the second step
 # (after the upload) is the confirm with "uploaded".
-FILE_KINDS = ("heir_mail", "heir_text", "obituary_mail")
+FILE_KINDS = ("heir_mail", "heir_text", "obituary_mail", "agency")
 LABELS = {"mail": "mail piece(s)", "attempts": "call counter correction(s)", "text": "owner text(s)",
           "leadclock": "card move(s)", "drip": "text(s) and email(s)", "heir_mail": "heir letter(s)",
           "heir_text": "heir text(s)", "obituary_mail": "obituary letter(s)", "probate": "probate change(s)",
-          "command": "command(s)"}
+          "command": "command(s)", "agency": "owner(s) for the calling agency"}
 
 
 def label(kind: str) -> str:
@@ -147,6 +148,9 @@ def slack_command(cmd: tuple[str, int, bool], user: str, channel: str, thread: s
         if b["kind"] == "mail" and _export_only(b):
             extra = (" It is a file for the mail house: upload it there first, then reply `confirm %d uploaded`."
                      % batch_id)
+        if b["kind"] == "agency":
+            from .autopilot import agencyexport
+            extra = " " + agencyexport.release_note(b)
         mode = "" if config.live() else " The brain is in dry mode, so a confirm will not send anything yet."
         say("%s. Reply `confirm %d` within %d minutes to release it.%s%s" % (
             describe(b)[0].upper() + describe(b)[1:], batch_id, CONFIRM_MINUTES, extra, mode))
@@ -211,6 +215,8 @@ def task_render(task: dict, result: dict) -> str:
         bits.append(", ".join("%s %s" % (v, k) for k, v in r["results"].items()))
     probs = r.get("problems") or []
     line = "Batch %s released: %s." % (result.get("batch"), "; ".join(bits) or json.dumps(r, default=str)[:200])
+    if r.get("next"):
+        line += "\nNext: %s.%s" % (r["next"], (" File: %s" % r["file"]) if r.get("file") else "")
     if probs:
         line += "\n" + "\n".join(":small_orange_diamond: %s" % x for x in probs[:3])
     return line

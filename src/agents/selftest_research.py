@@ -349,15 +349,16 @@ def _run(check, tmp, store, policy, registry) -> None:
     check(not young.ok and "research opens at 90 days" in young.reason and rk(obituary=True, obit_date=_day(-20), sales=[_day(9)]).ok,
           "an obituary inside its first three months is not queued, unless a sale date is ahead")
     check(not rk(obituary=True, lane="obituary").ok, "an obituary with no date on the record waits until the date is known")
-    parked = rk(dead=["owner flag"], lane="strong")
-    check(not parked.ok and parked.cls == "parked" and "Strong" in parked.reason,
-          "a dead owner on a Strong or Bulk list with nothing else going on is parked, not researched")
-    check(rk(dead=["owner flag"], lane="bulk", investor_score=91).ok and rk(dead=["owner flag"], lane="bulk", equity_pct=82).ok
-          and rk(dead=["owner flag"], lane="strong", distress=["tax delinquent"]).ok
-          and not rk(dead=["owner flag"], lane="bulk", investor_score=40, equity_pct=20).ok,
+    parked = rk(dead=["owner flag"], lane="agency")
+    check(not parked.ok and parked.cls == "parked" and "agency track" in parked.reason,
+          "a dead owner in the agency track with nothing else going on is parked, not researched")
+    check(rk(dead=["owner flag"], lane="agency", investor_score=91).ok and rk(dead=["owner flag"], lane="agency", equity_pct=82).ok
+          and rk(dead=["owner flag"], lane="agency", distress=["tax delinquent"]).ok
+          and not rk(dead=["owner flag"], lane="agency", investor_score=40, equity_pct=20).ok,
           "the investor score, the equity or a second signal ranks a parked record in")
     check(rk(dead=["Obituary list"], obituary=True, obit_date=_day(-100), lane="obituary").ok
-          and rk(dead=["owner flag"], lane="ftm").ok, "the parking rule is for Strong and Bulk only")
+          and rk(dead=["owner flag"], lane="ftm").ok and rk(dead=["owner flag"], lane="top1000").ok,
+          "the parking rule is for the agency track only: the Top 1,000 is worked in-house")
     lead = rk(lead=True, sales=[_day(9)])
     check(not lead.ok and "lead manager" in lead.reason and rq.rank(dict(base, lead=True, sales=[_day(9)]), today,
                                                                    dict(rq.options(None), leads="research")).ok,
@@ -371,9 +372,9 @@ def _run(check, tmp, store, policy, registry) -> None:
     check(not rk(skip_tag="Deep Prospected").ok, "a record research already finished is not queued again")
     check(rq.rank(dict(base, via=["04 Return"]), today, dict(rq.options(None), hints={"04 Return": "returned_mail"})).cls == "returned_mail",
           "a feeding preset can say what the record itself cannot, such as mail that came back")
-    check(rk(no_number=True, lane="priority1").reason == "Priority 1 with no number"
-          and rk(no_number=True, lane="ftm").score > rk(no_number=True, lane="priority1").score,
-          "a first-to-market record with no number goes ahead of a Priority 1 record with none")
+    check(rk(no_number=True, lane="top1000").reason == "a Top 1,000 owner with no number after every trace"
+          and rk(no_number=True, lane="ftm").score > rk(no_number=True, lane="top1000").score,
+          "a first-to-market record with no number goes ahead of a Top 1,000 record with none")
     check(all(re.search(r"[a-z]", r.reason) and "_" not in r.reason for r in order + [parked, lead, young]),
           "every rank comes with its reason in plain words")
     check(list(inspect.signature(rq.rank).parameters) == ["sig", "today", "o"]
@@ -510,7 +511,7 @@ def _run(check, tmp, store, policy, registry) -> None:
           and t.get("not queued: the sale date passed") == 1 and t.get("not queued: listed or pending on the MLS") == 1
           and t.get("not queued: tagged Do Not Market") == 1 and t.get("not queued: already settled (tag Deep Prospected)") == 1
           and t.get("not queued: obituary 20 days ago: research opens at 90 days") == 1
-          and t.get("not queued: a dead owner on a Strong list with no second signal: parked") == 1,
+          and t.get("not queued: a dead owner in the agency track with no second signal: parked") == 1,
           "everything left out of the queue is counted under its own reason")
     check(ledger.fact("q_hot", rq.SIG_FACT)["sales"] == [_day(9)] and ledger.fact("q_hot", rq.MARK_FACT) is None,
           "what a plan run learned about a record is remembered; a mark it only planned is not")

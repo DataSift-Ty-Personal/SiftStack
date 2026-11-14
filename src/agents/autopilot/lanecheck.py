@@ -8,11 +8,12 @@ in two lanes at once, which is the number the preset patch is meant to drive to 
 The map is the autopilot's own memory of the account, not a change to it, so it is refreshed in
 plan mode as well: a plan that ignored it would promise touches the gate will refuse.
 
-Bulk is not scanned. It is the lane a record is in when nothing higher claims it, so an owner who
-appears nowhere in the map is a bulk owner by definition.
+The agency lane is not scanned. It is the lane a record is in when nothing higher claims it, so an
+owner who appears nowhere in the map is an agency owner by definition. The Top 1,000 is scanned by
+its tag, so an owner with a Top 1,000 house and an agency house is held to the Top 1,000.
 
-A search stops at 10,000 rows. A lane larger than that (Priority 2 holds about 20,000 records in
-ty+2) is read in slices by the date the record was created, halving a slice until it fits.
+A search stops at 10,000 rows. A lane larger than that is read in slices by the date the record was
+created, halving a slice until it fits.
 """
 from __future__ import annotations
 
@@ -76,7 +77,7 @@ def run_lanes(ctx: Ctx) -> None:
     streets: dict[str, str] = {}
     per_lane: Counter = Counter()
     for lane in lanes.ORDER:
-        if lane == "bulk" or lane in skip:
+        if lane == lanes.DEFAULT_LANE or lane in skip:
             continue
         seen = set()
         for must in lane_musts(ctx, lane):

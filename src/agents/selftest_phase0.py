@@ -37,7 +37,7 @@ PLAYBOOK = {
                        "presets": ["FTM - 02 Ready to Call", "FTM - 03 Call Attempt 1", "FTM - 04 Call Attempt 2"]},
         "k_screen": {"kind": "screen", "owner": "research", "mode": "live", "schedule": "every 30 min", "lane": "ftm",
                      "presets": ["FTM - 02 Ready to Call", "FTM - 01 Skipped No Numbers"]},
-        "k_lanes": {"kind": "lanes", "owner": "ops", "mode": "plan", "schedule": "02:30 daily", "skip": ["strong"]},
+        "k_lanes": {"kind": "lanes", "owner": "ops", "mode": "plan", "schedule": "02:30 daily", "skip": ["top1000"]},
         "k_revoke": {"kind": "revoke", "owner": "sales", "mode": "live", "schedule": "every 60 min", "smarter_contact": False},
         "k_watch": {"kind": "watchdog", "owner": "ops", "mode": "plan", "schedule": "07:20 daily", "expect": [
             {"name": "Sold tag to Sold", "when": {"event": "property.tags.added", "tag": "recently sold"}, "then": {"status": "sold"}},
@@ -221,10 +221,10 @@ def _run(check, tmp, store, activity, attempts, audit, budget, gate, lanecheck, 
     print("  lanes")
     L = pol.lanes
     check(lanes.lane_of(dict(base, status="Hot Lead")) == "lead" and lanes.lane_of(dict(base, tags=["FTM", "Auction Soon"])) == "hot_auction"
-          and lanes.lane_of(base) == "ftm" and lanes.lane_of(dict(base, tags=["Priority 1"])) == "priority1"
-          and lanes.lane_of(dict(base, tags=[], lists=["Obituary"])) == "obituary" and lanes.lane_of(dict(base, tags=[], lists=[])) == "bulk",
+          and lanes.lane_of(base) == "ftm" and lanes.lane_of(dict(base, tags=["Top 1000"])) == "top1000"
+          and lanes.lane_of(dict(base, tags=[], lists=["Obituary"])) == "obituary" and lanes.lane_of(dict(base, tags=[], lists=[])) == "agency",
           "a record's lane comes from its status, tags and lists, highest first")
-    check(lanes.top_lane(["bulk", "ftm", "priority1"]) == "ftm" and lanes.rank("lead") < lanes.rank("heirs") < lanes.rank("bulk"),
+    check(lanes.top_lane(["agency", "ftm", "top1000"]) == "ftm" and lanes.rank("lead") < lanes.rank("heirs") < lanes.rank("agency"),
           "the highest lane wins")
     fri, mon = _et(11, 6).date(), _et(11, 9).date()
     check(lanes.business_days(fri, fri) == 0 and lanes.business_days(fri, mon) == 1 and lanes.business_days(_et(11, 2).date(), _et(11, 12).date()) == 8,
@@ -237,7 +237,7 @@ def _run(check, tmp, store, activity, attempts, audit, budget, gate, lanecheck, 
     check(co("mail", 0, 0, {"foreclosure": True}) and co("mail", 1, 0, {"no_number": True}),
           "a foreclosure and a record with no number are mailed at once")
     check(not co("followup_text", 4, 2) and co("followup_text", 9, 5), "follow-up texts wait for the round to end")
-    check(lanes.channel_open(L, "priority1", "mail", 0)[0], "a lane with no written timeline is not restricted by the table")
+    check(lanes.channel_open(L, "top1000", "mail", 0)[0], "a lane with no written timeline is not restricted by the table")
     check(len(lanes.describe(L, "ftm")) == 5 and "counter reads 5" in " ".join(lanes.describe(L, "ftm")), "the timeline prints in plain lines")
     try:
         policy.parse({**copy.deepcopy(PLAYBOOK), "lanes": {"warp": {"tags": ["X"]}}}, EMPLOYEES)
@@ -604,8 +604,8 @@ def _run(check, tmp, store, activity, attempts, audit, budget, gate, lanecheck, 
     sweep.run("k_lanes", crm=crm_w, now=T0 + timedelta(days=1), pol=pol)
     freed = lanes.owner_lane("o-w1")
     check(freed["lane"] == "ftm" and gate.check(crm_w.record("w2"), "call", lane="ftm", owner=freed).ok
-          and gate.check(crm_w.record("w1"), "call", lane="priority1", owner=freed).code == "owner_lane",
-          "the map is rebuilt each night: when the lead ends, the first-to-market record is workable and the Priority 1 record is the one held")
+          and gate.check(crm_w.record("w1"), "call", lane="top1000", owner=freed).code == "owner_lane",
+          "the map is rebuilt each night: when the lead ends, the first-to-market record is workable and the Top 1,000 record is the one held")
 
     # ------------------------------------------------------------------ revocation
     print("  revocation")

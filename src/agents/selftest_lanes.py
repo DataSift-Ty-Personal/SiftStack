@@ -28,6 +28,11 @@ KINDS = {
 }
 CALL_PRESETS = ["FTM - 02 Ready to Call", "FTM - 03 Call Attempt 1", "FTM - 04 Call Attempt 2",
                 "FTM - 05 Call Attempt 3", "FTM - 06 Call Attempt 4"]
+# A power-dialer timeline written out as a lane's own mapping (the retired Bulk row): three texts,
+# the dialer from day 3 every 30 days to attempt 6, then mail. The dial file reads its round end.
+POWER = {"round_ends_at": 6, "opening_texts": [0, 1, 2], "call_days": [3], "call_every_days": 30, "dial_mode": "power",
+         "mail_after_round": True, "mail_every_days": 30, "mail_pieces": 6, "mail_at_once": [],
+         "followup_texts": {"count": 0}, "research_at": "exhaustion"}
 
 
 class Gone(Exception):
@@ -231,40 +236,46 @@ def _run(check, tmp: Path) -> None:
     # ------------------------------------------------------------------ the channel map (plan 4.8)
     print("  channel map")
     plain = lanes.Lanes()
-    check(lanes.channel_open(plain, "priority1", "mail", 0)[0] and lanes.channel_open(plain, "bulk", "call", 0)[0],
+    check(lanes.channel_open(plain, "top1000", "mail", 0)[0] and lanes.channel_open(plain, "agency", "call", 0)[0],
           "a lane the playbook has not switched on is not restricted, whatever the channel map writes for it")
     pol_map = parse({"a": stage("secondchance", "analysis")}, {
         "ftm": {"tags": ["FTM"]}, "hot_auction": {"tags": ["Auction Soon"], "timeline": True},
-        "priority1": {"tags": ["Priority 1"], "timeline": True},
-        "strong": {"tags": ["Priority 2"], "timeline": {"mail_pieces": 4}}, "bulk": {"timeline": True}})
+        "top1000": {"tags": ["Top 1000"], "timeline": True}})
     M = pol_map.lanes
     co = lambda lane, ch, day, counter=0, facts=None, wd=2: lanes.channel_open(M, lane, ch, day, counter, facts, wd)[0]  # noqa: E731
-    check(co("priority1", "text", 0) and co("priority1", "call", 1) and not co("priority1", "mail", 3, 2) and co("priority1", "mail", 3, 5),
-          "Priority 1, switched on: text first, calls beside the texts, mail when the round ends")
-    check(M.timeline("priority1")["mail_pieces"] == 6 and M.timeline("strong")["mail_pieces"] == 4
-          and M.timeline("strong")["round_ends_at"] == 5,
+    check(co("top1000", "text", 0) and co("top1000", "call", 1) and not co("top1000", "mail", 3, 2) and co("top1000", "mail", 3, 5),
+          "the Top 1,000, switched on: text first, calls beside the texts, mail when the round ends")
+    M4 = parse({"a": stage("secondchance", "analysis")}, {"ftm": {"tags": ["FTM"]},
+                                                          "top1000": {"tags": ["Top 1000"], "timeline": {"mail_pieces": 4}}}).lanes
+    check(M.timeline("top1000")["mail_pieces"] == 6 and M4.timeline("top1000")["mail_pieces"] == 4
+          and M4.timeline("top1000")["round_ends_at"] == 5,
           "six mail pieces below first to market, and an override changes one value of a row, not the row")
-    check(not co("priority1", "research", 3, 2) and co("priority1", "research", 3, 5)
-          and co("priority1", "research", 0, 0, {"deceased": True}) and co("ftm", "research", 0, 0),
-          "research waits for exhaustion on Priority 1, a possible death goes at once, and first to market is unchanged")
-    check(co("priority1", "research", 0, 0, {"possible_death": True}) and co("strong", "research", 0, 0, {"returned_mail": True})
-          and co("bulk", "research", 0, 0, {"research_class": "exhausted"}) and not co("bulk", "research", 0, 0, {"research_class": "vacant_mailing"}),
+    check(not co("top1000", "research", 3, 2) and co("top1000", "research", 3, 5)
+          and co("top1000", "research", 0, 0, {"deceased": True}) and co("ftm", "research", 0, 0),
+          "research waits for exhaustion on the Top 1,000, a possible death goes at once, and first to market is unchanged")
+    check(co("top1000", "research", 0, 0, {"possible_death": True}) and co("top1000", "research", 0, 0, {"returned_mail": True})
+          and co("top1000", "research", 0, 0, {"research_class": "exhausted"})
+          and not co("top1000", "research", 0, 0, {"research_class": "vacant_mailing"}),
           "the research queue's own words for a possible death, returned mail and an exhausted record are read as well")
-    check(not co("bulk", "call", 1) and co("bulk", "call", 3) and not co("bulk", "call", 40, 6),
-          "bulk: three texts, then the power dialer from day 3, to attempt 6")
-    check(not co("bulk", "mail", 30, 5) and co("bulk", "mail", 30, 6) and not co("bulk", "followup_text", 30, 6),
-          "bulk mail opens only when the round is over, and bulk has no follow-up texts")
+    P = parse({"a": stage("secondchance", "analysis")}, {"ftm": {"tags": ["FTM"]}, "top1000": {"tags": ["Top 1000"], "timeline": {
+        "round_ends_at": 6, "call_days": [3], "call_every_days": 30, "dial_mode": "power", "mail_after_round": True,
+        "mail_at_once": [], "followup_texts": {"count": 0}}}}).lanes
+    cp = lambda ch, day, counter=0: lanes.channel_open(P, "top1000", ch, day, counter, None, 2)[0]  # noqa: E731
+    check(not cp("call", 1) and cp("call", 3) and not cp("call", 40, 6),
+          "a power-dialer timeline: three texts, then the dialer from day 3, to attempt 6")
+    check(not cp("mail", 30, 5) and cp("mail", 30, 6) and not cp("followup_text", 30, 6),
+          "mail after the round opens only when the round is over, and a row with no follow-up texts has none")
     check(co("hot_auction", "call", 20, 5) and not co("ftm", "call", 20, 5),
           "the hot auction lane keeps calling after the round; first to market does not")
     check(co("ftm", "door_knock", 0, 0, {"days_to_sale": 6}) and not co("ftm", "door_knock", 0, 0, {"days_to_sale": 9})
-          and not co("priority1", "door_knock", 0) and not lanes.channel_open(plain, "bulk", "door_knock", 0, 0, {})[0],
+          and not co("top1000", "door_knock", 0) and not lanes.channel_open(plain, "agency", "door_knock", 0, 0, {})[0],
           "a door knock is only for a sale inside a week, in every lane, written or not")
-    check(any("power dialer" in ln for ln in lanes.describe(M, "bulk")) and any("door knock" in ln for ln in lanes.describe(M, "hot_auction"))
+    check(any("power dialer" in ln for ln in lanes.describe(P, "top1000")) and any("door knock" in ln for ln in lanes.describe(M, "hot_auction"))
           and len(lanes.describe(M, "ftm")) == 5, "each written lane prints its own timeline, and first to market still prints five lines")
     try:
         parse({"a": stage("secondchance", "analysis")}, {
-            "obituary": {"timeline": True}, "strong": {"tranche": {"size": 0}}, "bulk": {"caps": {"weekly": 5}},
-            "priority1": {"tranche": {"size": 10, "speed": 3}}})
+            "obituary": {"timeline": True}, "top1000": {"tranche": {"size": 0}}, "agency": {"caps": {"weekly": 5}},
+            "heirs": {"tranche": {"size": 10, "speed": 3}}})
         check(False, "a lane block with a missing timeline, a bad tranche and an unknown cap is refused")
     except policy.PolicyError as exc:
         check(all(k in str(exc) for k in ("obituary", "tranche.size", "weekly", "speed")),
@@ -480,11 +491,11 @@ def _waterfall(check, go, parse, ctx_for, ledger, stages, store) -> None:
     capped = go("k_water", crm_c, parse({"k_water": dict(water, daily_usd=0)}), sources=s_c, enqueue=enq)
     check(not s_c["smartskip"].calls and any("not traced today" in k for k in capped.tally),
           "past the day's cap no source is called, and the record waits for tomorrow")
-    pol_lane = parse({"k_water": dict(water, lane="strong", presets=["Strong - 02 Ready to Call"])},
-                     {"ftm": {"tags": ["FTM"]}, "strong": {"tags": ["Priority 2"], "caps": {"daily_usd": 0.10}}})
+    pol_lane = parse({"k_water": dict(water, lane="top1000", presets=["Strong - 02 Ready to Call"])},
+                     {"ftm": {"tags": ["FTM"]}, "top1000": {"tags": ["Top 1000"], "caps": {"daily_usd": 0.10}}})
     crm_l, s_l = LaneCRM([_r("wl1", "9 Water St", ["Priority 2"], phones=[_phone("8655550491")])]), srcs()
     lane_run = go("k_water", crm_l, pol_lane, sources=s_l, enqueue=enq)
-    check(not s_l["smartskip"].calls and lane_run.tally.get("not traced today (strong lane cap $0.10/day)") == 1,
+    check(not s_l["smartskip"].calls and lane_run.tally.get("not traced today (Top 1,000 lane cap $0.10/day)") == 1,
           "a lane's own daily cap stops that lane's paid traces")
     check(ctx_for(pol, "k_water", crm).budget(0.15)[0], "a lane with no cap of its own is held only by the caps it always had")
     half = _r("wo1", "10 Water St", ["FTM"])
@@ -682,17 +693,17 @@ def _returned_mail(check, go, parse, ledger) -> None:
 def _tranches(check, go, parse, ctx_for, lanes, ledger, stages, store) -> None:
     print("  tranches and lane caps")
     _fresh()
-    strong = ["Strong - 02 Ready to Call"]
-    pol = parse({"s_assign": stage("assign", "analysis", strong, lane="strong", tranche=True, backlog=True),
-                 "s_score": stage("score", "research", strong, lane="strong", tranche=True),
-                 "s_keeper": stage("attempts", "ops", strong, lane="strong"),
+    strong = ["Strong - 02 Ready to Call"]     # a fixture preset title; the lane worked in tranches here is top1000
+    pol = parse({"s_assign": stage("assign", "analysis", strong, lane="top1000", tranche=True, backlog=True),
+                 "s_score": stage("score", "research", strong, lane="top1000", tranche=True),
+                 "s_keeper": stage("attempts", "ops", strong, lane="top1000"),
                  "s_digest": stage("digest", "ops", strong),
                  "f_score": stage("score", "research", ["FTM - 02 Ready to Call"], lane="ftm"),
                  "x_none": stage("assign", "analysis", ["FTM - 02 Ready to Call"], lane="ftm", tranche=True, backlog=True),
-                 "b_size": stage("assign", "analysis", ["Bulk - Big"], lane="bulk", tranche=2, backlog=True)},
+                 "b_size": stage("assign", "analysis", ["Bulk - Big"], lane="agency", tranche=2, backlog=True)},
                 {"ftm": {"tags": ["FTM"]},
-                 "strong": {"tags": ["Priority 2"], "presets": strong, "caps": {"daily_usd": 0.02},
-                            "tranche": {"size": 3, "min_days": 7, "check_hours": 0, "carry_over": 0.34}}})
+                 "top1000": {"tags": ["Top 1000"], "presets": strong, "caps": {"daily_usd": 0.02},
+                             "tranche": {"size": 3, "min_days": 7, "check_hours": 0, "carry_over": 0.34}}})
     crm = LaneCRM([_r("st%d" % i, "%d Strong St" % i, ["Priority 2"],
                       phones=[{"number": "86555511%02d" % i, "status": "UNKNOWN", "tags": [], "type": "MOBILE"}]) for i in range(1, 9)])
 
@@ -700,48 +711,48 @@ def _tranches(check, go, parse, ctx_for, lanes, ledger, stages, store) -> None:
         return sorted(u for u, r in crm.recs.items() if r["assigned_to"])
 
     p = go("s_assign", crm, pol, plan=True)
-    check(p.acted == 3 and p.tally.get("would draw tranche 1 of the strong lane") == 3 and lanes.tranche_state("strong") is None
+    check(p.acted == 3 and p.tally.get("would draw tranche 1 of the Top 1,000 lane") == 3 and lanes.tranche_state("top1000") is None
           and not crm.writes, "a plan run works out the first tranche and leaves none behind for a live run to inherit")
     a1 = go("s_assign", crm, pol)
-    check(held() == ["st1", "st2", "st3"] and lanes.tranche_state("strong")["n"] == 1
+    check(held() == ["st1", "st2", "st3"] and lanes.tranche_state("top1000")["n"] == 1
           and a1.tally.get("behind the current tranche, waiting their turn") == 5,
           "the lane is worked a tranche at a time: three of eight records are drawn and the other five wait")
     n0 = len(crm.reads)
     sc = go("s_score", crm, pol)
     check(set(crm.reads[n0:]) <= {"st1", "st2", "st3"} and len(crm.reads) > n0, "every stage of the lane works the same tranche: scoring reads only its records")
-    check(sc.tally.get("numbers scored") == 1 and sc.tally.get("numbers left unscored (strong lane cap $0.02/day)") == 2,
+    check(sc.tally.get("numbers scored") == 1 and sc.tally.get("numbers left unscored (Top 1,000 lane cap $0.02/day)") == 2,
           "the lane's own daily cap stops the lane's scoring after the first number")
     crm_f = LaneCRM([_r("fs1", "1 Other St", ["FTM"], phones=[{"number": "8655551201", "status": "UNKNOWN", "tags": [], "type": "MOBILE"}])])
-    check(go("f_score", crm_f, pol).tally.get("numbers scored") == 1, "another lane is not held by the Strong lane's cap")
-    pol_m = parse({"s_mail": stage("mail", "ops", lane="strong", vendor="csv", pieces=[{"preset": "Strong - 02 Ready to Call", "piece": "postcard"}])},
-                  {"ftm": {"tags": ["FTM"]}, "strong": {"tags": ["Priority 2"], "caps": {"daily_usd": 5, "outreach_daily_usd": 2}}})
+    check(go("f_score", crm_f, pol).tally.get("numbers scored") == 1, "another lane is not held by the Top 1,000 lane's cap")
+    pol_m = parse({"s_mail": stage("mail", "ops", lane="top1000", vendor="csv", pieces=[{"preset": "Strong - 02 Ready to Call", "piece": "postcard"}])},
+                  {"ftm": {"tags": ["FTM"]}, "top1000": {"tags": ["Top 1000"], "caps": {"daily_usd": 5, "outreach_daily_usd": 2}}})
     mail_ctx = ctx_for(pol_m, "s_mail", LaneCRM([]))
-    check(mail_ctx.budget(1.5)[0] and mail_ctx.budget(2.5) == (False, "strong lane cap $2.00/day"),
+    check(mail_ctx.budget(1.5)[0] and mail_ctx.budget(2.5) == (False, "Top 1,000 lane cap $2.00/day"),
           "a lane's mail has its own cap as well, apart from its data cap")
     a2 = go("s_assign", crm, pol, now=T0 + timedelta(days=1))
     check(a2.acted == 0 and held() == ["st1", "st2", "st3"], "the next day nothing more is drawn: the backlog waits behind the tranche")
     crm.recs["st1"]["predictivecall_attempts"] = 1
     a3 = go("s_assign", crm, pol, now=T0 + timedelta(days=8))
-    check(a3.acted == 0 and lanes.tranche_state("strong")["n"] == 1 and lanes.tranche_state("strong")["waiting"] == 2,
+    check(a3.acted == 0 and lanes.tranche_state("top1000")["n"] == 1 and lanes.tranche_state("top1000")["waiting"] == 2,
           "after a week the tranche is checked: two of its three records still wait to be dialed, so the next is not drawn")
     crm.recs["st2"]["predictivecall_attempts"] = 1
     a4 = go("s_assign", crm, pol, now=T0 + timedelta(days=8, hours=1))
-    check(held() == ["st1", "st2", "st3", "st4", "st5", "st6"] and lanes.tranche_state("strong")["n"] == 2
+    check(held() == ["st1", "st2", "st3", "st4", "st5", "st6"] and lanes.tranche_state("top1000")["n"] == 2
           and any("Drew tranche 2" in ln for ln in a4.lines), "once all but a few have been dialed the next tranche is drawn, never a record twice")
     check(len(stages.stage_rows(ctx_for(pol, "s_keeper", crm))) == 6,
           "a stage that does not ask for the tranche (the attempt keeper) sees every record in its presets")
     later = T0 + timedelta(days=8, hours=2)
     lines = stages.lane_lines(ctx_for(pol, "s_digest", crm, now=later))
-    check(len(lines) == 1 and lines[0].startswith("Strong lane: tranche 2, 3 record(s)") and "spent on it" in lines[0]
+    check(len(lines) == 1 and lines[0].startswith("Top 1,000 lane: tranche 2, 3 record(s)") and "spent on it" in lines[0]
           and "3 still waiting, 3 behind it" in lines[0], "the digest gets one line per lane: tranche size, cost and what is left")
-    check(any(ln.startswith("Strong lane:") for ln in go("s_digest", crm, pol, now=later).lines), "that line is in the morning digest")
+    check(any(ln.startswith("Top 1,000 lane:") for ln in go("s_digest", crm, pol, now=later).lines), "that line is in the morning digest")
     crm_x = LaneCRM([_r("xn1", "1 None St", ["FTM"], phones=[_phone("8655551301")])])
     x = go("x_none", crm_x, pol)
     check(x.acted == 0 and not crm_x.writes and any("no tranche size" in pr for pr in x.problems),
           "a stage told to work in tranches with no size set does nothing and says so, it does not work the whole backlog")
     crm_b = LaneCRM([_r("bz%d" % i, "%d Size St" % i, ["Big"], phones=[_phone("86555514%02d" % i)]) for i in range(1, 6)])
     b = go("b_size", crm_b, pol)
-    check(b.acted == 2 and lanes.tranche_state("bulk")["size"] == 2, "a stage may carry the tranche size itself: two records are drawn from its own presets")
+    check(b.acted == 2 and lanes.tranche_state("agency")["size"] == 2, "a stage may carry the tranche size itself: two records are drawn from its own presets")
 
 
 # ---------------------------------------------------------------------- the hot auction lane (plan 1.8)
@@ -1067,8 +1078,9 @@ def _dial_export(check, go, parse, activity, dialexport, laneroutes, tmp) -> Non
     check(dialexport.dial_mode(499, 500, 1000) == "single" and dialexport.dial_mode(500, 500, 1000) == "near"
           and dialexport.dial_mode(1000, 500, 1000) == "power", "under 500 a list is dialed one at a time, and from 1,000 it goes to the power dialer")
     lists = ["Bulk - Small", "Bulk - Mid", "Bulk - Big"]
-    block = stage("dialexport", "ops", lists, lane="bulk", single_dial_under=3, power_dialer_over=6, rest_after_days=2)
-    pol = parse({"k_dial": block, "k_sift": dict(block, datasift_export=True)}, {"ftm": {"tags": ["FTM"]}, "bulk": {"timeline": True}})
+    block = stage("dialexport", "ops", lists, lane="top1000", single_dial_under=3, power_dialer_over=6, rest_after_days=2)
+    pol = parse({"k_dial": block, "k_sift": dict(block, datasift_export=True)},
+                {"ftm": {"tags": ["FTM"]}, "top1000": {"tags": ["Top 1000"], "timeline": dict(POWER)}})
 
     def recs():
         out = [_r("sm%d" % i, "%d Small St" % i, ["Small"], phones=[_phone("86555550%02d" % i)]) for i in range(1, 3)]
@@ -1152,9 +1164,9 @@ def _dial_export(check, go, parse, activity, dialexport, laneroutes, tmp) -> Non
           and [w for w in crm_s.writes if w[0] == "export"] == [("export", "Bulk - Big", "POST")], "that export is set once, not on every run")
     _fresh()
     activity.reset()
-    pol_tq = parse({"k_tdial": stage("dialexport", "ops", ["Bulk - Big"], lane="bulk", tranche=True, single_dial_under=2,
+    pol_tq = parse({"k_tdial": stage("dialexport", "ops", ["Bulk - Big"], lane="top1000", tranche=True, single_dial_under=2,
                                      power_dialer_over=4, rest_after_days=0)},
-                   {"ftm": {"tags": ["FTM"]}, "bulk": {"timeline": True, "tranche": {"size": 5}}})
+                   {"ftm": {"tags": ["FTM"]}, "top1000": {"tags": ["Top 1000"], "timeline": dict(POWER), "tranche": {"size": 5}}})
     big = [_r("tq%d" % i, "%d Tranche Rd" % i, ["Big"], phones=[_phone("86555552%02d" % i)]) for i in range(1, 9)]
     tq = go("k_tdial", LaneCRM(big), pol_tq)
     tq_files = sorted(Path(tmp).rglob("k_tdial_*.csv"))

@@ -42,6 +42,10 @@ def plan(run_id: str) -> list[dict]:
             step["do"], step["args"] = "remove_tags", list(after or [])
         elif what == "remove_tags":
             step["do"], step["args"] = "add_tags", list(before or [])
+        elif what == "add_lists":
+            step["do"], step["args"] = "remove_lists", [t for t in (after or []) if t not in (before or [])]
+        elif what == "remove_lists":
+            step["do"], step["args"] = "add_lists", [t for t in (before or []) if t not in (after or [])]
         elif what == "status":
             step["do"], step["args"] = "set_status", before
         elif what == "call_attempts":
@@ -89,6 +93,10 @@ def run(run_id: str, crm=None, commit: bool = False) -> dict:
                 crm.remove_tags(u, s["args"])
             elif s["do"] == "add_tags":
                 crm.add_tags(u, s["args"])
+            elif s["do"] == "remove_lists":
+                crm.remove_lists(u, s["args"])
+            elif s["do"] == "add_lists":
+                crm.add_lists(u, s["args"])
             elif s["do"] == "set_status":
                 crm.set_status(u, s["args"])
             elif s["do"] == "call_attempts":

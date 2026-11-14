@@ -35,6 +35,13 @@ answered (a number marked CORRECT: a person has that thread now), a number on th
 registry, and anything limits.room() refuses (one text per owner a day, five a week across both
 texting systems, the platform's rest, the sending hours on both clocks).
 
+TWO LANES, ONE STAGE (2026-11-13). The Priority track texts first-to-market owners and the Top
+1,000 from the same stage (`lanes: [ftm, top1000]`): each lane is read on its own, first to market
+first, under the same daily caps, so a Top 1,000 owner never takes a first-to-market owner's place.
+Each record keeps its own lane's timeline, entry day and group prefix (`labels`), and the
+sale-date copy goes only to the lanes in `urgent_lanes` (first to market: a Top 1,000 house has no
+sale date).
+
 ONE THREAD. The first text puts each number in a group; that group is the number's thread and
 every later text to it carries the same thread key (decision D42). A sending campaign must never
 gain a contact, so every send gets its own group: the day's new cohort, "<cohort> T2" the next
@@ -62,7 +69,7 @@ from zoneinfo import ZoneInfo
 
 from .. import config
 from . import budget, gate, lanes, ledger, limits, scrub
-from .stages import GONE_STATUSES, Ctx, Summary, lane_entry, required_tags, stage_rows, tag_titles
+from .stages import GONE_STATUSES, Ctx, Summary, lane_entry, required_tags, stage_lanes, stage_rows, tag_titles
 
 SRC = Path(__file__).resolve().parents[2]
 if str(SRC) not in sys.path:
@@ -469,7 +476,7 @@ def plan_rows(load: dict, keys: dict) -> list[dict]:
     """A released load as the rows the land loader's create phase works from: one per number, with
     the group it joins and the contact to create. A number already in Smarter Contact (it is in the
     owner's thread) is listed with new_contact False: it only joins its new group."""
-    return [{"lane": load.get("lane") or "", "group": c["group"], "phone": c["phone"], "record": c["record"],
+    return [{"lane": c.get("lane") or load.get("lane") or "", "group": c["group"], "phone": c["phone"], "record": c["record"],
              "new_contact": bool(c.get("new_contact")), "input": contact_input(c, keys)} for c in load.get("contacts") or []]
 
 
@@ -540,6 +547,16 @@ def block_problems(st) -> list[str]:
         out.append("stage %s: series must be opening or followup, not %r" % (st.id, st.get("series")))
     if not st.get("lane"):
         out.append("stage %s: a text stage needs the lane whose timeline it reads" % st.id)
+    many = st.get("lanes")
+    if many is not None:
+        bad = [x for x in (many if isinstance(many, list) else [many]) if str(x) not in lanes.ORDER]
+        if not isinstance(many, list) or bad:
+            out.append("stage %s: lanes must list lanes (%s); %s is not one" % (st.id, ", ".join(lanes.ORDER), bad or many))
+        elif st.get("lane") and str(st.get("lane")) not in [str(x) for x in many]:
+            out.append("stage %s: lanes must include the stage's own lane %s" % (st.id, st.get("lane")))
+    labels = st.get("labels")
+    if labels is not None and not isinstance(labels, dict):
+        out.append("stage %s: labels must map a lane to its group name prefix" % st.id)
     if series == "opening" and not st.presets:
         out.append("stage %s: the opening texts need the presets that hold the lane's new records" % st.id)
     for key, low in (("numbers_per_owner", 1), ("daily_owners", 0), ("max_records", 1), ("max_new", 1)):
@@ -553,7 +570,20 @@ def block_problems(st) -> list[str]:
 
 
 def _label(st, lane: str) -> str:
-    return str(st.get("label") or lane.upper().replace("_", " ")).strip()
+    """The Smarter Contact group name prefix for a lane: its entry under `labels`, else the stage's
+    `label` for the stage's own lane, else the lane's name. Two lanes in one stage get two prefixes,
+    so a group's results can be read for first to market and for the Top 1,000 apart."""
+    labels = st.get("labels") if isinstance(st.get("labels"), dict) else {}
+    if labels.get(lane):
+        return str(labels[lane]).strip()
+    if st.get("label") and lane == str(st.get("lane") or ""):
+        return str(st.get("label")).strip()
+    return lane.upper().replace("_", " ").strip()
+
+
+def _lane_words(lanes_list: list[str]) -> str:
+    names = [lanes.name(x) for x in lanes_list]
+    return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " or " + names[-1]
 
 
 def _street(rec: dict) -> str:
@@ -577,36 +607,40 @@ def _drawn(ctx: Ctx, lane: str) -> set | None:
     return set(members(lane))
 
 
-def _candidates(ctx: Ctx, series: str, lane: str, lanes_cfg) -> list[tuple[str, dict]]:
-    """(where it came from, search row) for every record the series could concern. The opening
-    texts work the presets that hold new records. The follow-up series works every record that
-    carries the lane's marker and is not finished for good, plus any preset the block names: by
-    then a record has left the call presets, and a mailed one sits in no mail preset for a month."""
+def _candidates(ctx: Ctx, series: str, work: list[str], lanes_cfg) -> list[tuple[str, dict]]:
+    """(where it came from, search row) for every record the series could concern, each row carrying
+    its lane under `_lane`. The opening texts work the presets that hold new records (stage_rows
+    reads a two-lane stage one lane at a time, first to market first). The follow-up series works
+    every record that carries a lane's marker and is not finished for good, plus any preset the
+    block names: by then a record has left the call presets, and a mailed one sits in no mail
+    preset for a month."""
     st = ctx.stage
     out, seen = [], set()
     if st.presets:
         for title, row in stage_rows(ctx, extra=required_tags(ctx)):
             if row.get("uuid") not in seen:
                 seen.add(row["uuid"])
-                out.append((title, row))
+                out.append((title, row if row.get("_lane") else dict(row, _lane=work[0])))
     elif series == "opening":
         ctx.out.problem("the opening texts need the presets that hold the lane's new records; none are named")
     if series == "followup" and st.get("scan_lane", True):
-        marks = (lanes_cfg.markers.get(lane) or {}).get("tags") or []
-        ids = [ctx.crm.tag_uuid(t) for t in marks]
-        drawn = _drawn(ctx, lane)
-        if ids and all(ids):
-            for row in ctx.crm.rows({"any_tags": ids, "must_not": {"any_property_status": GONE_STATUSES}},
-                                    cap=int(st.get("max_scan", 3000))):
-                if not row.get("uuid") or row["uuid"] in seen:
-                    continue
-                if drawn is not None and row["uuid"] not in drawn:
-                    ctx.out.tally["behind the lane's tranches, waiting their turn"] += 1
-                    continue
-                seen.add(row["uuid"])
-                out.append(("lane", row))
-        elif marks:
-            ctx.out.problem("the lane's marker tag %s does not exist in this account, so the follow-up series has nobody to read" % marks)
+        for lane in work:
+            marks = (lanes_cfg.markers.get(lane) or {}).get("tags") or []
+            ids = [ctx.crm.tag_uuid(t) for t in marks]
+            drawn = _drawn(ctx, lane)
+            if ids and all(ids):
+                for row in ctx.crm.rows({"any_tags": ids, "must_not": {"any_property_status": GONE_STATUSES}},
+                                        cap=int(st.get("max_scan", 3000))):
+                    if not row.get("uuid") or row["uuid"] in seen:
+                        continue
+                    if drawn is not None and row["uuid"] not in drawn:
+                        ctx.out.tally["behind the lane's tranches, waiting their turn"] += 1
+                        continue
+                    seen.add(row["uuid"])
+                    out.append(("lane", dict(row, _lane=lane)))
+            elif marks:
+                ctx.out.problem("the lane's marker tag %s does not exist in this account, so the follow-up series has "
+                                "nobody to read in the %s lane" % (marks, lane.replace("_", " ")))
     return out
 
 
@@ -691,16 +725,35 @@ def _pick(numbers: list[dict], limit: int) -> list[dict]:
     return out[:max(1, int(limit))]
 
 
+def _lane_plan(lanes_cfg, lane: str, series: str) -> dict | None:
+    """One lane's part of the series: its timeline, the day window the series runs in, how many texts
+    and, for the follow-ups, their spacing. None when the lane has no such texts. Each lane of a
+    two-lane stage is planned from its own row of the lanes table, never from the stage's."""
+    tl = lanes_cfg.timeline(lane) if lane else None
+    if not tl:
+        return None
+    if series == "opening":
+        steps_total = len(tl.get("opening_texts") or [])
+        window = (min(tl.get("opening_texts") or [0]), last_open_day(lanes_cfg, lane, "text", 0))
+        fplan = {}
+    else:
+        fplan = followup_plan(tl, lanes_cfg, lane)
+        steps_total = fplan["count"]
+        window = (fplan.get("earliest", 0), fplan.get("close", -1))
+    if steps_total <= 0 or window[1] < 0:
+        return None
+    return {"tl": tl, "steps_total": steps_total, "window": window, "fplan": fplan}
+
+
 def run_textlane(ctx: Ctx) -> None:
     st = ctx.stage
     series = str(st.get("series", "opening")).strip().lower()
-    lane = str(st.get("lane") or "")
     lanes_cfg = getattr(ctx.policy, "lanes", None) or lanes.Lanes()
-    tl = lanes_cfg.timeline(lane) if lane else None
     if series not in SERIES:
         ctx.out.problem("series must be opening or followup, not %r; nothing was loaded" % series)
         return
-    if not tl:
+    work = stage_lanes(st)
+    if not work or not any(lanes_cfg.timeline(ln) for ln in work):
         ctx.out.problem("the text lane works a lane with a written timeline; set `lane` in the stage block (for example ftm)")
         return
     lim, bad = limits.read(ctx.policy)
@@ -728,7 +781,6 @@ def run_textlane(ctx: Ctx) -> None:
 
     gate_cfg = getattr(ctx.policy, "gate", None) or gate.GateConfig()
     system = str(st.get("system", "smarter_contact"))
-    label = _label(st, lane)
     per_owner = int(st.get("numbers_per_owner", 3))
     text_usd = float(st.get("text_usd", 0.02))
     stage_cap = st.get("daily_usd")
@@ -738,30 +790,33 @@ def run_textlane(ctx: Ctx) -> None:
     require_screen = bool(st.get("require_screen", True))
     stop_on_correct = bool(st.get("stop_on_correct", True))
     urgent_tag = str(st.get("urgent_tag", "Auction Critical")).strip().lower() if st.get("urgent_copy", True) else ""
+    # The sale-date copy (D21) belongs to a courthouse notice: a Top 1,000 house has no sale date,
+    # so only these lanes may get it whatever their tags say.
+    urgent_lanes = {str(x) for x in (st.get("urgent_lanes") or ["ftm"])}
     lead = timedelta(minutes=float(st.get("lead_minutes", 30)))
     allow = st.get("gate_allow") or ()
     # Texts 1 to 3 go out on the templates the account already holds: the Priority 1 touches, which
     # acknowledge the noise and never the situation. A lane with its own opening copy names its set.
     opening_set = str(st.get("opening_set", "p1")).strip() or "p1"
 
-    ends = int(tl.get("round_ends_at", 5))
-    if series == "opening":
-        steps_total = len(tl.get("opening_texts") or [])
-        window = (min(tl.get("opening_texts") or [0]), last_open_day(lanes_cfg, lane, "text", 0))
-        fplan = {}
-    else:
-        fplan = followup_plan(tl, lanes_cfg, lane)
-        steps_total = fplan["count"]
-        window = (fplan.get("earliest", 0), fplan.get("close", -1))
-    if steps_total <= 0 or window[1] < 0:
+    plans = {}
+    for ln in work:
+        p = _lane_plan(lanes_cfg, ln, series)
+        if p is None:
+            ctx.out.tally["the %s lane has no %s on its timeline" % (
+                ln.replace("_", " "), "opening texts" if series == "opening" else "follow-up texts")] += 1
+            continue
+        p["label"] = _label(st, ln)
+        plans[ln] = p
+    if not plans:
         ctx.out.head = "The %s lane's timeline has no %s." % (
-            lane.replace("_", " "), "opening texts" if series == "opening" else "follow-up texts")
+            _lane_words(work), "opening texts" if series == "opening" else "follow-up texts")
         return
 
-    rows = _candidates(ctx, series, lane, lanes_cfg)
+    rows = [(t, r) for t, r in _candidates(ctx, series, work, lanes_cfg) if r.get("_lane") in plans]
     ctx.out.found = len(rows)
-    for title in dict.fromkeys(t for t, _ in rows):
-        scrub.note_rows([r for t, r in rows if t == title], lane, ctx.now)      # every flag the rows show is remembered first
+    for title, ln in dict.fromkeys((t, r["_lane"]) for t, r in rows):
+        scrub.note_rows([r for t, r in rows if t == title and r["_lane"] == ln], ln, ctx.now)   # every flag the rows show is remembered first
     staged = ledger.staged_record_uuids(st.id)
     room_left = limits.capacity_left(ctx.now, lim, tz)
     spent_today = limits.spent(today_s, st.id)
@@ -774,32 +829,43 @@ def run_textlane(ctx: Ctx) -> None:
     by_step: Counter = Counter()
     tally = ctx.out.tally
     series_words = "opening texts" if series == "opening" else "follow-up texts"
-    closed_key, unknown_key, entry_key = CLOSED_FACT % (series, lane), UNKNOWN_FACT % lane, "lane_entry:%s" % lane
-    facts = _facts([closed_key, unknown_key, entry_key, "death_screen"])
+    keys = {ln: (CLOSED_FACT % (series, ln), UNKNOWN_FACT % ln, "lane_entry:%s" % ln) for ln in plans}
+    facts = _facts(sorted({k for trio in keys.values() for k in trio} | {"death_screen"}))
 
-    # Order of work, decided from what is already remembered and with no request made: records
-    # whose lane day is known first, then records never looked at, then the ones whose log did not
-    # show an entry date last time. A backlog of old records can then never use up the run's reads
-    # before today's new records are seen.
-    known, fresh, again = [], [], []
-    for title, row in rows:
-        u = row.get("uuid") or ""
-        if not u or u in facts[closed_key]:
-            continue
-        if u in facts[entry_key]:
-            known.append((title, row))
-            continue
-        tried = facts[unknown_key].get(u)
-        if not isinstance(tried, dict):
-            fresh.append((title, row))
-        elif ctx.now - datetime.fromisoformat(tried["at"]) >= UNKNOWN_RETRY:
-            again.append((title, row))
-        else:
-            tally["lane entry date not known yet (the log is asked again tomorrow)"] += 1
+    # Order of work, decided from what is already remembered and with no request made: lane by lane,
+    # first to market first, and inside a lane the records whose lane day is known first, then
+    # records never looked at, then the ones whose log did not show an entry date last time. A
+    # backlog of old records can then never use up the run's reads before today's new records are
+    # seen, and no Top 1,000 owner takes a first-to-market owner's place under the day's caps.
+    queue = []
+    for ln in plans:
+        closed_key, unknown_key, entry_key = keys[ln]
+        known, fresh, again = [], [], []
+        for title, row in rows:
+            if row["_lane"] != ln:
+                continue
+            u = row.get("uuid") or ""
+            if not u or u in facts[closed_key]:
+                continue
+            if u in facts[entry_key]:
+                known.append((title, row))
+                continue
+            tried = facts[unknown_key].get(u)
+            if not isinstance(tried, dict):
+                fresh.append((title, row))
+            elif ctx.now - datetime.fromisoformat(tried["at"]) >= UNKNOWN_RETRY:
+                again.append((title, row))
+            else:
+                tally["lane entry date not known yet (the log is asked again tomorrow)"] += 1
+        queue += known + fresh + again
 
-    for title, row in known + fresh + again:
+    for title, row in queue:
         u = row.get("uuid") or ""
         owner = (row.get("owner") or {}).get("uuid") or ""
+        lane = row["_lane"]
+        plan_ = plans[lane]
+        tl, window, steps_total, fplan, label = plan_["tl"], plan_["window"], plan_["steps_total"], plan_["fplan"], plan_["label"]
+        closed_key, unknown_key, entry_key = keys[lane]
         if u in staged:
             tally["already staged, waiting on release"] += 1
             continue
@@ -823,7 +889,7 @@ def run_textlane(ctx: Ctx) -> None:
                 tally["not looked at yet (read cap, next run)"] += 1
                 continue
             new_reads += 1
-        entered_at = lane_entry(ctx, row, lane)
+        entered_at = lane_entry(ctx, row, lane, resolve=False)     # the lane is known: the row came from its own pass
         if entered_at.year <= 2000:
             # The log does not show when the record entered the lane. When a log read failed in this
             # run that proves nothing about the record, so it is not counted against it; and when
@@ -878,7 +944,7 @@ def run_textlane(ctx: Ctx) -> None:
         except Exception as exc:  # noqa: BLE001
             ctx.out.problem("could not read a record (%s)" % str(exc)[:100])
             continue
-        v = ctx.verdict(rec, "text", row=row)
+        v = ctx.verdict(rec, "text", row=row, lane=lane)
         if not v.ok:
             if v.code == "no_number" and scrub.shown(row)[1] and gate.usable_numbers(rec, "text", gate_cfg, None):
                 # The gate found nothing to text only because the one usable number is the number
@@ -988,7 +1054,7 @@ def run_textlane(ctx: Ctx) -> None:
         tags = {t.lower() for t in tag_titles(rec)}
         if series == "followup":
             template_set, touch_no = (opening_set, 1) if first_contact else ("ftm_followup", step)
-        elif urgent_tag and urgent_tag in tags and step in URGENT:
+        elif urgent_tag and urgent_tag in tags and step in URGENT and lane in urgent_lanes:
             template_set, touch_no = "ftm_urgent", step
         else:
             template_set, touch_no = opening_set, step
@@ -1030,8 +1096,11 @@ def run_textlane(ctx: Ctx) -> None:
 
     name = "text" if series == "opening" else "follow-up"
     mix = ", ".join("%d on %s %d" % (n, name, s) for s, n in sorted(by_step.items()))
+    if len(plans) > 1:
+        per = Counter(it["lane"] for it in items)
+        mix += "; " + ", ".join("%d %s" % (per[ln], lanes.name(ln)) for ln in plans if per.get(ln))
     if not items:
-        ctx.out.head = "No owner in the %s lane is due %s today." % (lane.replace("_", " "), what)
+        ctx.out.head = "No owner in the %s lane is due %s today." % (_lane_words(list(plans)), what)
         return
     ctx.out.acted = len(items)
     if not ctx.live:
@@ -1076,12 +1145,16 @@ def build_load(batch: dict, kept: list[dict], held: list[dict], now: datetime, t
                 g["contacts"] += 1
                 g["start"] = min(g["start"], n.get("send_at") or g["start"]) if g["start"] else (n.get("send_at") or "")
             contacts.append({"group": n["group"], "cohort": n.get("cohort") or "", "thread": n.get("thread") or "",
+                             "lane": it.get("lane") or "",
                              "phone": n["number"], "record": it["record_uuid"], "owner": it["owner_uuid"],
                              "series": it["series"], "step": it["step"], "new_contact": bool(n.get("new_contact")),
                              "first_name": it.get("first_name") or "", "last_name": it.get("last_name") or "",
                              "values": it.get("values") or {}, "text": it.get("text") or "", "send_by": it.get("send_by") or ""})
     first = kept[0] if kept else {}
-    return {"batch": batch["id"], "stage": batch["stage"], "lane": first.get("lane") or "", "series": first.get("series") or "",
+    # One batch can hold two lanes (the Priority track): each contact carries its own, and `lanes`
+    # names them all; `lane` stays the first item's for a loader written before two-lane batches.
+    return {"batch": batch["id"], "stage": batch["stage"], "lane": first.get("lane") or "",
+            "lanes": sorted({it.get("lane") or "" for it in kept} - {""}), "series": first.get("series") or "",
             "system": first.get("system") or "", "campaign": bool(first.get("campaign", True)),
             "day": first.get("day") or limits._day(now, tz), "released": limits._iso(now),
             "groups": sorted(groups.values(), key=lambda g: g["name"]), "contacts": contacts, "held": held}
@@ -1134,7 +1207,7 @@ def release(batch_id: int, *, crm=None, pol=None, commit: bool = False, now: dat
             hold(it, "the record could not be read (%s)" % str(exc)[:60])
             continue
         row = _row_for(crm, owner, u)
-        v = ctx.verdict(rec, "text", row=row)
+        v = ctx.verdict(rec, "text", row=row, lane=it.get("lane") or "")
         if not v.ok:
             hold(it, v.reason())
             continue

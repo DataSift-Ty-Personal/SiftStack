@@ -288,6 +288,19 @@ class CRM:
         for t in drop:
             self.call("/api/internal/property/%s/remove-tags/" % uuid, "POST", {"tags": t})
 
+    def add_lists(self, uuid: str, add: list[str]) -> None:
+        """One documented call per list. `lists` is ONE title as a string: an array answers 201 and
+        attaches nothing (verified live 2026-11-11)."""
+        for t in add:
+            if t:
+                self.call("/api/internal/property/%s/add-lists/" % uuid, "POST", {"lists": t})
+
+    def remove_lists(self, uuid: str, drop: list[str]) -> None:
+        """The same contract as add_lists: one title, as a string, per call."""
+        for t in drop:
+            if t:
+                self.call("/api/internal/property/%s/remove-lists/" % uuid, "POST", {"lists": t})
+
     def set_status(self, uuid: str, status: str) -> None:
         self.call("/api/internal/property/%s/status/" % uuid, "POST", {"status": status})
 

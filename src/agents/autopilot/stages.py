@@ -89,6 +89,9 @@ class Summary:
     tally: Counter = field(default_factory=Counter)
     batch: int = 0
     writes: int = 0
+    # A folder holding a `files/` folder the run made (a ranking, a call list). The brain serves a
+    # file there by a signed link (slack.file_url) because the task's result names this folder.
+    run_dir: str = ""
 
     def line(self, text: str) -> None:
         if len(self.lines) < MAX_LINES:
@@ -136,15 +139,18 @@ class Ctx:
             ledger.change(self.run_id, self.stage.id, record_uuid, what, before, after)
 
     # --- the gate
-    def passes(self, rec: dict, channel: str, row: dict | None = None, allow=None) -> bool:
+    def passes(self, rec: dict, channel: str, row: dict | None = None, allow=None, lane: str = "") -> bool:
         """Run the suppression gate on a full record for this stage. A record that fails is counted
         under its reason ("held back: ...") and the caller skips it."""
-        v = self.verdict(rec, channel, row=row, allow=allow)
+        v = self.verdict(rec, channel, row=row, allow=allow, lane=lane)
         if not v.ok:
             self.out.tally["held back: %s" % v.reason()] += 1
         return v.ok
 
-    def verdict(self, rec: dict, channel: str, row: dict | None = None, allow=None):
+    def verdict(self, rec: dict, channel: str, row: dict | None = None, allow=None, lane: str = ""):
+        """The gate's answer for this record. The lane it is judged in is the record's own on a stage
+        that works two lanes (record_lane): a Top 1,000 house whose owner has a first-to-market
+        notice must be held as the lower lane it is, which a stage-wide lane of ftm would not do."""
         cfg = getattr(self.policy, "gate", None) or gate.GateConfig()
         lanes_cfg = getattr(self.policy, "lanes", None)
         allow = set(_list(self.stage.get("gate_allow"))) | set(allow or ())
@@ -165,7 +171,8 @@ class Ctx:
             c = ledger.phone(n) if n else None
             if c and c.get("litigator"):
                 lit.add(n)
-        return gate.check(rec, channel, cfg=cfg, lane=str(self.stage.get("lane") or ""), allow=allow, row=row,
+        lane = lane or (row or {}).get("_lane") or record_lane(self, rec)
+        return gate.check(rec, channel, cfg=cfg, lane=lane, allow=allow, row=row,
                           custom=custom, owner=lanes.owner_lane(ow.get("uuid") or ""), litigators=lit,
                           lanes_cfg=lanes_cfg)
 
@@ -181,7 +188,7 @@ class Ctx:
         if stage_cap is not None and ledger.spent(d, self.stage.id) + pending + usd > float(stage_cap):
             return False, "stage cap $%.2f/day" % float(stage_cap)
         # A lane's own cap (plan 4.1): what every stage of that lane has spent today, together.
-        # Without it the Strong lane's scoring could use up the day before first to market runs.
+        # Without it a big lower lane's scoring could use up the day before first to market runs.
         lane = str(self.stage.get("lane") or "")
         outreach = self.stage.spend == "outreach"
         lane_cap = lanes.lane_cap(getattr(self.policy, "lanes", None), lane, "outreach_daily_usd" if outreach else "daily_usd")
@@ -190,7 +197,7 @@ class Ctx:
             used = sum(ledger.spent(d, sid, action="mail") if outreach else ledger.spent(d, sid, exclude_action="mail")
                        for sid in ids)
             if used + pending + usd > lane_cap:
-                return False, "%s lane cap $%.2f/day" % (lane.replace("_", " "), lane_cap)
+                return False, "%s lane cap $%.2f/day" % (lanes.name(lane), lane_cap)
         if self.stage.spend == "outreach":
             # Marketing spend has its own budget: it does not compete with traces and scoring for
             # the data cap, and it never counts toward the brain's research cap.
@@ -290,6 +297,49 @@ def dial_order(numbers: list[dict], agreed=()) -> list[dict]:
     return sorted(numbers, key=key)
 
 
+# ---------------------------------------------------------------------- a stage that works two lanes
+def stage_lanes(st) -> list[str]:
+    """The lanes a stage works, highest first: its `lanes` list, else its one `lane`. The Priority
+    stages read presets that hold first-to-market and Top 1,000 records together (`lanes: [ftm,
+    top1000]`); every other stage works one lane or none."""
+    many = [str(x) for x in _list(st.get("lanes")) if x]
+    if not many:
+        one = str(st.get("lane") or "")
+        return [one] if one else []
+    return sorted(dict.fromkeys(many), key=lanes.rank)
+
+
+def _known_lane(ctx: "Ctx", rec: dict, many: list[str]) -> str:
+    """Which of these lanes the record is in, when something says so; '' when nothing does. In order:
+    the lane the stage's own search found the row in (lane_rows), the marker on a full record (a
+    search row carries no tags), and the lane the nightly owner-lane map holds for the record."""
+    rec = rec or {}
+    got = rec.get("_lane")
+    if got in many:
+        return got
+    if "tags" in rec or "lists" in rec:
+        cfg = getattr(ctx.policy, "lanes", None) or lanes.Lanes()
+        marks = marks_of(rec)
+        for ln in many:
+            m = cfg.markers.get(ln) or {}
+            if {str(t).strip().lower() for t in (m.get("tags") or []) + (m.get("lists") or [])} & marks:
+                return ln
+    held = lanes.owner_lane((rec.get("owner") or {}).get("uuid") or "")
+    mine = ((held or {}).get("records") or {}).get(rec.get("uuid") or "")
+    return mine if mine in many else ""
+
+
+def record_lane(ctx: "Ctx", rec: dict) -> str:
+    """The lane this stage works this record under. A one-lane stage answers its lane, as every stage
+    did before the Priority track. A stage that works several answers the record's own lane, so the
+    first-to-market rules (mail at once for a foreclosure, the twelve-piece mail lane, the sale-date
+    copy) reach first-to-market records only. When nothing says, the stage's first lane."""
+    many = stage_lanes(ctx.stage)
+    if len(many) <= 1:
+        return many[0] if many else ""
+    return _known_lane(ctx, rec, many) or many[0]
+
+
 def round_ends_at(ctx: "Ctx", lane: str = "") -> int:
     """The call counter that ends the round for this stage's lane (5 unless the playbook says otherwise)."""
     cfg = getattr(ctx.policy, "lanes", None) or lanes.Lanes()
@@ -300,16 +350,19 @@ def round_ends_at(ctx: "Ctx", lane: str = "") -> int:
 def exhausted_of(ctx: "Ctx", rec: dict) -> bool:
     """Nothing is left to dial on this record: the call round is over, the record's status says so,
     or every number on it is wrong, dead or do-not-call. A record with no number at all is
-    exhausted once its mail lane has run out, since mail is the only channel it ever had."""
+    exhausted once its mail lane has run out, since mail is the only channel it ever had. The
+    record's own lane decides both numbers: a Top 1,000 house runs out after six pieces, a
+    first-to-market one after twelve."""
+    lane = record_lane(ctx, rec)
     if status_of(rec) == "exhausted":
         return True
-    if int(rec.get("predictivecall_attempts") or 0) >= round_ends_at(ctx):
+    if int(rec.get("predictivecall_attempts") or 0) >= round_ends_at(ctx, lane):
         return True
     phones = (rec.get("owner") or {}).get("phones") or []
     if phones:
         return all(str(p.get("status") or "UNKNOWN").upper() in BAD_PHONE for p in phones)
     cfg = getattr(ctx.policy, "lanes", None) or lanes.Lanes()
-    tl = cfg.timeline(str(ctx.stage.get("lane") or "")) or cfg.timeline("ftm") or {}
+    tl = cfg.timeline(lane or str(ctx.stage.get("lane") or "")) or cfg.timeline("ftm") or {}
     return int(rec.get("directmail_attempts") or 0) >= int(tl.get("mail_pieces", 12))
 
 
@@ -351,20 +404,43 @@ def research_open(ctx: "Ctx", rec: dict, death: bool = False) -> tuple[bool, str
     return True, by
 
 
-def lane_entry(ctx: "Ctx", rec: dict, lane: str) -> datetime:
+def lane_entry(ctx: "Ctx", rec: dict, lane: str, resolve: bool = True) -> datetime:
     """When this record entered its lane: the moment a lane marker (the FTM tag, the Obituary list)
     first landed on it, else the day the record was created. Read once from the record's own log
     and remembered. It is what the timeline counts days from and what the attempt keeper counts
-    dials from, so a call made months ago under another list never counts toward this lane."""
+    dials from, so a call made months ago under another list never counts toward this lane.
+
+    On a stage that works two lanes, a caller asking for the stage's own lane gets the record's:
+    the attempt keeper must count a Top 1,000 house's dials from the day it got the Top 1000 tag,
+    not from a first-to-market tag it never had. The lane comes from what already says (the row's
+    lane, the record's tags, the nightly map), then from an entry already worked out, then from the
+    record's log: the highest of the stage's lanes whose marker the log shows. A caller that knows
+    the lane exactly (the text lane reads each lane separately) passes resolve=False."""
     u = rec.get("uuid") or ""
+    many = stage_lanes(ctx.stage)
+    choose = resolve and len(many) > 1 and (not lane or lane in many)
+    if choose:
+        known = _known_lane(ctx, rec, many)
+        if known:
+            lane, choose = known, False
+        else:
+            for ln in many:
+                v = ledger.fact(u, "lane_entry:%s" % ln)
+                if v:
+                    return datetime.fromisoformat(v)
     key = "lane_entry:%s" % (lane or "any")
-    v = ledger.fact(u, key)
-    if v:
-        return datetime.fromisoformat(v)
+    if not choose:
+        v = ledger.fact(u, key)
+        if v:
+            return datetime.fromisoformat(v)
     lanes_cfg = getattr(ctx.policy, "lanes", None) or lanes.Lanes()
-    marks = lanes_cfg.markers.get(lane) or {}
-    want = {t.lower() for t in (marks.get("tags") or []) + (marks.get("lists") or [])}
-    entry = created = None
+    cands = list(many) if choose else [lane]
+    want = {}
+    for ln in cands:
+        marks = lanes_cfg.markers.get(ln) or {}
+        want[ln] = {t.lower() for t in (marks.get("tags") or []) + (marks.get("lists") or [])}
+    entry: dict = {ln: None for ln in cands}
+    created = None
     try:
         log_rows = ctx.crm.record_logs(u, ["property.created", "property.tags.added", "property.lists.added"])
     except Exception as exc:  # noqa: BLE001
@@ -381,9 +457,13 @@ def lane_entry(ctx: "Ctx", rec: dict, lane: str) -> datetime:
             created = at if created is None else min(created, at)
         else:
             names = {str(x).lower() for x in (p.get("tags") or []) + (p.get("lists") or []) + (p.get("system_lists") or [])}
-            if want and names & want:
-                entry = at if entry is None else min(entry, at)
-    when = entry or created
+            for ln, w in want.items():
+                if w and names & w:
+                    entry[ln] = at if entry[ln] is None else min(entry[ln], at)
+    if choose:
+        lane = next((ln for ln in cands if entry[ln] is not None), cands[0])
+        key = "lane_entry:%s" % lane
+    when = entry.get(lane) or created
     if when is None:
         # Older than the log reaches: the record has been here a long time. Use a far-back date
         # (callers clamp to their own look-back) and do not cache a guess as if it were known.
@@ -433,9 +513,43 @@ def preset_rows(ctx: Ctx, titles, extra: dict | None = None, cap: int = 2000) ->
 def stage_rows(ctx: Ctx, extra: dict | None = None, cap: int | None = None) -> list[tuple[str, dict]]:
     """(preset title, search row) for every record in the stage's presets, deduped in preset order.
     A stage that works in tranches (`tranche` in its block) gets only the rows in its lane's
-    current tranche."""
+    current tranche. A stage that works two lanes gets them lane by lane (lane_rows)."""
     cap = int(cap or ctx.stage.get("max_scan", 2000))
+    many = stage_lanes(ctx.stage)
+    if len(many) > 1:
+        return _in_tranche(ctx, lane_rows(ctx, ctx.stage.presets, many, extra, cap))
     return _in_tranche(ctx, preset_rows(ctx, ctx.stage.presets, extra, cap))
+
+
+def lane_rows(ctx: Ctx, titles, many: list[str], extra: dict | None = None, cap: int = 2000) -> list[tuple[str, dict]]:
+    """(preset title, search row) for a stage that works several lanes: one pass per lane, highest
+    first, each search narrowed to the lane's marker tag. Two things depend on it. A search row
+    carries no tags, so the row has to say which lane it is in (under `_lane`) before the record is
+    opened: the text lane counts days from that lane's entry. And first-to-market rows come before
+    the Top 1,000's under every cap, which is what "first to market sits on top" means in practice.
+    A lane marked only by a list cannot be narrowed this way and is said, not guessed."""
+    cfg = getattr(ctx.policy, "lanes", None) or lanes.Lanes()
+    seen, out = set(), []
+    for ln in many:
+        if ln not in lanes.ORDER:
+            ctx.out.problem("the stage names the lane %r, which is not a lane; nothing was read for it" % ln)
+            continue
+        tags = (cfg.markers.get(ln) or {}).get("tags") or []
+        if not tags:
+            ctx.out.problem("the %s lane has no marker tag, so a stage that works two lanes cannot read it" % ln.replace("_", " "))
+            continue
+        for t in tags:
+            uid = ctx.crm.tag_uuid(t)
+            if not uid:
+                ctx.out.problem("the tag %s does not exist in this account, so no %s record was read" % (t, ln.replace("_", " ")))
+                continue
+            narrowed = merge_must(dict(extra or {}), {"all_tags": [uid]})
+            for title, row in preset_rows(ctx, titles, narrowed, cap):
+                u = row.get("uuid")
+                if u and u not in seen:
+                    seen.add(u)
+                    out.append((title, dict(row, _lane=ln)))
+    return out
 
 
 # ---------------------------------------------------------------------- tranches (plan 4.1)
@@ -485,7 +599,7 @@ def _next_tranche(ctx: Ctx, lane: str, cfg: dict, rows: list, state: dict | None
     source = preset_rows(ctx, cfg["presets"], None, int(cfg.get("scan", 5000))) if cfg.get("presets") else rows
     drawn = lanes.tranche_members(lane)
     fresh = [r["uuid"] for _, r in source if r["uuid"] not in drawn][: int(cfg["size"])]
-    name = lane.replace("_", " ")
+    name = lanes.name(lane)
     if not fresh:
         # Nothing is left behind the last tranche: the lane's backlog is finished.
         return state, (lanes.tranche_members(lane, int(state["n"])) if state else set())
@@ -2102,6 +2216,11 @@ def digest_extras(ctx: Ctx, counts: dict) -> None:
     add("alarms", lambda: alarms.digest_lines(now=ctx.now, tz=ctx.policy.tz, limit=2), problem=True, limit=2)
     add("pacing", lambda: pacing.digest_lines(ctx.policy, now=ctx.now, counts=counts, limit=1,
                                               remember=bool(ctx.task_id)), problem=True, limit=1)
+
+    def tracks():
+        from . import top1000
+        return top1000.digest_lines(ctx.policy, ctx.now)
+    add("tracks", tracks, limit=2)
     add("plans", lambda: plan_lines(ctx), limit=7)
 
 
@@ -2141,7 +2260,8 @@ def lane_lines(ctx: Ctx) -> list[str]:
         state = lanes.tranche_state(lane)
         if not tcfg and not state:
             continue
-        name = lane.replace("_", " ").capitalize()
+        name = lanes.name(lane)
+        name = name[:1].upper() + name[1:]
         if not state:
             out.append("%s lane: no tranche drawn yet (the first will be %d records)." % (name, tcfg["size"]))
             continue

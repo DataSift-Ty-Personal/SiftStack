@@ -8,7 +8,15 @@ an owner with a foreclosure and two rentals must not be texted by three programs
 lanes are ordered; the highest one any of an owner's records sits in wins and the owner's other
 records are held. Research is not a lane: it runs beside the lane while the owner is alive.
 
-    lead > heirs > hot_auction > ftm > obituary > priority1 > strong > bulk
+    lead > heirs > hot_auction > ftm > obituary > top1000 > agency
+
+TWO TRACKS (the owner's decision of 2026-11-13). Every record in the buy box is in exactly one:
+the Priority track, worked in-house through the whole sequence (texts, the call round, monthly
+mail, then research), is every first-to-market record (tag FTM) plus a scored Top 1,000 owners
+(tag Top 1000, kept by top1000.py), first to market on top; the agency track is everything else,
+sent once a month to a calling agency (agencyexport.py). The old Priority 1, Strong and Bulk
+lanes are gone: the Priority 1 and Priority 2 tags no longer decide a lane, and a record nothing
+higher claims is in the agency lane.
 
 ONE TIMELINE PER LANE. Each lane has one written timeline that every stage reads, so no two stages
 can disagree about what happens after the call round: when a channel opens is asked here, never
@@ -26,19 +34,19 @@ usable number, and a foreclosure (a notice lands a median 34 days before its sal
 once instead of on day 8.
 
 THE CHANNEL MAP (build plan 4.8). The same table is written for the lanes below first to market
-(CHANNEL_MAP): Priority 1 and Strong text first, call beside the texts, mail when the round ends
-and go to research at exhaustion; Bulk gets three texts, then the power dialer once a month to
-attempt 6, then six months of mail; a door knock is only ever for a sale a week out. A row there
-restricts nothing until the playbook switches it on for a lane (`timeline: true`, or a mapping of
-overrides), because a lane with no written timeline has always meant "not restricted" and stages
-already run that way.
+(CHANNEL_MAP): the Top 1,000 texts first, calls beside the texts, gets mail when the round ends
+(six pieces, not twelve) and goes to research at exhaustion; the agency lane is worked outside the
+building, so nothing is texted, called or mailed from here; a door knock is only ever for a sale a
+week out. A row there restricts nothing until the playbook switches it on for a lane (`timeline:
+true`, or a mapping of overrides), because a lane with no written timeline has always meant "not
+restricted" and stages already run that way.
 
-TRANCHES (build plan 4.1). The lanes below first to market hold thousands of records that are
-already in the account. Working all of them at once would be tens of thousands of texts and a
-scoring bill to match, so a lane is worked in tranches: a fixed set of records drawn once, and the next set is
-drawn only when the current one has been scored, texted and dialed. Which records are in a tranche
-is the autopilot's own memory (one fact per record), never a tag in the account. A lane may also
-carry its own daily caps, so the Strong lane cannot spend the first-to-market lane's budget.
+TRANCHES (build plan 4.1). A lane that holds thousands of records already in the account can be
+worked in tranches: a fixed set of records drawn once, and the next set drawn only when the current
+one has been scored, texted and dialed, so the whole backlog never becomes one bill. Which records
+are in a tranche is the autopilot's own memory (one fact per record), never a tag in the account.
+A lane may also carry its own daily caps, so one lane cannot spend another's budget. No lane in
+the two-track playbook uses a tranche (the Top 1,000 is bounded by its size); the machinery stays.
 """
 from __future__ import annotations
 
@@ -48,7 +56,15 @@ from datetime import date, datetime, timedelta, timezone
 
 from .. import store
 
-ORDER = ("lead", "heirs", "hot_auction", "ftm", "obituary", "priority1", "strong", "bulk")
+ORDER = ("lead", "heirs", "hot_auction", "ftm", "obituary", "top1000", "agency")
+# The lane a record is in when nothing higher claims it: the agency track.
+DEFAULT_LANE = "agency"
+# How a lane is named in a sentence a person reads ("top1000 lane cap" reads like a typo).
+NAMES = {"lead": "lead", "heirs": "heirs", "hot_auction": "hot auction", "ftm": "first-to-market",
+         "obituary": "obituary", "top1000": "Top 1,000", "agency": "agency"}
+# Lanes retired on 2026-11-13. A playbook or a remembered owner row that still names one is told
+# where the records went instead of being read as an unknown word.
+RETIRED = {"priority1": "top1000 or agency", "strong": "agency", "bulk": "agency"}
 
 # The statuses that mean "this owner is a lead", exactly as the account stores them (a search needs
 # the stored spelling; everything else compares in lower case).
@@ -65,8 +81,7 @@ DEFAULT_MARKERS = {
     "hot_auction": {"tags": ["Auction Soon"]},
     "ftm": {"tags": ["FTM"]},
     "obituary": {"tags": ["Obituary"], "lists": ["Obituary"]},
-    "priority1": {"tags": ["Priority 1"]},
-    "strong": {"tags": ["Priority 2"]},
+    "top1000": {"tags": ["Top 1000"]},
 }
 
 DEFAULT_TIMELINES = {
@@ -93,6 +108,8 @@ DOOR_KNOCK_DAYS = 7        # a door knock is only for a sale this close (decisio
 #   mail_after_round            mail opens only when the round is over, never on a day count
 #   calls_after_round           the hot auction lane keeps calling after the round, by task
 #   door_knock_days             how close a sale must be before a door knock
+#   outside                     the lane is worked by someone outside (the calling agency): no
+#                               text, call, mail or assignment goes out from here
 _COLD = {
     "round_ends_at": 5,
     "opening_texts": [0, 1, 2],
@@ -106,22 +123,15 @@ _COLD = {
 }
 CHANNEL_MAP = {
     "hot_auction": dict(DEFAULT_TIMELINES["ftm"], calls_after_round={"every_days": 2}, door_knock_days=DOOR_KNOCK_DAYS),
-    "priority1": dict(_COLD),
-    "strong": dict(_COLD),
-    "bulk": {
-        "round_ends_at": 6,                # monthly dials to attempt 6
-        "opening_texts": [0, 1, 2],        # three texts first
-        "call_days": [3],                  # then the power dialer
-        "call_every_days": 30,
-        "dial_mode": "power",
-        "mail_after_round": True,          # then six months of mail
-        "mail_every_days": 30,
-        "mail_pieces": 6,
-        "mail_at_once": [],
-        "followup_texts": {"count": 0},
-        "research_at": "exhaustion",
-    },
+    # The Top 1,000 is worked in-house on the first-to-market rhythm with the two rules that belong
+    # to a courthouse notice left out: no mail at once for a foreclosure (it has no sale date) and
+    # six pieces, not twelve (D7). Research waits for the call round, as on every scored list.
+    "top1000": dict(_COLD),
+    # The agency lane is called by an outside agency from the monthly file (agencyexport.py). Every
+    # in-house channel is closed, so a stage pointed at its records by mistake sends nothing.
+    "agency": {"outside": "the calling agency", "mail_pieces": 0, "followup_texts": {"count": 0}},
 }
+OUTSIDE_CLOSED = ("assign", "text", "call", "mail", "followup_text")
 # The facts that send a record to research at once on a lane whose research waits for exhaustion.
 # Two spellings of each are read, because the stages that ask do not all use the same words.
 RESEARCH_AT_ONCE = {"deceased": "a possible death", "possible_death": "a possible death", "no_number": "no number",
@@ -146,6 +156,10 @@ def parse(block: dict | None, problems: list[str]) -> Lanes:
     """The playbook's optional `lanes:` block over the defaults above."""
     out = Lanes()
     for name, cfg in (block or {}).items():
+        if name in RETIRED:
+            problems.append("lanes has %r, a lane retired on 2026-11-13 when the marketing became two tracks; "
+                            "its records are in %s now" % (name, RETIRED[name]))
+            continue
         if name not in ORDER:
             problems.append("lanes has %r (lanes are %s)" % (name, ", ".join(ORDER)))
             continue
@@ -173,7 +187,8 @@ def parse(block: dict | None, problems: list[str]) -> Lanes:
                 continue
             base = json.loads(json.dumps(written or DEFAULT_TIMELINES["ftm"]))
             base.update(tl)
-            if not isinstance(base.get("round_ends_at"), int) or base["round_ends_at"] < 1:
+            # A lane worked outside has no call round of ours to end.
+            if not base.get("outside") and (not isinstance(base.get("round_ends_at"), int) or base["round_ends_at"] < 1):
                 problems.append("lanes.%s.timeline.round_ends_at must be a whole number of call attempts" % name)
             out.timelines[name] = base
     return out
@@ -247,7 +262,8 @@ def status_of(rec: dict) -> str:
 
 
 def lane_of(rec: dict, cfg: Lanes | None = None) -> str:
-    """The lane ONE record puts its owner in, from its status, tags and lists."""
+    """The lane ONE record puts its owner in, from its status, tags and lists. A record no higher
+    lane claims is in the agency lane: the agency track is everything else in the buy box."""
     cfg = cfg or Lanes()
     if status_of(rec) in LEAD_STATUSES:
         return "lead"
@@ -258,15 +274,27 @@ def lane_of(rec: dict, cfg: Lanes | None = None) -> str:
             continue
         if tags & {t.lower() for t in m.get("tags", [])} or lists & {t.lower() for t in m.get("lists", [])}:
             return lane
-    return "bulk"
+    return DEFAULT_LANE
+
+
+def name(lane: str) -> str:
+    """The lane as a person reads it in a sentence."""
+    return NAMES.get(lane, str(lane or "").replace("_", " "))
 
 
 def rank(lane: str) -> int:
-    return ORDER.index(lane) if lane in ORDER else len(ORDER)
+    """A lane's place in the order. A retired name (an owner row from before 2026-11-13 that the
+    nightly check has not rewritten yet) ranks with the agency lane, the lane its records went to;
+    anything else unknown ranks last."""
+    if lane in ORDER:
+        return ORDER.index(lane)
+    if lane in RETIRED:
+        return ORDER.index(DEFAULT_LANE)
+    return len(ORDER)
 
 
 def top_lane(lanes: list[str]) -> str:
-    return min(lanes, key=rank) if lanes else "bulk"
+    return min(lanes, key=rank) if lanes else DEFAULT_LANE
 
 
 # ---------------------------------------------------------------------- the owner's lane, remembered
@@ -349,6 +377,12 @@ def channel_open(cfg: Lanes, lane: str, channel: str, day: int, counter: int = 0
         return False, "a door knock is only for a sale inside %d days" % limit
     if not tl:
         return True, ""
+    if tl.get("outside"):
+        # The agency lane: the agency dials from the monthly file. A text, a call, a letter or a
+        # caller assignment from here would be a second program on the same owner.
+        if channel in OUTSIDE_CLOSED:
+            return False, "%s works this lane; nothing goes out from here" % tl["outside"]
+        return True, ""
     ends = int(tl.get("round_ends_at", 5))
     over = counter >= ends
     if channel == "research":
@@ -414,6 +448,9 @@ def describe(cfg: Lanes, lane: str) -> list[str]:
     tl = cfg.timeline(lane)
     if not tl:
         return ["%s has no written timeline yet." % lane]
+    if tl.get("outside"):
+        return ["Worked by %s: nothing is texted, called or mailed from here." % tl["outside"],
+                "Owners are sent once a month by the agency export stage, the highest scored first."]
     fu = tl.get("followup_texts") or {}
     calls = tl.get("call_days") or [1]
     texts = ", ".join(str(x) for x in tl.get("opening_texts") or [])

@@ -659,7 +659,7 @@ def _opening_checks(check, *, store, activity, ledger, lanes, limits, policy, sc
           "text 3 goes out on day 2, and the record's counter reads three")
     s = sweep.run("t_open", crm=crm, now=at(12), pol=pol)
     check(not s.batch and s.tally["opening texts closed for the record (past day 2 of the lane)"] == 1
-          and "No owner in the ftm lane is due an opening text" in s.head, "on day 3 the table has closed the opening texts")
+          and "No owner in the first-to-market lane is due an opening text" in s.head, "on day 3 the table has closed the opening texts")
     before = (crm.reads, crm.log_reads)
     sweep.run("t_open", crm=crm, now=at(13), pol=pol)
     check((crm.reads, crm.log_reads) == before, "a record whose series is over is remembered and never read again")
