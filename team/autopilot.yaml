@@ -93,11 +93,18 @@ stages:
     # Three pipelines (2026-11-14): county records on this board, the Top 1,000 on its own presets,
     # the agency outside. A probate or obituary record waits in Research for a decision maker with a
     # number; a record whose owner is known starts at Day 1. A day without its full attempt holds the
-    # card. Any lead status takes the card off the board. Before going live: run the account tool
-    # (python src/agents/autopilot/pipelines.py plan, then apply) and put the column ids it prints
-    # under column_ids.
+    # card. Any lead status takes the card off the board. The board and its columns were made in ty+2
+    # on 2026-11-14 by the account tool (python src/agents/autopilot/pipelines.py apply); a new board
+    # has no card to learn its columns from, so their ids are named here.
     board: First to Market
-    column_ids: {}
+    column_ids:
+      Research: 192530d0-df7a-4913-ac01-03daed2117c8
+      Day 1: 74eea44b-0c5d-4ba1-ac3c-aa6eb7f6799f
+      Day 2: fa74c458-628a-47a7-9652-52d990781267
+      Day 3: 4af134a4-065a-4e46-85e7-b66c86b91440
+      Day 4: 054af843-5346-4aca-a840-2da9113a817a
+      Day 5: 226962ac-e67c-465f-8bc7-7756f7d0d861
+      Exhausted: 76f760fd-2152-40b7-a1c7-23a901657743
     presets:
       - FTM - 00 Needs Skipped
       - FTM - 01 Skipped No Numbers
