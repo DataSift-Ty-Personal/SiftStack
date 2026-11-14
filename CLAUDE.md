@@ -1481,6 +1481,27 @@ Ty, 11-13: "in the way that we use the comping workflow to paste in a boundary a
 
 **Traps met:** the clock fires only LIVE roster workflows, so a schedule on a planned entry is description; a helper named `test` in a test file is collected by pytest as a test (`fixture 'fn' not found`); a check that uses a workflow as its "planned" example breaks the day that workflow goes live (`selftest_team` now flips the status in the test instead).
 
+## Marketing in Two Tracks: Priority and Agency (build 1.0.70, 2026-11-13)
+
+Ty, 11-13, approved: "Go ahead and restructure it with the new proposed version." Every record sits in exactly ONE track. Commit 8de0c70; tests in `selftest_restructure` (99) and `selftest_tracks` (84).
+
+- **Priority** is worked in-house through the full sequence, Smarter Contact texts first, then the call round, then monthly mail, then deep prospecting. It holds every first-to-market record (tag `FTM`) plus the **Top 1,000** (tag `Top 1000`, by OWNER, so a portfolio owner is one slot). First-to-market sits on top of the 1,000.
+- **Agency** is everything else in the buy box. Each month the top 5,000 owners not sent in the last 90 days go to the calling agency in the October file format (`agency_call_list.py`'s exporter). Sent records go on ONE list, `Agency`, with a DATE field, `Sent to Agency`, never monthly tags. Nothing in-house texts, calls or mails this track.
+
+**Account (ty+2), applied 11-13 by `src/agents/autopilot/restructure.py`** (`plan`, then `apply --plan <file> --commit` with `RESTRUCTURE_ALLOW=1`; the backup is `output/backups/presets_ty2_2026-11-13_before_restructure.json`; `undo --log output/autopilot/restructure/applied_2026-11-13.jsonl --commit` reverses it). A re-plan proposes nothing.
+- New folders: `01. PRIORITY - TEXT` (Ready to Text, Texted Not Yet Called), `02. PRIORITY - CALL` and `03. PRIORITY - MAIL`, and `04. AGENCY` (`Agency - 01 Queue`, `02 Sent`, `03 Came Back`). The Priority CALL and MAIL presets are the first-to-market presets with ONE change: the anchor widened to `any_tags: [FTM, Top 1000]`. Two titles in `any_tags` mean OR, proven by count (FTM 1,155, Priority 1 5,691, either 6,754).
+- The 8 Hottest, Strong, FTM and Bulk folders were renamed `99. Archive - <old name>`, titles kept, so anything reading a preset by title still works.
+- Strong and Bulk turned out to have identical bases, so there is ONE agency queue. Day-one counts: Priority Ready to Call 501, Ready to Text 331, Mail 01 588, Agency Queue 19,579.
+- **A custom date field cannot be a preset filter.** The search answers a list under `custom_fields` with a 400, and a bare machine name is ignored. So the queue leaves out the whole Agency list, and the 90-day resend rule lives in code.
+
+**Autopilot.**
+- Lanes are lead, heirs, hot_auction, ftm, obituary, top1000, agency. `agency` is `outside`: no in-house assign, text, call or mail. Every Hottest, Strong and Bulk stage is `off`.
+- `top1000_refresh` (kind `top1000`, Atlas, the 1st of the month) sweeps SiftMap search rows for houses already in the account, in bands with offset paging. It scores with the Dream 100 score; a missing component is dropped and the rest rescaled, and the run says how many owners were scored that way. It reads only the finalists in full and ranks by owner. Excluded: FTM, live leads, finished statuses, DNM, litigators, sold, upside down, over $700K, and the Obituary list (that lane ranks above). Live, it adds and removes the tag with every change in the undo log. First population from the box: `python -m agents.autopilot.top1000 plan|apply --commit` with `TOP1000_ALLOW=1`.
+- `agency_export` (kind `agencyexport`, Quinn) waits for the month's Top 1,000, ranks the rest, and stages a FILE batch of kind `agency`. `confirm N` re-checks; `confirm N uploaded`, after the file has gone to the agency, marks the records. Numbers the registry scrub has seen are held out (D32, `registry_numbers: hold`). The 90-day memory was seeded 11-13 from the October file (10,493 owners as sent 2026-10-19) with `python -m agents.autopilot.agencyexport remember --csv <file> --day <date>`.
+- The Priority text, call, attempt, assign and mail stages read the Priority presets and work each record by its OWN lane (`stages.record_lane`), so the first-to-market rules reach first-to-market records only. Undo now reverses a list add.
+
+**Box traps met:** the brain image has no `pgrep`, `ps` or `kill` binary, and `fly ssh console -C` runs without a shell (wrap builtins in `sh -c`). A long job is started as `setsid -f sh -c 'exec python -u ... > /data/<log> 2>&1 < /dev/null'` and watched through `/proc` (a two-line script, `/tmp/box_procs.py` style). A plain `setsid` plus `&` left a job whose state the missing `pgrep` misreported as finished.
+
 ## DataSift Open API: the published contract (2026-11-11)
 
 DataSift publishes the API SiftStack had been reverse-engineering: https://developers.datasift.ai (guides + reference; OpenAPI bundles at `/_bundle/apis/datasift.yaml`, DataSift API 2.0 on apiv2.reisift.io, 287 operations, and `/_bundle/apis/siftmap.yaml`, SiftMap 1.0, 15). Most routes we found in the app bundle are now documented under `/api/internal/`. Rules that bind every integration, skill and agent (Acceptable use is part of the Terms):
