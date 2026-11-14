@@ -40,7 +40,7 @@ The whole team also listens in #ai-team.
 | second_chances | Every Not Interested record gets a task to call its Correct number again, on the clock its list sets. | schedule (08:40 Mon-Fri), ask in Slack | free | live |
 | caller_book | Each caller gets a book of new Priority 1 records on Monday morning, and nothing more until the next Monday. | schedule (Mon 07:30), ask in Slack | free | live |
 | probate_honest | Probate kept honest as a list a person approves, flagged addresses by the measured split, old probates to mail only, a no called again at 45 days. | schedule (Mon 07:40), ask in Slack | free | live |
-| top1000_refresh | The Top 1,000 owners re-ranked once a month by the Dream 100 score, one owner one slot; who would gain and lose the tag is listed, with the ranking as a file. | schedule (1st 00:20), schedule (1st 03:20), schedule (2nd 00:20), schedule (3rd 00:20), ask in Slack | free | live |
+| top1000_refresh | The Top 1,000 owners re-ranked once a month on deal odds (the chance an investor buys one of their houses within six months, learned from what sold), one owner one slot; who would gain and lose the tag is listed, with the ranking as a file. | schedule (1st 00:20), schedule (1st 03:20), schedule (2nd 00:20), schedule (3rd 00:20), ask in Slack | free | live |
 
 ### Diggs (Research)
 
