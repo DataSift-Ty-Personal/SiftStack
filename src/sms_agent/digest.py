@@ -80,8 +80,25 @@ def collect(days: int = 1) -> dict:
         )
     ]
 
+    # The build plan's additions. Each is absent unless its switch is on, so the digest reads
+    # exactly as it did until somebody turns one on.
+    extras: dict = {}
+    if config.RATE_BUDGET:
+        from . import ratebudget
+
+        extras["budget"] = ratebudget.line()
+    if config.REST_FLAGGED:
+        from . import numberhealth
+
+        extras["resting"] = sorted(numberhealth.resting())
+    if config.OWNER_REVOKE or config.SEND_RECHECK != "off":
+        extras["pulled"] = scalar(
+            "SELECT COUNT(*) FROM outbox WHERE status='cancelled' AND created_at>=?"
+            " AND (error LIKE 'pulled:%' OR error LIKE 'held at release:%')", since)
+
     return {
         "window_days": days,
+        "extras": extras,
         "inbound": inbound,
         "sent": sent,
         "intents": intents,
@@ -126,6 +143,13 @@ def render(data: dict) -> str:
         f"Pool: {cap['sent_today']} of {cap['capacity']} used today"
         f" across {cap['numbers']} number(s)"
     )
+    extras = data.get("extras") or {}
+    if extras.get("resting"):
+        lines.append(f"Resting numbers: {len(extras['resting'])} ({', '.join(extras['resting'][:6])})")
+    if extras.get("pulled"):
+        lines.append(f"Pulled before sending because the owner or the record changed: {extras['pulled']}")
+    if extras.get("budget"):
+        lines.append(extras["budget"])
 
     # The queue. This is the half that needs a person.
     lines.append("")

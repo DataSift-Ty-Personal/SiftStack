@@ -11,6 +11,7 @@ doing nothing.
 """
 from __future__ import annotations
 
+import json
 import re
 import tempfile
 from dataclasses import dataclass, field
@@ -88,6 +89,46 @@ def run(live_model: bool = False) -> int:
     stub = _Stub()
     r = Results()
 
+    # ---- nothing in this run may reach the network ----------------------
+    # The CRM WRITES below were always stubbed. The READS were not: until 2026-11-13 an unmapped
+    # number or an invented record id went out to the live account as a real search or a real
+    # GET, a dozen times a run (each a 404), from a suite whose first line says it is offline.
+    # Two fixes. The CRM client is replaced by one that answers every unstubbed read the way the
+    # account answered an invented id, with nothing. And the socket itself refuses anything but
+    # this machine, so a path nobody thought of fails here instead of quietly calling out; the
+    # last check of the run asserts that never happened.
+    import socket as _socket
+
+    stub.crm_reads, stub.network = [], []
+
+    class _OfflineCRM:
+        def _request(self, path, *a, **k):
+            stub.crm_reads.append(str(path))
+            raise RuntimeError("selftest: no such record (DataSift is never reached from a test)")
+
+        def get_record(self, uuid):
+            return self._request(f"/api/internal/property/{uuid}/")
+
+        def __getattr__(self, name):
+            def _nothing(*a, **k):
+                return self._request(f"<{name}>")
+            return _nothing
+
+    stub.offline_crm = _OfflineCRM()
+    crm.client = lambda: stub.offline_crm
+    _real_connect = _socket.socket.connect
+
+    def _local_only(sock, address, *a, **k):
+        host = address[0] if isinstance(address, tuple) else str(address)
+        if str(host) not in ("127.0.0.1", "::1", "localhost"):
+            stub.network.append(str(host))
+            raise OSError(f"selftest: the network is off, and something tried {host}")
+        return _real_connect(sock, address, *a, **k)
+
+    if not live_model:
+        # --live-model is the one mode that is meant to call out (to Claude, for a few cents).
+        _socket.socket.connect = _local_only
+
     # ---- stub every outbound edge -------------------------------------
     transport.send = lambda to, body, frm="": (
         stub.sent.append((to, body, frm)) or smrtphone.SendResult(True, sms_id="stub")
@@ -99,9 +140,11 @@ def run(live_model: bool = False) -> int:
     # string) and record the routing program alongside, so a hot BUYER
     # lead posted to the seller channel is a visible test failure.
     stub.slack_programs = []
+    stub.slack_blocks = []
     escalate._post = lambda text, blocks=None, program="": (
         stub.slack.append(text)
         or stub.slack_programs.append(program or "seller")
+        or stub.slack_blocks.append(blocks or [])
         or True)
     for name in ("add_tags", "add_list", "set_status", "post_note", "assign", "bump_sms_attempts"):
         setattr(
@@ -117,6 +160,9 @@ def run(live_model: bool = False) -> int:
     # is asserted separately below against ALLOWED_DIAL_TIERS.
     crm.dial_tier_checked = lambda uuid, phone: ("Dial First", True)
     crm.dial_tier = lambda uuid, phone: "Dial First"
+    # A land record's pinned deal card is read for the Slack handoff only. Zero network: none by default.
+    stub.land_cards = {}
+    crm.land_deal_card = lambda uuid: stub.land_cards.get(uuid, "")
     crm.deal_context = lambda uuid: {
         "owner_first": "Maron", "street": "158 Old State Rd", "city": "Maryville",
         "county": "Blount", "assigned_name": "Adriana", "record_uuid": uuid,
@@ -413,13 +459,28 @@ def run(live_model: bool = False) -> int:
     for i, ph in enumerate(("3109991447", "8650001212", "8650001313", "8650001414")):
         store.queue_message(ph, f"layout probe {i}", from_number=f"+186527300{i:02d}",
                             status="held")
-    laid = seed.reschedule_held()
+    # The window is PINNED rather than read off the wall clock: the Los Angeles
+    # number is closed for the next three hours and every other number is open.
+    # Against the real clock this check failed every evening, because after 6pm
+    # Eastern our own business window is shut and nothing goes "now".
+    from datetime import timedelta as _td
+    _wq_was = sender_pool.within_quiet_hours
+    _west_opens = _dt.now(_tz.utc) + _td(hours=3)
+    sender_pool.within_quiet_hours = lambda phone, at=None: (
+        not store.clean_phone(phone).startswith("310")
+        or (at or _dt.now(_tz.utc)) >= _west_opens)
+    try:
+        laid = seed.reschedule_held()
+    finally:
+        sender_pool.within_quiet_hours = _wq_was
     r.check("every staged message is laid out", laid["rescheduled"] >= 4, str(laid))
     rows = list(store._conn().execute(
         "SELECT phone, not_before FROM outbox WHERE body LIKE 'layout probe%'"))
     times = {x["phone"]: x["not_before"] for x in rows}
     east = sorted(v for k, v in times.items() if k.startswith("865"))
     west = times.get("3109991447")
+    r.check("the western recipient still waits for its own window",
+            bool(west) and bool(east) and west > east[-1], f"west={west} east={east}")
     now_iso = _dt.now(_tz.utc).isoformat(timespec="seconds")
     # The real property: an Eastern recipient goes NOW, whatever the western one
     # has to wait for. Asserting east < west only holds while Los Angeles is
@@ -478,7 +539,12 @@ def run(live_model: bool = False) -> int:
     store.update_conversation("8650006666", record_uuid="rec-6666", state="active")
     store.queue_message("8650006666", "counter probe", from_number="+18650000001")
     from . import worker as _w2
-    _w2.drain_outbox(limit=5)
+    _wq_was = sender_pool.within_quiet_hours  # open window, or after 6pm nothing sends
+    sender_pool.within_quiet_hours = lambda phone, at=None: True
+    try:
+        _w2.drain_outbox(limit=5)
+    finally:
+        sender_pool.within_quiet_hours = _wq_was
     config.DRY_RUN = _dry_was
     stub.sent[:] = _sent_was  # the probe is ours, not part of the dry-run check
     with store.tx() as _c:
@@ -1691,6 +1757,15 @@ def run(live_model: bool = False) -> int:
             ("c-hot", "grp-t2") in stub.sc_pulled and ("c-ni", "grp-t2") in stub.sc_pulled, str(stub.sc_pulled[-4:]))
     r.check("SC hot-lead post links straight to the Smarter Contact conversation",
             "app.smartercontact.com/messenger-full/c-hot" in stub.slack[-1], stub.slack[-1][:300])
+    r.check("a hot lead with no land card posts no land block",
+            not any("Land deal card" in json.dumps(b) for b in stub.slack_blocks[-1]), str(stub.slack_blocks[-1])[:300])
+    card = "\n".join(["Land deal card (test)", "Offer range: $204,000-$240,000.",
+                      "Builders who fit: none matched yet."])
+    escalate.hot_lead(ar["hot"], "Sure am, what are you offering?", "INTERESTED", hot_ctx, land_card=card)
+    land_block = stub.slack_blocks[-1][-1] if stub.slack_blocks[-1] else {}
+    r.check("land hot lead attaches the deal card as its own block, flagged internal in the text",
+            "Offer range: $204,000" in json.dumps(land_block) and "never quote them by text" in stub.slack[-1]
+            and "$204,000" not in stub.slack[-1], json.dumps(land_block)[:300])
 
     writes_before = len(stub.crm_writes)
     sc2(ar["stop"], "I'm a Realtor! Stop", "c-stop")
@@ -2100,6 +2175,21 @@ def run(live_model: bool = False) -> int:
             config.ALLOWED_IPS = []
     except ImportError as exc:
         r.check("fastapi TestClient available", False, str(exc))
+
+    # ---- 13. the build plan's texting packages (2026-11-13) ---------------
+    # The gate, the one table for every no, owner-wide revocation, the request budget, the
+    # touch feed, a hand raise becoming a New Lead, the call-is-coming text and number health.
+    # Each sits behind a switch that is off by default, so this section turns one on at a time
+    # and puts it back. It lives in its own module to keep this file readable.
+    from . import selftest_texting
+
+    selftest_texting.run(r, stub)
+
+    if not live_model:
+        print("\nno network")
+        r.check("nothing in this run reached the network", not stub.network,
+                f"tried: {sorted(set(stub.network))[:5]}")
+    _socket.socket.connect = _real_connect
 
     print()
     return r.report()

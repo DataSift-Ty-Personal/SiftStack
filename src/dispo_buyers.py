@@ -17,7 +17,14 @@ That is what this builds, in phases, each resumable and DRY by default:
     skipinput   project the registry into a SmartSkip upload        (free)
     phones      join the SmartSkip return back onto buyer_key         (free)
     score       Trestle dial tiers (--source registry|preset)         (BILLED)
+    rules       what the taught deed rules would change               (free, writes nothing)
     qa          the gate table
+
+How a deed is read is a named ruleset (see RULESETS below). `today` is the default and reads
+every deed as this file always has; `--rules taught` adds the rules from the buyer lessons
+(institutions by count, a flip within 18 months, back-to-back companies, a loan standing in
+for a missing price, new construction left out of flips). `--phase rules` shows the before
+and after from the cache without writing anything.
 
 The order of the two principal phases is the whole cost story: an LLC's mailing
 address is usually a person's house, so reversing it through the map we already
@@ -77,11 +84,44 @@ from enterprise_prospects import (  # noqa: E402
     ENTITY_RX, ORG_RX, SearchClient, WORLD, _match_candidate, classify_one,
     county_address, norm_name, strip_unit,
 )
+# The principal rules live beside the BusinessV2 client (both principal finders use them); they
+# are imported back here so every phase and test reads them by the same names as before.
+from enformion_business import (  # noqa: E402,F401
+    AGENT_FRONT_RX, FIRM_RX, OWNER_TITLES, PLACEHOLDER_NAMES, STATUS_TOKENS,
+    _is_human, _officer_in_state, person_first_last, principal_confidence, rank_officers, split_mail,
+)
 
 log = logging.getLogger("dispo_buyers")
 
-OUT = OUTPUT_ROOT / "dispo_buyers"
+# The registry's folder is a setting (DISPO_BUYERS_DIR) with the repo's output/ as the default. The
+# agents brain keeps it on its own volume through use_dir(): output/ inside the image is wiped by
+# every deploy, and losing details.json means reading thousands of deeds again.
+OUT = Path(os.environ.get("DISPO_BUYERS_DIR") or (OUTPUT_ROOT / "dispo_buyers"))
 STATE_PATH = OUT / "state.json"
+
+
+def use_dir(path) -> Path:
+    """Point every phase at another folder. Phases read OUT and STATE_PATH when they run, so
+    rebinding the two is all it takes (the tests have always done the same)."""
+    global OUT, STATE_PATH
+    OUT = Path(path)
+    STATE_PATH = OUT / "state.json"
+    OUT.mkdir(parents=True, exist_ok=True)
+    return OUT
+
+
+class KeyOnlySearch(SearchClient):
+    """The SiftMap search with no password fallback.
+
+    SearchClient answers a refused key by minting a token from DATASIFT_EMAIL and the password.
+    The agents brain carries no password and a user's install never will, so a refused key here is
+    an error that names the key, never a quiet switch to another login."""
+
+    def _bearer(self):
+        raise RuntimeError("SiftMap refused the Open API key (REISIFT_API_KEY); this client does not "
+                           "fall back to a password token")
+
+
 
 K_TXN = "extra_last_sale_investor_transaction_type"
 
@@ -104,6 +144,140 @@ UNIT_MARK_RX = re.compile(r"\b(STE|SUITE|UNIT|APT|BLDG|FL|FLOOR|PMB|RM)\b", re.I
 STREET_WORD_RX = re.compile(
     r"\b(STREET|ST|ROAD|RD|DRIVE|DR|LANE|LN|AVENUE|AVE|BOULEVARD|BLVD|COURT|"
     r"CT|CIRCLE|CIR|PIKE|PKWY|PARKWAY|WAY|TRAIL|TRL|PLACE|PL)\b")
+
+
+# ---------------------------------------------------------------- rules ----
+# How a deed is read, by name (build plan 5.6). "today" is the registry as it has always been
+# built. "taught" adds the rules from the buyer lessons:
+#
+#   institution_buys_6mo  a buyer with this many purchases in six months is an institution whatever
+#                         its name says. The name lists catch Opendoor; they cannot catch a fund
+#                         that buys through "Maple 14 LLC". 0 switches the rule off.
+#   flip_months           a flip is a purchase resold within this many months. A house an entity
+#                         held for eight years and then sold is a landlord's sale, and counting it
+#                         as a flip puts a 2016 purchase price in a flipper's buy box.
+#   double_close_days     two entities back to back on the deeds, this many days apart or fewer,
+#                         are a wholesaler and then the buyer. The first never held the house.
+#   loan_as_price         where the deed carries no price, the buyer's loan recorded with it stands
+#                         in (it is close to the truth and often includes the rehab), and says so.
+#   flip_built_by         a "flip" of a house built after this year is a builder selling new
+#                         construction, so it is not read as a flip.
+#
+# Nothing here is on by default: each rule moves buyers between types on a list the deal blast
+# already runs on, so it is switched on by name (--rules taught, or DISPO_BUYER_RULES=taught) once
+# the before and after has been read (--phase rules prints it and writes nothing).
+RULESETS = {
+    "today": {"institution_buys_6mo": 0, "flip_months": 0, "double_close_days": 0,
+              "loan_as_price": False, "flip_built_by": 0},
+    "taught": {"institution_buys_6mo": 100, "flip_months": 18, "double_close_days": 30,
+               "loan_as_price": True, "flip_built_by": 2010},
+}
+DEFAULT_RULES = "today"
+RULES_ENV = "DISPO_BUYER_RULES"
+SIX_MONTHS_DAYS = 182
+LOAN_MATCH_DAYS = 45           # a purchase loan is recorded with its deed, give or take the clerk
+LOAN_LOOKBACK_DAYS = 730       # with no purchase deed in the history, how far back a flipper's loan may sit
+_ACTIVE = {"name": ""}         # set from --rules; empty means the environment, then the default
+
+
+def rules_name(name: str | None = None) -> str:
+    chosen = (name or _ACTIVE["name"] or os.environ.get(RULES_ENV) or DEFAULT_RULES).strip().lower()
+    if chosen not in RULESETS:
+        raise ValueError("unknown ruleset %r (use %s)" % (chosen, " or ".join(sorted(RULESETS))))
+    return chosen
+
+
+def rules_for(name: str | None = None) -> dict:
+    """The named ruleset as its own dict, with its name on it."""
+    return dict(RULESETS[rules_name(name)], name=rules_name(name))
+
+
+def _day(value):
+    """A date from 'YYYY-MM-DD...' or None. A deed date that cannot be read is unknown, never today."""
+    from datetime import date
+    try:
+        return date.fromisoformat(str(value)[:10])
+    except (TypeError, ValueError):
+        return None
+
+
+def _days_between(first, second):
+    a, b = _day(first), _day(second)
+    return (b - a).days if a and b else None
+
+
+def six_month_buys(obs: list, today=None, days: int = SIX_MONTHS_DAYS) -> int:
+    """Purchases dated inside the last six months. A holder bought on the deed that made them the
+    owner; an exited flipper bought on the deed before the exit, and a resale date is not a
+    purchase. An observation with no readable purchase date is not counted."""
+    from datetime import date, timedelta
+    cut = (today or date.today()) - timedelta(days=days)
+    n = 0
+    for o in obs:
+        when = _day(o.get("date") if o.get("role") == "holder" else o.get("buy_date"))
+        if when and when >= cut:
+            n += 1
+    return n
+
+
+def is_flip(buy_date, exit_date, months: int):
+    """True when the resale came within `months` of the purchase, False when it came later, None
+    when either date is missing (the label is then all there is to go on)."""
+    held = _days_between(buy_date, exit_date)
+    if held is None or held < 0:
+        return None
+    return held <= months * 30.44
+
+
+def _same_party(a: str, b: str) -> bool:
+    return bool(a and b) and norm_name(a) == norm_name(b)
+
+
+def _loan_near(mortgages: list, borrower: str, when, days: int = LOAN_MATCH_DAYS):
+    """The borrower's loan recorded within `days` of a deed: the one closest in time."""
+    best = None
+    for m in mortgages or []:
+        gap = _days_between(when, m.get("date"))
+        amount = m.get("amount")
+        if gap is None or abs(gap) > days or not isinstance(amount, (int, float)) or amount <= 0:
+            continue
+        if not _same_party(m.get("borrower") or "", borrower):
+            continue
+        if best is None or abs(gap) < best[0]:
+            best = (abs(gap), m)
+    return best[1] if best else None
+
+
+def _first_loan_before(mortgages: list, borrower: str, before, lookback: int = LOAN_LOOKBACK_DAYS):
+    """With no purchase deed in the history: the borrower's earliest loan on this house in the
+    `lookback` days before they sold it. That is the loan they bought it with, or close to it."""
+    found = []
+    for m in mortgages or []:
+        gap = _days_between(m.get("date"), before)
+        amount = m.get("amount")
+        if gap is None or gap < 0 or gap > lookback or not isinstance(amount, (int, float)) or amount <= 0:
+            continue
+        if _same_party(m.get("borrower") or "", borrower):
+            found.append((str(m.get("date")), m))
+    return sorted(found, key=lambda x: x[0])[0][1] if found else None
+
+
+def _middleman(sh: list, at: int, days: int):
+    """The deed pair that makes a double closing, or None. `sh[at]` is the deed the observed buyer
+    bought on; if its seller bought the house on the deed before it, `days` or fewer earlier, and
+    both are companies, the seller only passed the contract along."""
+    if not days or at + 1 >= len(sh):
+        return None
+    buy, prior = sh[at], sh[at + 1]
+    seller, buyer = (buy.get("seller") or "").strip(), (buy.get("buyer") or "").strip()
+    if not seller or not buyer or not _same_party(prior.get("buyer") or "", seller):
+        return None
+    if _same_party(seller, buyer) or not (_is_entity(seller) and _is_entity(buyer)):
+        return None
+    gap = _days_between(prior.get("date"), buy.get("date"))
+    if gap is None or gap < 0 or gap > days:
+        return None
+    return {"name": seller, "bought": prior, "sold": buy, "days": gap}
 
 
 # ---------------------------------------------------------------- state ----
@@ -145,7 +319,7 @@ def gate(ok: bool, msg: str) -> None:
 # ---------------------------------------------------------------- sweep ----
 
 def _body(fips: str, name: str, state_ab: str, txn: str, page: int,
-          collapse: bool, since: str = "") -> dict:
+          collapse: bool, since: str = "", built_by: int = 0) -> dict:
     filters = {
         "type_single_family": True,
         K_TXN: [txn],
@@ -153,6 +327,13 @@ def _body(fips: str, name: str, state_ab: str, txn: str, page: int,
         "extra_last_sale_value_min": 1000,
         "extra_is_last_sale_interfamily": False,
     }
+    if built_by and txn in EXIT_TYPES:
+        # A flip search with no age floor returns builders selling new houses (the lesson asks for
+        # built 2010 or older). The key is in the published filter reference; the plain
+        # year_built_max spelling measured as ignored on saved filters (2026-09). The sweep proves
+        # the key with a count before it trusts it, and each property's own year built is checked
+        # again when the deed is read.
+        filters["extra_year_built_max"] = int(built_by)
     if since:
         # Verified by count delta 2026-08-28: Knox 6,912 unbounded drops to
         # 1,151 at 12 months, while a deliberately bogus key returns the
@@ -171,11 +352,29 @@ def _body(fips: str, name: str, state_ab: str, txn: str, page: int,
     }
 
 
+def _year_filter_proven(sc, fips: str, name: str, st: str, txn: str, collapse: bool, since: str,
+                        built_by: int) -> bool:
+    """One extra count, with the year key and without it. SiftMap ignores a key it does not know
+    and answers as if it were not there, so the only proof a filter works is a count that moves."""
+    if not built_by or txn not in EXIT_TYPES:
+        return True
+    with_key = sc.search(_body(fips, name, st, txn, 1, collapse, since, built_by)).get("total_results") or 0
+    without = sc.search(_body(fips, name, st, txn, 1, collapse, since)).get("total_results") or 0
+    if without and with_key >= without:
+        log.warning("%s:%s the built-by-%s filter did not change the count (%s both ways); it may be "
+                    "ignored. Each property's own year built is still checked.", name, txn, built_by, without)
+        return False
+    log.info("%s:%s built by %s: %s of %s", name, txn, built_by, with_key, without)
+    return True
+
+
 def phase_sweep(args) -> None:
-    sc = SearchClient(min_interval=args.min_interval)
+    sc = getattr(args, "search_client", None) or KeyOnlySearch(min_interval=args.min_interval)
     rows_path = OUT / "rows.json"
     store = _load(rows_path, {})
     counts: dict = {}
+    built_by = rules_for()["flip_built_by"]
+    each = bool(getattr(args, "each_purchase", False))
 
     for fips, name, st in COUNTIES:
         for txn in ALL_TYPES:
@@ -187,12 +386,15 @@ def phase_sweep(args) -> None:
             # Hold types collapse to one row per owner, which is exactly the
             # aggregation. Exit types must NOT collapse: we need each sale so
             # the seller (the flipper) can be read off its history.
-            collapse = txn in HOLD_TYPES
+            # --each-purchase keeps one row per purchase for the hold types too, which is what
+            # counting a buyer's purchases needs (and costs that many more detail reads).
+            collapse = txn in HOLD_TYPES and not each
+            _year_filter_proven(sc, fips, name, st, txn, collapse, "", built_by)
             seen: dict = {}
             page = 1
             total = None
             while True:
-                r = sc.search(_body(fips, name, st, txn, page, collapse))
+                r = sc.search(_body(fips, name, st, txn, page, collapse, built_by=built_by))
                 if total is None:
                     total = r.get("total_results") or 0
                     log.info("%s: %s total%s", key, total,
@@ -246,7 +448,8 @@ def phase_sweep(args) -> None:
     total_rows = sum(counts.values())
     uniq = len({r["id"] for v in store.values() for r in v})
     gate(total_rows > 0, "sweep returned zero rows across both counties")
-    mark_done("sweep", per_segment=counts, rows=total_rows, unique_ids=uniq)
+    mark_done("sweep", per_segment=counts, rows=total_rows, unique_ids=uniq,
+              **({"each_purchase": True} if each else {}))
     print(json.dumps(counts, indent=1))
     print("sweep: " + str(total_rows) + " rows, " + str(uniq) + " unique properties")
 
@@ -267,20 +470,22 @@ def _since(days: int) -> str:
 
 
 def phase_recent(args) -> None:
-    sc = SearchClient(min_interval=args.min_interval)
+    sc = getattr(args, "search_client", None) or KeyOnlySearch(min_interval=args.min_interval)
     since = _since(args.recent_days)
     details = _load(OUT / "details.json", {})
     rows_path = OUT / "recent_rows.json"
     store: dict = {}
     log.info("qualifying window: last sale on or after %s", since)
 
+    built_by = rules_for()["flip_built_by"]
+    each = bool(getattr(args, "each_purchase", False))
     for fips, name, st in COUNTIES:
         for txn in ALL_TYPES:
-            collapse = txn in HOLD_TYPES
+            collapse = txn in HOLD_TYPES and not each
             seen: dict = {}
             page, total = 1, None
             while True:
-                r = sc.search(_body(fips, name, st, txn, page, collapse, since))
+                r = sc.search(_body(fips, name, st, txn, page, collapse, since, built_by))
                 if total is None:
                     total = r.get("total_results") or 0
                 batch = r.get("data") or []
@@ -391,25 +596,56 @@ def _hydrate_one(smc: SiftMapClient, rid: str) -> dict:
                           "buyer": s.get("buyer_name"),
                           "seller": s.get("seller_name"),
                           "cash": s.get("is_cash_sale")} for s in sh[:4]],
+        # Two more things the same read already returns, kept so the taught rules can use them
+        # without a second request: the loans recorded against the house (a loan stands in for a
+        # deed price that is missing) and the year it was built (new construction is not a flip).
+        # Nothing reads either unless a ruleset asks for it.
+        "mortgages": [{"date": m.get("record_date"), "amount": m.get("amount"),
+                       "borrower": m.get("grantee_name"), "lender": m.get("lender_name")}
+                      for m in (d.get("mortgage_history") or [])[:8] if isinstance(m, dict)],
+        "year_built": d.get("years_built"),
     }
 
 
-def phase_hydrate(args) -> None:
-    require("sweep")
-    rows = _load(OUT / "rows.json", {})
-    # The date-bounded qualification sweep finds properties the unbounded one
-    # missed, and they need owners too. Reading only rows.json left 28 of them
-    # permanently unhydrated while the phase reported "nothing to do".
-    recent = _load(OUT / "recent_rows.json", {})
-    det_path = OUT / "details.json"
-    details = _load(det_path, {})
-
+def hydrate_todo(rows: dict | None = None, recent: dict | None = None, details: dict | None = None) -> list:
+    """Every swept property whose deed has not been read yet, from both sweeps. The date-bounded
+    qualification sweep finds properties the unbounded one missed, and they need owners too:
+    reading only rows.json left 28 of them permanently unhydrated while the phase reported
+    "nothing to do"."""
+    rows = _load(OUT / "rows.json", {}) if rows is None else rows
+    recent = _load(OUT / "recent_rows.json", {}) if recent is None else recent
+    details = _load(OUT / "details.json", {}) if details is None else details
     todo = []
     for source in (rows, recent):
         for seg_rows in source.values():
             for r in seg_rows:
                 if r["id"] not in details:
                     todo.append(r["id"])
+    return sorted(set(todo))
+
+
+def unmask_left(floor: int = 0) -> int:
+    """Entities still waiting for the free reverse-address check, at or above a purchase floor."""
+    reg = _load(OUT / "registry.json", [])
+    found = _load(OUT / "principals.json", {})
+    return sum(1 for b in unmask_targets(reg, found) if int(b.get("n_buys") or 0) >= floor)
+
+
+def phase_hydrate(args) -> None:
+    require("sweep")
+    rows = _load(OUT / "rows.json", {})
+    recent = _load(OUT / "recent_rows.json", {})
+    det_path = OUT / "details.json"
+    details = _load(det_path, {})
+
+    todo = hydrate_todo(rows, recent, details)
+    if getattr(args, "reread_unpriced", False):
+        # A detail read before the loans were kept cannot fill a missing price. Read again only
+        # the properties whose purchase has no deed price and whose cached read carries no loans.
+        seen_rules = dict(RULESETS["taught"], name="taught", loan_as_price=False)
+        for o in _observations(rows, details, seen_rules):
+            if o.get("id") and not _priced(o.get("price")) and "mortgages" not in (details.get(o["id"]) or {}):
+                todo.append(o["id"])
     todo = sorted(set(todo))
     if args.limit:
         todo = todo[:args.limit]
@@ -426,7 +662,7 @@ def phase_hydrate(args) -> None:
     def work(rid: str):
         tid = threading.get_ident()
         if tid not in clients:
-            clients[tid] = SiftMapClient(min_interval=args.min_interval)
+            clients[tid] = getattr(args, "detail_client", None) or SiftMapClient(min_interval=args.min_interval)
         return _hydrate_one(clients[tid], rid)
 
     # Detail throughput caps near 2-4 req/s AGGREGATE regardless of worker
@@ -543,7 +779,32 @@ def _phys(row: dict) -> dict:
     return {k: row.get(k) for k in PHYS_FIELDS}
 
 
-def _observations(rows: dict, details: dict) -> list:
+def _priced(price) -> bool:
+    return isinstance(price, (int, float)) and not isinstance(price, bool) and price > 0
+
+
+def _wholesale_obs(mid: dict, county: str, r: dict) -> dict:
+    """The company in the middle of a double closing, as its own observation: what it paid, what
+    it was paid the same week, and who it sold the contract to."""
+    return {
+        "name": mid["name"], "mail": "", "county": county, "txn": "wholesale", "role": "wholesaler",
+        "prop": r.get("address"), "id": r.get("id"), "date": mid["sold"].get("date"),
+        "buy_date": mid["bought"].get("date"), "price": mid["bought"].get("price"),
+        "exit_price": mid["sold"].get("price"), "sold_to": (mid["sold"].get("buyer") or "").strip(),
+        "days_held": mid["days"], "cash": mid["bought"].get("cash"), "portfolio_n": None,
+        "portfolio_value": None, "saved_uuid": None, "secondary": [], **_phys(r),
+    }
+
+
+def _observations(rows: dict, details: dict, rules: dict | None = None, stats: dict | None = None) -> list:
+    """One observation per purchase the deeds show. `rules` is a ruleset (rules_for); with none
+    given the active one is used, which is today's unless --rules or the environment says so.
+    `stats`, when handed in, is filled with what each rule did, so a phase can say it out loud."""
+    rules = rules or rules_for()
+    taught = any(rules.get(k) for k in ("flip_months", "double_close_days", "loan_as_price", "flip_built_by"))
+    stats = stats if stats is not None else {}
+    for k in ("long_holds", "wholesalers", "loan_priced", "new_builds", "year_unknown", "flips_checked"):
+        stats.setdefault(k, 0)
     obs = []
     for key, seg_rows in rows.items():
         county, txn = key.split(":", 1)
@@ -553,9 +814,10 @@ def _observations(rows: dict, details: dict) -> list:
                 continue
             sh = d.get("sale_history") or []
             last = sh[0] if sh else {}
+            loans = d.get("mortgages") or []
             if txn in HOLD_TYPES:
                 # The investor still holds it: the current owner is the buyer.
-                obs.append({
+                o = {
                     "name": d["owner_name"], "mail": d.get("owner_mail") or "",
                     "county": county, "txn": txn, "role": "holder",
                     "prop": r.get("address"), "date": last.get("date"),
@@ -565,7 +827,20 @@ def _observations(rows: dict, details: dict) -> list:
                     "saved_uuid": r.get("saved_uuid"),
                     "secondary": d.get("secondary_owners") or [],
                     **_phys(r),
-                })
+                }
+                if taught:
+                    o["id"] = r.get("id")
+                    if rules["loan_as_price"] and not _priced(o["price"]):
+                        loan = _loan_near(loans, o["name"], o["date"])
+                        if loan:
+                            o["price"], o["price_source"] = loan["amount"], "loan"
+                            stats["loan_priced"] += 1
+                    mid = _middleman(sh, 0, rules["double_close_days"])
+                    if mid:
+                        o["via"] = mid["name"]
+                        obs.append(_wholesale_obs(mid, county, r))
+                        stats["wholesalers"] += 1
+                obs.append(o)
             else:
                 # The flip already exited: the current owner is the RETAIL
                 # buyer. The investor is the SELLER on that last sale, and this
@@ -573,15 +848,62 @@ def _observations(rows: dict, details: dict) -> list:
                 seller = (last.get("seller") or "").strip()
                 if not seller:
                     continue
-                obs.append({
+                if rules["flip_built_by"]:
+                    # A house built after the cutoff and sold by a company is new construction:
+                    # the seller is a builder, and their "purchase" was a lot. Read as a flip it
+                    # puts a lot price in a flipper's buy box. An unknown year is kept, and counted.
+                    year = d.get("year_built")
+                    if isinstance(year, (int, float)) and not isinstance(year, bool) and year > rules["flip_built_by"]:
+                        stats["new_builds"] += 1
+                        continue
+                    if not year:
+                        stats["year_unknown"] += 1
+                # What the flipper PAID is the deed before the exit, where they are the buyer.
+                # The exit deed's price is what a homebuyer paid them, and pricing a flipper at it
+                # turned a book of $100K-$200K purchases into a $307,500 "buy box" (found
+                # 2026-10-27 on a real buyer). When the earlier deed is not in the history the
+                # purchase price is unknown, and unknown is what gets recorded.
+                at = next((i for i, s in enumerate(sh) if i and norm_name(s.get("buyer") or "") == norm_name(seller)), None)
+                buy = sh[at] if at is not None else None
+                o = {
                     "name": seller, "mail": "", "county": county, "txn": txn,
                     "role": "exited", "prop": r.get("address"),
-                    "date": last.get("date"), "price": last.get("price"),
-                    "cash": last.get("cash"), "portfolio_n": None,
+                    "date": last.get("date"), "price": buy.get("price") if buy else None,
+                    "buy_date": buy.get("date") if buy else None,
+                    "exit_price": last.get("price"),
+                    "cash": buy.get("cash") if buy else None, "portfolio_n": None,
                     "portfolio_value": None, "saved_uuid": None, "secondary": [],
                     **_phys(r),
-                })
+                }
+                if taught:
+                    o["id"] = r.get("id")
+                    if rules["loan_as_price"] and not _priced(o["price"]):
+                        loan = (_loan_near(loans, seller, o["buy_date"]) if buy
+                                else _first_loan_before(loans, seller, o["date"]))
+                        if loan:
+                            o["price"], o["price_source"] = loan["amount"], "loan"
+                            o["buy_date"] = o["buy_date"] or loan.get("date")
+                            stats["loan_priced"] += 1
+                    if rules["flip_months"]:
+                        stats["flips_checked"] += 1
+                        o["days_held"] = _days_between(o["buy_date"], o["date"])
+                        if is_flip(o["buy_date"], o["date"], rules["flip_months"]) is False:
+                            # Held longer than a flip, then sold: a landlord or an owner selling.
+                            # It is still a purchase this buyer made, so it stays, under its own name.
+                            o["role"] = "long_hold"
+                            stats["long_holds"] += 1
+                    if buy and o["role"] == "exited":
+                        mid = _middleman(sh, at, rules["double_close_days"])
+                        if mid:
+                            o["via"] = mid["name"]
+                            obs.append(_wholesale_obs(mid, county, r))
+                            stats["wholesalers"] += 1
+                obs.append(o)
     return obs
+
+
+def _rules_on(rules: dict) -> bool:
+    return any(rules.get(k) for k in RULESETS["taught"])
 
 
 def phase_aggregate(args) -> None:
@@ -589,7 +911,9 @@ def phase_aggregate(args) -> None:
     rows = _load(OUT / "rows.json", {})
     details = _load(OUT / "details.json", {})
 
-    obs = _observations(rows, details)
+    rules = rules_for()
+    rule_stats: dict = {}
+    obs = _observations(rows, details, rules, rule_stats)
     gate(len(obs) > 0, "aggregate produced no observations")
 
     # Pass 1: exact normalized name. Pass 2: mailing-address cluster, guarded
@@ -630,13 +954,33 @@ def phase_aggregate(args) -> None:
     groups = [g for g in groups if id(g) not in dropped]
 
     registry = []
+    by_count = []
     for g in groups:
         o_all = g["obs"]
         raw = Counter(o["name"] for o in o_all).most_common(1)[0][0]
         prices = sorted(o["price"] for o in o_all
-                        if isinstance(o.get("price"), (int, float)) and o["price"])
+                        if isinstance(o.get("price"), (int, float)) and o["price"]
+                        and o["role"] != "long_hold")
         holders = [o for o in o_all if o["role"] == "holder"]
         tier, reason, _conf = local_tier(norm_name(raw), len(o_all))
+        n_exited = len(o_all) - len(holders)
+        extra: dict = {}
+        if _rules_on(rules):
+            # Only a ruleset that was asked for adds these, so today's registry reads as it always has.
+            n_exited = sum(1 for o in o_all if o["role"] == "exited")
+            n6 = six_month_buys(o_all)
+            extra = {"rules": rules["name"], "buys_6mo": n6,
+                     "n_wholesaled": sum(1 for o in o_all if o["role"] == "wholesaler"),
+                     "n_long_holds": sum(1 for o in o_all if o["role"] == "long_hold"),
+                     "n_via_wholesaler": sum(1 for o in o_all if o.get("via")),
+                     "loan_priced": sum(1 for o in o_all if o.get("price_source") == "loan")}
+            floor = rules["institution_buys_6mo"]
+            if floor and n6 >= floor and tier != "EXCLUDE":
+                # By count, whatever the name says. A local builder with nine purchases is nowhere
+                # near this line, which is the point: the name rules must not be what catches a
+                # fund, because a name rule strict enough to do it also drops the builders.
+                tier, reason = "EXCLUDE", "institution by count: %d purchases in six months" % n6
+                by_count.append(raw)
         registry.append({
             "buyer_key": norm_name(raw),
             "name": raw,
@@ -647,7 +991,7 @@ def phase_aggregate(args) -> None:
             "txn_types": sorted({o["txn"] for o in o_all}),
             "n_buys": len(o_all),
             "n_held": len(holders),
-            "n_exited": len(o_all) - len(holders),
+            "n_exited": n_exited,
             "cash_n": sum(1 for o in o_all if o.get("cash")),
             "price_min": prices[0] if prices else None,
             "price_med": prices[len(prices) // 2] if prices else None,
@@ -664,6 +1008,7 @@ def phase_aggregate(args) -> None:
                       "county": o["county"], "txn": o["txn"], "role": o["role"]}
                      for o in sorted(o_all, key=lambda x: str(x.get("date") or ""),
                                      reverse=True)[:25]],
+            **extra,
         })
 
     # ---- join the recency layer ------------------------------------------
@@ -723,10 +1068,12 @@ def phase_aggregate(args) -> None:
 
     act = sum(1 for b in registry if b.get("active_365d"))
     hot = sum(1 for b in registry if b.get("active_182d"))
+    on = _rules_on(rules)
     mark_done("aggregate", buyers=len(registry), observations=len(obs),
               merges=len(merges), refused=len(refused),
               no_mailing_address=len(no_mail), excluded=len(excluded),
-              active_365d=act, active_182d=hot, recent_only_added=added)
+              active_365d=act, active_182d=hot, recent_only_added=added,
+              **({"rules": rules["name"], "rule_stats": rule_stats, "institutions_by_count": len(by_count)} if on else {}))
     print("aggregate: " + str(len(obs)) + " observations -> "
           + str(len(registry)) + " unique buyers")
     print("  merged by mailing address : " + str(len(merges)))
@@ -736,6 +1083,32 @@ def phase_aggregate(args) -> None:
     print("  active in the last 365d   : " + str(act) + " ("
           + str(hot) + " within 182d)")
     print("  added from the recency sweep only: " + str(added))
+    if on:
+        for line in rule_lines(rules, rule_stats, by_count, bool(state().get("sweep", {}).get("each_purchase"))):
+            print("  " + line)
+
+
+def rule_lines(rules: dict, stats: dict, by_count: list, each_purchase: bool) -> list:
+    """What the named rules did to this build, one plain line each."""
+    out = ["rules: %s" % rules["name"]]
+    if rules["institution_buys_6mo"]:
+        out.append("dropped as institutions by count (%d or more purchases in six months): %d%s" % (
+            rules["institution_buys_6mo"], len(by_count), (" (" + ", ".join(by_count[:4]) + ")") if by_count else ""))
+        if not each_purchase:
+            out.append("  holders were swept one row per owner, so a holder's count is a floor; "
+                       "sweep with --each-purchase to count every purchase")
+    if rules["flip_months"]:
+        out.append("flips checked against the %d-month rule: %d, of which %d were held longer and read as long holds" % (
+            rules["flip_months"], stats.get("flips_checked", 0), stats.get("long_holds", 0)))
+    if rules["double_close_days"]:
+        out.append("back-to-back company deeds within %d days: %d wholesalers recorded" % (
+            rules["double_close_days"], stats.get("wholesalers", 0)))
+    if rules["loan_as_price"]:
+        out.append("purchases with no deed price, priced at the buyer's loan: %d" % stats.get("loan_priced", 0))
+    if rules["flip_built_by"]:
+        out.append("flip sales of houses built after %d left out as new construction: %d (year built unknown on %d, kept)" % (
+            rules["flip_built_by"], stats.get("new_builds", 0), stats.get("year_unknown", 0)))
+    return out
 
 
 # --------------------------------------------------------------- unmask ----
@@ -745,186 +1118,51 @@ def phase_aggregate(args) -> None:
 # do not send to Enformion at $0.10, which is why this phase runs first and on
 # its own.
 
-# Registered-agent and corporate-front names that must never become a
-# "principal". Without this scrub the dial sheet fills up with C T Corporation
-# System and US Bank Trust, which are 800-numbers, not buyers.
-AGENT_FRONT_RX = re.compile(
-    r"SERVICE OF PROCESS|CORPORATION SYSTEM|REGISTERED AGENT|NORTHWEST|"
-    r"CORPORATION AGENTS|CORPORATE DIRECT|COGENCY|INCORP|NATIONAL ASSOC",
-    re.I)
+# Who counts as a principal (AGENT_FRONT_RX, FIRM_RX, OWNER_TITLES, STATUS_TOKENS,
+# PLACEHOLDER_NAMES, _is_human, _officer_in_state, rank_officers, principal_confidence) moved to
+# enformion_business on 2026-11-13, with every measured trap it carries, and is imported at the top
+# of this file. The free reverse-address check below and the team's entity_principals workflow
+# both read the rules from there.
 
 
-# A professional firm wearing a person-shaped name. The stock AGENT_FRONTS list
-# only knows the national commercial agents (CT Corporation, Northwest), so it
-# waves through the LOCAL law firms that actually appear on Knox filings.
-# Measured live: "DRYER AND ASSOCIATES P C" and "CHAMBLISS BAHNER & STOPHEL"
-# both came back as the "principal" of a real buying LLC.
-#
-# An ampersand ALONE is not the tell. Deed and filing names are full of married
-# couples ("Oneal Brian A & Ethel L", "Ciminieri Louis & Colleen"), and a first
-# pass that dropped every "&" threw away 7 real co-owning couples to catch 5
-# firms. `clean_owner_name` already splits a couple down to one person, so the
-# only thing worth rejecting is an explicit professional marker.
-FIRM_RX = re.compile(
-    r"\bAND ASSOCIATES\b|\bASSOCIATES\b|\bP\.?\s?C\.?\s*$|\bPLLC\b|\bLLP\b|"
-    r"\bLAW\b|\bATTORNEY|\bLEGAL\b|\bFIRM\b|\bCPA\b|\bACCOUNTAN|"
-    r"&\s*CO\b|\bLIMITED PARTNERSHIP\b|\bHOSPITAL\b|\bCLINIC\b|\bOFFICE\b",
-    re.I)
+def _unmask_one(client, buyer: dict) -> dict:
+    """The free principal for one buyer: who owns the house its mail goes to
+    (buyer_sweep.reverse_address). This used to find the house through SiftMap's
+    autocomplete, which DataSift's Acceptable use names as prohibited in volume;
+    the address search does the same job. `client` is a buyer_sweep.MapClient.
 
-# Titles that mean the person actually runs the company, as opposed to merely
-# receiving its mail.
-OWNER_TITLES = ("MANAGER", "MGR", "MEMBER", "ORGANIZER", "OFFICER", "PRESIDENT",
-                "CEO", "SECRETARY", "TREASURER", "PARTNER", "DIRECTOR", "OWNER",
-                "INCORPORATOR", "CONTACT")
-
-# Legal status and credential tokens that a name parser can mistake for a
-# surname. "Morales Family Trust" resolved to first=Morales last=Tr.
-STATUS_TOKENS = {
-    "TR", "TRUSTEE", "TTEE", "TRUST", "EST", "ESTATE", "LIFE", "ETAL", "ET",
-    "AL", "UX", "JR", "SR", "II", "III", "IV", "V", "MD", "DC", "PC", "DDS",
-    "DVM", "ESQ", "CPA", "REV", "LLC", "INC", "CORP", "CO", "LP", "LLP",
-}
-
-
-# Placeholder strings that arrive where a name should be. SiftMap returned the
-# literal "UNKNOWN" as the owner of one LLC's mailing address, and it sailed
-# through every entity and firm check because it is neither. Left alone it
-# reaches a text as "Hi UNKNOWN".
-PLACEHOLDER_NAMES = {
-    "UNKNOWN", "UNKNOWN OWNER", "NONE", "N A", "NA", "TBD", "OWNER",
-    "CURRENT OWNER", "OCCUPANT", "CURRENT RESIDENT", "RESIDENT", "TAXPAYER",
-    "NOT AVAILABLE", "NO OWNER", "VACANT", "ESTATE OF",
-}
-
-
-def _is_human(name: str) -> bool:
-    n = norm_name(name or "")
-    if not n or n in PLACEHOLDER_NAMES:
-        return False
-    # A person has a first name and a surname. One bare token is a placeholder,
-    # a company fragment, or a surname with no one attached to it.
-    if len(n.split()) < 2:
-        return False
-    if ORG_RX.search(n) or AGENT_FRONT_RX.search(name or ""):
-        return False
-    return not FIRM_RX.search(name or "")
-
-
-# BUSINESSV2 CANNOT BE CONSTRAINED GEOGRAPHICALLY, AND THAT IS THE WHOLE
-# PROBLEM WITH IT. Verified live 2026-08-28: searching "SMITHBILT LLC" with no
-# anchor, with Addresses[{AddressLine2: "Knoxville, TN"}], and with
-# Addresses[{State: "TN"}] all return byte-identical results. It fuzzy-matches
-# company names nationally, so a Knoxville LLC resolves to officers of a
-# same-named company in another state. Measured on 12 cohort entities, only 2
-# had ANY Tennessee officer, which means most of what the first pass bought was
-# a stranger who shares a company name.
-#
-# The officer's own address is the only geographic control available, and it is
-# only available because extract_officers() returns it. Filtering to the
-# buyer's own state is therefore mandatory, not a refinement.
-def _officer_in_state(officer: dict, state: str) -> bool:
-    """Is this officer physically in the buyer's state.
-
-    Tokenized rather than regexed on purpose. The first version used word
-    boundaries and the escape did not survive being written to the file: the
-    pattern compiled with literal backspace characters, matched nothing, and
-    reported 0 of 153 entities verified as though it were a finding about the
-    data. Splitting the address into alphanumeric tokens has no escaping to
-    get wrong.
-    """
-    addr = (officer.get("address") or "").upper()
-    if not addr:
-        return False
-    st = (state or "TN").upper()
-    tokens = "".join(c if c.isalnum() else " " for c in addr).split()
-    if st in tokens:
-        return True
-    return st == "TN" and "TENNESSEE" in tokens
-
-
-def rank_officers(entity: str, officers: list, state: str) -> list:
-    """State-verified officers first, then the ones who actually run the place.
-
-    Ty's rule (2026-08-28): prefer an ownership title, fall back to any officer
-    rather than giving up on the entity. But an officer in the wrong state is
-    not a fallback, it is a different person, so those are dropped entirely.
-    """
-    keep = [o for o in officers if _officer_in_state(o, state)]
-    def rank(o):
-        conf = principal_confidence(entity, o.get("name") or "", o.get("title") or "")
-        title = (o.get("title") or "").upper()
-        owner_title = any(k in title for k in OWNER_TITLES)
-        return (0 if owner_title else 1, 0 if conf == "high" else 1)
-    return sorted(keep, key=rank)
-
-
-def principal_confidence(entity: str, person: str, title: str) -> str:
-    """How much to trust a BusinessV2 officer as the person to actually text.
-
-    THE REGISTERED AGENT IS OFTEN THE COMPANY'S LAWYER, NOT ITS OWNER. On the
-    live run 135 of 193 resolved officers carried the title AGENT or REGISTERED
-    AGENT, and texting a firm's attorney a deal blast is the litigation bait
-    this program is built to avoid.
-
-    But an agent title is not automatically wrong: plenty of small operators are
-    their own registered agent. The tell is the SURNAME. "Turner Homes LLC ->
-    Michael L Turner" and "Smithbilt LLC -> Smith Kenneth" are obviously the
-    owner; "New Season Properties LLC -> Dryer and Associates" is obviously not.
-
-    So: an ownership title is trusted outright, an agent title is trusted only
-    when a name token also appears in the company name, and everything else is
-    low confidence and held back from the text list.
-    """
-    t = (title or "").upper()
-    if any(k in t for k in OWNER_TITLES):
-        return "high"
-    ent_tokens = {w for w in norm_name(entity).split() if len(w) > 2}
-    per_tokens = {w for w in norm_name(person).split() if len(w) > 2}
-    if ent_tokens & per_tokens:
-        return "high"
-    return "low"
-
-
-def _unmask_one(smc: SiftMapClient, buyer: dict) -> dict:
+    The unit is dropped from the street first ("Ste D200" confuses the search)
+    and the full line is tried only when that finds no house. A match needs the
+    same house number, street and ZIP, because a bare "123 Main St" exists in
+    every county and the owner of the wrong one is a stranger, not a principal."""
+    from buyer_sweep import MapError, drop_unit, reverse_address
     out = {"principal": None, "principal_source": None, "miss": None}
     mail = buyer.get("mail") or ""
-    if not mail:
-        out["miss"] = "no mailing address"
-        return out
-    if re.search(r"\bP\.?\s?O\.?\s+BOX\b", mail, re.I):
-        # A PO box reverses to nothing; it is not a residence.
-        out["miss"] = "PO box mailing address"
-        return out
     try:
-        stripped = strip_unit(mail)
-        hits = smc.autocomplete(stripped)
-        hit = _match_candidate(hits, stripped)
-        if not hit and stripped != mail:
-            hits = smc.autocomplete(mail)
-            hit = _match_candidate(hits, mail)
-        if not hit:
-            out["miss"] = "no autocomplete match on mailing address"
-            return out
-        d = smc.get_detail(hit["id"])
-        oi = d.get("owner_info") or {}
-        owner = _owner_name(oi)
-        if owner and _is_human(owner):
-            out["principal"] = owner
-            out["principal_source"] = "siftmap-reverse-address"
-            return out
-        for s in (oi.get("secondary_owner_names") or []):
-            if _is_human(str(s)):
-                out["principal"] = str(s)
-                out["principal_source"] = "siftmap-secondary-owner"
-                return out
-        out["miss"] = "mailing address owner is an organization"
-    except SiftMapError as e:
-        if "401" in str(e):
+        got = reverse_address(drop_unit(mail), client)
+        if got["miss"] == "no property at the mailing address" and drop_unit(mail) != mail:
+            got = reverse_address(mail, client)
+    except MapError as e:
+        if "401" in str(e) or "not set" in str(e):
             raise
         out["miss"] = str(e)[:160]
+        return out
     except Exception as e:  # noqa: BLE001
         out["miss"] = str(e)[:160]
+        return out
+    if got["principal"]:
+        out["principal"], out["principal_source"] = got["principal"], got["source"]
+    else:
+        out["miss"] = got["miss"]
     return out
+
+
+def unmask_targets(reg: list, found: dict) -> list:
+    """Entities still waiting for the free check, most valuable first: buyers active in the
+    window, then by purchase count. A bounded run (the agents brain reads a few dozen a night)
+    then spends its reads on the buyers a dispo blast would actually text."""
+    todo = [b for b in reg if b["is_entity"] and b["tier"] not in ("EXCLUDE",) and b["buyer_key"] not in found]
+    return sorted(todo, key=lambda b: (0 if b.get("active_365d") else 1, -int(b.get("n_buys") or 0)))
 
 
 def phase_unmask(args) -> None:
@@ -933,23 +1171,24 @@ def phase_unmask(args) -> None:
     path = OUT / "principals.json"
     found = _load(path, {})
 
-    targets = [b for b in reg
-               if b["is_entity"] and b["tier"] not in ("EXCLUDE",)
-               and b["buyer_key"] not in found]
+    floor = int(getattr(args, "unmask_floor", 0) or 0)
+    targets = [b for b in unmask_targets(reg, found) if int(b.get("n_buys") or 0) >= floor]
     if args.limit:
         targets = targets[:args.limit]
     log.info("unmasking %s entities (%s already done)", len(targets), len(found))
     if not targets:
-        mark_done("unmask", principals=len(found))
+        mark_done("unmask", principals=len(found), remaining=0)
         print("unmask: nothing to do, " + str(len(found)) + " cached")
         return
 
     clients: dict = {}
+    shared = getattr(args, "map_client", None)
 
     def work(b: dict):
         tid = threading.get_ident()
         if tid not in clients:
-            clients[tid] = SiftMapClient(min_interval=args.min_interval)
+            from buyer_sweep import MapClient
+            clients[tid] = shared or MapClient(min_interval=args.min_interval)
         return b["buyer_key"], _unmask_one(clients[tid], b)
 
     done = 0
@@ -966,7 +1205,8 @@ def phase_unmask(args) -> None:
     _save(path, found)
     hits = sum(1 for v in found.values() if v.get("principal"))
     gate(len(found) > 0, "unmask produced nothing")
-    mark_done("unmask", attempted=len(found), resolved=hits)
+    mark_done("unmask", attempted=len(found), resolved=hits,
+              remaining=sum(1 for b in unmask_targets(reg, found) if int(b.get("n_buys") or 0) >= floor))
     print("unmask: " + str(hits) + " principals from " + str(len(found))
           + " entities, all free")
     misses = Counter(v.get("miss") for v in found.values() if not v.get("principal"))
@@ -1022,10 +1262,14 @@ def phase_principals(args) -> None:
           + "+ buys still unresolved after the free unmask")
     print("            up to $%.2f at $0.10 per match (misses are free)" % cost)
     if not args.commit:
+        # What a paid run would buy, kept so a caller (the agents brain's nightly job) can say it
+        # without re-deriving the selection above.
+        mark_done("principals_plan", todo=len(todo), usd=round(cost, 2))
         print("DRY RUN. Re-run with --commit to spend.")
         return
 
     hits = 0
+    billed = 0           # searches that returned a record: those cost $0.10, a miss is free
     cleared: list = []
     for i, key in enumerate(todo, 1):
         b = by_key[key]
@@ -1036,7 +1280,8 @@ def phase_principals(args) -> None:
         if len(parts) >= 3:
             city_state = parts[-2] + ", " + parts[-1].split()[0]
         try:
-            officers = eb.find_principals(b["name"], city_state)
+            officers, paid = eb.search_officers(b["name"], city_state)
+            billed += 1 if paid else 0
         except Exception as e:  # noqa: BLE001
             found[key]["miss"] = "businessv2: " + str(e)[:120]
             continue
@@ -1082,8 +1327,9 @@ def phase_principals(args) -> None:
 
     _save(OUT / "principals.json", found)
     mark_done("principals", attempted=len(todo), resolved=hits,
-              cleared_unverified=len(cleared))
+              cleared_unverified=len(cleared), billed=billed, usd=round(billed * eb.UNIT_USD, 2))
     print("principals: %d of %d resolved and state verified" % (hits, len(todo)))
+    print("  billed searches: %d ($%.2f)" % (billed, billed * eb.UNIT_USD))
     print("  cleared as unverifiable (wrong state): %d" % len(cleared))
     for n in [c for c in cleared if c][:8]:
         print("      dropped: %s" % n)
@@ -1095,61 +1341,14 @@ def phase_principals(args) -> None:
 # billed: submit/map/calculate are all free and print the exact quote, so the
 # decision to spend happens after seeing the row count and price.
 
-def split_mail(mail: str) -> tuple:
-    """"1007 Andover View Ln, Knoxville, TN 37919" -> its four parts.
-
-    SiftMap hands the mailing address back as ONE string, but SmartSkip's
-    contract is `mailingAddress` = the STREET, with mailingCity / mailingState /
-    mailingZip as separate optional fields (its own synonym list calls the
-    field "mailingstreet"). Passing the whole line as the street matches worse,
-    and on a 1,900-row batch that is real money spent on a degraded input.
-    """
-    raw = (mail or "").strip().rstrip(",")
-    if not raw:
-        return "", "", "", ""
-    # TWO ADDRESS FORMATS REACH THIS FUNCTION. SiftMap writes
-    # "1007 Andover View Ln, Knoxville, TN 37919" but Enformion officer records
-    # write "4300 Hiawatha; Knoxville, TN 37919" with a SEMICOLON before the
-    # city. Splitting on commas alone glued the city onto the street and left
-    # Mailing City empty, and SmartSkip returned nothing for all 33 rows of a
-    # paid batch as a result.
-    # The semicolon is the street/city delimiter, so it takes precedence over
-    # commas rather than being flattened into one. "2099 Thunderhead, Ste 204;
-    # Knoxville, TN 37922" has a comma INSIDE the street, and treating both
-    # separators alike made the city read "Ste 204".
-    head = ""
-    if ";" in raw:
-        head, raw = raw.split(";", 1)
-        head, raw = head.strip().rstrip(","), raw.strip()
-    parts = [p.strip() for p in raw.split(",") if p.strip()]
-    if head:
-        # Everything before the semicolon is the street; what follows is
-        # city, state and zip.
-        parts = [head] + parts
-    street = parts[0] if parts else ""
-    city = parts[1] if len(parts) > 2 else (parts[1] if len(parts) == 2 else "")
-    tail = parts[-1] if len(parts) > 1 else ""
-    m = re.match(r"^([A-Za-z]{2})\s+(\d{5})(?:-\d{4})?$", tail)
-    if m:
-        state, zip_code = m.group(1).upper(), m.group(2)
-        if len(parts) < 3:
-            city = ""
-    else:
-        # No trailing "ST 12345": fall back to whatever we can see.
-        state, zip_code = "", ""
-        m2 = re.search(r"\b(\d{5})(?:-\d{4})?\b", tail)
-        if m2:
-            zip_code = m2.group(1)
-        m3 = re.search(r"\b([A-Za-z]{2})\b", tail)
-        if m3 and not zip_code:
-            state = m3.group(1).upper()
-    return street, city, state, zip_code
+# split_mail (SiftMap's comma and Enformion's semicolon address formats) moved to
+# enformion_business on 2026-11-13 and is imported at the top of this file.
 
 
 def phase_skipinput(args) -> None:
     require("aggregate")
     import csv
-    from enformion_ftm import clean_owner_name
+    clean_owner_name = person_first_last
 
     reg = _load(OUT / "registry.json", [])
     principals = _load(OUT / "principals.json", {})
@@ -1372,6 +1571,10 @@ def _real_prices(obs: list) -> tuple:
     """(prices worth banding, how many nominal transfers were dropped)."""
     keep, dropped = [], 0
     for o in obs:
+        if o.get("role") == "long_hold":
+            # Only the taught flip rule makes these: a house held for years and then sold. Its
+            # purchase is real and stays in the count, but its price is from another market.
+            continue
         p = o.get("price")
         if not isinstance(p, (int, float)) or p <= 0:
             continue
@@ -1399,6 +1602,12 @@ def buyer_type(b: dict) -> tuple:
         return "self-performer", "name says construction or building trade"
     txns = set(b.get("txn_types") or [])
     held, exited = b.get("n_held", 0), b.get("n_exited", 0)
+    # These two counts exist only on a registry built with the taught rules.
+    wholesaled, long_holds = b.get("n_wholesaled", 0), b.get("n_long_holds", 0)
+    if wholesaled and wholesaled > held and wholesaled >= exited:
+        return "wholesaler", "sold to another company back to back on the deeds"
+    if long_holds and long_holds > max(held, exited, wholesaled):
+        return "long-term holder", "sold houses it had held longer than a flip"
     if exited > held:
         return "exited flipper", "more exits than current holdings"
     # THE RENTAL LABEL LAGS BY OVER A YEAR. Measured 2026-08-28: `rental`
@@ -1502,7 +1711,14 @@ def phase_profiles(args) -> None:
     scores = _load(OUT / "phone_scores.json", {})
     rows = _load(OUT / "rows.json", {})
     details = _load(OUT / "details.json", {})
-    obs = _observations(rows, details)
+    rules = rules_for()
+    built_on = next((b.get("rules") for b in reg if b.get("rules")), DEFAULT_RULES)
+    if built_on != rules["name"]:
+        # The registry says who is which type; the observations here set each price band. Read on
+        # two different rulesets they describe two different buyers under one name.
+        raise SystemExit("the registry was built on the %s rules and this run asks for %s; run "
+                         "--phase aggregate --rules %s first" % (built_on, rules["name"], rules["name"]))
+    obs = _observations(rows, details, rules)
 
     by_key: dict = defaultdict(list)
     for o in obs:
@@ -1635,6 +1851,11 @@ def phase_profiles(args) -> None:
         p["principal_is_agent"] = bool(
             pr.get("principal")
             and pr.get("principal_confidence") == "low")
+        if _rules_on(rules):
+            for k in ("rules", "buys_6mo", "n_wholesaled", "n_long_holds", "n_via_wholesaler"):
+                p[k] = b.get(k)
+            # A band that leans on loan amounts runs high: a purchase loan often carries the rehab.
+            p["loan_priced"] = sum(1 for o in mine if o.get("price_source") == "loan")
         p["buyer_type"], p["buyer_type_rule"] = buyer_type(b)
         p["narrative"] = _narrative(p)
         profiles.append(p)
@@ -1897,6 +2118,19 @@ def write_profiles_xlsx(profiles: list, path: Path) -> None:
         ["Caution", "The buy box is inferred, never asked. Treat it as where "
                     "this buyer has been active, not a commitment"],
     ]
+    named = next((p.get("rules") for p in profiles if p.get("rules")), "")
+    if named:
+        r = RULESETS.get(named, {})
+        loans = sum(p.get("loan_priced") or 0 for p in profiles)
+        srows.append(["Rules", "Deeds were read on the %s rules: a flip is a purchase resold within %s months "
+                               "(a longer hold is a long-term holder's sale and its price is kept out of the "
+                               "band); two companies back to back within %s days are a wholesaler and then the "
+                               "buyer; %s or more purchases in six months is an institution whatever the name; "
+                               "a flip sale of a house built after %s is new construction and is left out. "
+                               "%d price(s) are loan amounts standing in for a deed with no price, and a loan "
+                               "often includes the rehab"
+                      % (named, r.get("flip_months"), r.get("double_close_days"), r.get("institution_buys_6mo"),
+                         r.get("flip_built_by"), loans)])
     sheet("Sources and Caveats", sh, srows, [22, 104],
           title="How to read this, and what not to trust")
 
@@ -1936,7 +2170,7 @@ def phase_phones(args) -> None:
     # Build the bridge from the REGISTRY, not from smartskip_input.csv. That
     # file is regenerated on every skipinput run, so a download from an earlier
     # batch loses its join the moment the cohort changes.
-    from enformion_ftm import clean_owner_name
+    clean_owner_name = person_first_last
     reg = _load(OUT / "registry.json", [])
     principals = _load(OUT / "principals.json", {})
     bridge = {}
@@ -2038,15 +2272,29 @@ def phase_phones(args) -> None:
 def phase_crm_phones(args) -> None:
     require("profiles")
     import time
-    from sms_agent import crm
-    from sms_agent.seed import SKIP_PHONE_STATUSES
+    # The agents brain passes a key-only client in args.crm; the workstation keeps its own.
+    crm = getattr(args, "crm", None)
+    if crm is None:
+        from sms_agent import crm
+    from sms_agent.gate_rules import BAD_PHONE as SKIP_PHONE_STATUSES
 
     profiles = _load(OUT / "buyer_profiles.json", [])
     reg = {b["buyer_key"]: b for b in _load(OUT / "registry.json", [])}
     out = _load(OUT / "phones.json", {})
 
     targets = [p for p in profiles if reg.get(p["buyer_key"], {}).get("saved_uuid")]
+    # A capped run resumes instead of re-reading the same first records: with skip_read_days set,
+    # a buyer whose record was read inside that window is skipped, and each read is remembered.
+    skip_days = int(getattr(args, "skip_read_days", 0) or 0)
+    read_path = OUT / "crm_read.json"
+    read_at = _load(read_path, {}) if skip_days else {}
+    if skip_days:
+        from datetime import timedelta
+        cutoff = (datetime.now() - timedelta(days=skip_days)).isoformat(timespec="seconds")
+        targets = [p for p in targets if str(read_at.get(p["buyer_key"]) or "") < cutoff]
+    left_over = 0
     if args.limit:
+        left_over = max(0, len(targets) - args.limit)
         targets = targets[:args.limit]
     log.info("reading %s CRM records for numbers already on file", len(targets))
 
@@ -2055,6 +2303,8 @@ def phase_crm_phones(args) -> None:
     for i, p in enumerate(targets, 1):
         key = p["buyer_key"]
         rec = _get_record(crm, reg[key]["saved_uuid"])
+        if skip_days and rec:
+            read_at[key] = datetime.now().isoformat(timespec="seconds")
         if not rec:
             stats["record unreadable after retries"] += 1
             continue
@@ -2108,10 +2358,12 @@ def phase_crm_phones(args) -> None:
             log.info("read %s/%s records", i, len(targets))
 
     _save(OUT / "phones.json", out)
+    if skip_days:
+        _save(read_path, read_at)
     uniq = {q["number"] for v in out.values() for q in v["phones"]}
     gate(stats["number added"] > 0 or added_buyers == 0,
          "harvest read records but added no numbers; check crm auth")
-    mark_done("crm_phones", records=len(targets), buyers_added=added_buyers,
+    mark_done("crm_phones", records=len(targets), buyers_added=added_buyers, left_over=left_over,
               **{k.replace(" ", "_"): v for k, v in stats.items()})
     print("crm-phones: read %d records" % len(targets))
     for k, v in stats.most_common():
@@ -2167,13 +2419,28 @@ def _tag_names(p: dict) -> list:
 
 
 def _score_numbers(pv, numbers: list, cache: dict, cache_path: Path,
-                   commit: bool) -> dict:
-    """Trestle-score whatever is not already cached. Returns the cache."""
+                   commit: bool, scorer=None, limit: int = 0) -> dict:
+    """Trestle-score whatever is not already cached. Returns the cache.
+
+    `scorer` is the agents brain's (agents.autopilot.sources.Scorer): the same Trestle call with
+    the litigator check, which this loop never asked for, so a known TCPA litigator could reach a
+    buyer list unmarked. `limit` caps how many new numbers one run may buy."""
     unscored = [n for n in numbers if n not in cache]
+    if limit:
+        unscored = unscored[:limit]
     print("  unique numbers needing a score      %d" % len(unscored))
     print("  estimated Trestle cost              $%.2f" % (len(unscored) * 0.015))
     if not commit:
         print("\nDRY RUN. Re-run with --commit to score.")
+        return cache
+    if scorer is not None:
+        for num, r in (scorer.score(unscored) or {}).items():
+            if r.get("error"):
+                cache[num] = {"error": str(r["error"])[:120]}
+            else:
+                cache[num] = {"score": r.get("score"), "tier": r.get("tier"),
+                              "litigator": bool(r.get("litigator")), "line_type": r.get("line_type") or ""}
+        _save(cache_path, cache)
         return cache
     key = os.getenv("TRESTLE_PAID_API_KEY") or os.getenv("TRESTLE_API_KEY")
     if not key:
@@ -2208,12 +2475,16 @@ def phase_score(args) -> None:
         gate(bool(phones), "no phones.json; run --phase phones first")
         nums = sorted({p["number"] for v in phones.values() for p in v["phones"]})
         print("registry: %d buyers, %d unique numbers" % (len(phones), len(nums)))
-        cache = _score_numbers(pv, nums, cache, cache_path, args.commit)
+        before = {n for n in nums if (cache.get(n) or {}).get("tier")}
+        cache = _score_numbers(pv, nums, cache, cache_path, args.commit,
+                               scorer=getattr(args, "scorer", None), limit=int(getattr(args, "score_limit", 0) or 0))
         if not args.commit:
             return
         got = [n for n in nums if (cache.get(n) or {}).get("tier")]
         by_tier = Counter((cache[n] or {}).get("tier") for n in got)
-        mark_done("score_registry", scored=len(got), by_tier=dict(by_tier))
+        newly = len(set(got) - before)
+        mark_done("score_registry", scored=len(got), by_tier=dict(by_tier), newly_scored=newly,
+                  left=sum(1 for n in nums if n not in cache))
         print("score: %d numbers scored" % len(got))
         print("  by tier: " + str(dict(by_tier)))
         reachable = sum(1 for v in phones.values()
@@ -2371,7 +2642,7 @@ def phase_writeback(args) -> None:
     require("profiles")
     import time
     from sms_agent import crm
-    from sms_agent.seed import SKIP_PHONE_STATUSES
+    from sms_agent.gate_rules import BAD_PHONE as SKIP_PHONE_STATUSES
     import phone_validator as pv
 
     profiles = _load(OUT / "buyer_profiles.json", [])
@@ -2505,13 +2776,68 @@ def phase_qa(args) -> None:
 
 # ----------------------------------------------------------------- main ----
 
+def rules_preview(rows: dict, details: dict, buyer: str = "", today=None) -> dict:
+    """What the taught rules would change, read from the cached sweep. Nothing is written and
+    nothing is fetched: this is the before and after to read before switching the rules on."""
+    now, then = rules_for("today"), rules_for("taught")
+    stats: dict = {}
+    before = _observations(rows, details, now)
+    after = _observations(rows, details, then, stats)
+
+    def groups(obs):
+        out: dict = defaultdict(list)
+        for o in obs:
+            out[norm_name(o["name"])].append(o)
+        return out
+
+    g0, g1 = groups(before), groups(after)
+    by_count = sorted(k for k, v in g1.items() if six_month_buys(v, today) >= then["institution_buys_6mo"])
+    out = {"observations": {"today": len(before), "taught": len(after)},
+           "buyers": {"today": len(g0), "taught": len(g1)},
+           "new_buyers": sorted(set(g1) - set(g0))[:25], "institutions_by_count": by_count, "stats": stats}
+    if buyer:
+        key = norm_name(buyer)
+        out["buyer"] = {"name": buyer,
+                        "today": {"purchases": len(g0.get(key, [])), "band": _price_band(g0.get(key, []))[0]},
+                        "taught": {"purchases": len(g1.get(key, [])), "band": _price_band(g1.get(key, []))[0],
+                                   "long_holds": sum(1 for o in g1.get(key, []) if o["role"] == "long_hold"),
+                                   "loan_priced": sum(1 for o in g1.get(key, []) if o.get("price_source") == "loan")}}
+    return out
+
+
+def phase_rules(args) -> None:
+    rows = _load(OUT / "rows.json", {})
+    details = _load(OUT / "details.json", {})
+    gate(bool(rows) and bool(details), "no cached sweep to read; run sweep and hydrate first")
+    got = rules_preview(rows, details, getattr(args, "buyer", "") or "")
+    then = rules_for("taught")
+    print("rules preview: nothing was written")
+    print("  observations: %d today, %d on the taught rules" % (got["observations"]["today"], got["observations"]["taught"]))
+    print("  buyers      : %d today, %d on the taught rules (%d appear only as wholesalers)" % (
+        got["buyers"]["today"], got["buyers"]["taught"], got["buyers"]["taught"] - got["buyers"]["today"]))
+    for line in rule_lines(then, got["stats"], got["institutions_by_count"],
+                           bool(state().get("sweep", {}).get("each_purchase")))[1:]:
+        print("  " + line)
+    with_loans = sum(1 for d in details.values() if "mortgages" in d)
+    if with_loans < len(details):
+        print("  %d of %d cached properties were read before loans were kept, so the loan rule cannot see them; "
+              "--phase hydrate --reread-unpriced reads again only the ones with no deed price"
+              % (len(details) - with_loans, len(details)))
+    b = got.get("buyer")
+    if b:
+        for name in ("today", "taught"):
+            band = b[name]["band"]
+            print("  %s, %s rules: %d purchases, price band %s to %s on %d priced sale(s)" % (
+                b["name"], name, b[name]["purchases"], _money(band["lo"]) or "none", _money(band["hi"]) or "none", band["n"]))
+
+
 PHASES = {"sweep": phase_sweep, "recent": phase_recent,
           "hydrate": phase_hydrate,
           "aggregate": phase_aggregate, "unmask": phase_unmask,
           "principals": phase_principals, "skipinput": phase_skipinput,
           "phones": phase_phones, "crm-phones": phase_crm_phones,
           "profiles": phase_profiles, "writeback": phase_writeback,
-          "score": phase_score,
+          "score": phase_score, "rules": phase_rules,
           "qa": phase_qa}
 
 
@@ -2554,12 +2880,25 @@ def main() -> int:
                     help="score phase: CRM preset cohort, or the registry's own phones")
     ap.add_argument("--include-dnc", action="store_true",
                     help="also score numbers flagged do-not-call")
+    ap.add_argument("--rules", choices=sorted(RULESETS), default=None,
+                    help="how deeds are read (default: today's, or DISPO_BUYER_RULES); "
+                         "--phase rules previews the taught set without writing")
+    ap.add_argument("--each-purchase", action="store_true",
+                    help="sweep/recent: one row per purchase for held houses too, so a "
+                         "buyer's purchases can be counted (more rows to hydrate)")
+    ap.add_argument("--reread-unpriced", action="store_true",
+                    help="hydrate: read again the cached properties whose purchase has no "
+                         "deed price, to pick up the loans recorded with them")
+    ap.add_argument("--buyer", default="",
+                    help="rules: also print this buyer's price band before and after")
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args()
 
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s %(levelname)s %(message)s", datefmt="%H:%M:%S")
+    _ACTIVE["name"] = args.rules or ""
+    rules_name()                     # an unknown name in the environment stops here, before any phase
     OUT.mkdir(parents=True, exist_ok=True)
     PHASES[args.phase](args)
     return 0

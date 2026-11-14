@@ -1,68 +1,55 @@
-"""End-to-end test: obituary enrichment on 5100 Stokely Ln (known deceased owner)."""
+"""End-to-end check of the obituary enrichment on ONE record.
 
+LIVE: it searches the web and calls a model on this repo's keys. It therefore runs only when a
+person starts it by hand and names the record on the command line. Under pytest it does nothing:
+it used to run at import with a real record written into the file, so `pytest tests` reached the
+network (and a public repo carried a real owner's name).
+
+    python tests/test_e2e_obituary.py --owner "LAST FIRST M" --address "123 Example St" \
+        --city Knoxville --zip 37900 --county Knox --notice-type tax_sale
+"""
+import argparse
+import logging
 import os
 import sys
-import logging
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)-7s %(message)s")
 
-import config
-from notice_parser import NoticeData
-from obituary_enricher import enrich_obituary_data
+def main(argv=None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    ap.add_argument("--owner", required=True, help="the owner of record, as the county writes it")
+    ap.add_argument("--address", required=True)
+    ap.add_argument("--city", default="Knoxville")
+    ap.add_argument("--state", default="TN")
+    ap.add_argument("--zip", default="")
+    ap.add_argument("--county", default="Knox")
+    ap.add_argument("--notice-type", default="tax_sale")
+    ap.add_argument("--parcel", default="")
+    args = ap.parse_args(argv)
 
-# Build a minimal NoticeData matching the 5100 Stokely Ln record
-notice = NoticeData(
-    address="5100 Stokely Ln",
-    city="Knoxville",
-    state="TN",
-    zip="37918",
-    county="Knox",
-    notice_type="tax_sale",
-    parcel_id="048DE017",
-    tax_owner_name="WILLIAMS DANIEL H",
-)
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)-7s %(message)s")
+    import config
+    from notice_parser import NoticeData
+    from obituary_enricher import enrich_obituary_data
 
-print(f"Testing obituary enrichment for: {notice.tax_owner_name}")
-print(f"Address: {notice.address}, {notice.city}, {notice.state} {notice.zip}")
-print()
+    notice = NoticeData(address=args.address, city=args.city, state=args.state, zip=args.zip, county=args.county,
+                        notice_type=args.notice_type, parcel_id=args.parcel, tax_owner_name=args.owner)
+    if not config.ANTHROPIC_API_KEY:
+        print("ERROR: No ANTHROPIC_API_KEY configured in .env")
+        return 1
+    print("Testing obituary enrichment for the record given on the command line (live: web search and a model call).")
+    enrich_obituary_data([notice], config.ANTHROPIC_API_KEY)
 
-api_key = config.ANTHROPIC_API_KEY
-if not api_key:
-    print("ERROR: No ANTHROPIC_API_KEY configured in .env")
-    sys.exit(1)
+    print()
+    print("=" * 60)
+    print("RESULTS:")
+    for field in ("owner_deceased", "date_of_death", "obituary_url", "decision_maker_name", "decision_maker_relationship",
+                  "decision_maker_street", "decision_maker_city", "decision_maker_state", "decision_maker_zip"):
+        print("  %-30s %r" % (field + ":", getattr(notice, field, None)))
+    print("=" * 60)
+    return 0
 
-enrich_obituary_data([notice], api_key)
 
-print()
-print("=" * 60)
-print("RESULTS:")
-print(f"  owner_deceased:              {notice.owner_deceased!r}")
-print(f"  date_of_death:               {notice.date_of_death!r}")
-print(f"  obituary_url:                {notice.obituary_url!r}")
-print(f"  decision_maker_name:         {notice.decision_maker_name!r}")
-print(f"  decision_maker_relationship: {notice.decision_maker_relationship!r}")
-print("=" * 60)
-
-# Validate expectations
-ok = True
-if notice.owner_deceased != "yes":
-    print("FAIL: owner_deceased should be 'yes'")
-    ok = False
-if not notice.date_of_death:
-    print("FAIL: date_of_death should not be empty")
-    ok = False
-if "dignitymemorial" not in (notice.obituary_url or ""):
-    print(f"WARN: expected dignitymemorial.com URL, got: {notice.obituary_url}")
-# Decision-maker is a bonus — only available when full page is fetched (not snippet fallback)
-if notice.decision_maker_name:
-    print(f"BONUS: decision_maker identified: {notice.decision_maker_name} ({notice.decision_maker_relationship})")
-else:
-    print("NOTE: decision_maker empty (expected when using snippet fallback — full page was blocked)")
-
-if ok:
-    print("\nPASS — Deceased owner correctly identified")
-else:
-    print("\nFAIL — Core fields missing")
-    sys.exit(1)
+if __name__ == "__main__":
+    sys.exit(main())

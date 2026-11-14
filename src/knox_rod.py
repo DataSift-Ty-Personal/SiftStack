@@ -76,6 +76,86 @@ DOC_TYPES = {"FTL": 4, "LEN": 5, "STL": 6, "REL": 13, "RFTL": 14, "RESL": 15,
              "RFTL*": 114, "RSTL*": 116}
 
 
+SUBSCRIPTION_WARN_DAYS = 14
+# What the last login saw: {"state": "active" | "expired" | "unknown", "days": int | None}.
+# Read by the daily lien stage so the days-left figure can ride in the run report.
+SUBSCRIPTION: dict = {}
+
+# The doc-type tree as the last login read it off the live page: {label: API integer}.
+# DOC_TYPES above stays the source for the types the lien pull has always used. Any OTHER type
+# (the substitute trustee appointment, the deed of trust it points at) is resolved here by its
+# LABEL, never by a number typed into the code: the numbering is the county's, and a renumbered
+# tree would otherwise pull a different kind of document without a single error.
+DOC_TREE: dict = {}
+
+# The last captured search request, so a second stage in the same process (the appointment pull
+# straight after the lien pull) replays the session that is already open instead of logging in
+# again. The county's one concern is load, and a login is the heaviest thing this module does.
+SESSION: dict = {}
+SESSION_MAX_AGE = 900     # seconds a captured session is reused before a fresh login
+
+
+def doc_code(label: str) -> int | None:
+    """The API integer for a doc-type label, or None when neither table knows it."""
+    key = (label or "").strip().upper()
+    if key in DOC_TYPES:
+        return DOC_TYPES[key]
+    return DOC_TREE.get(key)
+
+
+def remember_tree(pairs) -> int:
+    """Fill DOC_TREE from the live tree's [id, label] pairs. Returns how many labels it holds."""
+    DOC_TREE.clear()
+    for code, label in pairs or []:
+        label = str(label or "").strip().upper()
+        try:
+            if label:
+                DOC_TREE.setdefault(label, int(str(code).strip()))
+        except ValueError:
+            continue
+    return len(DOC_TREE)
+
+
+def capture_cached(max_age: float = SESSION_MAX_AGE, capture=None, clock=time.time) -> tuple[dict, dict]:
+    """(fields, headers) from this process's open session, logging in only when there is none
+    or it is older than max_age seconds."""
+    if SESSION.get("fields") and clock() - float(SESSION.get("at") or 0) <= max_age:
+        return SESSION["fields"], SESSION["headers"]
+    if capture is None:
+        import asyncio
+        fields, headers = asyncio.run(capture_request())
+    else:
+        fields, headers = capture()
+    SESSION.update(fields=fields, headers=headers, at=clock())
+    return fields, headers
+
+
+class RodSubscriptionExpired(RuntimeError):
+    """The paid Register of Deeds subscription has lapsed.
+
+    Login still works on a lapsed account and the search page still renders,
+    but the search button fires no request at all: the site answers with a
+    browser alert instead. For 11 weeks (2026-08-26 on) that read as "no
+    v2Search request was captured; the page layout changed". No retry or code
+    change fixes it; the account has to be renewed on the Subscription tab.
+    """
+
+
+def subscription_state(timer_text: str) -> tuple[str, int | None]:
+    """Read the header timer ("DAYS UNTIL SUBSCRIPTION EXPIRES: 23").
+
+    Returns ("expired", None), ("active", days) or ("unknown", None). Unknown
+    is not treated as expired: the search itself is the second check.
+    """
+    tail = (timer_text or "").split(":")[-1].strip().lower()
+    if "expired" in tail:
+        return "expired", None
+    digits = "".join(c for c in tail if c.isdigit())
+    if digits:
+        return "active", int(digits)
+    return "unknown", None
+
+
 def _month_windows(months: int, end: date | None = None) -> list[tuple[str, str]]:
     """Calendar months, oldest first, as (MM/DD/YYYY, MM/DD/YYYY)."""
     end = end or date.today()
@@ -98,11 +178,22 @@ async def capture_request() -> tuple[dict, dict]:
     """
     from playwright.async_api import async_playwright
 
+    import asyncio
+
     caps: list[dict] = []
     tree: list = []
+    alerts: list[str] = []
+
+    def _on_dialog(d) -> None:
+        # The site reports a lapsed subscription ONLY through a browser alert.
+        # Unhandled, Playwright dismisses it silently and nothing is left to see.
+        alerts.append(d.message or "")
+        asyncio.ensure_future(d.accept())
+
     async with async_playwright() as p:
         b = await p.chromium.launch(headless=True)
         page = await (await b.new_context()).new_page()
+        page.on("dialog", _on_dialog)
         page.on("request", lambda r: caps.append(
             {"headers": dict(r.headers), "post": r.post_data})
             if "v2Search" in r.url else None)
@@ -119,6 +210,24 @@ async def capture_request() -> tuple[dict, dict]:
             raise RuntimeError(
                 "paxsub login failed. A logged-out page still renders a plausible "
                 "grid, so this asserts on the Log off link rather than trusting the URL.")
+
+        timer = await page.evaluate(
+            "() => { const e = document.getElementById('subscriptionTimer');"
+            " return e ? (e.value || e.innerText || '') : ''; }")
+        state, days = subscription_state(timer)
+        SUBSCRIPTION.clear()
+        SUBSCRIPTION.update(state=state, days=days)
+        if state == "expired":
+            await b.close()
+            raise RodSubscriptionExpired(
+                "Register of Deeds subscription has EXPIRED. Renew it at "
+                + BASE + "/views/subscription (Renew Subscription); nothing "
+                "else will make the search return rows.")
+        if state == "active":
+            print("  Register of Deeds subscription: %d day(s) left" % days)
+            if days <= SUBSCRIPTION_WARN_DAYS:
+                print("  WARNING: the Register of Deeds subscription expires in "
+                      "%d day(s). Renew it before the next pull." % days)
 
         await page.goto(BASE + "/views/search", wait_until="domcontentloaded")
         await page.wait_for_timeout(4500)
@@ -156,6 +265,7 @@ async def capture_request() -> tuple[dict, dict]:
         await b.close()
 
     if tree:
+        remember_tree(tree)
         try:
             os.makedirs("output/knox", exist_ok=True)
             with open("output/knox/rod_doctypes.json", "w", encoding="utf-8") as fh:
@@ -165,11 +275,17 @@ async def capture_request() -> tuple[dict, dict]:
         print("  live doc-type tree (%d types) -> output/knox/rod_doctypes.json" % len(tree))
 
     if not caps:
-        raise RuntimeError("no v2Search request was captured; the page layout changed")
+        said = "; ".join(a for a in alerts if a)
+        if "expired" in said.lower() or "subscription" in said.lower():
+            raise RodSubscriptionExpired("Register of Deeds refused the search: " + said)
+        raise RuntimeError(
+            "no v2Search request was captured"
+            + ((". The site said: " + said) if said else "; the page layout changed"))
     c = caps[0]
     fields = dict(urllib.parse.parse_qsl(c["post"], keep_blank_values=True))
     headers = {k: v for k, v in c["headers"].items()
                if k.lower() not in ("content-length", "host", ":authority")}
+    SESSION.update(fields=fields, headers=headers, at=time.time())
     return fields, headers
 
 
@@ -188,9 +304,9 @@ def _post(fields: dict, headers: dict, timeout: int = 90) -> dict:
 def fetch_type(fields: dict, headers: dict, doc: str,
                d_from: str, d_to: str, sleep: float = 1.5) -> list[list]:
     """All rows for one doc type in one window, paged."""
-    code = DOC_TYPES.get(doc.upper())
+    code = doc_code(doc)
     if code is None:
-        raise ValueError(f"unknown doc type {doc!r}; known: {sorted(DOC_TYPES)}")
+        raise ValueError(f"unknown doc type {doc!r}; known: {sorted(set(DOC_TYPES) | set(DOC_TREE))}")
 
     base = dict(fields)
     base["CategoryDocumentTypes"] = str(code)
@@ -277,7 +393,13 @@ def main() -> int:
           f"({windows[0][0]} .. {windows[-1][1]})")
 
     print("capturing a live search request (browser, once)...")
-    fields, headers = asyncio.run(capture_request())
+    try:
+        fields, headers = asyncio.run(capture_request())
+    except RodSubscriptionExpired as exc:
+        # Exit 4, distinct from "no rows" (1) and "no credentials" (2): a lapsed
+        # subscription is not a quiet month and no retry fixes it.
+        print("SUBSCRIPTION EXPIRED: %s" % exc)
+        return 4
     print(f"  session {fields.get('SessionId','')[:8]} captured")
 
     allrec, counts = [], {}

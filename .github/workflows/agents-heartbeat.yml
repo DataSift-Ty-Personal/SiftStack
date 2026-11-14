@@ -1,0 +1,73 @@
+name: Agents heartbeat
+
+# Watches the agents brain from OUTSIDE the box (build plan 0.15).
+#
+# The brain posts its own morning digest, and that covers what a run can see about itself. It
+# cannot cover the failure that matters most: a stopped machine reports nothing, and a missing
+# digest looks exactly like a quiet morning. The first-to-market pull went silent this way for
+# weeks before its own outside watchdog existed.
+#
+# Unlike the pull, the brain is a web service, so the probe is one request to its health page:
+# is it up, is the worker thread alive, is the clock alive, and did the stages actually run today.
+# The verdict is worked out by deploy/agents_heartbeat.py, a standard-library script whose logic
+# the selftest drives with invented pages, so a change to the health page that would blind this
+# watchdog fails a test first.
+#
+# Scheduled workflows run only from the default branch, so this is inert until it is on main.
+# Repo secrets: AGENTS_HEALTH_WEBHOOK (falls back to FTM_HEALTH_WEBHOOK) is where a failure is
+# posted. No Fly token is needed: the health page is public and carries counts only, never a
+# record, a street or a name.
+
+on:
+  schedule:
+    # 14:30 UTC = 10:30 EDT / 09:30 EST: after the 08:00 local digest in both halves of the year.
+    - cron: "30 14 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: agents-heartbeat
+  cancel-in-progress: false
+
+env:
+  AGENTS_URL: https://siftstack-agents.fly.dev
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            deploy/agents_heartbeat.py
+          sparse-checkout-cone-mode: false
+
+      - name: Ask the brain whether it is alive and working
+        id: probe
+        run: python3 deploy/agents_heartbeat.py "$AGENTS_URL"
+
+      - name: Tell Slack when the brain is not healthy
+        # always(): a probe that crashed is itself a reason to speak up, not a reason to stay quiet.
+        if: always() && steps.probe.outputs.status != 'ok'
+        env:
+          SLACK_WEBHOOK: ${{ secrets.AGENTS_HEALTH_WEBHOOK || secrets.FTM_HEALTH_WEBHOOK }}
+          STATUS: ${{ steps.probe.outputs.status }}
+          DETAIL: ${{ steps.probe.outputs.detail }}
+        run: |
+          if [ -z "$SLACK_WEBHOOK" ]; then
+            echo "::error::The agents brain is $STATUS and no Slack webhook is configured."
+            exit 1
+          fi
+          printf -v TEXT '%s\n%s\n\n%s\n%s' \
+            "*Agents brain is ${STATUS:-unknown}*" \
+            "$DETAIL" \
+            "This came from the watchdog, not the box, so it also fires when the morning digest never arrives." \
+            'Check: `fly status -a siftstack-agents` then `fly logs -a siftstack-agents`'
+          jq -nc --arg t "$TEXT" '{text: $t}' \
+            | curl -sS -X POST -H 'Content-Type: application/json' -d @- "$SLACK_WEBHOOK"
+          echo
+          echo "::error::The agents brain is $STATUS"
+          exit 1

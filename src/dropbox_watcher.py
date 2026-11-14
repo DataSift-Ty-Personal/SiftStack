@@ -28,7 +28,7 @@ VALID_NOTICE_TYPES = {
     "foreclosure", "tax_sale", "tax_delinquent", "probate",
     "eviction", "code_violation", "divorce",
 }
-# Counties are not restricted — any county folder name in Dropbox is accepted.
+# Counties are not restricted: any county folder name in Dropbox is accepted.
 # Previously hardcoded to Knox/Blount; now supports any market.
 KNOWN_COUNTIES = {"knox", "blount"}  # Known counties (used for info logging only)
 VALID_EXTENSIONS = {".jpg", ".jpeg", ".png"}
@@ -98,7 +98,7 @@ def check_storage_usage(dbx: dropbox.Dropbox) -> None:
         if usage.allocation.is_individual():
             total = usage.allocation.get_individual().allocated
         else:
-            total = usage.used  # team accounts — can't determine allocation easily
+            total = usage.used  # team accounts: the allocation cannot be read easily
             return
 
         percent = (used / total * 100) if total > 0 else 0
@@ -107,7 +107,7 @@ def check_storage_usage(dbx: dropbox.Dropbox) -> None:
 
         if percent >= config.DROPBOX_STORAGE_WARN_PERCENT:
             logger.warning(
-                "⚠ Dropbox storage at %.0f%% — consider cleaning processed photos",
+                "⚠ Dropbox storage at %.0f%%: consider cleaning processed photos",
                 percent,
             )
     except Exception as e:
@@ -245,6 +245,66 @@ def mark_processed(
     _save_state(config.PHOTO_STATE_FILE, photo_state)
 
 
+def _upload_via_browser(notices: list) -> dict | None:
+    """The upload wizard, driven by Playwright. The fallback (FTM_UPLOAD_BROWSER=1)."""
+    if not (config.DATASIFT_EMAIL and config.DATASIFT_PASSWORD):
+        return None
+    try:
+        import asyncio as _asyncio
+        from datasift_formatter import write_datasift_split_csvs
+        from datasift_uploader import upload_datasift_split, upload_to_datasift as _wizard_upload
+
+        csv_infos = write_datasift_split_csvs(notices)
+        if len(csv_infos) > 1:
+            result = _asyncio.run(upload_datasift_split(csv_infos, enrich=True, skip_trace=True))
+        else:
+            result = _asyncio.run(_wizard_upload(csv_infos[0]["path"], enrich=True, skip_trace=True))
+        if result.get("success"):
+            logger.info("DataSift upload: %s", result.get("message", "OK"))
+        else:
+            logger.error("DataSift upload failed: %s", result.get("message"))
+        return result
+    except Exception as e:
+        logger.error("DataSift upload error: %s", e)
+        return {"success": False, "message": str(e)}
+
+
+def upload_to_datasift(notices: list, uploader=None) -> dict | None:
+    """Put a photo batch into DataSift. Over the API unless FTM_UPLOAD_BROWSER=1 (build plan 5.5).
+
+    The wizard needed a person watching it: a modal or an unmapped column stalled it instead of
+    failing it. The API path creates each record with its list, tags, fields, notes and traced
+    numbers, reads the FIRST record back, and stops there if anything is missing.
+
+    Two things the wizard did that the API path does not, both said in the result message: it
+    does not run "Enrich Property Information" (no scoped route exists yet), and it does not
+    start a skip trace (DataSift traces new records itself when that setting is on).
+
+    Returns the same shape the Slack notice already reads (success, message, records_uploaded),
+    or None when this box holds no DataSift credential at all."""
+    import api_intake
+
+    if api_intake.browser_wanted():
+        return _upload_via_browser(notices)
+    if not ((config.DATASIFT_EMAIL and config.DATASIFT_PASSWORD) or os.environ.get("REISIFT_API_KEY")):
+        return None
+    try:
+        res = (uploader or api_intake.upload_notices)(notices, commit=True, source_tag="Tracerfy")
+    except Exception as e:
+        logger.error("DataSift upload error: %s", e)
+        return {"success": False, "message": str(e)}
+    if res.get("stopped"):
+        logger.error("DataSift upload stopped: %s", res["stopped"])
+        return {"success": False, "message": res["stopped"], "records_uploaded": res.get("created", 0)}
+    ok = bool(res.get("created")) and not res.get("failed")
+    message = ("%d of %d record(s) into DataSift over the API (%d already existed, %d phone number(s) added, "
+               "%d failed). Property enrichment and the skip trace were not started from here."
+               % (res.get("created", 0), res.get("submitted", 0), res.get("existing", 0), res.get("phones", 0),
+                  res.get("failed", 0)))
+    (logger.info if ok else logger.error)("DataSift upload: %s", message)
+    return {"success": ok, "message": message, "records_uploaded": res.get("created", 0)}
+
+
 def run_watcher(
     poll_interval: int | None = None,
     delete_after: bool = True,
@@ -327,32 +387,10 @@ def run_watcher(
                                     stats["phones_found"],
                                 )
                             except Exception as e:
-                                logger.warning("Tracerfy failed: %s — continuing", e)
+                                logger.warning("Tracerfy failed: %s, continuing", e)
 
-                        # DataSift upload
-                        upload_result = None
-                        if config.DATASIFT_EMAIL and config.DATASIFT_PASSWORD:
-                            try:
-                                import asyncio as _asyncio
-                                from datasift_formatter import write_datasift_split_csvs
-                                from datasift_uploader import upload_datasift_split, upload_to_datasift
-
-                                csv_infos = write_datasift_split_csvs(notices)
-                                if len(csv_infos) > 1:
-                                    upload_result = _asyncio.run(
-                                        upload_datasift_split(csv_infos, enrich=True, skip_trace=True)
-                                    )
-                                else:
-                                    upload_result = _asyncio.run(
-                                        upload_to_datasift(csv_infos[0]["path"], enrich=True, skip_trace=True)
-                                    )
-                                if upload_result.get("success"):
-                                    logger.info("DataSift upload: %s", upload_result.get("message", "OK"))
-                                else:
-                                    logger.error("DataSift upload failed: %s", upload_result.get("message"))
-                            except Exception as e:
-                                logger.error("DataSift upload error: %s", e)
-                                upload_result = {"success": False, "message": str(e)}
+                        # DataSift upload: over the API, with the wizard kept as a fallback.
+                        upload_result = upload_to_datasift(notices)
 
                         # Slack notification
                         if config.SLACK_WEBHOOK_URL:

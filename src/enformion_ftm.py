@@ -11,9 +11,15 @@ numbers (Trestle decides mobile/landline + dial tier, so the MMS mobile-only fil
 
 Billed per match (misses free, ~$0.25-0.35/match). DRY by default.
 
+THE MERGE GOES OVER THE API (build plan 5.5). It used to drive the browser's Add-Data wizard;
+api_intake.merge_phones now finds each record by address, adds only the numbers its owner lacks,
+counts the trace on the owner, and reads the first record back before the rest. It never creates
+a record. The wizard is still there behind --browser (or FTM_UPLOAD_BROWSER=1).
+
   python src/enformion_ftm.py                  # trace ALL FTM (single-family) records, write merge CSV (no upload)
   python src/enformion_ftm.py --limit 2        # cheap smoke test (2 records)
-  python src/enformion_ftm.py --finish         # also merge found phones into reisift
+  python src/enformion_ftm.py --finish         # also merge found phones into reisift, over the API
+  python src/enformion_ftm.py --finish --browser   # the same merge through the upload wizard
   python src/enformion_ftm.py --no-phone-only  # only records that still have no phones
 """
 import argparse
@@ -31,7 +37,6 @@ import config  # noqa: E402,F401  (loads .env -> Enformion creds for the library
 from notice_parser import NoticeData  # noqa: E402
 from tracerfy_skip_tracer import PHONE_FIELDS  # noqa: E402
 from datasift_formatter import write_datasift_split_csvs  # noqa: E402
-from sift_upload_wizard import run_upload  # noqa: E402
 from enformion_heir import person_search, first_match  # noqa: E402  (canonical library client)
 
 OUTDIR = SRC.parent / "output"
@@ -89,12 +94,35 @@ def owner_first_last(r: dict) -> tuple[str, str]:
     return clean_owner_name(raw)
 
 
+def merge(merge_csv, tags: list, *, browser: bool = False, headed: bool = False, merger=None) -> dict:
+    """Merge the found phones into the existing Foreclosure records (build plan 5.5).
+
+    Over the API by default: each record is found by address, only numbers the owner lacks are
+    added, the trace is counted on the owner, and the first record is read back before the rest.
+    The browser wizard is the fallback (--browser or FTM_UPLOAD_BROWSER=1)."""
+    import api_intake
+
+    if browser or api_intake.browser_wanted():
+        from sift_upload_wizard import run_upload   # Playwright, imported only when it is used
+        (OUTDIR / "_enformion_merge").mkdir(parents=True, exist_ok=True)
+        return {"route": "browser", "result": asyncio.run(run_upload(
+            merge_csv, "Foreclosure", tags, existing_list=True, do_finish=True, headless=not headed,
+            shot_base=str(OUTDIR / "_enformion_merge" / "run")))}
+    with open(merge_csv, encoding="utf-8") as fh:
+        rows = list(csv.DictReader(fh))
+    res = (merger or api_intake.merge_phones)(rows, commit=True, source_tag="Enformion",
+                                             list_name="Foreclosure", tags=tags)
+    return {"route": "api", "result": res}
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--csv", default="", help="FTM master CSV (default: latest *_sfr.csv)")
     ap.add_argument("--addr", default="", help="comma list of address substrings to limit to (e.g. a re-run on specific records)")
     ap.add_argument("--no-phone-only", action="store_true", help="only records still with no phones")
-    ap.add_argument("--finish", action="store_true", help="merge found phones into reisift")
+    ap.add_argument("--finish", action="store_true", help="merge found phones into reisift (over the API)")
+    ap.add_argument("--browser", action="store_true",
+                    help="merge through the browser upload wizard instead of the API (the fallback)")
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--headed", action="store_true")
     a = ap.parse_args()
@@ -164,11 +192,11 @@ def main():
     if a.finish:
         iy, iw, _ = date.today().isocalendar()
         tags = ["FTM", "foreclosure", "has_auction", "Courthouse Data", f"{iy}-W{iw:02d}"]
-        (OUTDIR / "_enformion_merge").mkdir(parents=True, exist_ok=True)
-        res = asyncio.run(run_upload(merge_csv, "Foreclosure", tags, existing_list=True,
-                                     do_finish=True, headless=not a.headed,
-                                     shot_base=str(OUTDIR / "_enformion_merge" / "run")))
-        print("merge upload:", res)
+        out = merge(merge_csv, tags, browser=a.browser, headed=a.headed)
+        print("merge (%s):" % out["route"], out["result"])
+        if out["route"] == "api" and out["result"].get("stopped"):
+            print("!! " + out["result"]["stopped"])
+            return
         print("\nNEXT: re-run score_ftm_phones.py --commit + run_phone_tag_upload.py --finish "
               "to score/tier the new numbers (then the MMS builder picks up the new mobiles).")
     else:

@@ -191,3 +191,115 @@ class TestLeadingSentenceWords:
         stopword cannot be erased into an empty string."""
         from notice_parser import _clean_name
         assert _clean_name("Estate") == "Estate"
+
+
+# Blount County, published 2026-11-10 in a narrow newspaper column and served
+# as PDF text. The layout, the line breaks and the mid-word hyphens are exactly
+# as scraped; the NAMES are changed, since this repo is public. Statutory
+# boilerplate trimmed where marked.
+BLOUNT_WRAPPED = """NOTICE TO CREDITORS
+
+ DOCKET NO.: PR-0000
+(As required by section 30-2-
+306 of the Tennessee Code
+Annotated) Estate of Maria B
+Hale, late of  Blount County,
+Tennessee.
+
+Notice  is  hereby  given  that  on
+November  3rd,  2026,  Letters
+Testamentary in respect to the
+Estate  of  Maria  B  Hale,  de-
+ceased,  who  died  on  October
+19th, 2026, were issued to the
+undersigned by Probate Clerk of
+Blount  County,  Tennessee.  All
+persons, resident and non-resi-
+dent, having claims, matured or
+unmatured, against said Estate
+are required to file the same [...]
+
+This  the  3  day  of  November,
+2026.
+
+Edwin F Hale
+Personal Representative
+
+By: Clerk Name,
+Blount County Probate Clerk
+Maryville, TN 37804
+"""
+
+# Same layout, the break falls inside the decedent's own name, twice.
+BLOUNT_WRAPPED_NAME = """NOTICE TO CREDITORS
+
+(As required by section 30-2-
+306 of the Tennessee Code
+Annotated) Estate of Karen Di-
+anne Westmore, late of  Blount
+County, Tennessee.
+
+Notice  is  hereby  given  that  on
+November  3rd,  2026,  Letters
+Testamentary in respect to the
+Estate  of  Karen  Dianne  West-
+more, deceased, who died on
+October 2nd, 2026, were issued [...]
+"""
+
+NL = chr(10)
+
+
+class TestLineWrappedNames:
+    """A column break inside a word must not become part of a name.
+
+    What shipped before: "Estate of NAME, de-" then "ceased, who died" on the
+    next line never matched the Deceased anchor, the capture ran on, and the
+    decedent was stored as "Name, De- Ceased". The assessor was then searched
+    for "DE- FIRST" and returned an unrelated family's house.
+    """
+
+    def test_deceased_split_across_lines_is_not_part_of_the_name(self):
+        n = _parse(BLOUNT_WRAPPED)
+        assert n.decedent_name == "Maria B Hale"
+
+    def test_name_split_across_lines_is_rejoined(self):
+        n = _parse(BLOUNT_WRAPPED_NAME)
+        assert n.decedent_name == "Karen Dianne Westmore"
+
+    def test_no_fragment_survives_in_any_form(self):
+        for raw in (BLOUNT_WRAPPED, BLOUNT_WRAPPED_NAME):
+            name = _parse(raw).decedent_name
+            assert "-" not in name
+            assert "ceased" not in name.lower()
+
+    @pytest.mark.parametrize(
+        "raw, expected",
+        [
+            ("de-" + NL + "ceased", "deceased"),
+            ("STRICK-" + NL + "LAND", "STRICKLAND"),
+            ("non-resi-" + NL + "dent", "non-resident"),
+            ("publica- " + NL + " tion", "publication"),
+            # A real hyphenated surname broken at its own hyphen keeps it.
+            ("Smith-" + NL + "Jones", "Smith-Jones"),
+            # Digits are a statute citation, not a wrapped word.
+            ("30-2-" + NL + "306", "30-2-" + NL + "306"),
+            # A hyphen that is not at a line end is left alone.
+            ("Mary Smith-Jones", "Mary Smith-Jones"),
+        ],
+    )
+    def test_join_line_wraps(self, raw, expected):
+        from notice_parser import _join_line_wraps
+        assert _join_line_wraps(raw) == expected
+
+    @pytest.mark.parametrize(
+        "raw, expected",
+        [
+            ("KAREN DIANNE WEST- MORE", "Karen Dianne Westmore"),
+            ("Maria B Hale, de- ceased", "Maria B Hale"),
+            ("Mary Smith- Jones", "Mary Smith-Jones"),
+        ],
+    )
+    def test_clean_name_repairs_a_wrap_that_reached_it(self, raw, expected):
+        from notice_parser import _clean_name
+        assert _clean_name(raw) == expected

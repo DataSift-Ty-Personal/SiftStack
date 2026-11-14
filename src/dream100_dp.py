@@ -27,6 +27,9 @@ Rules carried from the v5 skill, each one a live failure:
     relationship, or the dial sheet labels the owner's own landline "Son".
   * Never a person's name in a phone tag. Names live in the note, with last-4 numbers.
   * upsert-phones replaces the object BY NUMBER, so existing phones are never sent at all.
+  * What may go on the record is decided in agents/research/writeback.py, before any write:
+    Dial First and Second numbers (Third only as a reserve), a decision maker only when verified,
+    and the owner's deceased mark only when the record's owner is the person who died.
 """
 from __future__ import annotations
 
@@ -49,6 +52,8 @@ SRC = Path(__file__).resolve().parent
 ROOT = SRC.parent
 sys.path.insert(0, str(SRC))
 
+from agents.research import writeback as wb  # noqa: E402  (the write-back rules; standard library only)
+
 RANKED = ROOT / "output/dream100/dream100_ranked.json"
 FULL = ROOT / "output/dream100/full_records.json"
 VENDOR_GLOB = "output/visual_distress/job_*.jsonl"
@@ -65,7 +70,10 @@ TRESTLE_PER_NUM = 0.015
 STREETVIEW_PER_IMG = 0.007
 
 TIERS = ("Dial First", "Dial Second", "Dial Third", "Dial Fourth", "Drop")
+# The tiers a number must sit in to be CONSIDERED for the record. Which of them is then written is
+# decided by wb.tier_rule (decision D12): First and Second, with Third held as the reserve.
 WRITE_TIERS = {"Dial First", "Dial Second", "Dial Third"}
+READBACK_PAUSE_S = 1.0          # DataSift's index lags a write; tests set this to 0
 MARKER = "[Deep prospecting v5]"
 PROPERTY_TAG = "Deep Prospected"
 BAD_STATUSES = {"WRONG", "DEAD", "DNC", "CORRECT_DNC", "WRONG_DNC"}
@@ -936,7 +944,9 @@ def assemble(run: Run) -> list[dict]:
 
 
 def writeback_plan(d: dict) -> dict:
-    """New numbers only, for the people the analysis gave a role, tiers First to Third."""
+    """New numbers only, for the people the analysis gave a role. Dial First and Second go on the
+    record; Dial Third only when the record has nothing better (wb.tier_rule, decision D12).
+    `held` lists what was left off and why, so a dry run shows it."""
     items = []
     for r in d["dial"]:
         if r["on_crm"] or r["do_not_dial"] or r["tier"] not in WRITE_TIERS or not r["reaches"]:
@@ -947,7 +957,8 @@ def writeback_plan(d: dict) -> dict:
         items.append({"number": r["number"], "type": r["type"], "tags": tags, "status": "UNKNOWN",
                       "is_connected": True, "verified": False,
                       "_reaches": r["reaches_label"]})
-    return {"owner_uuid": d["x"]["owner_uuid"], "phones": items}
+    kept, held = wb.tier_rule(d["dial"], items, wb.settings()["third_tier"], _crm_phones(d["x"]))
+    return {"owner_uuid": d["x"]["owner_uuid"], "phones": kept, "held": held}
 
 
 # ---------------------------------------------------------------------- text --
@@ -974,7 +985,7 @@ def build_note(d: dict) -> str:
         L.append("Decision makers: " + ", ".join("%s (%s)" % (p["name"], _short_rel(p)) for p in dms[:5]))
     order = an.get("call_order") or [{"who": r["reaches_label"], "number": r["number"],
                                       "why": "%s %s" % (r["tier"], r["type"].lower())}
-                                     for r in d["dial"] if not r["do_not_dial"] and r["tier"] in WRITE_TIERS][:4]
+                                     for r in wb.dial_first(d["dial"], wb.settings()["third_tier"])][:4]
     if order:
         L.append("Call order:")
         L += ["  %d. %s ...%s: %s" % (i, c.get("who", ""), last4(c.get("number", "")), c.get("why", ""))
@@ -1824,27 +1835,69 @@ def phase_build(args, run: Run):
 
 # ----------------------------------------------------------------- writeback --
 
-def _readback(api, d: dict, plan: dict) -> dict:
+def decision(run: Run, d: dict, cfg: dict | None = None) -> dict:
+    """What the write-back may do for one assembled record, worked out from the run's own files
+    (the name checks, the pages the research opened). No network, so a dry run can show it."""
+    slug = d["slug"]
+    return wb.decide(d, verify=run.load("verify.json", {}) or {},
+                     urls=run.load(os.path.join("research", slug + "_urls.json"), []) or [],
+                     webcache=run.load(os.path.join("research", slug + "_webcache.json")),
+                     cfg=cfg or wb.settings())
+
+
+def _readback(api, d: dict, plan: dict, want: dict | None = None) -> dict:
+    """Read the record back and say what stuck. `want` names the optional writes this pass made
+    (heir tag, level, litigator tags, skip trace counter, document, owner change): each one that
+    ran gets its own line, because a write that returned 200 is not a write that landed."""
     uuid = d["x"]["uuid"]
+    want = want or {}
     rec = api.call("/api/internal/property/%s/" % uuid)
+    owner = rec.get("owner") or {}
     have = {digits(p.get("number")): [t if isinstance(t, str) else (t.get("title") or t.get("name"))
                                       for t in (p.get("tags") or [])]
-            for p in ((rec.get("owner") or {}).get("phones") or [])}
+            for p in (owner.get("phones") or [])}
     phones_ok = all(digits(p["number"]) in have and set(p["tags"]) <= set(have[digits(p["number"])])
                     for p in plan["phones"])
     tags = [t if isinstance(t, str) else (t.get("title") or t.get("name")) for t in rec.get("tags") or []]
     msgs = api.call("/api/internal/property/%s/message/?limit=50" % uuid)
     msgs = msgs.get("results") if isinstance(msgs, dict) else msgs
     note = next((m for m in msgs or [] if MARKER in str(m.get("message") or "")), None)
-    return {"phones_ok": phones_ok, "tag_ok": PROPERTY_TAG in tags, "note_ok": bool(note),
-            "note_pinned": bool((note or {}).get("pinned")),
-            "owner_deceased": bool((rec.get("owner") or {}).get("deceased"))}
+    rb = {"phones_ok": phones_ok, "tag_ok": PROPERTY_TAG in tags, "note_ok": bool(note),
+          "note_pinned": bool((note or {}).get("pinned")), "owner_deceased": bool(owner.get("deceased"))}
+    if want.get("tags"):
+        rb["heir_tag_ok"] = all(t in tags for t in want["tags"])
+    if want.get("litigator"):
+        rb["litigator_ok"] = wb.LITIGATOR_TAG in tags and wb.DO_NOT_MARKET_TAG in tags
+    if want.get("skiptrace") is not None:
+        rb["skiptrace_ok"] = int(owner.get("skiptrace_attempts") or 0) == int(want["skiptrace"])
+    if want.get("owner"):
+        rb["owner_ok"] = all(str(owner.get(k) or "").strip().lower() == str(want["owner"].get(k) or "").strip().lower()
+                             for k in ("first_name", "last_name"))
+    if want.get("level"):
+        label, sent = want["level"]
+        got = api.call("/api/internal/property/%s/custom-field/" % uuid)
+        got = got.get("results") if isinstance(got, dict) else got
+        rb["level_ok"] = any(((c.get("custom_field") or {}).get("label") == label and str(c.get("value")) in sent)
+                             for c in got or [] if isinstance(c, dict))
+    if want.get("document"):
+        name, size = want["document"]
+        docs = api.call("/api/internal/property/%s/document/?limit=100" % uuid)
+        docs = docs.get("results") if isinstance(docs, dict) else docs
+        rb["document_ok"] = any(x.get("filename") == name and int(x.get("size") or -1) == size for x in docs or [])
+    return rb
 
 
 def phase_writeback(args, run: Run):
-    """New phones, one pinned research note, the property tag, confirmed-death fields. Read back."""
+    """New phones, one pinned research note, the property tag, confirmed-death fields. Read back.
+
+    What may be written is decided first, in one place (wb.decide): which numbers, which fields,
+    and whether the owner on the record is the person who died. The writes this chain has not yet
+    made on a real record (the research level, the heir tag, the skip trace counter, the litigator
+    tags, the report in the record's documents, the owner change) run only when their setting is
+    on, after the writes that were already here, and each one is read back."""
     from datasift_api_upload import Api, attach_to_record, field_index  # noqa: E402
     from ftm_deep_prospect_push import upsert_phones  # noqa: E402  (the index-drop retry)
+    cfg = wb.settings()
     data = assemble(run)
     if args.only:
         data = [d for d in data if d["slug"] in args.only.split(",")]
@@ -1853,23 +1906,72 @@ def phase_writeback(args, run: Run):
     api = Api() if args.commit else None
     idx = field_index(api) if api else {}
     for d in data:
-        an, x = d["an"], d["x"]
+        an, x, slug = d["an"], d["x"], d["slug"]
         plan = writeback_plan(d)
+        dec = decision(run, d, cfg)
+        if dec["suppress"]:
+            # The record is about to leave every lane, so nothing new is put on it to dial.
+            plan["held"] = list(plan.get("held") or []) + [
+                {"number": p["number"], "tier": "", "why": "a litigator's number is tied to this record"}
+                for p in plan["phones"]]
+            plan["phones"] = []
         note = build_note(d)
-        fields = dict(an.get("crm_fields") or {})
+        fields = dict(dec["fields"])
+        dead = bool((an.get("death") or {}).get("owner_deceased"))
         print("\n%s  owner %s" % (x["row"]["street"], (plan["owner_uuid"] or "")[:8]))
         for p in plan["phones"]:
             print("  + %s %-8s %-40s -> %s" % (fmt_phone(p["number"]), p["type"], ", ".join(p["tags"]), p["_reaches"]))
+        for h in plan.get("held") or []:
+            print("  - %s not written: %s" % (fmt_phone(h["number"]), h["why"]))
         for k, v in fields.items():
             print("  field %s = %s" % (k, v))
-        if (an.get("death") or {}).get("owner_deceased"):
+        for h in dec["held_fields"]:
+            print("  - " + h)
+        if dead and dec["deceased"][0]:
             print("  owner deceased flag -> true (obituary: %s)" % an["death"].get("obituary_url"))
-        print("  note: %d lines, tag %s" % (note.count("\n") + 1, PROPERTY_TAG))
+        elif dead:
+            print("  - owner deceased flag not set: " + dec["deceased"][1])
+        print("  note: %d lines, tag %s%s" % (note.count("\n") + 1, PROPERTY_TAG,
+                                              "".join(", tag " + t for t in dec["tags"])))
+        print("  research level %d (%s)%s" % (dec["level"][0], dec["level"][1],
+                                              "" if cfg["level"] else "; not written, AGENTS_DP_LEVEL is off"))
+        if dec["litigators"]:
+            print("  litigator number(s) ending %s: %s" % (
+                ", ".join(last4(n) for n in dec["litigators"]),
+                "this record and the owner's other records get Litigator and Do Not Market" if dec["suppress"]
+                else "record tags not written, AGENTS_DP_LITIGATOR is off"))
+        if dec["swap"]:
+            print("  owner -> %s at %s" % (dec["swap"]["person"], dec["swap"]["to"]["address"]["street"]))
+        for why in dec["swap_refused"]:
+            print("  - owner not changed: " + why)
         if not args.commit:
             continue
         uuid = x["uuid"]
-        entry = {"phones_written": [], "fields": {}, "errors": []}
-        if plan["phones"]:
+        earlier = audit.get(slug) or {}
+        entry = {"phones_written": [], "fields": {}, "errors": [], "level": dec["level"][0],
+                 "verified": sorted(n for n, v in dec["verified"].items() if v["verified"]),
+                 "held": {"phones": plan.get("held") or [], "fields": dec["held_fields"]}}
+        want: dict = {}
+        try:
+            now = api.call("/api/internal/property/%s/" % uuid) or {}
+        except Exception as exc:  # noqa: BLE001
+            now = {}
+            entry["errors"].append("record not read before writing: %s" % str(exc)[:120])
+        owner_now = now.get("owner") or (x.get("record") or {}).get("owner") or {}
+        # The records file can be hours old. If the record's owner is no longer the one it named,
+        # phones and owner marks would land on a person who is no longer attached to this house.
+        moved = bool(owner_now.get("uuid") and plan["owner_uuid"] and owner_now["uuid"] != plan["owner_uuid"])
+        if moved:
+            entry["errors"].append("the record's owner changed since it was read: phones and owner marks were not "
+                                   "written. Run the records phase again.")
+        # Judged again on the owner the record holds right now. With an owner change in play the
+        # name check is never optional: after the change the owner on the record is the living heir,
+        # and a later run must not mark that person dead.
+        may, why_not = (wb.deceased_flag(an, owner_now, strict=cfg["verified_only"] or cfg["owner_swap"])
+                        if dead else (False, ""))
+        fields, late = wb.owner_deceased_field(fields, [], an, (may, why_not))
+        entry["held"]["fields"] = entry["held"]["fields"] + [h for h in late if h not in entry["held"]["fields"]]
+        if plan["phones"] and not moved:
             tags = {p["number"]: p["tags"] for p in plan["phones"]}
             # upsert_phones builds items with type UNKNOWN; send full objects instead, same retry rule
             items = [{k: v for k, v in p.items() if not k.startswith("_")} for p in plan["phones"]]
@@ -1898,10 +2000,11 @@ def phase_writeback(args, run: Run):
         except Exception as exc:  # noqa: BLE001
             entry["errors"].append("note: %s" % str(exc)[:120])
         try:
-            attach_to_record(api, uuid, {"tags": [PROPERTY_TAG]})
+            attach_to_record(api, uuid, {"tags": [PROPERTY_TAG] + dec["tags"]})
+            want["tags"] = dec["tags"]
         except Exception as exc:  # noqa: BLE001
             entry["errors"].append("tag: %s" % str(exc)[:120])
-        pairs = []
+        pairs, sent = [], {}
         for label, val in fields.items():
             f = idx.get(label)
             if not f:
@@ -1918,6 +2021,7 @@ def phase_writeback(args, run: Run):
                 v = val
             pairs.append({"field_uuid": f["uuid"], "value": v})
             entry["fields"][label] = val
+            sent[label] = v
         if pairs:
             try:
                 api.call("/api/internal/property/%s/custom-field/update-values/" % uuid, "PATCH", pairs)
@@ -1931,19 +2035,102 @@ def phase_writeback(args, run: Run):
                     except Exception as exc2:  # noqa: BLE001
                         entry["fields"].pop(label, None)
                         entry["errors"].append("field %s refused: %s" % (label, str(exc2)[:100]))
-        if (an.get("death") or {}).get("owner_deceased"):
+        if cfg["level"] and cfg["level_field"] in entry["fields"]:
+            want["level"] = (cfg["level_field"], {str(sent[cfg["level_field"]]), str(dec["level"][0])})
+        marked = False
+        if dead:
+            if may and not moved:
+                try:
+                    api.call("/api/internal/owner/%s/" % plan["owner_uuid"], "PATCH", {"deceased": True})
+                    marked = True
+                except Exception as exc:  # noqa: BLE001
+                    entry["errors"].append("owner deceased flag: %s" % str(exc)[:120])
+            elif why_not:
+                entry["held"]["deceased"] = why_not
+        if dec["suppress"]:
             try:
-                api.call("/api/internal/owner/%s/" % plan["owner_uuid"], "PATCH", {"deceased": True})
+                done = wb.suppress_litigator(api, uuid, owner_now.get("uuid") or plan["owner_uuid"])
+                entry["errors"] += done.pop("problems", [])
+                entry["litigator"] = dict(done, numbers=[last4(n) for n in dec["litigators"]])
+                want["litigator"] = True
             except Exception as exc:  # noqa: BLE001
-                entry["errors"].append("owner deceased flag: %s" % str(exc)[:120])
-        time.sleep(1.0)
-        rb = _readback(api, d, plan)
+                entry["errors"].append("litigator tags: %s" % str(exc)[:120])
+        # Sticky across passes: numbers written by an earlier pass still count as landed, so the
+        # counter can be written by a later pass (the setting switched on since, or a write that failed).
+        entry["numbers_landed"] = bool(entry["phones_written"]) or bool(earlier.get("numbers_landed"))
+        if earlier.get("skiptrace"):
+            entry["skiptrace"] = earlier["skiptrace"]
+        if cfg["skiptrace_counter"] and not moved and not dec["suppress"]:
+            step = wb.counter_plan(owner_now.get("skiptrace_attempts"), entry["numbers_landed"],
+                                   earlier.get("skiptrace"), wb.trace_key(run.load("ledger.json", {})))
+            if step:
+                try:
+                    wb.write_counter(api, plan["owner_uuid"], step["total"])
+                    entry["skiptrace"] = dict(step, ok=True)
+                    want["skiptrace"] = step["total"]
+                except Exception as exc:  # noqa: BLE001
+                    entry["skiptrace"] = dict(step, ok=False)
+                    entry["errors"].append("skip trace counter: %s" % str(exc)[:120])
+        if cfg["document"]:
+            pdf = run.p("packs", slug + ".pdf")
+            if not pdf.exists():
+                entry["errors"].append("report not filed: the PDF has not been built")
+            else:
+                try:
+                    entry["document"] = wb.file_document(api, uuid, pdf, wb.document_name(slug), prop=now.get("id"))
+                    want["document"] = (wb.document_name(slug), pdf.stat().st_size)
+                except Exception as exc:  # noqa: BLE001
+                    entry["errors"].append("report not filed: %s" % str(exc)[:160])
+        if cfg["owner_swap"] and not dec["suppress"] and not moved:
+            swap, refused = wb.swap_plan(d, dec["verified"], owner=owner_now)
+            if swap:
+                try:
+                    done = wb.swap_owner(api, uuid, swap)
+                    entry["owner_swap"] = dict(done, person=swap["person"], before=swap["before"], to=swap["to"])
+                    want["owner"] = swap["to"]
+                    if not done["ok"]:
+                        entry["errors"].append("owner change did not take")
+                    elif not done["same_owner"] and done["owner_uuid"]:
+                        # The update attached a NEW owner instead of renaming the old one. What this
+                        # pass put on the old owner has to follow the house, or the record reads as
+                        # having no numbers and never traced.
+                        if entry["phones_written"]:
+                            carried = [{k: v for k, v in p.items() if not k.startswith("_")} for p in entry["phones_written"]]
+                            if not _upsert_full(api, done["owner_uuid"], carried)[0]:
+                                entry["errors"].append("numbers not carried to the new owner")
+                        if want.get("skiptrace") is not None:
+                            total = done["skiptrace_attempts"] + 1
+                            wb.write_counter(api, done["owner_uuid"], total)
+                            entry["skiptrace"] = dict(entry["skiptrace"], total=total, carried=True)
+                            want["skiptrace"] = total
+                except Exception as exc:  # noqa: BLE001
+                    entry["errors"].append("owner change: %s" % str(exc)[:120])
+            elif refused:
+                entry["held"]["owner_swap"] = refused
+        time.sleep(READBACK_PAUSE_S)
+        rb = _readback(api, d, plan, want)
+        if rb.get("skiptrace_ok") is False:
+            entry["skiptrace"]["ok"] = False      # it did not stick: the next pass tries again
         entry["readback"] = ", ".join("%s %s" % (k.replace("_", " "), "yes" if v else "no") for k, v in rb.items())
         k = len(entry["phones_written"])
-        entry["summary"] = "%s, pinned research note, tag %s%s%s" % (
+        more = []
+        reserve = sum(1 for h in entry["held"]["phones"] if h.get("tier") == wb.RESERVE_TIER)
+        if reserve:
+            more.append("%d Dial Third number%s held in reserve" % (reserve, "" if reserve == 1 else "s"))
+        if dec["tags"] and rb.get("heir_tag_ok"):
+            more.append("tag " + ", ".join(dec["tags"]))
+        if (entry.get("litigator") or {}).get("tagged"):
+            more.append("%d record(s) tagged Litigator and Do Not Market" % len(entry["litigator"]["tagged"]))
+        if want.get("skiptrace") is not None:
+            more.append("skip trace counter %d" % want["skiptrace"])
+        if entry.get("document"):
+            more.append("report filed" if entry["document"].get("filed") else "report already filed")
+        if (entry.get("owner_swap") or {}).get("ok"):
+            more.append("owner changed to " + entry["owner_swap"]["person"])
+        entry["summary"] = "%s, pinned research note, tag %s%s%s%s" % (
             "no new numbers" if not k else "%d new number%s" % (k, "" if k == 1 else "s"), PROPERTY_TAG,
             ", fields " + ", ".join(entry["fields"]) if entry["fields"] else "",
-            ", owner marked deceased" if (an.get("death") or {}).get("owner_deceased") else "")
+            ", owner marked deceased" if marked else "", "".join(", " + m for m in more))
         entry["rb"] = rb
         audit[d["slug"]] = entry
         run.save("writeback_audit.json", audit)

@@ -14,6 +14,15 @@ posts, so the team can judge the output before the agent spends money.
 
 The run folder lives on the volume and is keyed by address, so a re-run reuses every paid
 SmartSkip order instead of buying it again.
+
+The order above is today's, and the default. AGENTS_DP_ORDER=free_first (build plan 3.3) reads what
+is free first and pays for a trace only afterwards:
+
+    records -> FREE LOOK (the notice text on the record, the county obituary index, a saved deed
+            lookup) -> RESEARCH -> smartskip -> merge -> ANALYSIS -> heirs -> ... as above
+
+A free look that shows the owner no longer owns the house ends the run there, before a cent is
+spent. What may be written back at the end is decided in writeback.py.
 """
 from __future__ import annotations
 
@@ -29,7 +38,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from .. import config, slack, store
-from . import researcher
+from . import open_research, researcher, writeback
 
 log = logging.getLogger(__name__)
 
@@ -45,13 +54,17 @@ class Budget:
         self.task_id = task_id
         self.skipped: list[str] = []
 
-    def allows(self, usd: float, what: str) -> bool:
+    def allows(self, usd: float, what: str, reserve: float = 0.0) -> bool:
+        """May this step spend about `usd`? `reserve` is what must still be left in the run
+        afterwards (the final analysis). The day is counted against research's own budget."""
         day = datetime.now(timezone.utc).isoformat()[:10]
-        run_total = store.spent(task_id=self.task_id) + usd
-        day_total = store.spent(day=day) + usd
-        if run_total > config.RUN_CAP_USD or day_total > config.DAILY_CAP_USD:
-            self.skipped.append("%s skipped: about $%.2f would pass the cap (run $%.0f, day $%.0f)"
-                                % (what, usd, config.RUN_CAP_USD, config.DAILY_CAP_USD))
+        run_total = store.spent(task_id=self.task_id) + usd + reserve
+        day_total = store.spent(day=day, research=True) + usd
+        if run_total > config.RUN_CAP_USD or day_total > config.RESEARCH_DAILY_CAP_USD:
+            self.skipped.append("%s skipped: about $%.2f would pass the cap (run $%.0f%s, research day $%.0f)"
+                                % (what, usd, config.RUN_CAP_USD,
+                                   " with $%.2f held for the final analysis" % reserve if reserve else "",
+                                   config.RESEARCH_DAILY_CAP_USD))
             return False
         return True
 
@@ -81,11 +94,36 @@ def _phase(name: str, fn, log_lines: list[str]):
     return ok, err
 
 
+def _free_look(rn, row: dict, cfg: dict, slug: str) -> dict:
+    """Gather what is free about the record and leave it where the research brief reads it. The
+    obituary index answers go through the record's own web cache, so the research engine that
+    runs next does not ask the library for the same name again."""
+    x = (rn.load("records.json") or [{}])[0]
+    web = open_research.Web(rn.p("research", slug + "_webcache.json"))
+    look = researcher.free_look(x, row, lookup=web.obituary_index,
+                                deed=researcher.saved_deed(rn, row.get("uuid") or "", cfg["deed_dir"]))
+    web.save()
+    rn.save("free_look.json", look)
+    return look
+
+
+def _look_line(look: dict) -> str:
+    idx = look.get("obituary_index") or {}
+    hits = sum(len(x.get("possible") or []) for x in idx.get("lookups") or [])
+    return "notice text %d characters%s; obituary index %s; deed lookup %s" % (
+        len(look.get("notice_text") or ""),
+        ", mentions %s" % ", ".join(look["notice_mentions"][:3]) if look.get("notice_mentions") else "",
+        ("%d possible row(s)" % hits) if idx.get("lookups") else ("not asked" if idx.get("covered") else "none for this county"),
+        "on file" if look.get("deed") else "none saved")
+
+
 def run(task: dict) -> dict:
     import deep_prospect_record as dpr   # noqa: E402  (imported late: it monkeypatches dream100_dp)
     dp = dpr.dp
     dp.load_env()
     live = config.live()
+    cfg = writeback.settings()
+    free_first = cfg["order"] == "free_first"
     budget = Budget(task["id"])
     lines: list[str] = []
 
@@ -108,7 +146,7 @@ def run(task: dict) -> dict:
         if not live:
             lines.append("== %s skipped (dry mode: no vendor spend)" % name)
             return False
-        if not budget.allows(estimate, name):
+        if not budget.allows(estimate, name, reserve=config.FINAL_RESERVE_USD):
             lines.append("== " + budget.skipped[-1])
             return False
         before = _ledger_total(rn)
@@ -122,22 +160,55 @@ def run(task: dict) -> dict:
     if not ok:
         raise RuntimeError("records phase failed: " + err)
 
-    owner_rows = dp.smartskip_rows(rn.load("records.json"))
-    paid("smartskip", len(owner_rows) * dp.SMARTSKIP_PER_HIT, lambda: dp.phase_smartskip(args, rn))
-    if rn.load("smartskip.json") is not None:
-        _phase("merge", lambda: dpr.phase_merge(args, rn, row), lines)
-    if rn.load("people.json") is None:
-        rn.save("people.json", [{"slug": slug, "people": [], "crm_only": [], "research_loaded": False}])
+    def owner_trace():
+        owner_rows = dp.smartskip_rows(rn.load("records.json"))
+        paid("smartskip", len(owner_rows) * dp.SMARTSKIP_PER_HIT, lambda: dp.phase_smartskip(args, rn))
+        if rn.load("smartskip.json") is not None:
+            _phase("merge", lambda: dpr.phase_merge(args, rn, row), lines)
 
-    llm_cap = 3.0
-    if budget.allows(llm_cap, "research"):
-        _, usd = researcher.research(rn, row)
-        budget.charge(usd, "research (Claude + web search)")
-        lines.append("== research ok ($%.2f)" % usd)
-        _, usd = researcher.analyze(rn, row, final=False)
+    def people_placeholder():
+        if rn.load("people.json") is None:
+            rn.save("people.json", [{"slug": slug, "people": [], "crm_only": [], "research_loaded": False}])
+
+    if free_first:
+        try:
+            look = _free_look(rn, row, cfg, slug)
+            lines.append("== free look ok (%s)" % _look_line(look))
+        except Exception as exc:  # noqa: BLE001  (a free look that fails stops nothing: the run goes on without it)
+            look = {}
+            lines.append("== free look FAILED | %s: %s" % (type(exc).__name__, str(exc)[:200]))
+            if rn.p("free_look.json").exists():
+                rn.save("free_look.json", None)    # never an older run's look in place of this one
+        if look.get("stop"):
+            # Nothing was paid for and nothing is written: the house is no longer this owner's.
+            result = {"slug": slug, "street": row["street"], "run_dir": str(run_dir), "pdf": "", "pdf_name": "",
+                      "headline": "Stopped before any paid step. " + look["stop"], "owner_status": "",
+                      "decision_maker": "", "must_sign": [], "call_order": [], "open_items": [],
+                      "written_back": False, "live": live, "skipped": budget.skipped,
+                      "spent_usd": round(store.spent(task_id=task["id"]), 2), "log": lines[-80:],
+                      "stopped": look["stop"], "order": cfg["order"]}
+            rn.save("agent_result.json", result)
+            return result
+    elif rn.p("free_look.json").exists():
+        rn.save("free_look.json", None)        # left by an earlier free-first run: today's order reads none
+    if not free_first:
+        owner_trace()
+    people_placeholder()
+
+    # The Claude researcher unless AGENTS_RESEARCH_ENGINE=open (two low-cost models, cross-checked).
+    eng = open_research.engine()
+    llm_cap = eng.cap
+    if budget.allows(llm_cap, "research", reserve=config.FINAL_RESERVE_USD if live else 0.0):
+        _, usd = eng.research(rn, row)
+        budget.charge(usd, eng.label)
+        lines.append("== research ok ($%.2f, %s engine)" % (usd, eng.name))
+        if free_first:
+            owner_trace()                      # the paid trace comes only after the free facts and the research
+        _, usd = eng.analyze(rn, row, final=False)
         budget.charge(usd, "analysis")
         lines.append("== analysis ok ($%.2f)" % usd)
     else:
+        # In the free-first order no trace is bought for a record the research could not run on.
         lines.append("== " + budget.skipped[-1])
 
     heir_rows, _ = (dpr.heir_rows(rn, row) if rn.load("analysis/%s.json" % slug) else ([], []))
@@ -151,7 +222,7 @@ def run(task: dict) -> dict:
         n_verify = len(dpr.verify_pairs(rn, row) or [])
         paid("verify", n_verify * REAL_CONTACT_USD, lambda: dpr.phase_verify(args, rn, row))
         if budget.allows(1.0, "final analysis"):
-            _, usd = researcher.analyze(rn, row, final=True)
+            _, usd = eng.analyze(rn, row, final=True)
             budget.charge(usd, "final analysis")
             lines.append("== final analysis ok ($%.2f)" % usd)
 
@@ -168,9 +239,23 @@ def run(task: dict) -> dict:
               "decision_maker": an.get("decision_maker", ""), "must_sign": an.get("must_sign", []),
               "call_order": an.get("call_order", []), "open_items": an.get("open_items", []),
               "written_back": wrote, "live": live, "skipped": budget.skipped,
-              "spent_usd": round(store.spent(task_id=task["id"]), 2), "log": lines[-80:]}
+              "spent_usd": round(store.spent(task_id=task["id"]), 2), "log": lines[-80:],
+              "order": cfg["order"], "research_level": 0, "verified": [], "heir_shares": None, "writeback": ""}
     if not built:
         result["build_error"] = err
+    if an:
+        # What the result file carries beyond the pack: the level, who is verified, and each heir's
+        # share when more than one person signs (an offer sheet reads heir_shares, plan 3.9).
+        try:
+            d = next(d for d in dp.assemble(rn) if d["slug"] == slug)
+            dec = dp.decision(rn, d, cfg)
+            result.update(research_level=dec["level"][0], heir_shares=dec["shares"],
+                          verified=sorted(n for n, v in dec["verified"].items() if v["verified"]))
+        except Exception as exc:  # noqa: BLE001  (the file is still worth having without them)
+            lines.append("== level and shares not worked out: %s: %s" % (type(exc).__name__, str(exc)[:200]))
+            result["log"] = lines[-80:]
+    if wrote:
+        result["writeback"] = ((rn.load("writeback_audit.json") or {}).get(slug) or {}).get("summary") or ""
     rn.save("agent_result.json", result)
     return result
 
@@ -185,10 +270,17 @@ def slack_text(task: dict, r: dict) -> str:
     if r.get("headline"):
         lines.append(r["headline"])
     if r.get("owner_status"):
-        lines.append("Owner: %s" % r["owner_status"])
+        lines.append("Owner: %s%s" % (r["owner_status"],
+                                      ", research level %d" % r["research_level"] if r.get("research_level") else ""))
     signers = [m.get("short") or m.get("who") for m in r.get("must_sign") or [] if m.get("who")]
     if signers:
         lines.append("Who signs: " + "; ".join(signers[:4]))
+    shares = r.get("heir_shares") or {}
+    if shares.get("computed"):
+        lines.append("Shares if there is no will: " + ", ".join("%s %s" % (h["name"], h["fraction"])
+                                                                for h in shares["heirs"][:5]))
+    elif shares.get("reason"):
+        lines.append("Shares not worked out: " + shares["reason"][:180])
     calls = ["%s (ends %s)" % (c.get("who"), _last4(c.get("number"))) for c in (r.get("call_order") or [])[:3]
              if c.get("who")]
     if calls:
@@ -201,6 +293,8 @@ def slack_text(task: dict, r: dict) -> str:
     tail = "Spent $%.2f" % r.get("spent_usd", 0)
     tail += " | written back to the record" if r.get("written_back") else " | nothing written to the CRM"
     lines.append(tail)
+    if r.get("writeback"):
+        lines.append("Written: " + r["writeback"])
     for s in (r.get("skipped") or [])[:3]:
         lines.append(":warning: " + s)
     for item in (r.get("open_items") or [])[:2]:

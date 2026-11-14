@@ -605,6 +605,48 @@ def _band_fill():
     return PatternFill("solid", fgColor="44506B")
 
 
+OFFER_DEFAULTS = {
+    "rule": DEFAULT_RULE, "fee": DEFAULT_FEE, "hold": DEFAULT_HOLD, "arv": 0.0, "as_is": 0.0,
+    "tax_rate": 0.0039, "insurance": DEFAULT_INSURANCE, "utilities": DEFAULT_UTILITIES,
+    "escrow_buy": DEFAULT_ESCROW_BUY, "title_pct": DEFAULT_TITLE_PCT, "escrow_sell": DEFAULT_ESCROW_SELL,
+    "realtor_pct": DEFAULT_REALTOR_PCT, "transfer_pct": DEFAULT_TRANSFER_PCT, "lot_value": 0.0,
+    "demo": 0.0, "prepared": "", "offer_only": False,
+}
+
+
+def offer_args(**overrides) -> argparse.Namespace:
+    """The options main() parses, with its own defaults, for a caller that is
+    not the command line. An unknown name is refused, so a typo cannot quietly
+    leave a default in place."""
+    unknown = sorted(set(overrides) - set(OFFER_DEFAULTS))
+    if unknown:
+        raise TypeError("unknown offer option(s): %s" % ", ".join(unknown))
+    return argparse.Namespace(**dict(OFFER_DEFAULTS, **overrides))
+
+
+def build_offer(pack: dict, walk: dict, args, out: str) -> dict:
+    """Hydrate the pack, write the workbook and return the offer as numbers.
+
+    The single definition of the offer: main() prints these figures and the
+    agents post them, so the two can never disagree. Rehab is recomputed from
+    the walk (the stale pack trap), and an explicit --arv / --as-is wins.
+    """
+    _hydrate(pack, walk, args)
+    subject = pack["subject"]
+    path = build_workbook(pack, walk, args, out)
+    rehab = build_rehab_matrix(subject, walk)
+    first = (rehab.get("scenarios") or [{}])[0]
+    rt = _num(next(iter((rehab.get("totals") or {"reno": 0}).values())))
+    arv = _num(args.arv) or _num((pack.get("arv", {}).get("base") or {}).get("arv"))
+    buyer_max = round(args.rule * arv - rt)
+    return {"out": path, "arv": arv, "rehab": rt, "rule": float(args.rule), "fee": float(args.fee),
+            "buyer_max": buyer_max, "offer": buyer_max - args.fee,
+            "scenario": first.get("label") or "", "scenario_key": first.get("key") or "",
+            "single_scenario": bool(walk.get("single_scenario")),
+            "as_is": _num(args.as_is) or _num(pack.get("as_is")),
+            "address": subject.get("full_address") or subject.get("address") or ""}
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -639,21 +681,14 @@ def main() -> int:
     pack = json.loads(Path(args.pack).read_text(encoding="utf8"))
     walk = (json.loads(Path(args.walk).read_text(encoding="utf8"))
             if args.walk else (pack.get("walk") or {}))
-    _hydrate(pack, walk, args)
     subject = pack["subject"]
     safe = "".join(ch for ch in (subject.get("address") or "Offer")
                    if ch.isalnum() or ch in " -")[:44].strip().replace(" ", "_")
-    out = args.out or f"{safe}_Offer.xlsx"
-    out = build_workbook(pack, walk, args, out)
-
-    rehab = build_rehab_matrix(subject, walk)
-    rt = _num(next(iter((rehab.get("totals") or {"reno": 0}).values())))
-    arv = _num(args.arv) or _num((pack.get("arv", {}).get("base") or {}).get("arv"))
-    buyer_max = round(args.rule * arv - rt)
-    print(f"ARV ${arv:,.0f} | rehab ${rt:,.0f} | rule {args.rule:.0%} | fee ${args.fee:,.0f}")
-    print(f"Buyer's maximum ${buyer_max:,.0f}  ->  OFFER TO SELLER "
-          f"${buyer_max - args.fee:,.0f}")
-    print(f"workbook: {out}")
+    r = build_offer(pack, walk, args, args.out or f"{safe}_Offer.xlsx")
+    print(f"ARV ${r['arv']:,.0f} | rehab ${r['rehab']:,.0f} | rule {args.rule:.0%} | fee ${args.fee:,.0f}")
+    print(f"Buyer's maximum ${r['buyer_max']:,.0f}  ->  OFFER TO SELLER "
+          f"${r['offer']:,.0f}")
+    print(f"workbook: {r['out']}")
     return 0
 
 

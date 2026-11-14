@@ -1616,9 +1616,25 @@ def cli_main() -> None:
             print("No saved searches found (login failed or dropdown missing).")
             sys.exit(1)
         configured = {s.saved_search_name for s in config.SAVED_SEARCHES}
+        # A notice feed that runs as its own stage (tax_sale, tax_delinquent, public_notices)
+        # names its saved searches in the feed table, not in config. A feed whose stage is in
+        # FTM_ARGS is checked here like the core four: a renamed search scrapes nothing and
+        # reads exactly like a quiet day. A feed that is off is only labelled.
+        feed_off: set = set()
+        try:
+            import ftm_feeds
+            asked = set(ftm_feeds.requested_stages())
+            for f in ftm_feeds.FEEDS:
+                if f.search_label and f.stage not in ftm_feeds.TODAY_STAGES:
+                    (configured if f.stage in asked else feed_off).add(f.search_label)
+            if "public_notices" in asked:
+                configured |= {label for _c, _t, label in ftm_feeds.public_notice_searches()}
+        except Exception:
+            pass
         print(f"\n{len(labels)} saved search(es) on tnpublicnotice.com:\n")
         for label in labels:
-            mark = "[configured]" if label in configured else "[ not used  ]"
+            mark = ("[configured]" if label in configured
+                    else "[ feed off  ]" if label in feed_off else "[ not used  ]")
             print(f"  {mark}  {label}")
         missing = sorted(configured - set(labels))
         if missing:

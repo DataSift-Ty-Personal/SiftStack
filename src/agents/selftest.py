@@ -4,6 +4,7 @@
 """
 from __future__ import annotations
 
+import importlib
 import json
 import tempfile
 from pathlib import Path
@@ -32,11 +33,103 @@ class FakeRun:
 U1 = "11111111-2222-3333-4444-555555555555"
 
 
+def _ds_event(event_id: str, uuid: str) -> dict:
+    """A delivery in the shape DataSift publishes (developers.datasift.ai/guides/webhooks)."""
+    return {"event_type": "sequence.action.triggered", "event_id": event_id,
+            "event_datetime": "2026-11-11T15:00:00Z", "sequence": {"uuid": U1, "name": "Send to Deep Prospecting"},
+            "property": {"uuid": uuid, "address": {"street": "1 Example Rd", "city": "Knoxville", "state": "TN"},
+                         "owner": {"first_name": "Pat", "last_name": "Example"}, "tags": [], "lists": []}}
+
+
+def _webhook_signer(check):
+    """Generate a throwaway Ed25519 key, park its public half in the signature module's cache (so
+    nothing is fetched), unit-test verify(), and return a function that signs a body the way
+    DataSift does. None when the cryptography package is missing, which is itself a failure."""
+    import base64
+    import time
+    from . import webhook_sig
+    try:
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    except ImportError as exc:
+        check(False, "webhook signatures need the cryptography package: %s" % exc)
+        return None
+    key = Ed25519PrivateKey.generate()
+    pem = key.public_key().public_bytes(serialization.Encoding.PEM,
+                                        serialization.PublicFormat.SubjectPublicKeyInfo).decode()
+    keys = {"test-key": pem}
+    webhook_sig._CACHE.update({"keys": dict(keys), "at": time.time()})
+
+    def sign(body, age: int = 0, tamper: bool = False, kid: str = "test-key"):
+        raw = json.dumps(body, separators=(",", ":")).encode()
+        ts = int(time.time()) - age
+        sig = base64.b64encode(key.sign(("%d." % ts).encode() + raw)).decode()
+        if tamper:
+            raw = raw.replace(b"Knoxville", b"Maryville")
+        return raw, {"Content-Type": "application/json", "X-Sift-Webhook-Signature": "v1," + sig,
+                     "X-Sift-Webhook-Timestamp": str(ts), "X-Sift-Webhook-Key-Id": kid}
+
+    raw, h = sign(_ds_event("u-1", U1))
+    stub = lambda: dict(keys)  # noqa: E731  (a fetch that keeps the test key in the cache)
+    check(webhook_sig.verify(h, raw, fetch=stub) == (True, ""), "a body signed with DataSift's scheme verifies")
+    check(webhook_sig.verify({k.lower(): v for k, v in h.items()}, raw, fetch=stub)[0],
+          "header names are matched case-insensitively")
+    check(webhook_sig.verify(h, raw + b" ", fetch=stub)[1] == "signature does not match",
+          "one byte of difference fails: the raw body is what is signed, never re-serialised JSON")
+    raw2, h2 = sign(_ds_event("u-2", U1), kid="rotated")
+    check(webhook_sig.verify(h2, raw2, fetch=stub)[1].startswith("unknown key id"), "an unknown key id fails")
+    check(webhook_sig.verify({}, raw, fetch=stub)[1] == "unsigned", "a delivery with no signature is unsigned")
+    check(webhook_sig.verify(dict(h, **{"X-Sift-Webhook-Signature": "v2," + h["X-Sift-Webhook-Signature"][3:]}),
+                             raw, fetch=stub)[1].startswith("unknown signature version"), "only v1 signatures are read")
+    raw3, h3 = sign(_ds_event("u-3", U1), age=4000)
+    check(webhook_sig.verify(h3, raw3, fetch=stub)[1].startswith("stale"), "an old signature is stale")
+    check(webhook_sig.mode() == "require", "signatures default to require")
+    return sign
+
+
+EXTRA_SECTIONS: list[tuple[str, str]] = [
+    ("data, lists and hygiene", "selftest_data"),
+    ("releasing a batch from slack", "selftest_release"),
+    ("text lane", "selftest_textlane"),
+    ("lead management", "selftest_leads"),
+    ("lanes", "selftest_lanes"),
+    ("kpi, alarms and measurement", "selftest_kpi"),
+    ("research lane", "selftest_research"),
+    ("research write-back", "selftest_writeback"),
+    ("files dropped in slack", "selftest_files"),
+    ("quinn's operations workflows", "selftest_wf_ops"),
+    ("people workflows", "selftest_wf_people"),
+    ("atlas's data workflows", "selftest_wf_data"),
+    ("roma's deal workflows", "selftest_wf_deals"),
+    ("query tools", "selftest_query"),
+    ("scripts from slack", "selftest_cmd"),
+    ("code sandbox", "selftest_sandbox"),
+    ("two tracks for the presets", "selftest_restructure"),
+    ("the two tracks", "selftest_tracks"),
+    ("three pipelines", "selftest_pipeline"),
+    ("deal odds", "selftest_deal_odds"),
+]
+
+
+class NoNetwork:
+    """Stands where `requests` stands until a section installs its own fake. This machine's .env can
+    hold a real Slack app; a selftest that reached for it would post in a real channel."""
+
+    def post(self, *a, **k):
+        raise AssertionError("the selftest tried to reach Slack")
+
+    get = post
+
+
 def main() -> int:
     tmp = Path(tempfile.mkdtemp(prefix="agents_selftest_"))
     config.DB_PATH, config.RUNS_DIR = tmp / "agents.db", tmp / "runs"
     config.WEBHOOK_SECRET, config.PUBLIC_URL = "test-secret", "https://agents.example.test"
     config.SLACK_WEBHOOK, config.INLINE_WORKER = "", False
+    # Every Slack setting this machine's own .env may carry is blanked, and the door is shut.
+    config.SLACK_BOT_TOKEN = config.SLACK_SIGNING_SECRET = config.SLACK_APP_TOKEN = config.SLACK_CHANNEL = ""
+    from . import slack_app, slack_socket
+    slack_app._http = slack_socket._http = NoNetwork()
     config.RUN_CAP_USD, config.DAILY_CAP_USD, config.MODE = 5.0, 25.0, "dry"
     from . import router, slack, store
     from .research import deep_prospect, researcher
@@ -140,24 +233,139 @@ def main() -> int:
     check("—" not in txt and "–" not in txt, "no em or en dash in the Slack post")
     check("/files/9/" in txt, "the property file is linked")
 
+    print("webhook signatures")
+    signer = _webhook_signer(check)
+
     print("brain")
     try:
         from fastapi.testclient import TestClient
         from . import brain
         c = TestClient(brain.app)
+        hook = "/hooks/datasift/test-secret/"
         check(c.post("/hooks/datasift/wrong/deep-prospect", json={"property_uuid": U1}).status_code == 404,
               "a wrong secret is a 404")
         U2 = "99999999-2222-3333-4444-555555555555"
-        r1 = c.post("/hooks/datasift/test-secret/deep-prospect", json={"property": {"uuid": U2}}).json()
-        r2 = c.post("/hooks/datasift/test-secret/deep-prospect", json={"property": {"uuid": U2}}).json()
-        check(r1["queued"] and not r2["queued"], "the webhook queues once and dedupes a repeat")
-        r3 = c.post("/hooks/datasift/test-secret/deep-prospect", json={"nothing": 1}).json()
-        check(r3["queued"] is False and r3.get("reason") == "no record id", "a body with no record id runs nothing")
-        check(c.post("/hooks/datasift/test-secret/unknown", json={}).status_code == 404, "an unknown workflow is a 404")
+        if signer:
+            def post(workflow, body, **kw):
+                raw, headers = signer(body, **kw)
+                return c.post(hook + workflow, content=raw, headers=headers)
+
+            check(c.post(hook + "deep-prospect", json={"property": {"uuid": U2}}).status_code == 401,
+                  "an unsigned delivery is refused (signatures default to require)")
+            check(post("deep-prospect", _ds_event("e-forged", U2), tamper=True).status_code == 401,
+                  "a body changed after signing is refused")
+            check(post("deep-prospect", _ds_event("e-old", U2), age=4000).status_code == 401,
+                  "a delivery signed over half an hour ago is refused (no replay)")
+            r1 = post("deep-prospect", _ds_event("e-1", U2)).json()
+            r2 = post("deep-prospect", _ds_event("e-1", U2)).json()
+            r2b = post("deep-prospect", _ds_event("e-2", U2)).json()
+            check(r1.get("queued") is True, "a signed delivery in the documented shape queues the deep prospect")
+            check(r2.get("duplicate") is True, "DataSift's retry of the same event_id is a duplicate")
+            check(r2b.get("queued") is False, "a second event for a record already queued does not queue it twice")
+            rt = post("deep-prospect", {"event_type": "webhook.test", "event_id": "t-1"}).json()
+            check(rt.get("test") is True and store.kv_get("datasift:webhook_test:deep-prospect"),
+                  "the app's Test button is recorded, and that receipt is the setup proof")
+            check(c.get("/health").json().get("datasift_webhook_tests", {}).get("deep-prospect"),
+                  "health reports when each webhook last passed DataSift's test")
+            r3 = post("deep-prospect", {"event_id": "e-3", "nothing": 1}).json()
+            check(r3.get("queued") is False and r3.get("reason") == "no record id", "a body with no record id runs nothing")
+            check(post("unknown", {"event_id": "e-4"}).status_code == 404, "an unknown workflow is a 404")
+            import os
+            os.environ["AGENTS_WEBHOOK_SIGNATURES"] = "log"
+            try:
+                U3 = "77777777-2222-3333-4444-555555555555"
+                r4 = c.post(hook + "deep-prospect", json=_ds_event("e-5", U3)).json()
+                check(r4.get("queued") is True, "log mode accepts an unsigned delivery (for a first install only)")
+            finally:
+                os.environ.pop("AGENTS_WEBHOOK_SIGNATURES", None)
         check(c.get("/health").json()["ok"] is True, "health answers")
         check(c.get("/files/1/badsig/x.pdf").status_code == 404, "a bad file signature is a 404")
     except ImportError as exc:
         check(False, "brain tests need fastapi + httpx: %s" % exc)
+
+    print("datasift setup: the test delivery")
+    from . import datasift_setup
+
+    class _HookCRM:
+        def __init__(self, answer):
+            self.answer, self.calls = answer, []
+
+        def _request(self, path, method="GET", body=None, params=None):
+            self.calls.append((method, path))
+            if isinstance(self.answer, Exception):
+                raise self.answer
+            return self.answer
+
+    real_receipt, receipts = datasift_setup.test_receipt, []
+    datasift_setup.test_receipt = lambda workflow="deep-prospect": (receipts.pop(0) if len(receipts) > 1 else receipts[0],
+                                                                    "the running brain")
+    try:
+        crm_ok = _HookCRM({"success": True, "status_code": 200})
+        receipts[:] = ["", "", "2026-01-02T03:04:05+00:00"]
+        said = datasift_setup.send_test(crm_ok, "hook-1", sleep=lambda s: None)
+        check(said.startswith("received by the running brain at 2026-01-02") and
+              crm_ok.calls == [("POST", "/api/internal/integration/webhook/%s/test/" % "hook-1")],
+              "the setup asks DataSift for its Test delivery and waits for the brain's own receipt")
+        receipts[:] = ["2026-01-01T00:00:00+00:00"]
+        check(datasift_setup.send_test(crm_ok, "hook-1", wait_s=4, sleep=lambda s: None).startswith("sent, but"),
+              "an older receipt is not taken for this test: no new receipt is said plainly")
+        receipts[:] = [""]
+        check(datasift_setup.send_test(_HookCRM({"success": False, "status_code": 401}), "hook-1", sleep=lambda s: None)
+              == "sent, and the brain answered 401", "a delivery the brain refused is reported with its status")
+        from sms_agent.crm_standalone import StandaloneCRMError
+        check(datasift_setup.send_test(_HookCRM(StandaloneCRMError("HTTP 404")), "hook-1", sleep=lambda s: None)
+              .startswith("not sent"), "a route that refuses the test is reported, never raised")
+    finally:
+        datasift_setup.test_receipt = real_receipt
+
+    print("team")
+    from . import selftest_team
+    try:
+        selftest_team.run(check, tmp)
+    except Exception as exc:  # noqa: BLE001  (a crash in the team checks is a failure, not an abort)
+        import traceback
+        traceback.print_exc()
+        check(False, "team checks crashed: %s: %s" % (type(exc).__name__, exc))
+
+    print("autopilot")
+    from . import selftest_autopilot
+    try:
+        selftest_autopilot.run(check, tmp)
+    except Exception as exc:  # noqa: BLE001
+        import traceback
+        traceback.print_exc()
+        check(False, "autopilot checks crashed: %s: %s" % (type(exc).__name__, exc))
+    finally:
+        config.MODE = "dry"
+
+    print("phase 0")
+    from . import selftest_phase0
+    try:
+        selftest_phase0.run(check, tmp)
+    except Exception as exc:  # noqa: BLE001
+        import traceback
+        traceback.print_exc()
+        check(False, "phase 0 checks crashed: %s: %s" % (type(exc).__name__, exc))
+    finally:
+        config.MODE = "dry"
+
+    # Sections added after the first build: (title, module with run(check, tmp)). One line each.
+    for title, module in EXTRA_SECTIONS:
+        print(title)
+        try:
+            importlib.import_module("%s.%s" % (__package__, module)).run(check, tmp)
+        except Exception as exc:  # noqa: BLE001  (a crash in one section is a failure, not an abort)
+            import traceback
+            traceback.print_exc()
+            check(False, "%s checks crashed: %s: %s" % (title, type(exc).__name__, exc))
+        finally:
+            config.MODE = "dry"
+
+    print("registries")
+    from .autopilot import registry
+    from . import workflows
+    check(registry.problems() == [], "every registered stage kind loads: %s" % (registry.problems() or "ok"))
+    check(workflows.problems() == [], "every registered workflow loads: %s" % (workflows.problems() or "ok"))
 
     print("source hygiene")
     src = Path(__file__).resolve().parent

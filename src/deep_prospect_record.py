@@ -35,6 +35,13 @@ upserted by number. What differs, each on purpose:
     object the way d4d_call_list does, since upsert-phones replaces by number.
   * the pack and the note claim no Dream 100 rank, deal size or D4D score, and the note carries
     the heir map, since the message board is the copy a caller actually reads.
+  * build leaves heir_shares.json in the run folder: each heir's share when the owner has died
+    and more than one person signs (an offer sheet reads it).
+
+What may be written back is decided in agents/research/writeback.py, the same rules for this path
+and for dream100_dp: Dial First and Second numbers with Third as a reserve, a decision maker only
+when verified, and the newer writes (level, heir tag, counter, report, owner change) each behind
+its own switch.
 """
 from __future__ import annotations
 
@@ -596,7 +603,10 @@ def phase_build(args, run, row):
         note = dp.build_note(d)
         run.p("packs", d["slug"] + "_board_note.txt").write_text(note, encoding="utf-8")
         for what, text in (("pack", md.read_text(encoding="utf-8")), ("board note", note)):
-            dp.gate("—" not in text and "–" not in text, "%s carries an em or en dash" % what)
+            dp.gate(chr(0x2014) not in text and chr(0x2013) not in text, "%s carries an em or en dash" % what)
+        # Each heir's share when more than one person signs, for an offer sheet (plan 3.9). Saved
+        # even when there is none, so a file from an earlier run never outlives its research.
+        run.save("heir_shares.json", dp.decision(run, d)["shares"])
         print("  pack %s\n  note %s (%d lines)" % (dp.rel(pdf),
                                                  dp.rel(run.p("packs", d["slug"] + "_board_note.txt")),
                                                  note.count("\n") + 1))
@@ -632,8 +642,14 @@ def phase_writeback(args, run, row):
         return
     from datasift_api_upload import Api  # noqa: E402
     api = Api()
+    # The row was read in the records phase. If the record's owner has changed since (an owner
+    # change, a merge), these tags would land on someone no longer attached to this house.
+    held = (api.call("/api/internal/property/%s/" % row["uuid"]) or {}).get("owner") or {}
+    if held.get("uuid") and row.get("owner_uuid") and held["uuid"] != row["owner_uuid"]:
+        print("  existing numbers not re-tagged: the record's owner changed since it was read. Run the records phase again.")
+        return
     ok, dropped = dp._upsert_full(api, row["owner_uuid"], [dict(p) for p in items])
-    time.sleep(1.0)
+    time.sleep(dp.READBACK_PAUSE_S)
     rec = api.call("/api/internal/property/%s/" % row["uuid"])
     have = {dp.digits(p.get("number")): {t if isinstance(t, str) else (t.get("title") or t.get("name"))
                                          for t in p.get("tags") or []}

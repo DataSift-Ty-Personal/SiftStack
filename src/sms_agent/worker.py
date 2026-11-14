@@ -20,9 +20,22 @@ import threading
 import time
 from datetime import datetime, timezone
 
-from . import config, engine, sender_pool, store, transport
+from . import config, engine, numberhealth, revocation, sender_pool, store, transport
 
 log = logging.getLogger(__name__)
+
+
+def _lead_text_on_handoff(row: dict, conv: dict) -> bool:
+    """Is this the call-is-coming text, on a thread paused only because it was handed to a person?
+
+    Every other queued message dies when its thread is paused, which is right: a pause means a
+    person has the conversation. The one exception is the text whose whole content is "that
+    person is about to call you" (build plan 2.2). It still dies if anything else paused the
+    thread (a person typed, a person called), because then the promise is already kept. No row
+    carries this intent unless SMS_AGENT_SPEED_TO_LEAD staged it.
+    """
+    return (row.get("intent") == "SPEED_TO_LEAD" and conv.get("state") == "paused"
+            and str(conv.get("paused_reason") or "").startswith("handed to"))
 
 
 # ------------------------------------------------------------------ events
@@ -75,16 +88,30 @@ def drain_outbox(limit: int = 25) -> dict:
             continue
 
         conv = store.get_conversation(phone) or {}
-        if conv.get("state") not in ("active", None, ""):
+        if conv.get("state") not in ("active", None, "") and not _lead_text_on_handoff(row, conv):
             store.mark_outbox(row["id"], "cancelled", f"conversation {conv.get('state')}")
             skipped += 1
             continue
+
+        if row["intent"] == "SPEED_TO_LEAD":
+            # "I will call you in a few minutes" is only true for so long (speedtolead.GOOD_FOR).
+            from . import speedtolead
+
+            if speedtolead.expired(phone):
+                store.mark_outbox(row["id"], "cancelled", speedtolead.TOO_LATE)
+                skipped += 1
+                continue
+
+        # A line check goes to our own handset from every number in turn (numberhealth.py), so
+        # the two rules below that are about ONE owner on ONE number do not describe it. No row
+        # carries this intent unless a person staged the canary.
+        canary = row["intent"] == "canary"
 
         # Has the thread moved since this row was written? A seed touch is built
         # hours before it is released, and in that gap a rep can step in or the
         # seller can reply. Sending stale copy into a live conversation is the
         # complaint this whole change exists to fix.
-        moved = store.thread_moved_since(phone, row["created_at"])
+        moved = "" if canary else store.thread_moved_since(phone, row["created_at"])
         if moved:
             store.mark_outbox(row["id"], "cancelled", moved)
             skipped += 1
@@ -117,6 +144,9 @@ def drain_outbox(limit: int = 25) -> dict:
                 (store.lookup_phone(phone) or {}).get("context", {}).get("assigned_name", ""),
             )
         )
+        if canary:
+            # The row owns the number here: the whole point is one text from EACH.
+            from_number = row["from_number"]
         if not from_number:
             store.mark_outbox(row["id"], "failed", "no sending number available")
             failed += 1
@@ -127,6 +157,33 @@ def drain_outbox(limit: int = 25) -> dict:
             log.info("holding outbox %s: %s (%s)", row["id"], why, from_number)
             held += 1
             continue
+
+        # A resting number sends no outreach until its rest ends (build plan 4.7). False unless
+        # SMS_AGENT_REST_FLAGGED is on. The thread keeps its number and waits: moving an owner to
+        # a number they have never seen is worse than a few days' delay.
+        if numberhealth.holds_outreach(from_number, row["intent"]):
+            log.info("holding outbox %s: %s is resting", row["id"], from_number)
+            held += 1
+            continue
+
+        # The last look before this text leaves (build plan 0.17). Off by default. On, it asks
+        # again whether the owner stopped on ANOTHER of their numbers since this row was queued,
+        # and in `full` mode reads the record as DataSift holds it right now and runs the gate.
+        if config.SEND_RECHECK != "off":
+            verdict, why = revocation.send_block(row, conv, from_number)
+            if verdict == "cancel":
+                store.mark_outbox(row["id"], "cancelled", revocation.PULLED + why)
+                skipped += 1
+                log.info("cancelled outbox %s at the last look: %s", row["id"], why)
+                continue
+            if verdict == "hold":
+                # No answer is not a yes. Try again in a few minutes, not on every pass.
+                with store.tx() as c:
+                    c.execute("UPDATE outbox SET not_before=? WHERE id=?",
+                              (revocation.hold_until(), row["id"]))
+                held += 1
+                log.info("holding outbox %s at the last look: %s", row["id"], why)
+                continue
 
         if config.DRY_RUN:
             log.info("DRY_RUN send %s -> %s: %s", from_number, phone, row["body"][:100])
@@ -143,7 +200,8 @@ def drain_outbox(limit: int = 25) -> dict:
             store.add_message(phone, "out", row["body"], from_number, sms_id=result.sms_id,
                               author="ai", intent=row["intent"], confidence=row["confidence"])
             store.record_send(from_number, phone)
-            store.update_conversation(phone, from_number=from_number)
+            if not canary:
+                store.update_conversation(phone, from_number=from_number)
             sent += 1
             log.info("sent %s -> %s (%s)", from_number, phone, result.sms_id or "no id")
 
@@ -194,6 +252,15 @@ def flush_escalations() -> int:
     One notification per conversation carrying the WHOLE burst, rather than one
     per inbound text repeating the same transcript.
     """
+    from . import ratebudget
+
+    # The handoff is speed-to-lead work, so its record reads go first in this app's DataSift
+    # share (build plan 0.14). The marker costs nothing while the budget is off.
+    with ratebudget.priority():
+        return _flush_escalations()
+
+
+def _flush_escalations() -> int:
     from . import crm, escalate, sender_pool
 
     posted = 0
@@ -212,6 +279,9 @@ def flush_escalations() -> int:
         # channel, which is where the handoff quietly dies.
         conv = store.get_conversation(phone) or {}
         program = sender_pool.program_for(conv.get("from_number") or "")
+        # A land record carries a pinned deal card; the handoff shows it to the person calling, never
+        # to the responder.
+        land_card = crm.land_deal_card(record_uuid) if program not in ("buyer", "dispo") else ""
         ok = escalate.hot_lead(
             phone,
             "\n".join(inbound[-4:]) or "(no message body)",
@@ -221,14 +291,37 @@ def flush_escalations() -> int:
             record_uuid,
             note="",
             program=program,
+            land_card=land_card,
         )
         if ok:
             store.mark_escalation_posted(phone)
             posted += 1
             log.info("handed off %s to %s", phone, config.HANDOFF_NAME)
+            _stage_lead_text(phone, record_uuid, row.get("first_seen") or "", program)
         else:
             log.warning("handoff post failed for %s; will retry next pass", phone)
     return posted
+
+
+def _stage_lead_text(phone: str, record_uuid: str, first_seen: str, program: str) -> None:
+    """Once a person has been told about a hand raise, tell the owner a call is coming.
+
+    Staged here, after the burst has settled and the handoff has actually posted, for two
+    reasons: a text that promises a call must not go out when nobody was paged, and a row staged
+    on the first of three quick texts would be cancelled by the second as "they replied".
+    Does nothing unless SMS_AGENT_SPEED_TO_LEAD is on, and never for a buyer thread.
+    """
+    if config.SPEED_TO_LEAD == "off" or program in ("buyer", "dispo") or not record_uuid:
+        return
+    try:
+        from . import ratebudget, speedtolead
+
+        with ratebudget.priority():
+            out = speedtolead.stage(record_uuid, phone=phone, source="hand raise", first_seen=first_seen)
+        if not out.get("staged"):
+            log.info("no call-is-coming text for %s: %s", phone, out.get("skipped"))
+    except Exception:  # noqa: BLE001 - a courtesy text must never break the handoff it follows
+        log.exception("call-is-coming text could not be staged for %s", phone)
 
 
 _last_repin = 0.0

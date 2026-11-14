@@ -18,11 +18,17 @@ from __future__ import annotations
 import json
 import logging
 import math
+import os
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-DATA_PATH = Path(__file__).parent.parent / "data" / "master_materials_locked_37914.json"
+# SIFTSTACK_LOCKED_MATERIALS points at the lock file on a box whose image does not
+# carry the repo's data/ folder (the agents brain copies only src/, team/ and
+# skills/). Without it the Knox estimate there quietly fell back to the engine
+# tables, so the same house priced differently on Fly than on the workstation.
+DATA_PATH = Path(os.environ.get("SIFTSTACK_LOCKED_MATERIALS")
+                 or Path(__file__).parent.parent / "data" / "master_materials_locked_37914.json")
 LOCKED_ZIP = "37914"
 SKU_REGIONS = ("knoxville", "blount")
 GRADE_BY_TIER = {1: "budget", 2: "standard", 3: "upgrade"}
@@ -62,6 +68,21 @@ def load_locked() -> dict | None:
 def reset_cache() -> None:
     """Test hook: forget the loaded file."""
     _cache["loaded"], _cache["data"] = False, None
+
+
+def status() -> dict:
+    """Whether Knox and Blount materials price off the lock on THIS machine.
+
+    A report that quotes a rehab figure says which source it came from: the
+    fallback to the engine tables is silent inside estimate_rehab, and a figure
+    that silently changed source is a figure nobody can audit.
+    """
+    data = load_locked()
+    if data:
+        return {"locked": True, "stamp": data["_stamp"], "path": str(DATA_PATH), "why": ""}
+    why = ("the locked list is not on this machine" if not DATA_PATH.exists()
+           else "the locked list did not pass validation")
+    return {"locked": False, "stamp": "engine", "path": str(DATA_PATH), "why": why}
 
 
 def _price(locked: dict, key: str, tier: int) -> float:

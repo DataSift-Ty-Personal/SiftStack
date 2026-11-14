@@ -34,6 +34,7 @@ import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from reisift_session import Session, api_call, load_staff_jwt  # noqa: E402
+import shard_guard  # noqa: E402
 import siftmap_pull  # noqa: E402
 from siftmap_pull import Map, usage  # noqa: E402
 
@@ -69,7 +70,7 @@ def fetch_shard() -> dict:
         os.makedirs(OUT, exist_ok=True)
         with open(SHARD_CACHE, "w", encoding="utf-8") as f:
             json.dump(data, f)
-    county = data.get(FIPS)
+    county = shard_guard.county_from(data, FIPS)   # a month reading zero is left out, and said so
     if not county:
         raise SystemExit("shard has no key %s" % FIPS)
     return county

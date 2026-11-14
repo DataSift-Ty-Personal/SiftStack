@@ -380,21 +380,43 @@ def _write_table(ws, start, cols, rows, money_idx=(), pct_idx=(), freeze="E{}"):
     return r
 
 
-def write_workbook(top, bench, ranked, excluded, portfolios, path: Path, n_top: int):
+def d4d_words(n_top: int) -> dict:
+    """The workbook's words about where its rows came from: the D4D Dream 100's own, exactly as this
+    module always wrote them. Another cohort (a list the team ranks with its idle_records workflow)
+    passes its own words to write_workbook, because a sheet that says "D4D top 3,000" over a different
+    list states a fact that is not true, and the sheet is what a person reads."""
+    top = "Dream %d" % n_top
+    return {
+        "top_label": top,
+        "title": "Dream %d: the largest opportunities in the D4D top 3,000" % n_top,
+        "subtitle": "Ranked by opportunity score (deal size 35, condition 20, investor 20, evidence 15, reach 10). Built %s. Read-only snapshot of ty+2." % date.today().isoformat(),
+        "overview": "One row per property. Three sources joined on the CRM record: the D4D visual distress rank, the record's DataFlik scores and deal fields, and the lists attached in the account.",
+        "condition": "The D4D visual distress score from the street pano, ramped 69 (the cohort floor) to 100.",
+        "reach": "Best dial tier on the owner's phones after the D4D Trestle scoring: Dial First 10, Second 7, Third 4, Fourth 2. DNC or opt-out scores 0 and is marked mail only.",
+        "portfolio_sheet": "Owners holding two or more properties in the D4D 3,000, summed. One conversation can move several doors.",
+        "portfolio_title": "Owners with two or more properties in the D4D 3,000",
+        "condition_caveat": "The D4D score reads the most recent street pano, which can be years old. Drive the top rows.",
+        "phones_caveat": "Tiers are Trestle scores from the 2026-09-11 D4D run. Numbers disposed WRONG, DEAD or DNC were skipped.",
+        "cohort_list": "D4D Top 3000",
+    }
+
+
+def write_workbook(top, bench, ranked, excluded, portfolios, path: Path, n_top: int, words: dict | None = None):
+    w_ = d4d_words(n_top)
+    w_.update(words or {})
     wb = Workbook()
     money = (3, 16, 18, 19, 22, 26)
     pct = (17, 24)
 
     # 1 Dream 100
     ws = wb.active
-    ws.title = "Dream %d" % n_top
-    _title(ws, "Dream %d: the largest opportunities in the D4D top 3,000" % n_top,
-           "Ranked by opportunity score (deal size 35, condition 20, investor 20, evidence 15, reach 10). Built %s. Read-only snapshot of ty+2." % date.today().isoformat())
+    ws.title = w_["top_label"]
+    _title(ws, w_["title"], w_["subtitle"])
     _write_table(ws, 4, MAIN_COLS, [_main_row(i, r) for i, r in enumerate(top, 1)], money, pct)
 
     # 2 Overview
     ov = wb.create_sheet("Overview")
-    _title(ov, "How this list was built", "One row per property. Three sources joined on the CRM record: the D4D visual distress rank, the record's DataFlik scores and deal fields, and the lists attached in the account.")
+    _title(ov, "How this list was built", w_["overview"])
     sum_deal = sum(r["deal_size"] for r in top)
     sum_val = sum(r["value"] for r in top)
     med = sorted(r["value"] for r in top)[len(top) // 2] if top else 0
@@ -402,9 +424,9 @@ def write_workbook(top, bench, ranked, excluded, portfolios, path: Path, n_top: 
         ("Headline", ""),
         ("Properties ranked", len(ranked)),
         ("Excluded before ranking", len(excluded)),
-        ("Dream %d combined value" % n_top, sum_val),
-        ("Dream %d combined discount room" % n_top, sum_deal),
-        ("Median value in the Dream %d" % n_top, med),
+        ("%s combined value" % w_["top_label"], sum_val),
+        ("%s combined discount room" % w_["top_label"], sum_deal),
+        ("Median value in the %s" % w_["top_label"], med),
         ("Reachable now (Dial First or Second)", sum(1 for r in top if r["best_tier"] in ("Dial First", "Dial Second") and not r["dnc"])),
         ("DNC or opt-out (mail only)", sum(1 for r in top if r["dnc"])),
         ("Already in the pipeline (status set)", sum(1 for r in top if r["status_l"] in WORKED_STATUSES)),
@@ -422,28 +444,28 @@ def write_workbook(top, bench, ranked, excluded, portfolios, path: Path, n_top: 
         ("", ""),
         ("Opportunity score, 100 points", ""),
         ("Deal size (35)", "Discount room = the smaller of equity dollars and 30% of value, ramped $15K to $120K. A seller cannot sell below the payoff, and the 70% rule gap is the most a wholesale buyer pays for. This is room, not profit."),
-        ("Condition (20)", "The D4D visual distress score from the street pano, ramped 69 (the cohort floor) to 100."),
+        ("Condition (20)", w_["condition"]),
         ("Investor (20)", "DataFlik investor_score ramped 20 to 90. Up to 5 points off when realtor_score is 70 or higher, because that owner is likely to list with an agent."),
         ("Evidence (15)", "Distress the account can point to: attached lists (Tax Delinquent 4, Vacant 4, Foreclosure 5, Probate/Obituary 4, Liens 3, Tired Landlord 2, Out-of-State 2, Senior/Absentee 1 ...) plus record fields (tax owed, deceased, auction date, probate open, age 75+, held 20+ years). Capped at 14 raw points."),
-        ("Reach (10)", "Best dial tier on the owner's phones after the D4D Trestle scoring: Dial First 10, Second 7, Third 4, Fourth 2. DNC or opt-out scores 0 and is marked mail only."),
+        ("Reach (10)", w_["reach"]),
         ("", ""),
         ("Gates (see the Excluded sheet)", "Dead lead status (sold, closed, not interested, buyer); tagged recently sold or Do Not Market; on a Dispo buyer list; no value; over the $700K buy box; not single family; upside down; listed on the MLS."),
         ("Not a gate", "Records already being prospected stay in and are flagged on Must verify, because a Dream 100 that hides the team's own hottest files is wrong."),
         ("", ""),
         ("Sheets", ""),
-        ("Dream %d" % n_top, "The list, one row per property, every input visible."),
+        (w_["top_label"], "The list, one row per property, every input visible."),
         ("Dial sheet", "The same %d with up to five scored numbers each, ready for the dialer." % n_top),
         ("Bench", "Ranks %d to %d, the next in line when a Dream row closes or dies." % (n_top + 1, n_top + 200)),
-        ("Portfolio owners", "Owners holding two or more properties in the D4D 3,000, summed. One conversation can move several doors."),
+        ("Portfolio owners", w_["portfolio_sheet"]),
         ("Full ranking", "Every qualified property with its score, for re-cutting by zip, neighborhood or list."),
         ("Excluded", "Every record dropped before ranking, with the reason, so nothing vanishes silently."),
         ("", ""),
         ("Caveats", ""),
         ("Value", "estimate_value is an AVM. Comp every Dream row before an offer."),
-        ("Condition", "The D4D score reads the most recent street pano, which can be years old. Drive the top rows."),
+        ("Condition", w_["condition_caveat"]),
         ("Equity", "No mortgage of record reads as 100% equity. A private note or a HELOC would not show."),
         ("Lists", "A list is evidence the account attached, not a verified fact. Tax Delinquent and Liens came from county pulls with their own dates."),
-        ("Phones", "Tiers are Trestle scores from the 2026-09-11 D4D run. Numbers disposed WRONG, DEAD or DNC were skipped."),
+        ("Phones", w_["phones_caveat"]),
     ]
     r = 4
     for a, b in lines:
@@ -459,7 +481,7 @@ def write_workbook(top, bench, ranked, excluded, portfolios, path: Path, n_top: 
 
     # 3 Dial sheet
     ds = wb.create_sheet("Dial sheet")
-    _title(ds, "Dream %d dial sheet" % n_top, "Numbers sorted best tier first, mobiles before landlines. Ask for the owner named; entity rows need the signing member.")
+    _title(ds, "%s dial sheet" % w_["top_label"], "Numbers sorted best tier first, mobiles before landlines. Ask for the owner named; entity rows need the signing member.")
     dcols = [("Rank", 6), ("Opp", 6), ("Owner", 24), ("Ask who", 22), ("Address", 26), ("City", 12), ("Deal size $", 11),
              ("Value", 11), ("Reach", 12), ("Lead status", 12)]
     for k in range(1, 6):
@@ -494,7 +516,7 @@ def write_workbook(top, bench, ranked, excluded, portfolios, path: Path, n_top: 
 
     # 5 Portfolio owners
     ps = wb.create_sheet("Portfolio owners")
-    _title(ps, "Owners with two or more properties in the D4D 3,000", "Grouped by owner record and mailing address. Summed discount room is the size of the conversation.")
+    _title(ps, w_["portfolio_title"], "Grouped by owner record and mailing address. Summed discount room is the size of the conversation.")
     pcols = [("Owner", 28), ("Owner type", 9), ("Mailing address", 34), ("Properties", 8), ("Combined value", 13),
              ("Combined discount room", 13), ("Best opp score", 8), ("Best rank", 8), ("Best reach", 12),
              ("Addresses", 70), ("Lists seen", 40)]
@@ -523,7 +545,7 @@ def write_workbook(top, bench, ranked, excluded, portfolios, path: Path, n_top: 
     xcols = [("Reason", 40), ("D4D rank", 8), ("Address", 26), ("City", 12), ("Owner", 24), ("Value", 11),
              ("Equity %", 8), ("Lead status", 14), ("Lists", 40), ("CRM link", 44)]
     xrows = [[x["reason"], x["d4d_rank"], x["street"], x["city"], x["owner"], x["value"], x["equity_pct"], x["status"],
-              ", ".join(l for l in x["lists"] if l != "D4D Top 3000"), x["crm_url"]] for x in excluded]
+              ", ".join(l for l in x["lists"] if l != w_["cohort_list"]), x["crm_url"]] for x in excluded]
     _write_table(xs, r, xcols, xrows, money_idx=(6,), pct_idx=(7,), freeze="A{}")
 
     for w in wb.worksheets:
@@ -545,6 +567,40 @@ def phase_build(args) -> None:
     scores = json.loads(d4d.SCORES_PATH.read_text(encoding="utf-8")) if d4d.SCORES_PATH.exists() else {}
     if not full:
         raise SystemExit("no full records; run --phase pull first")
+    ranked, excluded, portfolios = rank_records(full, cohort, scores)
+
+    n = args.top
+    top, bench = ranked[:n], ranked[n:n + 200]
+    stamp = date.today().strftime("%Y%m%d")
+    xlsx = OUT / ("Dream100_Knox_Blount_%s.xlsx" % stamp)
+    write_workbook(top, bench, ranked, excluded, portfolios, xlsx, n)
+
+    # CSV twins
+    with open(OUT / ("Dream100_%s.csv" % stamp), "w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        w.writerow([c[0] for c in MAIN_COLS])
+        for i, r in enumerate(top, 1):
+            w.writerow([no_dash(v) if isinstance(v, str) else v for v in _main_row(i, r)])
+    (OUT / "dream100_ranked.json").write_text(json.dumps(
+        [{k: (v.isoformat() if isinstance(v, date) else v) for k, v in r.items()} for r in ranked],
+        indent=0, default=str), encoding="utf-8")
+
+    print("build: %d qualified, %d excluded, %d portfolio owners" % (len(ranked), len(excluded), len(portfolios)))
+    print("Dream %d: combined value $%s, combined discount room $%s" % (
+        n, format(int(sum(r['value'] for r in top)), ","), format(int(sum(r['deal_size'] for r in top)), ",")))
+    print("  reachable (Dial First/Second, not DNC): %d; entity owners: %d; already worked: %d" % (
+        sum(1 for r in top if r["best_tier"] in ("Dial First", "Dial Second") and not r["dnc"]),
+        sum(1 for r in top if r["entity"]), sum(1 for r in top if r["status_l"] in WORKED_STATUSES)))
+    print("wrote", xlsx)
+    return ranked, excluded, top
+
+
+def rank_records(full: dict, cohort: dict, scores: dict) -> tuple[list, list, list]:
+    """(ranked, excluded, portfolios) for a set of full CRM records: every record flattened, gated and
+    scored, and the owners holding two or more of them summed. The D4D build and the team's
+    idle_records workflow both rank through here, so a list ranked on the agents box is ranked by
+    exactly the rules the workstation's Dream 100 uses. `cohort` maps a record uuid to its D4D row
+    (rank and visual distress score); a record with none scores no condition points."""
     rows, excluded = [], []
     for u, rec in full.items():
         co = cohort.get(u) or {}
@@ -588,28 +644,12 @@ def phase_build(args) -> None:
         p["best_rank"] = min((rank_of[u] for u in p["uuids"] if u in rank_of), default=None)
     portfolios.sort(key=lambda p: (-p["deal"], -p["n"]))
     excluded.sort(key=lambda r: (r["reason"], r["d4d_rank"] or 9999))
+    return ranked, excluded, portfolios
 
-    n = args.top
-    top, bench = ranked[:n], ranked[n:n + 200]
-    stamp = date.today().strftime("%Y%m%d")
-    xlsx = OUT / ("Dream100_Knox_Blount_%s.xlsx" % stamp)
-    write_workbook(top, bench, ranked, excluded, portfolios, xlsx, n)
 
-    # CSV twins
-    with open(OUT / ("Dream100_%s.csv" % stamp), "w", newline="", encoding="utf-8") as f:
-        w = csv.writer(f)
-        w.writerow([c[0] for c in MAIN_COLS])
-        for i, r in enumerate(top, 1):
-            w.writerow([no_dash(v) if isinstance(v, str) else v for v in _main_row(i, r)])
-    (OUT / "dream100_ranked.json").write_text(json.dumps(
-        [{k: (v.isoformat() if isinstance(v, date) else v) for k, v in r.items()} for r in ranked],
-        indent=0, default=str), encoding="utf-8")
-
-    print("build: %d qualified, %d excluded, %d portfolio owners" % (len(ranked), len(excluded), len(portfolios)))
-    print("Dream %d: combined value $%s, combined discount room $%s" % (
-        n, format(int(sum(r['value'] for r in top)), ","), format(int(sum(r['deal_size'] for r in top)), ",")))
-    print("  reachable (Dial First/Second, not DNC): %d; entity owners: %d; already worked: %d" % (
-        sum(1 for r in top if r["best_tier"] in ("Dial First", "Dial Second") and not r["dnc"]),
-        sum(1 for r in top if r["entity"]), sum(1 for r in top if r["status_l"] in WORKED_STATUSES)))
-    print("wrote", xlsx)
-    return ranked, excluded, top
+def csv_rows(top: list) -> list[list]:
+    """The CSV twin of the top sheet: the header, then one dash-free row per property."""
+    out = [[c[0] for c in MAIN_COLS]]
+    for i, r in enumerate(top, 1):
+        out.append([no_dash(v) if isinstance(v, str) else v for v in _main_row(i, r)])
+    return out

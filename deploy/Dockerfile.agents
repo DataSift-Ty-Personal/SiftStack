@@ -1,8 +1,10 @@
-# SiftStack agents brain: DataSift webhooks in, agent work out, one SQLite queue on the volume.
+# SiftStack agents brain: Slack and DataSift in, the four-employee team at work, one SQLite queue
+# on the volume.
 #
-# No browser: every vendor the Research agent touches (DataSift, SiftMap, SmartSkip, Trestle,
-# Tracerfy, the county tax API, Claude) is plain HTTP. ffmpeg is here for ffprobe, which measures
-# call recordings so a transcript can be checked against the real audio length.
+# No browser: every vendor the employees touch (DataSift, SiftMap, SmartSkip, Trestle, Tracerfy,
+# the county tax API, Claude) is plain HTTP. The Claude Agent SDK ships its own Claude Code binary,
+# so there is no Node install. ffmpeg is here for ffprobe, which measures call recordings so a
+# transcript can be checked against the real audio length.
 FROM python:3.12-slim
 
 ENV PYTHONUNBUFFERED=1 \
@@ -15,13 +17,29 @@ RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg \
 WORKDIR /app
 COPY deploy/requirements-agents.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
+# The code sandbox (src/agents/sandbox.py): an employee's Python runs as this user, with no home and no shell.
+RUN useradd --system --user-group --no-create-home --shell /usr/sbin/nologin sandbox
 
 COPY src/ ./src/
-COPY skills/deep-prospecting-v5/ ./skills/deep-prospecting-v5/
+# The team (roster, briefs, generated TEAM.md) and the skill library the employees carry.
+COPY team/ ./team/
+COPY skills/ ./skills/
+# The locked Knox material list (sku_pricing): without it Knox and Blount rehab is priced from the
+# engine tables, a different number from the workstation's.
+COPY data/master_materials_locked_37914.json ./data/
+# The deal-odds model the Top 1,000 and the agency file rank on (src/deal_odds.py reads it here).
+COPY data/deal_odds_model.json ./data/
 
 # State lives on the volume; the container has no .env, every key is a Fly secret.
+#   AGENTS_WORKSPACES_DIR  each employee's runtime workspace, outside /app so nothing unrelated loads
+#   CLAUDE_CONFIG_DIR      Claude sessions on the volume, so an employee waiting on the operator can
+#                          resume the same conversation after a redeploy
 ENV AGENTS_DATA_DIR=/data \
     AGENTS_INLINE_WORKER=1 \
+    AGENTS_TEAM_DIR=/app/team \
+    AGENTS_SKILLS_DIR=/app/skills \
+    AGENTS_WORKSPACES_DIR=/data/workspaces \
+    CLAUDE_CONFIG_DIR=/data/claude \
     PYTHONPATH=/app/src
 
 EXPOSE 8080

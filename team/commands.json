@@ -1,0 +1,9183 @@
+{
+ "about": "GENERATED from src/*.py by python src/agents/commands.py --write. Do not edit by hand.",
+ "counts": {
+  "browser": 24,
+  "package": 1,
+  "paid": 13,
+  "retired": 32,
+  "runnable": 54,
+  "wired": 28,
+  "writes": 21
+ },
+ "scripts": {
+  "_debug_login": {
+   "args": [],
+   "class": "retired",
+   "cli": "none",
+   "complete": true,
+   "replacement": "",
+   "summary": "Debug the headless DataSift login: attempt it, screenshot, and surface why it fails.",
+   "why": "an investigation probe of the DataSift web app's screens, written while building the upload wizard",
+   "writes": ""
+  },
+  "_discover_remove_from_list": {
+   "args": [],
+   "class": "retired",
+   "cli": "none",
+   "complete": true,
+   "replacement": "",
+   "summary": "Discover the reisift 'remove from list' / 'delete populated list' network call. Logs into ty+2, opens the Lists page, expands the 'default' folder, locates the 'FTM Foreclosure Blount 2026-06-22' list",
+   "why": "an investigation probe of the DataSift web app's screens, written while building the upload wizard",
+   "writes": ""
+  },
+  "_dropbox_proof": {
+   "args": [],
+   "class": "retired",
+   "cli": "none",
+   "complete": true,
+   "replacement": "",
+   "summary": "Proof: upload an existing notice screenshot to Dropbox, get a PERMANENT public link, apply the direct-render transform, and verify it serves the raw PNG. Validates the whole 'auction image -> durable ",
+   "why": "a one-off proof of the retired notice screenshot hosting",
+   "writes": ""
+  },
+  "_probe_lists_ui": {
+   "args": [],
+   "class": "retired",
+   "cli": "none",
+   "complete": true,
+   "replacement": "",
+   "summary": "Probe the reisift Lists UI: navigate to Lists, screenshot, and report controls on the 'FTM Foreclosure Blount' row (delete / menu) so we can automate list removal.",
+   "why": "an investigation probe of the DataSift web app's screens, written while building the upload wizard",
+   "writes": ""
+  },
+  "_probe_nolist": {
+   "args": [],
+   "class": "retired",
+   "cli": "none",
+   "complete": true,
+   "replacement": "",
+   "summary": "Probe: can the upload wizard proceed with NO list (uncheck 'Create new list')? Logs into ty+2, opens the wizard, selects 'new list' upload type, then unchecks 'Create new list' and reports whether the",
+   "why": "an investigation probe of the DataSift web app's screens, written while building the upload wizard",
+   "writes": ""
+  },
+  "_wizard_discover": {
+   "args": [],
+   "class": "retired",
+   "cli": "none",
+   "complete": true,
+   "replacement": "",
+   "summary": "Discovery driver: walk the CURRENT DataSift 6-step upload wizard and dump the live DOM (visible buttons / inputs / styled-selects / step nav) + a screenshot at each step. STOPS before \"Finish Upload\" ",
+   "why": "an investigation probe of the DataSift web app's screens, written while building the upload wizard",
+   "writes": ""
+  },
+  "agency_call_list": {
+   "args": [
+    {
+     "flags": [
+      "--pool"
+     ],
+     "help": "pool JSON from ai_pools.py (rank order, dataflik_id)",
+     "kind": "value",
+     "required": true
+    },
+    {
+     "flags": [
+      "--list"
+     ],
+     "help": "the DataSift list the pool was pulled onto",
+     "kind": "value",
+     "required": true
+    },
+    {
+     "flags": [
+      "--about"
+     ],
+     "help": "one sentence for the Read me: what the pool is, its buy box",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--target"
+     ],
+     "help": "allowlisted account email, token in REISIFT_TARGET_JWT_FILE",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--key-env"
+     ],
+     "help": "env var holding another account's Open API key",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--expect-email"
+     ],
+     "kind": "value"
+    },
+    {
+     "choices": [
+      "harvest",
+      "export",
+      "all"
+     ],
+     "flags": [
+      "--phase"
+     ],
+     "kind": "value",
+     "required": true
+    },
+    {
+     "default": 0.3,
+     "flags": [
+      "--gap"
+     ],
+     "help": "harvest: minimum seconds between record reads",
+     "kind": "value",
+     "type": "float"
+    },
+    {
+     "flags": [
+      "--not-on"
+     ],
+     "help": "export: hold owners already on this list's call sheet (repeatable; export it first)",
+     "kind": "value"
+    }
+   ],
+   "class": "runnable",
+   "cli": "argparse",
+   "complete": true,
+   "not_paid": "imports d4d_call_list for its CRM call wrapper, its gate and its file helpers only; it never scores a number (read 2026-11-13)",
+   "paid_deeper": [
+    "Enformion",
+    "Firecrawl",
+    "OpenRouter",
+    "Serper",
+    "Tracerfy",
+    "Trestle"
+   ],
+   "summary": "Calling-agency call list for a pool pulled with pull_by_ids.py: one row per owner, callable numbers only.",
+   "writes": ""
+  },
+  "ai_pools": {
+   "args": [
+    {
+     "choices": "dynamic",
+     "flags": [
+      "--market"
+     ],
+     "kind": "value",
+     "required": true
+    },
+    {
+     "default": 1.5,
+     "flags": [
+      "--margin"
+     ],
+     "help": "candidates per slot fetched before the overlap split (two-pool markets)",
+     "kind": "value",
+     "type": "float"
+    },
+    {
+     "choices": [
+      "ladder",
+      "ai"
+     ],
+     "default": "ladder",
+     "flags": [
+      "--rank"
+     ],
+     "help": "investor pool: the doors-per-deal ladder, or investor AI score top-down",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--exclude"
+     ],
+     "help": "ids never to pick (a JSON list, or a dict keyed by id), e.g. owners an account already marked do-not-market; the pools refill past them",
+     "kind": "value"
+    }
+   ],
+   "class": "wired",
+   "cli": "argparse",
+   "complete": true,
+   "summary": "Ranked, buy-boxed, non-overlapping record pools from the properties index (read through the opensearch MCP).",
+   "why": "runs inside list_pull (Atlas)",
+   "workflows": [
+    "list_pull"
+   ],
+   "writes": ""
+  },
+  "audit_tags_lists": {
+   "args": [
+    {
+     "default": "output/enriched_audit.json",
+     "flags": [
+      "--audit"
+     ],
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--fix"
+     ],
+     "kind": "switch"
+    },
+    {
+     "default": 0.25,
+     "flags": [
+      "--sleep"
+     ],
+     "kind": "value",
+     "type": "float"
+    },
+    {
+     "default": 0,
+     "flags": [
+      "--limit"
+     ],
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "default": "output/tag_list_audit.json",
+     "flags": [
+      "--out"
+     ],
+     "kind": "value"
+    }
+   ],
+   "class": "runnable",
+   "cli": "argparse",
+   "complete": true,
+   "paid_deeper": [
+    "Enformion",
+    "Firecrawl",
+    "OpenRouter",
+    "Serper",
+    "Tracerfy"
+   ],
+   "summary": "Audit (and repair) the FTM tag and the notice-type list on every record.",
+   "write_flags": [
+    "--fix"
+   ],
+   "writes": "commit"
+  },
+  "build_linda_rd_report": {
+   "args": [],
+   "class": "retired",
+   "cli": "none",
+   "complete": true,
+   "replacement": "the deep_prospect workflow (Diggs)",
+   "summary": "Build the combined Deep Prospecting PDF report for 8207 Linda Rd / Jarboe estate.",
+   "why": "a one-off report for a single estate",
+   "writes": ""
+  },
+  "builder_land": {
+   "args": [
+    {
+     "default": "knox_blount",
+     "flags": [
+      "--market"
+     ],
+     "help": "slug for the output folder",
+     "kind": "value"
+    },
+    {
+     "default": "47093,47009",
+     "flags": [
+      "--fips"
+     ],
+     "help": "comma-separated county FIPS forming one market",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--name"
+     ],
+     "help": "market label (default: county names from the cluster)",
+     "kind": "value"
+    },
+    {
+     "choices": [
+      "pull",
+      "history",
+      "analyze",
+      "export",
+      "all",
+      "national"
+     ],
+     "default": "all",
+     "flags": [
+      "--phase"
+     ],
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--from-dir"
+     ],
+     "help": "import an earlier pull (properties *.jsonl and sales*.jsonl) instead of reading the cluster",
+     "kind": "value"
+    },
+    {
+     "default": 4,
+     "flags": [
+      "--streams"
+     ],
+     "help": "parallel MCP streams for pull and history",
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "default": 3,
+     "flags": [
+      "--min-buys"
+     ],
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "default": 24,
+     "flags": [
+      "--active-months"
+     ],
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "flags": [
+      "--fee"
+     ],
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "flags": [
+      "--lux"
+     ],
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "flags": [
+      "--mid"
+     ],
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "flags": [
+      "--lots-csv"
+     ],
+     "help": "restrict the supply to a vacant_land mail list (needs a 'DataSift id' column)",
+     "kind": "value"
+    },
+    {
+     "default": 75,
+     "flags": [
+      "--per-builder"
+     ],
+     "help": "rows per builder on the Lots by builder sheet",
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "flags": [
+      "--refresh"
+     ],
+     "help": "national: re-pull the buyer-stats rows instead of the cache",
+     "kind": "switch"
+    }
+   ],
+   "class": "wired",
+   "cli": "argparse",
+   "complete": true,
+   "summary": "Builder land desk: the land acquisition department for small builders, run off the county deeds.",
+   "why": "runs inside land_desk (Atlas)",
+   "workflows": [
+    "land_desk"
+   ],
+   "writes": ""
+  },
+  "buyer_sweep": {
+   "args": [
+    {
+     "flags": [
+      "--zip"
+     ],
+     "kind": "value",
+     "required": true
+    },
+    {
+     "default": "Knoxville",
+     "flags": [
+      "--city"
+     ],
+     "kind": "value"
+    },
+    {
+     "default": "TN",
+     "flags": [
+      "--state"
+     ],
+     "kind": "value"
+    },
+    {
+     "default": 18,
+     "flags": [
+      "--months"
+     ],
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "default": 25000,
+     "flags": [
+      "--min-price"
+     ],
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "default": 170000,
+     "flags": [
+      "--max-price"
+     ],
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "flags": [
+      "--sold-json"
+     ],
+     "help": "Reuse a saved zillow pull instead of hitting the API",
+     "kind": "value"
+    },
+    {
+     "default": 15,
+     "flags": [
+      "--unmask-top"
+     ],
+     "help": "Reverse/unmask top N entities",
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "flags": [
+      "--no-unmask"
+     ],
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--out"
+     ],
+     "help": "Output stem (default output/buyer_sweep_<zip>_<date>)",
+     "kind": "value"
+    },
+    {
+     "default": 0.75,
+     "flags": [
+      "--min-interval"
+     ],
+     "help": "seconds between SiftMap calls (the account allows 120 a minute across every tool)",
+     "kind": "value",
+     "type": "float"
+    },
+    {
+     "flags": [
+      "-v",
+      "--verbose"
+     ],
+     "kind": "switch"
+    }
+   ],
+   "class": "wired",
+   "cli": "argparse",
+   "complete": true,
+   "paid": [
+    "Enformion",
+    "Tracerfy",
+    "Zillow (OpenWeb Ninja)"
+   ],
+   "paid_deeper": [
+    "Trestle"
+   ],
+   "siftmap_reads": [
+    "get_detail",
+    "properties/detail"
+   ],
+   "summary": "SiftMap deed-level buyer sweep: who is ACTUALLY buying in a zip, at what band, with what portfolio: the dispo-list engine built on the 158 Old State run.",
+   "why": "runs inside buyer_registry (Diggs), entity_principals (Diggs)",
+   "workflows": [
+    "buyer_registry",
+    "entity_principals"
+   ],
+   "writes": ""
+  },
+  "clone_account": {
+   "args": [
+    {
+     "choices": [
+      "export",
+      "validate",
+      "plan",
+      "apply",
+      "verify"
+     ],
+     "flags": [
+      "--phase"
+     ],
+     "kind": "value",
+     "required": true
+    },
+    {
+     "flags": [
+      "--blueprint"
+     ],
+     "help": "blueprint JSON (validate/plan/apply/verify)",
+     "kind": "value"
+    },
+    {
+     "default": "ty2",
+     "flags": [
+      "--label"
+     ],
+     "help": "export: label for the file name and source",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--source-account"
+     ],
+     "help": "export: Deal Room store account name",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--api-key"
+     ],
+     "help": "export: Open API key (else REISIFT_API_KEY / store)",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--no-counts"
+     ],
+     "help": "export: skip per-preset source counts",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--target"
+     ],
+     "help": "target account email (apply/plan/verify)",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--jwt"
+     ],
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--jwt-file"
+     ],
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--email"
+     ],
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--password"
+     ],
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--impersonate"
+     ],
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--commit"
+     ],
+     "help": "apply: write (DRY by default)",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--only"
+     ],
+     "help": "comma list of families to create",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--skip"
+     ],
+     "help": "comma list of families to leave alone",
+     "kind": "value"
+    },
+    {
+     "choices": [
+      "numbered",
+      "all"
+     ],
+     "default": "numbered",
+     "flags": [
+      "--folders"
+     ],
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--move-presets"
+     ],
+     "help": "a preset that exists in another folder is moved to the blueprint's folder",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--user-map"
+     ],
+     "help": "\"Adriana=Jane,Tinaa=Sam\" source first name -> target first name",
+     "kind": "value"
+    },
+    {
+     "choices": [
+      "self",
+      "drop"
+     ],
+     "default": "self",
+     "flags": [
+      "--assign-fallback"
+     ],
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--keep-neighborhoods"
+     ],
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--stub-inactive"
+     ],
+     "help": "create a sequence inactive when a non-structural ref is missing",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--siftmap-auto-add"
+     ],
+     "help": "keep auto-add ON for SiftMap presets (spends the target's allowance)",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--probe-only"
+     ],
+     "help": "create one object per unverified route (task-group, task-preset, sequence-folder, custom-field group, board, column), read it back, stop",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--allow-staff-target"
+     ],
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--allow-same-account"
+     ],
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--strict-counts"
+     ],
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--no-count-probe"
+     ],
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--state"
+     ],
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--report"
+     ],
+     "kind": "value"
+    }
+   ],
+   "class": "wired",
+   "cli": "argparse",
+   "cli_via": "account_blueprint.cli",
+   "complete": true,
+   "summary": "Clone the ty+2 DataSift account structure into any DataSift account.",
+   "why": "runs inside account_setup (Atlas)",
+   "workflows": [
+    "account_setup"
+   ],
+   "write_flags": [
+    "--commit",
+    "--siftmap-auto-add"
+   ],
+   "writes": "commit"
+  },
+  "code_violations": {
+   "args": [
+    {
+     "flags": [
+      "--scratch"
+     ],
+     "kind": "value"
+    }
+   ],
+   "class": "runnable",
+   "cli": "argparse",
+   "complete": true,
+   "summary": "Code violations from a file a person exported (build plan 1.10). Knox only.",
+   "writes": ""
+  },
+  "comp_package": {
+   "args": [
+    {
+     "flags": [
+      "--address"
+     ],
+     "kind": "value",
+     "required": true
+    },
+    {
+     "default": "Knoxville",
+     "flags": [
+      "--city"
+     ],
+     "kind": "value"
+    },
+    {
+     "default": "TN",
+     "flags": [
+      "--state"
+     ],
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--zip"
+     ],
+     "kind": "value",
+     "required": true
+    },
+    {
+     "flags": [
+      "--beds"
+     ],
+     "help": "Override (county card beats Zillow)",
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "flags": [
+      "--baths"
+     ],
+     "kind": "value",
+     "type": "float"
+    },
+    {
+     "flags": [
+      "--sqft"
+     ],
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "flags": [
+      "--year-built"
+     ],
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "default": 12,
+     "flags": [
+      "--months"
+     ],
+     "help": "Sold lookback (default 12)",
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "flags": [
+      "--bbox"
+     ],
+     "help": "lat_min,lat_max,lon_min,lon_max boundary box",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--streets"
+     ],
+     "help": "Regex of in-boundary street names",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--out"
+     ],
+     "help": "Output .xlsx path",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "-v",
+      "--verbose"
+     ],
+     "kind": "switch"
+    }
+   ],
+   "class": "wired",
+   "cli": "argparse",
+   "complete": true,
+   "paid": [
+    "Zillow (OpenWeb Ninja)"
+   ],
+   "siftmap_reads": [
+    "get_detail"
+   ],
+   "summary": "One-command comp package builder (the \"158 Old State\" document, generalized).",
+   "why": "runs inside quick_screen (Roma), underwrite (Roma)",
+   "workflows": [
+    "quick_screen",
+    "underwrite"
+   ],
+   "writes": ""
+  },
+  "consolidate_foreclosures": {
+   "args": [
+    {
+     "default": 3,
+     "flags": [
+      "--months"
+     ],
+     "help": "How many months of Apify runs to pull",
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "flags": [
+      "--actor"
+     ],
+     "help": "Apify actor name",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--county"
+     ],
+     "help": "Restrict to one county (e.g. Knox)",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--no-apify"
+     ],
+     "help": "Skip Apify, use local CSVs only",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--no-local"
+     ],
+     "help": "Skip local CSVs, use Apify only",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--require-sale-date"
+     ],
+     "help": "Drop records with no parsed sale date (stricter active list)",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--out"
+     ],
+     "help": "Output CSV path",
+     "kind": "value"
+    }
+   ],
+   "class": "runnable",
+   "cli": "argparse",
+   "complete": true,
+   "summary": "Consolidate the last N months of foreclosure runs into a master list.",
+   "writes": ""
+  },
+  "county_market_report": {
+   "args": [
+    {
+     "flags": [
+      "--sift"
+     ],
+     "kind": "value",
+     "required": true
+    },
+    {
+     "flags": [
+      "--bundle"
+     ],
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--county"
+     ],
+     "kind": "value",
+     "required": true
+    },
+    {
+     "flags": [
+      "--state"
+     ],
+     "kind": "value",
+     "required": true
+    },
+    {
+     "default": 52,
+     "flags": [
+      "--fred-dom"
+     ],
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "flags": [
+      "--out"
+     ],
+     "kind": "value",
+     "required": true
+    }
+   ],
+   "class": "wired",
+   "cli": "argparse",
+   "complete": true,
+   "summary": "County-agnostic 7-sheet market research workbook generator.",
+   "why": "runs inside market_report (Atlas)",
+   "workflows": [
+    "market_report"
+   ],
+   "writes": ""
+  },
+  "d4d_call_list": {
+   "args": [
+    {
+     "choices": "dynamic",
+     "flags": [
+      "--phase"
+     ],
+     "kind": "value",
+     "required": true
+    },
+    {
+     "flags": [
+      "--commit"
+     ],
+     "help": "write / spend (dry by default)",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--master"
+     ],
+     "kind": "value"
+    },
+    {
+     "default": 3000,
+     "flags": [
+      "--top"
+     ],
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "flags": [
+      "--list-name"
+     ],
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--tag"
+     ],
+     "kind": "value"
+    },
+    {
+     "default": 100,
+     "flags": [
+      "--chunk"
+     ],
+     "help": "ids per SiftMap search",
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "default": 250,
+     "flags": [
+      "--chunk-pull"
+     ],
+     "help": "ids per add call",
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "default": 5.0,
+     "flags": [
+      "--probe-wait"
+     ],
+     "help": "minutes to wait for the probe id",
+     "kind": "value",
+     "type": "float"
+    },
+    {
+     "default": 30.0,
+     "flags": [
+      "--wait-min"
+     ],
+     "help": "minutes to wait for a batch to land",
+     "kind": "value",
+     "type": "float"
+    },
+    {
+     "flags": [
+      "--no-wait"
+     ],
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--headless"
+     ],
+     "help": "no longer used: the browser wizard is retired",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--refresh"
+     ],
+     "help": "harvest: re-read cached records",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--refresh-pulled"
+     ],
+     "help": "harvest: re-read records this run pulled (after the skip trace lands)",
+     "kind": "switch"
+    },
+    {
+     "default": 6,
+     "flags": [
+      "--workers"
+     ],
+     "help": "score: Trestle threads",
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "default": 0,
+     "flags": [
+      "--limit"
+     ],
+     "help": "score: cap numbers this run",
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "default": 50,
+     "flags": [
+      "--readback"
+     ],
+     "help": "writeback: owners to verify",
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "default": "Dial First,Dial Second",
+     "flags": [
+      "--tiers"
+     ],
+     "help": "dialer: tiers to keep",
+     "kind": "value"
+    },
+    {
+     "default": 10,
+     "flags": [
+      "--phone-cols"
+     ],
+     "help": "dialer: Phone N columns",
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "flags": [
+      "--no-dedupe"
+     ],
+     "help": "kixie: keep a number on every property that carries it (default: dial once)",
+     "kind": "switch"
+    },
+    {
+     "default": "Obituary",
+     "flags": [
+      "--suppress-lists"
+     ],
+     "help": "dialer: drop any record on these lists (comma-separated)",
+     "kind": "value"
+    }
+   ],
+   "class": "wired",
+   "cli": "argparse",
+   "complete": true,
+   "paid": [
+    "Trestle"
+   ],
+   "paid_deeper": [
+    "Enformion",
+    "Firecrawl",
+    "OpenRouter",
+    "Serper",
+    "Tracerfy"
+   ],
+   "summary": "D4D Top N call list: DataSift skip trace + Trestle dial tiers + dialer CSV.",
+   "why": "runs inside idle_records (Atlas)",
+   "workflows": [
+    "idle_records"
+   ],
+   "write_flags": [
+    "--commit"
+   ],
+   "writes": "commit"
+  },
+  "datasift_api_upload": {
+   "args": [
+    {
+     "default": "output/knox_ftm_pull.csv",
+     "flags": [
+      "--csv"
+     ],
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--commit"
+     ],
+     "kind": "switch"
+    },
+    {
+     "default": 0,
+     "flags": [
+      "--limit"
+     ],
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "default": 0,
+     "flags": [
+      "--start"
+     ],
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "default": 0.1,
+     "flags": [
+      "--sleep"
+     ],
+     "kind": "value",
+     "type": "float"
+    }
+   ],
+   "class": "runnable",
+   "cli": "argparse",
+   "complete": true,
+   "paid_deeper": [
+    "Enformion",
+    "Firecrawl",
+    "OpenRouter",
+    "Serper",
+    "Tracerfy"
+   ],
+   "summary": "Upload the Knox first-to-market CSV into DataSift entirely over the API.",
+   "write_flags": [
+    "--commit"
+   ],
+   "writes": "commit"
+  },
+  "datasift_schema_setup": {
+   "args": [
+    {
+     "flags": [
+      "--commit"
+     ],
+     "kind": "switch"
+    }
+   ],
+   "class": "wired",
+   "cli": "argparse",
+   "complete": true,
+   "summary": "Create the DataSift custom fields, select options and lists this pull needs.",
+   "why": "runs inside account_setup (Atlas)",
+   "workflows": [
+    "account_setup"
+   ],
+   "write_flags": [
+    "--commit"
+   ],
+   "writes": "commit"
+  },
+  "datasift_skiptrace": {
+   "args": [
+    {
+     "flags": [
+      "--stats"
+     ],
+     "help": "read the counters and exit",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--run"
+     ],
+     "help": "trigger skip trace. ACCOUNT-WIDE; the endpoint ignores scoping",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--allow-metered"
+     ],
+     "help": "override the unlimited-plan guard. Think first.",
+     "kind": "switch"
+    }
+   ],
+   "class": "runnable",
+   "cli": "argparse",
+   "complete": true,
+   "paid_deeper": [
+    "Enformion",
+    "Firecrawl",
+    "OpenRouter",
+    "Serper",
+    "Tracerfy"
+   ],
+   "summary": "Skip trace via the DataSift internal API.",
+   "write_flags": [
+    "--run"
+   ],
+   "writes": "commit"
+  },
+  "deal_buyer_dp": {
+   "args": [
+    {
+     "flags": [
+      "--slug"
+     ],
+     "kind": "value",
+     "required": true
+    },
+    {
+     "choices": [
+      "crm",
+      "dossier",
+      "trace",
+      "verify",
+      "export"
+     ],
+     "flags": [
+      "--phase"
+     ],
+     "kind": "value",
+     "required": true
+    },
+    {
+     "flags": [
+      "--commit"
+     ],
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "-v",
+      "--verbose"
+     ],
+     "kind": "switch"
+    }
+   ],
+   "class": "wired",
+   "cli": "argparse",
+   "complete": true,
+   "paid": [
+    "SmartSkip",
+    "Trestle"
+   ],
+   "paid_deeper": [
+    "Enformion",
+    "Firecrawl",
+    "OpenRouter",
+    "Serper",
+    "Tracerfy",
+    "Zillow (OpenWeb Ninja)"
+   ],
+   "summary": "Deep prospect the top buyers for one deal: who signs, and which number reaches them.",
+   "why": "runs inside deal_buyers (Roma)",
+   "workflows": [
+    "deal_buyers"
+   ],
+   "write_flags": [
+    "--commit"
+   ],
+   "writes": "commit"
+  },
+  "deal_buyer_match": {
+   "args": [
+    {
+     "choices": [
+      "sweep",
+      "hydrate",
+      "rank",
+      "all"
+     ],
+     "default": "all",
+     "flags": [
+      "--phase"
+     ],
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--slug"
+     ],
+     "kind": "value",
+     "required": true
+    },
+    {
+     "flags": [
+      "--address"
+     ],
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--subject-id"
+     ],
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--lat"
+     ],
+     "kind": "value",
+     "required": true,
+     "type": "float"
+    },
+    {
+     "flags": [
+      "--lon"
+     ],
+     "kind": "value",
+     "required": true,
+     "type": "float"
+    },
+    {
+     "flags": [
+      "--beds"
+     ],
+     "kind": "value",
+     "required": true,
+     "type": "int"
+    },
+    {
+     "default": 1,
+     "flags": [
+      "--baths"
+     ],
+     "kind": "value",
+     "type": "float"
+    },
+    {
+     "flags": [
+      "--sqft"
+     ],
+     "kind": "value",
+     "required": true,
+     "type": "float"
+    },
+    {
+     "default": 0,
+     "flags": [
+      "--year"
+     ],
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "flags": [
+      "--ask"
+     ],
+     "help": "price we offer buyers",
+     "kind": "value",
+     "required": true,
+     "type": "float"
+    },
+    {
+     "default": 0,
+     "flags": [
+      "--contract"
+     ],
+     "kind": "value",
+     "type": "float"
+    },
+    {
+     "default": 1.0,
+     "flags": [
+      "--comp-mi"
+     ],
+     "kind": "value",
+     "type": "float"
+    },
+    {
+     "default": 18,
+     "flags": [
+      "--comp-months"
+     ],
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "default": 3.0,
+     "flags": [
+      "--buyer-mi"
+     ],
+     "kind": "value",
+     "type": "float"
+    },
+    {
+     "default": 36,
+     "flags": [
+      "--buyer-months"
+     ],
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "default": 0.6,
+     "flags": [
+      "--band-lo"
+     ],
+     "help": "ask band floor multiple; below the band is interest, not affordability",
+     "kind": "value",
+     "type": "float"
+    },
+    {
+     "default": 1.6,
+     "flags": [
+      "--band-hi"
+     ],
+     "kind": "value",
+     "type": "float"
+    },
+    {
+     "default": 10,
+     "flags": [
+      "--top"
+     ],
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "default": 3,
+     "flags": [
+      "--min-buys"
+     ],
+     "help": "lifetime purchases required for the top N call list",
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "default": 30,
+     "flags": [
+      "--show"
+     ],
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "default": "47093,Knox,TN",
+     "flags": [
+      "--county"
+     ],
+     "help": "fips,name,state the sweep is held to (default Knox); 'none' = the box alone",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--detail-cap"
+     ],
+     "help": "most deed reads this run, nearest first (default: no cap)",
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "flags": [
+      "-v",
+      "--verbose"
+     ],
+     "kind": "switch"
+    }
+   ],
+   "class": "wired",
+   "cli": "argparse",
+   "complete": true,
+   "paid": [
+    "Enformion"
+   ],
+   "paid_deeper": [
+    "Firecrawl",
+    "OpenRouter",
+    "Serper",
+    "SmartSkip",
+    "Tracerfy",
+    "Trestle",
+    "Zillow (OpenWeb Ninja)"
+   ],
+   "summary": "Top buyers for ONE deal: who actually buys near this house, at this price.",
+   "why": "runs inside deal_buyers (Roma)",
+   "workflows": [
+    "deal_buyers"
+   ],
+   "writes": ""
+  },
+  "deal_odds_train": {
+   "args": [
+    {
+     "choices": [
+      "pull",
+      "history",
+      "listings",
+      "aiscores",
+      "build",
+      "fit",
+      "forward",
+      "score",
+      "all"
+     ],
+     "flags": [
+      "--phase"
+     ],
+     "kind": "value",
+     "required": true
+    },
+    {
+     "flags": [
+      "--work"
+     ],
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--model"
+     ],
+     "kind": "value"
+    },
+    {
+     "default": 8,
+     "flags": [
+      "--streams"
+     ],
+     "kind": "value",
+     "type": "int"
+    }
+   ],
+   "class": "runnable",
+   "cli": "argparse",
+   "complete": true,
+   "paid": [
+    "Enformion",
+    "Tracerfy",
+    "Trestle"
+   ],
+   "paid_deeper": [
+    "Firecrawl",
+    "OpenRouter",
+    "Serper",
+    "Zillow (OpenWeb Ninja)"
+   ],
+   "summary": "Fit and test the deal-odds model (src/deal_odds.py) on what actually sold in Knox and Blount.",
+   "writes": ""
+  },
+  "deal_package": {
+   "args": [
+    {
+     "flags": [
+      "--spec"
+     ],
+     "help": "JSON spec file",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--out"
+     ],
+     "help": "Output .xlsx path",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--template"
+     ],
+     "help": "Write deal_spec_template.json and exit",
+     "kind": "switch"
+    }
+   ],
+   "class": "runnable",
+   "cli": "argparse",
+   "complete": true,
+   "summary": "Spec-driven deal-package workbook generator (the 158 Old State structure, generalized). One clean Excel file per property with six sheets:",
+   "writes": ""
+  },
+  "deep_prospect_batch": {
+   "args": [],
+   "class": "runnable",
+   "cli": "argparse",
+   "complete": true,
+   "paid": [
+    "Claude",
+    "Firecrawl",
+    "OpenRouter",
+    "SerpApi",
+    "Serper"
+   ],
+   "paid_deeper": [
+    "Enformion",
+    "Google Maps",
+    "Tracerfy",
+    "Trestle"
+   ],
+   "subcommand_required": true,
+   "subcommands": {
+    "cohort": {
+     "args": [
+      {
+       "flags": [
+        "--fresh"
+       ],
+       "help": "re-read every record, ignoring facts read earlier today",
+       "kind": "switch"
+      }
+     ]
+    },
+    "estimate": {
+     "args": []
+    },
+    "one": {
+     "args": [
+      {
+       "flags": [
+        "--uuid"
+       ],
+       "kind": "value",
+       "required": true
+      }
+     ]
+    },
+    "run": {
+     "args": [
+      {
+       "choices": [
+        "Foreclosure",
+        "Probate",
+        "Obituary"
+       ],
+       "flags": [
+        "--list"
+       ],
+       "kind": "value"
+      },
+      {
+       "flags": [
+        "--uuids"
+       ],
+       "kind": "value"
+      },
+      {
+       "flags": [
+        "--addresses"
+       ],
+       "help": "street lines separated by ;",
+       "kind": "value"
+      },
+      {
+       "default": 0,
+       "flags": [
+        "--limit"
+       ],
+       "kind": "value",
+       "type": "int"
+      },
+      {
+       "default": 2,
+       "flags": [
+        "--workers"
+       ],
+       "kind": "value",
+       "type": "int"
+      },
+      {
+       "flags": [
+        "--commit"
+       ],
+       "help": "live: pay vendors and write back to the CRM",
+       "kind": "switch"
+      },
+      {
+       "choices": [
+        "open",
+        "claude"
+       ],
+       "default": "open",
+       "flags": [
+        "--engine"
+       ],
+       "kind": "value"
+      },
+      {
+       "flags": [
+        "--analysis-model"
+       ],
+       "kind": "value"
+      },
+      {
+       "choices": [
+        "",
+        "trace_first",
+        "free_first"
+       ],
+       "flags": [
+        "--order"
+       ],
+       "help": "trace_first is today's order; free_first reads the free facts and researches before any paid trace (unset: whatever AGENTS_DP_ORDER says)",
+       "kind": "value"
+      },
+      {
+       "default": 25.0,
+       "flags": [
+        "--max-usd"
+       ],
+       "help": "stop starting records once the batch has spent this",
+       "kind": "value",
+       "type": "float"
+      },
+      {
+       "default": 0.0,
+       "flags": [
+        "--daily-cap"
+       ],
+       "help": "override AGENTS_DAILY_CAP_USD for this batch",
+       "kind": "value",
+       "type": "float"
+      },
+      {
+       "flags": [
+        "--redo"
+       ],
+       "help": "run records a batch already finished",
+       "kind": "switch"
+      },
+      {
+       "flags": [
+        "--force"
+       ],
+       "help": "skip the last check (auction passed, sold, listed) before each record",
+       "kind": "switch"
+      }
+     ]
+    },
+    "status": {
+     "args": []
+    }
+   },
+   "summary": "Deep prospect a whole list: count it, price it, run it.",
+   "write_flags": [
+    "--commit"
+   ],
+   "writes": "commit"
+  },
+  "deep_prospect_pdf": {
+   "args": [
+    {
+     "flags": [
+      "md"
+     ],
+     "help": "path to the research-pack .md",
+     "kind": "positional"
+    },
+    {
+     "flags": [
+      "pdf"
+     ],
+     "help": "output .pdf (default: same name)",
+     "kind": "positional",
+     "nargs": "?"
+    }
+   ],
+   "class": "runnable",
+   "cli": "argparse",
+   "complete": true,
+   "summary": "Render a deep-prospecting research pack (markdown) to a branded PDF.",
+   "writes": ""
+  },
+  "deep_prospect_record": {
+   "args": [
+    {
+     "flags": [
+      "--address"
+     ],
+     "help": "street line of the CRM record",
+     "kind": "value",
+     "required": true
+    },
+    {
+     "choices": "dynamic",
+     "flags": [
+      "--phase"
+     ],
+     "kind": "value",
+     "required": true
+    },
+    {
+     "flags": [
+      "--run"
+     ],
+     "help": "run folder (default output/deep_prospect/<address slug>)",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--commit"
+     ],
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--context"
+     ],
+     "help": "records: what the pack header says this record is",
+     "kind": "value"
+    },
+    {
+     "choices": [
+      "mailing",
+      "property"
+     ],
+     "flags": [
+      "--subject-address"
+     ],
+     "help": "trace the owner at the CRM mailing address or at the property (when the mailing address is not a home)",
+     "kind": "value"
+    }
+   ],
+   "class": "wired",
+   "cli": "argparse",
+   "complete": true,
+   "paid": [
+    "Google Maps",
+    "Tracerfy",
+    "Trestle"
+   ],
+   "paid_deeper": [
+    "Enformion",
+    "Firecrawl",
+    "OpenRouter",
+    "Serper",
+    "SmartSkip"
+   ],
+   "summary": "Deep prospecting v5 on one CRM record (build 1.0.58, 2026-10-27).",
+   "why": "runs inside deep_prospect (Diggs)",
+   "workflows": [
+    "deep_prospect"
+   ],
+   "write_flags": [
+    "--commit"
+   ],
+   "writes": "commit"
+  },
+  "dispo_buyers": {
+   "args": [
+    {
+     "choices": "dynamic",
+     "flags": [
+      "--phase"
+     ],
+     "kind": "value",
+     "required": true
+    },
+    {
+     "flags": [
+      "--commit"
+     ],
+     "help": "allow billed calls / CRM writes (trace, mirror)",
+     "kind": "switch"
+    },
+    {
+     "default": 0,
+     "flags": [
+      "--limit"
+     ],
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "default": 4,
+     "flags": [
+      "--workers"
+     ],
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "default": 0.3,
+     "flags": [
+      "--min-interval"
+     ],
+     "kind": "value",
+     "type": "float"
+    },
+    {
+     "default": 200,
+     "flags": [
+      "--max-pages"
+     ],
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "flags": [
+      "--refresh"
+     ],
+     "help": "re-run a segment already cached in rows.json",
+     "kind": "switch"
+    },
+    {
+     "default": "Dispo - 02 Ready to Text",
+     "flags": [
+      "--preset"
+     ],
+     "help": "CRM filter preset naming the cohort to score",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--active-only"
+     ],
+     "help": "principals: only entities active in the window",
+     "kind": "switch"
+    },
+    {
+     "default": 2,
+     "flags": [
+      "--min-buys"
+     ],
+     "help": "buy floor for the PAID principals pass",
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "flags": [
+      "--trace-businessv2"
+     ],
+     "help": "include BusinessV2 principals in SmartSkip (4%% hit rate)",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--retrace"
+     ],
+     "help": "re-buy numbers for buyers already traced",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--include-low"
+     ],
+     "help": "include low-confidence (agent-titled) principals",
+     "kind": "switch"
+    },
+    {
+     "default": 2,
+     "flags": [
+      "--trace-min-buys"
+     ],
+     "help": "purchase floor for the PAID skip trace (0 = everyone)",
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "default": 2,
+     "flags": [
+      "--profile-min-buys"
+     ],
+     "help": "purchase floor for the profiles phase",
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "default": 365,
+     "flags": [
+      "--recent-days"
+     ],
+     "help": "the qualifying activity window in days",
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "flags": [
+      "--require-active"
+     ],
+     "help": "profiles: only buyers active in the window",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--no-require-active"
+     ],
+     "help": "profiles: ignore recency (the old behaviour)",
+     "kind": "switch"
+    },
+    {
+     "choices": [
+      "preset",
+      "registry"
+     ],
+     "default": "preset",
+     "flags": [
+      "--source"
+     ],
+     "help": "score phase: CRM preset cohort, or the registry's own phones",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--include-dnc"
+     ],
+     "help": "also score numbers flagged do-not-call",
+     "kind": "switch"
+    },
+    {
+     "choices": [
+      "today",
+      "taught"
+     ],
+     "flags": [
+      "--rules"
+     ],
+     "help": "how deeds are read (default: today's, or DISPO_BUYER_RULES); --phase rules previews the taught set without writing",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--each-purchase"
+     ],
+     "help": "sweep/recent: one row per purchase for held houses too, so a buyer's purchases can be counted (more rows to hydrate)",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--reread-unpriced"
+     ],
+     "help": "hydrate: read again the cached properties whose purchase has no deed price, to pick up the loans recorded with them",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--buyer"
+     ],
+     "help": "rules: also print this buyer's price band before and after",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "-v",
+      "--verbose"
+     ],
+     "kind": "switch"
+    }
+   ],
+   "class": "wired",
+   "cli": "argparse",
+   "complete": true,
+   "paid": [
+    "Enformion",
+    "SmartSkip",
+    "Tracerfy",
+    "Trestle"
+   ],
+   "paid_deeper": [
+    "Firecrawl",
+    "OpenRouter",
+    "Serper",
+    "Zillow (OpenWeb Ninja)"
+   ],
+   "siftmap_reads": [
+    "get_detail",
+    "properties/detail"
+   ],
+   "summary": "One deduped buyer registry for Knox and Blount, ready to skip trace and text.",
+   "why": "runs inside buyer_registry (Diggs)",
+   "workflows": [
+    "buyer_registry"
+   ],
+   "write_flags": [
+    "--commit"
+   ],
+   "writes": "commit"
+  },
+  "dispo_flip_buyers": {
+   "args": [
+    {
+     "choices": [
+      "infra",
+      "pull",
+      "trace",
+      "vip",
+      "flippers"
+     ],
+     "flags": [
+      "--phase"
+     ],
+     "kind": "value",
+     "required": true
+    },
+    {
+     "flags": [
+      "--commit"
+     ],
+     "kind": "switch"
+    },
+    {
+     "default": 25,
+     "flags": [
+      "--limit"
+     ],
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "flags": [
+      "--all-owners"
+     ],
+     "help": "trace person-owned records too (default: entities only)",
+     "kind": "switch"
+    },
+    {
+     "default": 24,
+     "flags": [
+      "--months"
+     ],
+     "help": "flippers sweep: only exits in the last N months",
+     "kind": "value",
+     "type": "int"
+    }
+   ],
+   "browser": [
+    "playwright"
+   ],
+   "class": "browser",
+   "cli": "argparse",
+   "complete": true,
+   "paid": [
+    "Enformion",
+    "Tracerfy"
+   ],
+   "paid_deeper": [
+    "Firecrawl",
+    "OpenRouter",
+    "Serper"
+   ],
+   "siftmap_reads": [
+    "autocomplete",
+    "get_detail"
+   ],
+   "summary": "Dispo buyer engine: pending-flip owners -> ty+2 records -> principal skip trace.",
+   "why": "drives a browser (playwright), and the brain has none",
+   "write_flags": [
+    "--commit"
+   ],
+   "writes": "commit"
+  },
+  "dispo_flow": {
+   "args": [
+    {
+     "choices": "dynamic",
+     "flags": [
+      "--phase"
+     ],
+     "kind": "value",
+     "required": true
+    },
+    {
+     "flags": [
+      "--commit"
+     ],
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "-v",
+      "--verbose"
+     ],
+     "kind": "switch"
+    }
+   ],
+   "class": "runnable",
+   "cli": "argparse",
+   "complete": true,
+   "paid_deeper": [
+    "Claude"
+   ],
+   "summary": "Anchor the dispo blast cohort to a list and a sequential preset flow.",
+   "write_flags": [
+    "--commit"
+   ],
+   "writes": "commit"
+  },
+  "dispo_skiptrace": {
+   "args": [
+    {
+     "flags": [
+      "--contacts"
+     ],
+     "help": "JSON list of contacts",
+     "kind": "value",
+     "required": true
+    },
+    {
+     "flags": [
+      "--web"
+     ],
+     "help": "Optional web-crosscheck JSON: {label: {phones:{digits:{}}, emails:[]}}",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--out"
+     ],
+     "help": "Output stem",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "-v",
+      "--verbose"
+     ],
+     "kind": "switch"
+    }
+   ],
+   "class": "wired",
+   "cli": "argparse",
+   "complete": true,
+   "paid": [
+    "Enformion",
+    "Tracerfy",
+    "Trestle"
+   ],
+   "paid_deeper": [
+    "Firecrawl",
+    "OpenRouter",
+    "Serper"
+   ],
+   "summary": "Three-source dispo skip-trace waterfall with a per-contact audit matrix.",
+   "why": "runs inside buyer_registry (Diggs)",
+   "workflows": [
+    "buyer_registry"
+   ],
+   "writes": ""
+  },
+  "dream100": {
+   "args": [
+    {
+     "choices": [
+      "pull",
+      "build",
+      "attach",
+      "compare"
+     ],
+     "flags": [
+      "--phase"
+     ],
+     "kind": "value",
+     "required": true
+    },
+    {
+     "flags": [
+      "--commit"
+     ],
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--refresh"
+     ],
+     "kind": "switch"
+    },
+    {
+     "default": 100,
+     "flags": [
+      "--top"
+     ],
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "choices": [
+      "today",
+      "taught"
+     ],
+     "flags": [
+      "--weights"
+     ],
+     "help": "the weight set to score with (default: today's, or DREAM100_WEIGHTS)",
+     "kind": "value"
+    }
+   ],
+   "class": "wired",
+   "cli": "argparse",
+   "complete": true,
+   "paid": [
+    "Trestle"
+   ],
+   "paid_deeper": [
+    "Enformion",
+    "Firecrawl",
+    "OpenRouter",
+    "Serper",
+    "Tracerfy"
+   ],
+   "summary": "Dream 100: the hundred largest opportunities in the D4D top 3,000.",
+   "why": "runs inside idle_records (Atlas)",
+   "workflows": [
+    "idle_records"
+   ],
+   "write_flags": [
+    "--commit"
+   ],
+   "writes": "commit"
+  },
+  "dream100_dp": {
+   "args": [
+    {
+     "choices": "dynamic",
+     "flags": [
+      "--phase"
+     ],
+     "kind": "value",
+     "required": true
+    },
+    {
+     "default": 5,
+     "flags": [
+      "--top"
+     ],
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "default": "output/deep_prospect/dream100_top5_20260923",
+     "flags": [
+      "--run"
+     ],
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--commit"
+     ],
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--only"
+     ],
+     "help": "writeback: comma-separated slugs",
+     "kind": "value"
+    }
+   ],
+   "class": "wired",
+   "cli": "argparse",
+   "complete": true,
+   "paid": [
+    "Google Maps",
+    "SmartSkip",
+    "Tracerfy",
+    "Trestle"
+   ],
+   "paid_deeper": [
+    "Claude",
+    "Enformion",
+    "Firecrawl",
+    "OpenRouter",
+    "Serper"
+   ],
+   "siftmap_reads": [
+    "get_detail"
+   ],
+   "summary": "Deep prospecting v5 on the top of the Dream 100 (build 1.0.56, 2026-09-23).",
+   "why": "runs inside deep_prospect (Diggs)",
+   "workflows": [
+    "deep_prospect"
+   ],
+   "write_flags": [
+    "--commit"
+   ],
+   "writes": "commit"
+  },
+  "dropbox_get_refresh_token": {
+   "args": [],
+   "class": "retired",
+   "cli": "none",
+   "complete": true,
+   "replacement": "",
+   "summary": "One-time: mint a PERMANENT Dropbox refresh token for the FTM pipeline.",
+   "why": "a one-time setup that waits for a code typed at the keyboard",
+   "writes": ""
+  },
+  "enformion_ftm": {
+   "args": [
+    {
+     "flags": [
+      "--csv"
+     ],
+     "help": "FTM master CSV (default: latest *_sfr.csv)",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--addr"
+     ],
+     "help": "comma list of address substrings to limit to (e.g. a re-run on specific records)",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--no-phone-only"
+     ],
+     "help": "only records still with no phones",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--finish"
+     ],
+     "help": "merge found phones into reisift (over the API)",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--browser"
+     ],
+     "help": "merge through the browser upload wizard instead of the API (the fallback)",
+     "kind": "switch"
+    },
+    {
+     "default": 0,
+     "flags": [
+      "--limit"
+     ],
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "flags": [
+      "--headed"
+     ],
+     "kind": "switch"
+    }
+   ],
+   "browser": [
+    "playwright",
+    "sift_upload_wizard"
+   ],
+   "class": "browser",
+   "cli": "argparse",
+   "complete": true,
+   "paid": [
+    "Enformion",
+    "Tracerfy"
+   ],
+   "paid_deeper": [
+    "Firecrawl",
+    "OpenRouter",
+    "Serper"
+   ],
+   "summary": "Layer 3b - Enformion (Endato) Person Search skip-trace for FTM foreclosure records, then merge the found numbers back into reisift. A THIRD phone source stacked on top of DataSift (free, at upload) + ",
+   "why": "drives a browser (playwright, sift_upload_wizard), and the brain has none",
+   "write_flags": [
+    "--finish"
+   ],
+   "writes": "commit"
+  },
+  "enformion_heir_test": {
+   "args": [
+    {
+     "flags": [
+      "--first"
+     ],
+     "kind": "value",
+     "required": true
+    },
+    {
+     "flags": [
+      "--last"
+     ],
+     "kind": "value",
+     "required": true
+    },
+    {
+     "flags": [
+      "--city"
+     ],
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--state"
+     ],
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--zip"
+     ],
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--raw"
+     ],
+     "help": "Schema-discovery mode: dump full JSON + field map",
+     "kind": "switch"
+    }
+   ],
+   "class": "retired",
+   "cli": "argparse",
+   "complete": true,
+   "paid": [
+    "Enformion"
+   ],
+   "replacement": "the deep_prospect workflow (Diggs)",
+   "summary": "Enformion (Endato) Person Search , live heir-finding test harness.",
+   "why": "a test harness for the v4 Enformion heir search, which deep prospecting v5 replaced",
+   "writes": ""
+  },
+  "enterprise_prospects": {
+   "args": [
+    {
+     "choices": "dynamic",
+     "flags": [
+      "--phase"
+     ],
+     "kind": "value",
+     "required": true
+    },
+    {
+     "flags": [
+      "--resume"
+     ],
+     "kind": "switch"
+    },
+    {
+     "default": 0,
+     "flags": [
+      "--limit"
+     ],
+     "help": "cap counties (sweep) or targets (verify) for smoke tests",
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "default": 4,
+     "flags": [
+      "--workers"
+     ],
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "default": 0.25,
+     "flags": [
+      "--min-interval"
+     ],
+     "help": "seconds between SiftMap search calls per client",
+     "kind": "value",
+     "type": "float"
+    },
+    {
+     "default": 100,
+     "flags": [
+      "--counties"
+     ],
+     "help": "how many top counties the sweep covers",
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "default": 400,
+     "flags": [
+      "--hydrate-cap"
+     ],
+     "help": "max corporate-owned sold rows hydrated per county",
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "flags": [
+      "-v",
+      "--verbose"
+     ],
+     "kind": "switch"
+    }
+   ],
+   "class": "runnable",
+   "cli": "argparse",
+   "complete": true,
+   "paid_deeper": [
+    "Enformion",
+    "Firecrawl",
+    "OpenRouter",
+    "Serper",
+    "Tracerfy"
+   ],
+   "siftmap_reads": [
+    "autocomplete",
+    "get_detail"
+   ],
+   "summary": "Enterprise outbound prospect pipeline: top property buyers nationwide.",
+   "writes": ""
+  },
+  "excel_exporter": {
+   "args": [
+    {
+     "flags": [
+      "argv"
+     ],
+     "kind": "positional",
+     "nargs": "?"
+    }
+   ],
+   "class": "runnable",
+   "cli": "argv",
+   "complete": false,
+   "summary": "Export enrichment CSV to a multi-sheet Excel review workbook.",
+   "writes": ""
+  },
+  "export_buyer_list": {
+   "args": [
+    {
+     "flags": [
+      "--county"
+     ],
+     "help": "County name (e.g. Knox)",
+     "kind": "value",
+     "required": true
+    },
+    {
+     "flags": [
+      "--state"
+     ],
+     "help": "State abbrev (e.g. TN)",
+     "kind": "value",
+     "required": true
+    },
+    {
+     "default": 25,
+     "flags": [
+      "--top"
+     ],
+     "help": "Number of buyers (default 25)",
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "flags": [
+      "--research"
+     ],
+     "help": "Enable web search + LLM for decision-maker research",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--output"
+     ],
+     "help": "Output Excel path",
+     "kind": "value"
+    },
+    {
+     "default": 2,
+     "flags": [
+      "--min-purchases"
+     ],
+     "help": "Minimum purchases to include (default 2)",
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "flags": [
+      "-v",
+      "--verbose"
+     ],
+     "help": "Verbose logging",
+     "kind": "switch"
+    }
+   ],
+   "class": "package",
+   "cli": "argparse",
+   "complete": true,
+   "needs": [
+    "ddgs"
+   ],
+   "paid": [
+    "Claude"
+   ],
+   "summary": "Top 25 Wholesale-Friendly Cash Buyer List Generator.",
+   "why": "imports ddgs, which the brain image does not install",
+   "writes": ""
+  },
+  "export_full_demo": {
+   "args": [],
+   "class": "runnable",
+   "cli": "none",
+   "complete": true,
+   "summary": "Export ALL scraped records from master CSV to a presentation-ready Excel workbook.",
+   "writes": ""
+  },
+  "export_tax_delinquency": {
+   "args": [
+    {
+     "flags": [
+      "argv"
+     ],
+     "kind": "positional",
+     "nargs": "?"
+    }
+   ],
+   "class": "runnable",
+   "cli": "argv",
+   "complete": false,
+   "summary": "Pull live Knox County tax-delinquency data for the properties in a Sift export.",
+   "writes": ""
+  },
+  "export_tax_full_amounts": {
+   "args": [
+    {
+     "flags": [
+      "argv"
+     ],
+     "kind": "positional",
+     "nargs": "?"
+    }
+   ],
+   "class": "runnable",
+   "cli": "argv",
+   "complete": false,
+   "summary": "Pull the FULL outstanding Knox County tax balance for properties in a Sift export.",
+   "writes": ""
+  },
+  "export_tax_sale_demo": {
+   "args": [],
+   "class": "runnable",
+   "cli": "none",
+   "complete": true,
+   "summary": "Export tax sale records from master CSV to a cleaned, presentation-ready Excel file.",
+   "writes": ""
+  },
+  "extract_market_finder": {
+   "args": [
+    {
+     "flags": [
+      "--state"
+     ],
+     "help": "State name (e.g., Tennessee)",
+     "kind": "value",
+     "required": true
+    },
+    {
+     "flags": [
+      "--county"
+     ],
+     "help": "County name(s), comma-separated (e.g., Knox or Knox,Blount)",
+     "kind": "value",
+     "required": true
+    },
+    {
+     "flags": [
+      "--headless"
+     ],
+     "help": "Run browser in headless mode",
+     "kind": "switch"
+    },
+    {
+     "default": "./output",
+     "flags": [
+      "--output-dir"
+     ],
+     "help": "Output directory for JSON files (default: ./output)",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "-v",
+      "--verbose"
+     ],
+     "help": "Verbose logging",
+     "kind": "switch"
+    },
+    {
+     "choices": [
+      "browser",
+      "api"
+     ],
+     "flags": [
+      "--source"
+     ],
+     "help": "browser (the default) or api (the published routes, on REISIFT_API_KEY)",
+     "kind": "value"
+    }
+   ],
+   "class": "wired",
+   "cli": "argparse",
+   "complete": true,
+   "paid_deeper": [
+    "Enformion",
+    "Firecrawl",
+    "OpenRouter",
+    "Serper",
+    "Tracerfy"
+   ],
+   "summary": "Extract Market Finder data from DataSift.ai, through the published API or the browser.",
+   "why": "runs inside market_report (Atlas)",
+   "workflows": [
+    "market_report"
+   ],
+   "writes": ""
+  },
+  "franklin_top30k": {
+   "args": [
+    {
+     "choices": "dynamic",
+     "flags": [
+      "--phase"
+     ],
+     "kind": "value",
+     "required": true
+    },
+    {
+     "flags": [
+      "--commit"
+     ],
+     "kind": "switch"
+    },
+    {
+     "choices": [
+      "auto",
+      "ai",
+      "lists"
+     ],
+     "default": "auto",
+     "flags": [
+      "--variant"
+     ],
+     "kind": "value"
+    },
+    {
+     "choices": [
+      "<email>",
+      "<email>"
+     ],
+     "default": "<email>",
+     "flags": [
+      "--target"
+     ],
+     "help": "account the pull writes into (pull/qa phases)",
+     "kind": "value"
+    },
+    {
+     "default": 800,
+     "flags": [
+      "--sample"
+     ],
+     "help": "owners to read (phones)",
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "default": 29,
+     "flags": [
+      "--seed"
+     ],
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "default": 6,
+     "flags": [
+      "--workers"
+     ],
+     "help": "score: Trestle threads",
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "default": 1440.0,
+     "flags": [
+      "--max-spend"
+     ],
+     "help": "score: refuse above this (Ty approved ~$1,237 all-paid)",
+     "kind": "value",
+     "type": "float"
+    },
+    {
+     "flags": [
+      "--allow-partial"
+     ],
+     "kind": "switch"
+    },
+    {
+     "default": 60,
+     "flags": [
+      "--readback"
+     ],
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "flags": [
+      "--offline"
+     ],
+     "help": "export: skip the live name pull (layout test)",
+     "kind": "switch"
+    }
+   ],
+   "class": "wired",
+   "cli": "argparse",
+   "complete": true,
+   "paid": [
+    "Trestle"
+   ],
+   "paid_deeper": [
+    "Enformion",
+    "Firecrawl",
+    "OpenRouter",
+    "Serper",
+    "Tracerfy"
+   ],
+   "summary": "Franklin County OH (39049): the top 30,000 records by Doors per Deal, into ty+1.",
+   "why": "runs inside list_pull (Atlas)",
+   "workflows": [
+    "list_pull"
+   ],
+   "write_flags": [
+    "--commit"
+   ],
+   "writes": "commit"
+  },
+  "ftm_budget": {
+   "args": [
+    {
+     "flags": [
+      "--selftest"
+     ],
+     "kind": "switch"
+    }
+   ],
+   "class": "runnable",
+   "cli": "argv",
+   "complete": false,
+   "summary": "A request budget for the first-to-market app's DataSift calls (build plan 0.14).",
+   "writes": ""
+  },
+  "ftm_deep_prospect_push": {
+   "args": [
+    {
+     "flags": [
+      "--commit"
+     ],
+     "kind": "switch"
+    },
+    {
+     "default": 0,
+     "flags": [
+      "--limit"
+     ],
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "flags": [
+      "--skip-phones"
+     ],
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--tag-all-owners"
+     ],
+     "help": "tier-tag the non-probate records in the same queue",
+     "kind": "switch"
+    }
+   ],
+   "class": "runnable",
+   "cli": "argparse",
+   "complete": true,
+   "paid_deeper": [
+    "Enformion",
+    "Firecrawl",
+    "OpenRouter",
+    "Serper",
+    "Tracerfy"
+   ],
+   "summary": "Push the FTM deep-prospecting v5 results into DataSift.",
+   "write_flags": [
+    "--commit",
+    "--tag-all-owners"
+   ],
+   "writes": "commit"
+  },
+  "ftm_feeds": {
+   "args": [
+    {
+     "flags": [
+      "argv"
+     ],
+     "kind": "positional",
+     "nargs": "?"
+    }
+   ],
+   "class": "runnable",
+   "cli": "argv",
+   "complete": false,
+   "summary": "Every first-to-market feed this pipeline knows, in one table (build plan 1.10, 1.12, 1.17).",
+   "writes": ""
+  },
+  "ftm_health": {
+   "args": [
+    {
+     "flags": [
+      "--days"
+     ],
+     "help": "History window (default )",
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "flags": [
+      "--post"
+     ],
+     "help": "Post the report to Slack",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--full"
+     ],
+     "help": "The detailed report (feeds, stages, source inventory) instead of the two-line daily summary",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--check"
+     ],
+     "help": "One line verdict, exit 1 if red. For the watchdog.",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--no-ledger-update"
+     ],
+     "help": "Report without recording today's records as seen",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--selftest"
+     ],
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--verbose",
+      "-v"
+     ],
+     "kind": "switch"
+    }
+   ],
+   "browser": [
+    "playwright"
+   ],
+   "class": "browser",
+   "cli": "argparse",
+   "complete": true,
+   "paid_deeper": [
+    "Enformion",
+    "Firecrawl",
+    "OpenRouter",
+    "Serper",
+    "Tracerfy"
+   ],
+   "summary": "Daily coverage audit and health digest for the first-to-market pull.",
+   "why": "drives a browser (playwright), and the brain has none",
+   "write_flags": [
+    "--post"
+   ],
+   "writes": "commit"
+  },
+  "ftm_runner": {
+   "args": [
+    {
+     "flags": [
+      "--commit"
+     ],
+     "help": "Actually write to DataSift and advance run state. Without it nothing is written anywhere.",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--stages"
+     ],
+     "help": "Comma-separated subset of:",
+     "kind": "value"
+    },
+    {
+     "choices": [
+      "daily",
+      "historical"
+     ],
+     "default": "daily",
+     "flags": [
+      "--mode"
+     ],
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--counties"
+     ],
+     "help": "e.g. \"Knox,Blount\"",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--types"
+     ],
+     "help": "e.g. \"foreclosure,probate\"",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--since"
+     ],
+     "help": "YYYY-MM-DD cutoff override",
+     "kind": "value"
+    },
+    {
+     "default": 0,
+     "flags": [
+      "--max-notices"
+     ],
+     "help": "Cost ceiling: stop after this many notices (0 = no limit)",
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "default": 0,
+     "flags": [
+      "--backfill-months"
+     ],
+     "help": "Backfill the last N months by running each saved search once per calendar month. Required to reach anything older than a few weeks: the site",
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "default": 30,
+     "flags": [
+      "--capture-days"
+     ],
+     "help": "how far back the eviction sweep looks. Retention is irregular, so a wider sweep sometimes recovers an older court date that is still up.",
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "default": 0,
+     "flags": [
+      "--backfill-offset"
+     ],
+     "help": "Shift the backfill window back M months. Use with --backfill-months 1 to run a single month at a time, so a long backfill is a series of sho",
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "flags": [
+      "--deep-heirs"
+     ],
+     "help": "Run obituary/heir resolution (billed per record)",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--no-upload"
+     ],
+     "help": "Scrape and write the CSV but never call DataSift",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--no-proxy"
+     ],
+     "help": "Use this machine's own IP (blocked from most networks)",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--doctor"
+     ],
+     "help": "Check credentials, egress and state dir, then exit",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--verbose",
+      "-v"
+     ],
+     "kind": "switch"
+    }
+   ],
+   "browser": [
+    "playwright",
+    "scraper"
+   ],
+   "class": "browser",
+   "cli": "argparse",
+   "complete": true,
+   "paid": [
+    "2Captcha",
+    "Scrapfly"
+   ],
+   "paid_deeper": [
+    "Claude",
+    "Enformion",
+    "Firecrawl",
+    "OpenRouter",
+    "Serper",
+    "Smarty",
+    "Tracerfy",
+    "Zillow (OpenWeb Ninja)"
+   ],
+   "summary": "Unattended first-to-market run: scrape -> enrich -> CSV -> DataSift -> Slack.",
+   "why": "drives a browser (playwright, scraper), and the brain has none",
+   "write_flags": [
+    "--commit"
+   ],
+   "writes": "commit"
+  },
+  "ftm_schedule": {
+   "args": [
+    {
+     "flags": [
+      "--once"
+     ],
+     "help": "Run immediately, then exit",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--health-once"
+     ],
+     "help": "Post the health digest immediately, then exit",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--next"
+     ],
+     "help": "Print the next 5 fire times and exit",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--verbose",
+      "-v"
+     ],
+     "kind": "switch"
+    }
+   ],
+   "browser": [
+    "playwright"
+   ],
+   "class": "browser",
+   "cli": "argparse",
+   "complete": true,
+   "paid": [
+    "2Captcha"
+   ],
+   "paid_deeper": [
+    "Claude",
+    "Enformion",
+    "Firecrawl",
+    "OpenRouter",
+    "Scrapfly",
+    "Serper",
+    "Smarty",
+    "Tracerfy",
+    "Zillow (OpenWeb Ninja)"
+   ],
+   "summary": "Long-running scheduler that fires the FTM run at a fixed local time.",
+   "why": "drives a browser (playwright), and the brain has none",
+   "write_flags": [
+    "--health-once",
+    "--once"
+   ],
+   "writes": "commit"
+  },
+  "heir_signing_workflow": {
+   "args": [],
+   "class": "runnable",
+   "cli": "none",
+   "complete": true,
+   "paid": [
+    "Enformion",
+    "Tracerfy",
+    "Trestle"
+   ],
+   "summary": "Cost-optimized heir + signing workflow for a deceased-owner property.",
+   "writes": ""
+  },
+  "knox_appointments": {
+   "args": [
+    {
+     "flags": [
+      "--scratch"
+     ],
+     "kind": "value"
+    },
+    {
+     "default": 0,
+     "flags": [
+      "--months"
+     ],
+     "kind": "value",
+     "type": "int"
+    }
+   ],
+   "browser": [
+    "playwright"
+   ],
+   "class": "browser",
+   "cli": "argparse",
+   "complete": true,
+   "paid_deeper": [
+    "Enformion",
+    "Firecrawl",
+    "OpenRouter",
+    "Serper",
+    "Tracerfy"
+   ],
+   "summary": "Substitute trustee appointments: the foreclosure signal that comes before the sale notice (build plan 1.9). Knox only: Blount has no online recorder.",
+   "why": "drives a browser (playwright), and the brain has none",
+   "writes": ""
+  },
+  "knox_blount_top15k": {
+   "args": [
+    {
+     "choices": [
+      "areas",
+      "count",
+      "sweep",
+      "suppress",
+      "pull",
+      "qa",
+      "report",
+      "harvest",
+      "export"
+     ],
+     "flags": [
+      "--phase"
+     ],
+     "kind": "value",
+     "required": true
+    },
+    {
+     "flags": [
+      "--commit"
+     ],
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--existing-only"
+     ],
+     "help": "harvest/export: only records already in ty+2 (no pull needed)",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--refresh"
+     ],
+     "help": "areas: re-collect from SiftMap instead of the cache",
+     "kind": "switch"
+    }
+   ],
+   "class": "wired",
+   "cli": "argparse",
+   "complete": true,
+   "paid_deeper": [
+    "Enformion",
+    "Firecrawl",
+    "OpenRouter",
+    "Serper",
+    "Tracerfy",
+    "Trestle"
+   ],
+   "summary": "Knox + Blount TN (47093, 47009): the top 15,000 records by Doors per Deal, into ty+2.",
+   "why": "runs inside list_pull (Atlas)",
+   "workflows": [
+    "list_pull"
+   ],
+   "write_flags": [
+    "--commit"
+   ],
+   "writes": "commit"
+  },
+  "knox_condemnations": {
+   "args": [
+    {
+     "flags": [
+      "--scratch"
+     ],
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--no-fetch"
+     ],
+     "help": "parse the newest archived snapshots, download nothing",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--out"
+     ],
+     "kind": "value"
+    }
+   ],
+   "class": "runnable",
+   "cli": "argparse",
+   "complete": true,
+   "paid": [
+    "Scrapfly"
+   ],
+   "summary": "Knox City condemnation docket: BBB blight certifications + Public Officer orders.",
+   "writes": ""
+  },
+  "knox_evictions": {
+   "args": [
+    {
+     "flags": [
+      "--scratch"
+     ],
+     "kind": "value"
+    },
+    {
+     "default": 30,
+     "flags": [
+      "--days"
+     ],
+     "help": "how far back to sweep; retention is irregular so a wider sweep occasionally recovers an older date",
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "flags": [
+      "--no-fetch"
+     ],
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--out"
+     ],
+     "kind": "value"
+    }
+   ],
+   "class": "runnable",
+   "cli": "argparse",
+   "complete": true,
+   "summary": "Knox County eviction (detainer) docket -> landlord leads.",
+   "writes": ""
+  },
+  "knox_ftm_pull": {
+   "args": [
+    {
+     "default": "output/knox_ftm_pull.csv",
+     "flags": [
+      "--out"
+     ],
+     "kind": "value"
+    },
+    {
+     "default": "output/knox_ftm_pull_rejected.csv",
+     "flags": [
+      "--rejects"
+     ],
+     "kind": "value"
+    },
+    {
+     "default": 1.0,
+     "flags": [
+      "--value-min"
+     ],
+     "kind": "value",
+     "type": "float"
+    },
+    {
+     "default": 700000.0,
+     "flags": [
+      "--value-max"
+     ],
+     "kind": "value",
+     "type": "float"
+    },
+    {
+     "flags": [
+      "--scratch"
+     ],
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--no-enrich"
+     ],
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--staged-feeds"
+     ],
+     "help": "comma list of staged feeds to include (substitute_trustee, tax_sale_report, code_violations); none by default",
+     "kind": "value"
+    }
+   ],
+   "browser": [
+    "playwright"
+   ],
+   "class": "browser",
+   "cli": "argparse",
+   "complete": true,
+   "paid_deeper": [
+    "Enformion",
+    "Firecrawl",
+    "OpenRouter",
+    "Serper",
+    "Tracerfy"
+   ],
+   "siftmap_reads": [
+    "autocomplete",
+    "get_detail"
+   ],
+   "summary": "Knox County first-to-market multi-source pull -> DataSift upload CSV.",
+   "why": "drives a browser (playwright), and the brain has none",
+   "writes": ""
+  },
+  "knox_lien_index": {
+   "args": [
+    {
+     "flags": [
+      "--scratch"
+     ],
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--merge"
+     ],
+     "help": "comma-separated folders holding earlier indexes",
+     "kind": "value"
+    }
+   ],
+   "class": "runnable",
+   "cli": "argparse",
+   "complete": true,
+   "summary": "Build the two lookups the Knox lien loader needs from raw Register of Deeds rows.",
+   "writes": ""
+  },
+  "knox_lien_releases": {
+   "args": [
+    {
+     "flags": [
+      "--scratch"
+     ],
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--reconcile"
+     ],
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--unlist-released"
+     ],
+     "help": "take fully released records off the Liens list",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--commit"
+     ],
+     "kind": "switch"
+    },
+    {
+     "default": 0,
+     "flags": [
+      "--limit"
+     ],
+     "kind": "value",
+     "type": "int"
+    }
+   ],
+   "class": "runnable",
+   "cli": "argparse",
+   "complete": true,
+   "paid_deeper": [
+    "Enformion",
+    "Firecrawl",
+    "OpenRouter",
+    "Serper",
+    "Tracerfy"
+   ],
+   "summary": "Keep DataSift's lien numbers true after a lien is RELEASED (Ty, 2026-11-11).",
+   "write_flags": [
+    "--commit",
+    "--reconcile",
+    "--unlist-released"
+   ],
+   "writes": "commit"
+  },
+  "knox_lien_resolve": {
+   "args": [
+    {
+     "default": ".",
+     "flags": [
+      "--scratch"
+     ],
+     "kind": "value"
+    },
+    {
+     "default": 500,
+     "flags": [
+      "--sample"
+     ],
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "flags": [
+      "--all"
+     ],
+     "kind": "switch"
+    },
+    {
+     "default": 5,
+     "flags": [
+      "--workers"
+     ],
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "default": "output/knox_lien_parcels.json",
+     "flags": [
+      "--out"
+     ],
+     "kind": "value"
+    }
+   ],
+   "class": "runnable",
+   "cli": "argparse",
+   "complete": true,
+   "summary": "Resolve Knox lien debtors to parcels.",
+   "writes": ""
+  },
+  "knox_liens_daily": {
+   "args": [
+    {
+     "flags": [
+      "--scratch"
+     ],
+     "kind": "value"
+    },
+    {
+     "default": 0,
+     "flags": [
+      "--months"
+     ],
+     "help": "0 = current month (plus the last one early in a month)",
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "flags": [
+      "--mark-uploaded"
+     ],
+     "help": "record the staged instruments as handled, without pulling",
+     "kind": "switch"
+    }
+   ],
+   "class": "runnable",
+   "cli": "argparse",
+   "complete": true,
+   "summary": "Daily Knox lien refresh: pull the recorder, find NEW debtors, match them to parcels.",
+   "write_flags": [
+    "--mark-uploaded"
+   ],
+   "writes": "commit"
+  },
+  "knox_rod": {
+   "args": [
+    {
+     "default": 1,
+     "flags": [
+      "--months"
+     ],
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "default": "LEN,STL",
+     "flags": [
+      "--types"
+     ],
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--out"
+     ],
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--scratch"
+     ],
+     "kind": "value"
+    },
+    {
+     "default": 2.0,
+     "flags": [
+      "--sleep"
+     ],
+     "kind": "value",
+     "type": "float"
+    }
+   ],
+   "browser": [
+    "playwright"
+   ],
+   "class": "browser",
+   "cli": "argparse",
+   "complete": true,
+   "summary": "Knox Register of Deeds bulk pull (paxsub.knoxrod.org).",
+   "why": "drives a browser (playwright), and the brain has none",
+   "writes": ""
+  },
+  "knox_tax_sale": {
+   "args": [
+    {
+     "flags": [
+      "--scratch"
+     ],
+     "kind": "value"
+    }
+   ],
+   "browser": [
+    "playwright"
+   ],
+   "class": "browser",
+   "cli": "argparse",
+   "complete": true,
+   "paid": [
+    "Scrapfly"
+   ],
+   "paid_deeper": [
+    "Enformion",
+    "Firecrawl",
+    "OpenRouter",
+    "Serper",
+    "Tracerfy"
+   ],
+   "summary": "The Knox County Trustee's tax sale documents (build plan 1.10). Knox only.",
+   "why": "drives a browser (playwright), and the brain has none",
+   "writes": ""
+  },
+  "land_market": {
+   "args": [
+    {
+     "choices": "dynamic",
+     "default": "all",
+     "flags": [
+      "--phase"
+     ],
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--counties"
+     ],
+     "help": "comma-separated county names (default: all 11)",
+     "kind": "value",
+     "type": "custom"
+    },
+    {
+     "flags": [
+      "--refresh"
+     ],
+     "help": "re-download cached public layers",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--skip-builder-land"
+     ],
+     "help": "buyers: reuse the region's analysis.json",
+     "kind": "switch"
+    }
+   ],
+   "class": "wired",
+   "cli": "argparse",
+   "complete": true,
+   "paid_deeper": [
+    "Enformion",
+    "Firecrawl",
+    "OpenRouter",
+    "Serper",
+    "Tracerfy"
+   ],
+   "summary": "Knoxville region land market: how much land there is, which of it is real, who buys it, how to market it.",
+   "why": "runs inside land_desk (Atlas)",
+   "workflows": [
+    "land_desk"
+   ],
+   "writes": ""
+  },
+  "lender_docs": {
+   "args": [
+    {
+     "flags": [
+      "--spec"
+     ],
+     "kind": "value",
+     "required": true
+    },
+    {
+     "flags": [
+      "--outdir"
+     ],
+     "kind": "value"
+    }
+   ],
+   "class": "wired",
+   "cli": "argparse",
+   "complete": true,
+   "summary": "The lender document set (build 1.0.42, 2026-08).",
+   "why": "runs inside lender_package (Roma)",
+   "workflows": [
+    "lender_package"
+   ],
+   "writes": ""
+  },
+  "lender_package": {
+   "args": [
+    {
+     "flags": [
+      "--spec"
+     ],
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--out"
+     ],
+     "kind": "value"
+    }
+   ],
+   "class": "wired",
+   "cli": "argparse",
+   "complete": true,
+   "summary": "The Private Lender Package (build 1.0.43, 2026-08).",
+   "why": "runs inside lender_package (Roma)",
+   "workflows": [
+    "lender_package"
+   ],
+   "writes": ""
+  },
+  "list_inventory": {
+   "args": [
+    {
+     "default": "47093",
+     "flags": [
+      "--fips"
+     ],
+     "help": "county FIPS (default Knox TN)",
+     "kind": "value"
+    },
+    {
+     "default": "output/list_inventory.json",
+     "flags": [
+      "--out"
+     ],
+     "kind": "value"
+    }
+   ],
+   "class": "runnable",
+   "cli": "argparse",
+   "complete": true,
+   "paid_deeper": [
+    "Enformion",
+    "Firecrawl",
+    "OpenRouter",
+    "Serper",
+    "Tracerfy"
+   ],
+   "summary": "Inventory the Ty+2 DataSift lists against the County List Playbook framework.",
+   "writes": ""
+  },
+  "list_inventory_report": {
+   "args": [],
+   "class": "runnable",
+   "cli": "none",
+   "complete": true,
+   "summary": "Render the County List Framework inventory for ty+2 as a branded workbook.",
+   "writes": ""
+  },
+  "lot_split_underwrite": {
+   "args": [],
+   "class": "runnable",
+   "cli": "none",
+   "complete": true,
+   "summary": "Ground-up development underwrite: demo the existing house, split the lot, build new spec homes, sell. Built for 306 N Morgan St, Friendsville TN -- the post-walkthrough exit engine only scores wholesa",
+   "writes": ""
+  },
+  "main": {
+   "args": [
+    {
+     "choices": [
+      "daily",
+      "historical",
+      "list-searches",
+      "pdf-import",
+      "photo-import",
+      "dropbox-watch",
+      "csv-import",
+      "phone-validate",
+      "manage-sold",
+      "manage-presets",
+      "comp",
+      "rehab",
+      "analyze-deal",
+      "market-analysis",
+      "buyer-prospect",
+      "deep-prospect",
+      "lead-manage",
+      "setup-sequences",
+      "niche-sequential",
+      "playbook"
+     ],
+     "flags": [
+      "mode"
+     ],
+     "help": "daily/historical = scrape notices; list-searches = dump the live saved-search dropdown labels; pdf-import/photo-import = import from files; ",
+     "kind": "positional"
+    },
+    {
+     "flags": [
+      "--counties"
+     ],
+     "help": "Comma-separated counties to scrape (e.g. \"Knox,Blount\" or \"all\")",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--types"
+     ],
+     "help": "Comma-separated notice types (e.g. \"foreclosure,probate\" or \"all\")",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--split"
+     ],
+     "help": "Output separate CSV files per notice type",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--since"
+     ],
+     "help": "Override date cutoff (YYYY-MM-DD). Overrides daily/historical mode logic.",
+     "kind": "value"
+    },
+    {
+     "default": 0,
+     "flags": [
+      "--max-notices"
+     ],
+     "help": "Stop after scraping this many notices (0 = no limit)",
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "flags": [
+      "--no-proxy"
+     ],
+     "help": "Scrape from this machine's own IP. Only works from an IP the site allows; most get 'not permitted to view public notices'.",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--verbose",
+      "-v"
+     ],
+     "help": "Enable debug logging",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--pdf-path"
+     ],
+     "help": "Path to scanned tax sale PDF (required for pdf-import mode)",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--pdf-county"
+     ],
+     "help": "County name for PDF import, e.g. \"Knox\" (required for pdf-import mode)",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--pdf-date"
+     ],
+     "help": "Date for PDF records (YYYY-MM-DD). Defaults to today.",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--regex-only"
+     ],
+     "help": "Skip LLM parsing and use regex only (pdf-import mode)",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--folder"
+     ],
+     "help": "Path to folder of phone photos (required for photo-import mode)",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--photo-county"
+     ],
+     "help": "County name for photo import, e.g. \"Knox\" (required for photo-import mode)",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--photo-type"
+     ],
+     "help": "Notice type for photo import, e.g. \"eviction\" (required for photo-import mode)",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--photo-date"
+     ],
+     "help": "Date for photo records (YYYY-MM-DD). Defaults to today.",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--no-perspective-correct"
+     ],
+     "help": "Skip perspective correction in photo preprocessing (photo-import mode)",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--poll-interval"
+     ],
+     "help": "Seconds between Dropbox polls (default: 900 = 15 min)",
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "flags": [
+      "--max-polls"
+     ],
+     "help": "Maximum number of poll cycles (default: infinite)",
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "flags": [
+      "--no-delete"
+     ],
+     "help": "Don't delete photos from Dropbox after processing",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--csv-path"
+     ],
+     "help": "Path to existing CSV file to re-enrich (required for csv-import mode)",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--csv-county"
+     ],
+     "help": "County name for CSV import, e.g. \"Knox\" (sets county for records missing it)",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--skip-smarty"
+     ],
+     "help": "Skip Smarty address standardization",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--skip-zillow"
+     ],
+     "help": "Skip Zillow property enrichment",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--skip-tax"
+     ],
+     "help": "Skip tax delinquency enrichment",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--skip-obituary"
+     ],
+     "help": "Skip obituary search for deceased owner detection",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--skip-ancestry"
+     ],
+     "help": "Skip Ancestry.com lookup (SSDI + obituary collection)",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--skip-geocode"
+     ],
+     "help": "Skip reverse geocode retry for failed Smarty lookups",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--skip-dm-address"
+     ],
+     "help": "Skip decision-maker mailing address lookup",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--skip-heir-verification"
+     ],
+     "help": "Skip heir alive/dead verification loop (still runs obituary search)",
+     "kind": "switch"
+    },
+    {
+     "default": 2,
+     "flags": [
+      "--max-heir-depth"
+     ],
+     "help": "Max recursion depth for heir verification (default: 2)",
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "flags": [
+      "--tracerfy-tier1"
+     ],
+     "help": "Use Tracerfy as primary DM address lookup ($0.02/record)",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--deep-heirs"
+     ],
+     "help": "Resolve deceased-owner heirs via Enformion Person Search (grounded relatives graph, ~$0.35/match) instead of obituary survivor parsing",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--skip-tracerfy"
+     ],
+     "help": "Skip Tracerfy batch skip trace (phones + emails) before DataSift upload",
+     "kind": "switch"
+    },
+    {
+     "choices": [
+      "anthropic",
+      "ollama",
+      "openrouter"
+     ],
+     "flags": [
+      "--llm-backend"
+     ],
+     "help": "LLM backend: 'anthropic' (Claude Haiku, paid) or 'ollama' (local, free)",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--research-entities"
+     ],
+     "help": "Research entity-owned properties to find the person behind LLCs/Corps (web search + LLM)",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--include-vacant"
+     ],
+     "help": "Keep vacant land parcels (default: filtered out). Use if your buy box includes land deals.",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--include-commercial"
+     ],
+     "help": "Keep commercial properties (default: filtered out). Use if your buy box includes commercial.",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--include-entities"
+     ],
+     "help": "Keep entity-owned records (LLC, Corp, etc.) without filtering. Default: removed unless --research-entities finds a person.",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--upload-datasift"
+     ],
+     "help": "Upload results to DataSift.ai via Playwright (requires DATASIFT_EMAIL/PASSWORD)",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--no-enrich"
+     ],
+     "help": "Skip DataSift property enrichment after upload",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--no-skip-trace"
+     ],
+     "help": "Skip DataSift skip trace after upload",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--notify-slack"
+     ],
+     "help": "Send run summary to Slack/Discord webhook (requires SLACK_WEBHOOK_URL)",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--audit-records"
+     ],
+     "help": "Audit DataSift for incomplete records (future: daily check via Playwright)",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--list-name"
+     ],
+     "help": "DataSift list name to export phones from (phone-validate mode)",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--preset-folder"
+     ],
+     "help": "DataSift preset folder to export phones from (phone-validate mode)",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--all-records"
+     ],
+     "help": "Export all DataSift records for phone validation (phone-validate mode)",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--estimate"
+     ],
+     "help": "Show phone validation cost estimate only, no API calls (phone-validate mode)",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--no-upload"
+     ],
+     "help": "Skip uploading phone tags back to DataSift (phone-validate mode)",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--custom-tiers"
+     ],
+     "help": "JSON custom tier boundaries, e.g. '{\"Hot\": [80,100], \"Cold\": [0,79]}' (phone-validate mode)",
+     "kind": "value"
+    },
+    {
+     "default": 10,
+     "flags": [
+      "--batch-size"
+     ],
+     "help": "Concurrent Trestle API requests per batch (phone-validate mode, default: 10)",
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "flags": [
+      "--add-litigator"
+     ],
+     "help": "Include litigator risk check in phone validation (phone-validate mode)",
+     "kind": "switch"
+    },
+    {
+     "default": 1,
+     "flags": [
+      "--months-back"
+     ],
+     "help": "Months of sales to pull from SiftMap (manage-sold mode, default: 1)",
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "default": 1000,
+     "flags": [
+      "--min-sale-price"
+     ],
+     "help": "Min sale price to exclude deed transfers (manage-sold mode, default: 1000)",
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "flags": [
+      "--sold-tag-date"
+     ],
+     "help": "Tag date in YYYY-MM format (manage-sold mode, default: current month)",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--discover"
+     ],
+     "help": "Discover and list all preset folders, presets, and sequences (manage-presets mode)",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--add-sold-exclusion"
+     ],
+     "help": "Update existing presets to exclude Sold status/tag (manage-presets mode)",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--create-sold-sequence"
+     ],
+     "help": "Create Sold Property Cleanup sequence (manage-presets mode)",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--preset-folders"
+     ],
+     "help": "Comma-separated preset folder names to target (manage-presets mode, default: all)",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--address"
+     ],
+     "help": "Property address (comp/rehab/analyze-deal modes)",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--city"
+     ],
+     "help": "Property city (comp/rehab/analyze-deal modes)",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--zip-code"
+     ],
+     "help": "Property ZIP code (comp/rehab/analyze-deal modes)",
+     "kind": "value"
+    },
+    {
+     "default": 0.5,
+     "flags": [
+      "--radius"
+     ],
+     "help": "Comp search radius in miles (comp mode, default: 0.5)",
+     "kind": "value",
+     "type": "float"
+    },
+    {
+     "default": 6,
+     "flags": [
+      "--months"
+     ],
+     "help": "Comp lookback months (comp mode, default: 6)",
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "choices": [
+      1,
+      2,
+      3,
+      4
+     ],
+     "default": 2,
+     "flags": [
+      "--tier"
+     ],
+     "help": "Finish tier 1-4 (rehab mode, default: 2)",
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "choices": [
+      "full",
+      "wholetail"
+     ],
+     "default": "full",
+     "flags": [
+      "--scope"
+     ],
+     "help": "Rehab scope (rehab mode, default: full)",
+     "kind": "value"
+    },
+    {
+     "default": "knoxville",
+     "flags": [
+      "--region"
+     ],
+     "help": "Regional pricing (rehab mode, default: knoxville)",
+     "kind": "value"
+    },
+    {
+     "default": 0,
+     "flags": [
+      "--sqft"
+     ],
+     "help": "Property sqft override (rehab mode)",
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "default": 0,
+     "flags": [
+      "--bedrooms"
+     ],
+     "help": "Bedrooms override (rehab mode)",
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "default": 0,
+     "flags": [
+      "--bathrooms"
+     ],
+     "help": "Bathrooms override (rehab mode)",
+     "kind": "value",
+     "type": "float"
+    },
+    {
+     "default": 0,
+     "flags": [
+      "--purchase-price"
+     ],
+     "help": "Purchase price (analyze-deal mode, default: auto-calculate MAO)",
+     "kind": "value",
+     "type": "float"
+    },
+    {
+     "choices": [
+      1,
+      2,
+      3,
+      4
+     ],
+     "default": 2,
+     "flags": [
+      "--rehab-tier"
+     ],
+     "help": "Rehab tier for deal analysis (default: 2)",
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "choices": [
+      "flip",
+      "wholesale",
+      "hold"
+     ],
+     "default": "flip",
+     "flags": [
+      "--exit-strategy"
+     ],
+     "help": "Exit strategy (analyze-deal mode, default: flip)",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--zip-codes"
+     ],
+     "help": "Comma-separated ZIP codes to analyze (market-analysis mode)",
+     "kind": "value"
+    },
+    {
+     "default": 5000,
+     "flags": [
+      "--monthly-budget"
+     ],
+     "help": "Monthly marketing budget for allocation (market-analysis mode)",
+     "kind": "value",
+     "type": "float"
+    },
+    {
+     "default": 2,
+     "flags": [
+      "--min-transactions"
+     ],
+     "help": "Min transactions to qualify as investor (buyer-prospect mode)",
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "choices": [
+      1,
+      2,
+      3,
+      4
+     ],
+     "default": 3,
+     "flags": [
+      "--depth"
+     ],
+     "help": "Research depth level 1-4 (deep-prospect mode, default: 3)",
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "choices": [
+      "qualify",
+      "report"
+     ],
+     "default": "qualify",
+     "flags": [
+      "--lead-action"
+     ],
+     "help": "Lead management action (lead-manage mode)",
+     "kind": "value"
+    },
+    {
+     "choices": [
+      "lead-management",
+      "acquisitions",
+      "transactions",
+      "deep-prospecting",
+      "default",
+      "all"
+     ],
+     "default": "all",
+     "flags": [
+      "--seq-folder"
+     ],
+     "help": "Sequence folder to create (setup-sequences mode)",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--dry-run"
+     ],
+     "help": "Preview changes without creating (setup-sequences/niche-sequential)",
+     "kind": "switch"
+    },
+    {
+     "choices": [
+      "sms",
+      "call",
+      "mail",
+      "dp"
+     ],
+     "default": "sms",
+     "flags": [
+      "--channel"
+     ],
+     "help": "Marketing channel (niche-sequential mode)",
+     "kind": "value"
+    },
+    {
+     "choices": [
+      1,
+      2,
+      3
+     ],
+     "default": 1,
+     "flags": [
+      "--day"
+     ],
+     "help": "Cycle day 1-3 (niche-sequential mode)",
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "choices": [
+      "execute",
+      "setup-presets",
+      "status"
+     ],
+     "default": "execute",
+     "flags": [
+      "--ns-action"
+     ],
+     "help": "Niche sequential action (niche-sequential mode)",
+     "kind": "value"
+    },
+    {
+     "choices": [
+      "wholesale",
+      "flip",
+      "hold",
+      "hybrid"
+     ],
+     "default": "wholesale",
+     "flags": [
+      "--blueprint"
+     ],
+     "help": "Investment blueprint (playbook mode)",
+     "kind": "value"
+    },
+    {
+     "default": "knoxville",
+     "flags": [
+      "--market"
+     ],
+     "help": "Target market (playbook mode)",
+     "kind": "value"
+    },
+    {
+     "default": 1,
+     "flags": [
+      "--team-size"
+     ],
+     "help": "Team size 1/2/5 (playbook mode)",
+     "kind": "value",
+     "type": "int"
+    }
+   ],
+   "browser": [
+    "datasift_core",
+    "datasift_uploader",
+    "playwright",
+    "scraper"
+   ],
+   "class": "browser",
+   "cli": "argparse",
+   "complete": true,
+   "dry_flags": [
+    "--dry-run"
+   ],
+   "paid": [
+    "2Captcha",
+    "OpenRouter",
+    "Tracerfy",
+    "Trestle",
+    "Zillow (OpenWeb Ninja)"
+   ],
+   "paid_deeper": [
+    "Claude",
+    "Enformion",
+    "Firecrawl",
+    "OpenAI",
+    "Serper",
+    "Smarty"
+   ],
+   "summary": "Entry point for SiftStack , full-stack REI operations platform.",
+   "why": "drives a browser (datasift_core, datasift_uploader, playwright, scraper), and the brain has none",
+   "write_flags": [
+    "--add-litigator",
+    "--add-sold-exclusion",
+    "--create-sold-sequence",
+    "--notify-slack",
+    "--upload-datasift"
+   ],
+   "writes": "commit"
+  },
+  "manual_login": {
+   "args": [],
+   "browser": [
+    "datasift_core"
+   ],
+   "class": "browser",
+   "cli": "none",
+   "complete": true,
+   "summary": "One-time interactive DataSift login -> saves a fresh session cookie for the wizard.",
+   "why": "drives a browser (datasift_core), and the brain has none",
+   "writes": ""
+  },
+  "market_analyzer": {
+   "args": [
+    {
+     "flags": [
+      "--compare"
+     ],
+     "help": "print the top ZIPs under both weight sets",
+     "kind": "switch"
+    },
+    {
+     "default": "Knox,Blount",
+     "flags": [
+      "--counties"
+     ],
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--market-finder"
+     ],
+     "help": "the Market Finder JSON with each ZIP's investor sales",
+     "kind": "value"
+    },
+    {
+     "default": 10,
+     "flags": [
+      "--top"
+     ],
+     "kind": "value",
+     "type": "int"
+    }
+   ],
+   "class": "wired",
+   "cli": "argparse",
+   "complete": true,
+   "summary": "Market analysis, zip code scoring, and Market Finder reports.",
+   "why": "runs inside market_report (Atlas)",
+   "workflows": [
+    "market_report"
+   ],
+   "writes": ""
+  },
+  "material_list": {
+   "args": [
+    {
+     "default": "158 Old State Rd",
+     "flags": [
+      "--address"
+     ],
+     "kind": "value"
+    },
+    {
+     "default": "37914",
+     "flags": [
+      "--zip"
+     ],
+     "kind": "value"
+    },
+    {
+     "default": 1946,
+     "flags": [
+      "--sqft"
+     ],
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "default": 3,
+     "flags": [
+      "--beds"
+     ],
+     "help": "FINISHED config",
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "default": 2.0,
+     "flags": [
+      "--baths"
+     ],
+     "help": "FINISHED config",
+     "kind": "value",
+     "type": "float"
+    },
+    {
+     "default": 1938,
+     "flags": [
+      "--year-built"
+     ],
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "choices": [
+      "158",
+      "sanland"
+     ],
+     "default": "158",
+     "flags": [
+      "--profile"
+     ],
+     "help": "Walk-driven line catalog to use",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--master"
+     ],
+     "help": "Build the property-agnostic master standardization list instead",
+     "kind": "switch"
+    },
+    {
+     "default": 11,
+     "flags": [
+      "--windows-done"
+     ],
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "default": 60,
+     "flags": [
+      "--drywall-done-pct"
+     ],
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "flags": [
+      "--cached"
+     ],
+     "help": "Reuse the saved pricing pull",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--lock"
+     ],
+     "help": "With --master: export the LOCKED data/ artifacts the rehab engine and rehab-estimator skill consume (explicit, dated act)",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--out"
+     ],
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "-v",
+      "--verbose"
+     ],
+     "kind": "switch"
+    }
+   ],
+   "class": "runnable",
+   "cli": "argparse",
+   "complete": true,
+   "paid": [
+    "SerpApi"
+   ],
+   "summary": "Full tier 1/2/3 material list for a rehab, priced live from Home Depot.",
+   "write_flags": [
+    "--lock"
+   ],
+   "writes": "commit"
+  },
+  "mms_inbox_snapshot": {
+   "args": [],
+   "browser": [
+    "datasift_core",
+    "playwright"
+   ],
+   "class": "browser",
+   "cli": "none",
+   "complete": true,
+   "paid": [
+    "smrtPhone"
+   ],
+   "summary": "Read-only SmrtPhone inbox snapshot - see how the foreclosure MMS threads are doing (which homeowners replied, what the list looks like). Loads the saved session, dismisses the mic modal, screenshots t",
+   "why": "drives a browser (datasift_core, playwright), and the brain has none",
+   "writes": ""
+  },
+  "mms_sender": {
+   "args": [
+    {
+     "flags": [
+      "--plan"
+     ],
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--commit"
+     ],
+     "help": "actually click Send (default: dry, stop before send)",
+     "kind": "switch"
+    },
+    {
+     "default": 0,
+     "flags": [
+      "--limit"
+     ],
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "flags": [
+      "--to"
+     ],
+     "help": "override recipient (send ALL selected rows to THIS number - for a self-test)",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--headed"
+     ],
+     "kind": "switch"
+    },
+    {
+     "default": 45,
+     "flags": [
+      "--spacing-min"
+     ],
+     "help": "min seconds between sends (anti-burst)",
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "default": 90,
+     "flags": [
+      "--spacing-max"
+     ],
+     "help": "max seconds between sends",
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "default": 8,
+     "flags": [
+      "--window-start"
+     ],
+     "help": "quiet-hours: earliest recipient-local send hour",
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "default": 21,
+     "flags": [
+      "--window-end"
+     ],
+     "help": "quiet-hours: latest recipient-local send hour (21=9pm)",
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "flags": [
+      "--no-window"
+     ],
+     "help": "disable the quiet-hours guard (testing/self-test only)",
+     "kind": "switch"
+    }
+   ],
+   "browser": [
+    "datasift_core",
+    "playwright"
+   ],
+   "class": "browser",
+   "cli": "argparse",
+   "complete": true,
+   "paid": [
+    "smrtPhone"
+   ],
+   "summary": "Route B MMS sender: drives the smrtPhone web-app Inbox to text each foreclosure homeowner their auction-notice screenshot + the personalized message.",
+   "why": "drives a browser (datasift_core, playwright), and the brain has none",
+   "write_flags": [
+    "--commit"
+   ],
+   "writes": "commit"
+  },
+  "obituary_campaign": {
+   "args": [
+    {
+     "flags": [
+      "--cache"
+     ],
+     "kind": "value"
+    },
+    {
+     "default": "output/dp/ranked_records.json",
+     "flags": [
+      "--ranked"
+     ],
+     "kind": "value"
+    },
+    {
+     "default": "output/dp/stage_c_research.json",
+     "flags": [
+      "--research"
+     ],
+     "kind": "value"
+    },
+    {
+     "default": 60,
+     "flags": [
+      "--top"
+     ],
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "default": "output/Obituary_Campaign.xlsx",
+     "flags": [
+      "--out"
+     ],
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--validate"
+     ],
+     "help": "Smarty-validate every address",
+     "kind": "switch"
+    }
+   ],
+   "class": "runnable",
+   "cli": "argparse",
+   "complete": true,
+   "paid": [
+    "Smarty"
+   ],
+   "summary": "Consolidate the obituary run into one mail campaign: who we mail, and why.",
+   "writes": ""
+  },
+  "obituary_crm_plan": {
+   "args": [
+    {
+     "flags": [
+      "--cache"
+     ],
+     "kind": "value"
+    },
+    {
+     "default": "output/dp/ranked_records.json",
+     "flags": [
+      "--ranked"
+     ],
+     "kind": "value"
+    },
+    {
+     "default": "output/dp/stage_c_research.json",
+     "flags": [
+      "--research"
+     ],
+     "kind": "value"
+    },
+    {
+     "default": 60,
+     "flags": [
+      "--top"
+     ],
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "choices": [
+      "Adriana",
+      "Tinaa"
+     ],
+     "default": "Adriana",
+     "flags": [
+      "--sender"
+     ],
+     "kind": "value"
+    },
+    {
+     "default": "output/dp",
+     "flags": [
+      "--outdir"
+     ],
+     "kind": "value"
+    }
+   ],
+   "class": "runnable",
+   "cli": "argparse",
+   "complete": true,
+   "paid_deeper": [
+    "Smarty"
+   ],
+   "summary": "Plan every CRM write for the obituary deep-prospecting cohort. Reads only.",
+   "writes": ""
+  },
+  "obituary_crm_push": {
+   "args": [
+    {
+     "choices": [
+      "preflight",
+      "csv",
+      "assign",
+      "tags",
+      "fields",
+      "notes",
+      "cards",
+      "audit",
+      "all"
+     ],
+     "default": "csv",
+     "flags": [
+      "--phase"
+     ],
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--plan"
+     ],
+     "kind": "value"
+    },
+    {
+     "default": 0,
+     "flags": [
+      "--limit"
+     ],
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "flags": [
+      "--commit"
+     ],
+     "kind": "switch"
+    },
+    {
+     "default": 0.5,
+     "flags": [
+      "--sleep"
+     ],
+     "kind": "value",
+     "type": "float"
+    }
+   ],
+   "class": "runnable",
+   "cli": "argparse",
+   "complete": true,
+   "paid_deeper": [
+    "Enformion",
+    "Firecrawl",
+    "OpenRouter",
+    "Serper",
+    "Smarty",
+    "Tracerfy"
+   ],
+   "summary": "Stage and push the obituary deep-prospecting cohort into ty+2.",
+   "write_flags": [
+    "--commit"
+   ],
+   "writes": "commit"
+  },
+  "obituary_dp_input": {
+   "args": [
+    {
+     "flags": [
+      "--cache"
+     ],
+     "kind": "value"
+    },
+    {
+     "default": 60,
+     "flags": [
+      "--top"
+     ],
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "default": 3,
+     "flags": [
+      "--min-months"
+     ],
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "flags": [
+      "--today"
+     ],
+     "kind": "value"
+    },
+    {
+     "default": "output/dp",
+     "flags": [
+      "--outdir"
+     ],
+     "kind": "value"
+    }
+   ],
+   "class": "runnable",
+   "cli": "argparse",
+   "complete": true,
+   "summary": "Stage A input builder for the obituary deep-prospecting run.",
+   "writes": ""
+  },
+  "obituary_dp_run": {
+   "args": [
+    {
+     "flags": [
+      "--smartskip"
+     ],
+     "help": "SmartSkip export CSV (vertical or horizontal)",
+     "kind": "value",
+     "required": true
+    },
+    {
+     "default": "output/dp",
+     "flags": [
+      "--outdir"
+     ],
+     "kind": "value"
+    },
+    {
+     "default": 4,
+     "flags": [
+      "--max-dms"
+     ],
+     "help": "cap on FALLBACK generic relatives when no family is labelled",
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "default": 45.0,
+     "flags": [
+      "--min-score"
+     ],
+     "help": "minimum DM score to keep (default 45)",
+     "kind": "value",
+     "type": "float"
+    },
+    {
+     "flags": [
+      "--rank-only"
+     ],
+     "help": "stage B only, spend nothing",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--tracerfy"
+     ],
+     "help": "stage D gap-fill, $0.02 per DM traced",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--trestle"
+     ],
+     "help": "stage E scoring, $0.015 per number",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--litigator"
+     ],
+     "help": "add Trestle litigator checks",
+     "kind": "switch"
+    }
+   ],
+   "class": "runnable",
+   "cli": "argparse",
+   "complete": true,
+   "paid": [
+    "SmartSkip",
+    "Tracerfy",
+    "Trestle"
+   ],
+   "summary": "Stages B to E of the obituary deep-prospecting v5 run.",
+   "writes": ""
+  },
+  "obituary_experiment": {
+   "args": [
+    {
+     "flags": [
+      "--test-set"
+     ],
+     "help": "Path to ground truth JSON",
+     "kind": "value",
+     "required": true
+    },
+    {
+     "default": 0,
+     "flags": [
+      "--sample"
+     ],
+     "help": "Run on a random sample of N records (0 = all)",
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "flags": [
+      "--append-results"
+     ],
+     "help": "Append metrics to results.tsv",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--description"
+     ],
+     "help": "Experiment description for results.tsv",
+     "kind": "value"
+    },
+    {
+     "default": 2,
+     "flags": [
+      "--max-heir-depth"
+     ],
+     "help": "Max heir verification depth",
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "flags": [
+      "--skip-heir-verification"
+     ],
+     "help": "Skip heir verification (Phase B only)",
+     "kind": "switch"
+    },
+    {
+     "choices": [
+      "anthropic",
+      "ollama",
+      "openrouter"
+     ],
+     "flags": [
+      "--llm-backend"
+     ],
+     "help": "LLM backend: 'anthropic' (Claude Haiku), 'ollama' (local), or 'openrouter' (cheap cloud)",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--skip-ancestry"
+     ],
+     "help": "Skip Ancestry.com fallback (test Haiku-only baseline)",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "-v",
+      "--verbose"
+     ],
+     "kind": "switch"
+    }
+   ],
+   "class": "retired",
+   "cli": "argparse",
+   "complete": true,
+   "paid": [
+    "Firecrawl",
+    "OpenRouter",
+    "Serper",
+    "Tracerfy"
+   ],
+   "paid_deeper": [
+    "Claude",
+    "Enformion",
+    "OpenAI"
+   ],
+   "replacement": "",
+   "summary": "Autoresearch-style experiment harness for obituary enrichment quality.",
+   "why": "an experiment harness from April 2026",
+   "writes": ""
+  },
+  "obituary_mail_clean": {
+   "args": [
+    {
+     "default": "output/Obituary_Mail_Campaign.csv",
+     "flags": [
+      "--src"
+     ],
+     "kind": "value"
+    },
+    {
+     "default": "output/Obituary_Heirs_Mail_List.csv",
+     "flags": [
+      "--out"
+     ],
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--heirs-only"
+     ],
+     "help": "drop the living-owner rows, mail only relatives",
+     "kind": "switch"
+    }
+   ],
+   "class": "runnable",
+   "cli": "argparse",
+   "complete": true,
+   "summary": "Clean SmartSkip Campaign-format mail file for the obituary heirs.",
+   "writes": ""
+  },
+  "obituary_mail_export": {
+   "args": [
+    {
+     "default": "output/dp/smartskip_vertical.csv",
+     "flags": [
+      "--vertical"
+     ],
+     "kind": "value"
+    },
+    {
+     "default": "output/dp/mail_roster_final.csv",
+     "flags": [
+      "--roster"
+     ],
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--cache"
+     ],
+     "kind": "value"
+    },
+    {
+     "default": 60,
+     "flags": [
+      "--top"
+     ],
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "default": "output/Obituary_Mail_Campaign.csv",
+     "flags": [
+      "--out"
+     ],
+     "kind": "value"
+    }
+   ],
+   "class": "runnable",
+   "cli": "argparse",
+   "complete": true,
+   "paid_deeper": [
+    "Smarty"
+   ],
+   "summary": "Emit the obituary mail list in SmartSkip Campaign (vertical) format.",
+   "writes": ""
+  },
+  "obituary_mail_validate": {
+   "args": [
+    {
+     "default": "output/dp/ranked_records.json",
+     "flags": [
+      "--ranked"
+     ],
+     "kind": "value"
+    },
+    {
+     "default": "output/dp",
+     "flags": [
+      "--outdir"
+     ],
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--include-channels"
+     ],
+     "help": "also validate in-law and generic relative addresses",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--commit"
+     ],
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--dry-run"
+     ],
+     "kind": "switch"
+    }
+   ],
+   "class": "runnable",
+   "cli": "argparse",
+   "complete": true,
+   "dry_flags": [
+    "--dry-run"
+   ],
+   "paid": [
+    "Smarty"
+   ],
+   "summary": "Validate every mailing address on the obituary deep-prospecting mail list.",
+   "write_flags": [
+    "--commit"
+   ],
+   "writes": "commit"
+  },
+  "obituary_opportunity": {
+   "args": [
+    {
+     "flags": [
+      "--pull"
+     ],
+     "help": "refresh the cache from the API first",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--account"
+     ],
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--cache"
+     ],
+     "kind": "value"
+    },
+    {
+     "default": "Obituary_Opportunities.xlsx",
+     "flags": [
+      "--out"
+     ],
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--min-months"
+     ],
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "default": 50,
+     "flags": [
+      "--top"
+     ],
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "default": 0.75,
+     "flags": [
+      "--mail-cost"
+     ],
+     "help": "cost per mail piece",
+     "kind": "value",
+     "type": "float"
+    },
+    {
+     "default": 6,
+     "flags": [
+      "--touches"
+     ],
+     "help": "mail touches per record",
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "flags": [
+      "--today"
+     ],
+     "help": "override the run date, YYYY-MM-DD",
+     "kind": "value"
+    }
+   ],
+   "class": "wired",
+   "cli": "argparse",
+   "complete": true,
+   "summary": "Obituary opportunity ranking for a DataSift/reisift account (built for ty+2).",
+   "why": "runs inside idle_records (Atlas)",
+   "workflows": [
+    "idle_records"
+   ],
+   "writes": ""
+  },
+  "obituary_owner_phones": {
+   "args": [
+    {
+     "flags": [
+      "--cache"
+     ],
+     "kind": "value"
+    },
+    {
+     "default": 60,
+     "flags": [
+      "--top"
+     ],
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "default": 3,
+     "flags": [
+      "--min-months"
+     ],
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "default": "output/dp",
+     "flags": [
+      "--outdir"
+     ],
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--commit"
+     ],
+     "help": "actually call Trestle",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--dry-run"
+     ],
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--paid"
+     ],
+     "help": "use the paid key instead of the free tier",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--rescore-all"
+     ],
+     "help": "also rescore numbers that already carry a CRM tier tag",
+     "kind": "switch"
+    }
+   ],
+   "class": "runnable",
+   "cli": "argparse",
+   "complete": true,
+   "dry_flags": [
+    "--dry-run"
+   ],
+   "free_dry_run": "without --commit it reads the local cache, counts the numbers it would score and returns before the first Trestle call (read 2026-11-13)",
+   "paid": [
+    "Trestle"
+   ],
+   "summary": "Score the owner phone numbers already sitting on the top obituary records.",
+   "write_flags": [
+    "--commit"
+   ],
+   "writes": "commit"
+  },
+  "obituary_presets": {
+   "args": [
+    {
+     "flags": [
+      "--commit"
+     ],
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--dry"
+     ],
+     "kind": "switch"
+    }
+   ],
+   "class": "runnable",
+   "cli": "argparse",
+   "complete": true,
+   "dry_flags": [
+    "--dry"
+   ],
+   "summary": "Add the staged Obituary call and mail presets to folder 11 on ty+2.",
+   "write_flags": [
+    "--commit"
+   ],
+   "writes": "commit"
+  },
+  "offer_sheet": {
+   "args": [
+    {
+     "flags": [
+      "--pack"
+     ],
+     "help": "post_walkthrough --save-pack JSON",
+     "kind": "value",
+     "required": true
+    },
+    {
+     "flags": [
+      "--walk"
+     ],
+     "help": "walkthrough JSON (defaults to the one in the pack)",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--out"
+     ],
+     "help": "output .xlsx",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--rule"
+     ],
+     "kind": "value",
+     "type": "float"
+    },
+    {
+     "flags": [
+      "--fee"
+     ],
+     "kind": "value",
+     "type": "float"
+    },
+    {
+     "flags": [
+      "--hold"
+     ],
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "default": 0,
+     "flags": [
+      "--arv"
+     ],
+     "kind": "value",
+     "type": "float"
+    },
+    {
+     "default": 0,
+     "flags": [
+      "--as-is"
+     ],
+     "kind": "value",
+     "type": "float"
+    },
+    {
+     "default": 0.0039,
+     "flags": [
+      "--tax-rate"
+     ],
+     "kind": "value",
+     "type": "float"
+    },
+    {
+     "flags": [
+      "--insurance"
+     ],
+     "kind": "value",
+     "type": "float"
+    },
+    {
+     "flags": [
+      "--utilities"
+     ],
+     "kind": "value",
+     "type": "float"
+    },
+    {
+     "flags": [
+      "--escrow-buy"
+     ],
+     "kind": "value",
+     "type": "float"
+    },
+    {
+     "flags": [
+      "--title-pct"
+     ],
+     "kind": "value",
+     "type": "float"
+    },
+    {
+     "flags": [
+      "--escrow-sell"
+     ],
+     "kind": "value",
+     "type": "float"
+    },
+    {
+     "flags": [
+      "--realtor-pct"
+     ],
+     "kind": "value",
+     "type": "float"
+    },
+    {
+     "flags": [
+      "--transfer-pct"
+     ],
+     "kind": "value",
+     "type": "float"
+    },
+    {
+     "default": 0,
+     "flags": [
+      "--lot-value"
+     ],
+     "help": "vacant lot value for the tear-down floor (else walk, pack, or land comps)",
+     "kind": "value",
+     "type": "float"
+    },
+    {
+     "default": 0,
+     "flags": [
+      "--demo"
+     ],
+     "help": "demolition cost for the tear-down floor (default )",
+     "kind": "value",
+     "type": "float"
+    },
+    {
+     "flags": [
+      "--prepared"
+     ],
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--offer-only"
+     ],
+     "help": "Render just the Offer page, no backup tabs",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "-v",
+      "--verbose"
+     ],
+     "kind": "switch"
+    }
+   ],
+   "class": "wired",
+   "cli": "argparse",
+   "complete": true,
+   "paid": [
+    "Zillow (OpenWeb Ninja)"
+   ],
+   "summary": "One-page wholesale offer sheet, laid out like the Fortune Builders analyzer.",
+   "why": "runs inside offer_sheet (Roma), underwrite (Roma)",
+   "workflows": [
+    "offer_sheet",
+    "underwrite"
+   ],
+   "writes": ""
+  },
+  "post_walkthrough": {
+   "args": [
+    {
+     "flags": [
+      "--address"
+     ],
+     "help": "Subject street address",
+     "kind": "value"
+    },
+    {
+     "default": "Knoxville",
+     "flags": [
+      "--city"
+     ],
+     "kind": "value"
+    },
+    {
+     "default": "TN",
+     "flags": [
+      "--state"
+     ],
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--zip"
+     ],
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--beds"
+     ],
+     "help": "County card override (beats Zillow and Sift)",
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "flags": [
+      "--baths"
+     ],
+     "kind": "value",
+     "type": "float"
+    },
+    {
+     "flags": [
+      "--sqft"
+     ],
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "flags": [
+      "--year-built"
+     ],
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "default": 18,
+     "flags": [
+      "--months"
+     ],
+     "help": "Sold comp lookback (default 18)",
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "flags": [
+      "--bbox"
+     ],
+     "help": "lat_min,lat_max,lon_min,lon_max boundary box",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--polygon"
+     ],
+     "help": "Drawn boundary: 'lat,lon lat,lon ...' or a JSON file of [lat, lon] pairs. Beats a bbox: the pocket is roads, not a box",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--streets"
+     ],
+     "help": "Regex of in-boundary street names",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--sold-json"
+     ],
+     "help": "Re-use a saved /search sold pull instead of a new API pull",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--walkthrough"
+     ],
+     "help": "Walkthrough findings JSON (see --walkthrough-template)",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--buyers"
+     ],
+     "help": "buyer_sweep .json/.csv output",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--outreach"
+     ],
+     "help": "dispo_skiptrace .json output",
+     "kind": "value"
+    },
+    {
+     "default": 25,
+     "flags": [
+      "--max-buyers"
+     ],
+     "help": "Buyer Targets rows, best deal-fit first (default 25, 0 = all)",
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "flags": [
+      "--spec"
+     ],
+     "help": "Saved pack JSON (re-render without new API pulls)",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--soft-pct"
+     ],
+     "help": "Permits + contingency rate (default )",
+     "kind": "value",
+     "type": "float"
+    },
+    {
+     "flags": [
+      "--no-sift"
+     ],
+     "help": "Skip the live CRM lookup",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--record"
+     ],
+     "help": "The Sift record uuid (else the record is found by street line)",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--deal-room-clients"
+     ],
+     "help": "Deal Room client checkout folder for the dossier lead pull (or ); unset, the lead is read over the Open API key",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--sift-account"
+     ],
+     "help": "Deal Room auth account for the dossier pull (default )",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--no-api"
+     ],
+     "help": "Skip Zillow property details",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--save-pack"
+     ],
+     "help": "Write the assembled pack JSON here",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--out"
+     ],
+     "help": "Output .xlsx path",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--walkthrough-template"
+     ],
+     "help": "Write walkthrough_template.json and exit",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "-v",
+      "--verbose"
+     ],
+     "kind": "switch"
+    }
+   ],
+   "class": "wired",
+   "cli": "argparse",
+   "complete": true,
+   "paid": [
+    "Zillow (OpenWeb Ninja)"
+   ],
+   "siftmap_reads": [
+    "get_detail"
+   ],
+   "summary": "Post-walkthrough deal package: the one workbook you build the hour after you walk a house.",
+   "why": "runs inside quick_screen (Roma), underwrite (Roma)",
+   "workflows": [
+    "quick_screen",
+    "underwrite"
+   ],
+   "writes": ""
+  },
+  "priority_tags": {
+   "args": [
+    {
+     "flags": [
+      "--commit"
+     ],
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--dry"
+     ],
+     "kind": "switch"
+    },
+    {
+     "default": "datasift-apikey",
+     "flags": [
+      "--account"
+     ],
+     "kind": "value"
+    }
+   ],
+   "class": "runnable",
+   "cli": "argparse",
+   "complete": true,
+   "dry_flags": [
+    "--dry"
+   ],
+   "summary": "Incremental Priority 1 / Priority 2 tag stamping for ty+2 (Doors per Deal).",
+   "write_flags": [
+    "--commit"
+   ],
+   "writes": "commit"
+  },
+  "probate_audit_restore": {
+   "args": [
+    {
+     "default": "output/all_records.json",
+     "flags": [
+      "--records"
+     ],
+     "help": "every backfilled record (address + our fields)",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--audit"
+     ],
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--restore-prs"
+     ],
+     "help": "re-post the PR wherever enrichment overwrote it",
+     "kind": "switch"
+    },
+    {
+     "default": "output/enriched_audit.json",
+     "flags": [
+      "--out"
+     ],
+     "kind": "value"
+    },
+    {
+     "default": 0.25,
+     "flags": [
+      "--sleep"
+     ],
+     "kind": "value",
+     "type": "float"
+    },
+    {
+     "default": 0,
+     "flags": [
+      "--limit"
+     ],
+     "kind": "value",
+     "type": "int"
+    }
+   ],
+   "class": "retired",
+   "cli": "argparse",
+   "complete": true,
+   "paid_deeper": [
+    "Enformion",
+    "Firecrawl",
+    "OpenRouter",
+    "Serper",
+    "Tracerfy"
+   ],
+   "replacement": "",
+   "summary": "Audit every backfilled record, restore PR contacts, and score the buy box.",
+   "why": "a one-off audit and repair of the August probate backfill",
+   "write_flags": [
+    "--restore-prs"
+   ],
+   "writes": "commit"
+  },
+  "probate_pr_note": {
+   "args": [
+    {
+     "default": "output/pr_targets.json",
+     "flags": [
+      "--targets"
+     ],
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--commit"
+     ],
+     "kind": "switch"
+    },
+    {
+     "default": 0,
+     "flags": [
+      "--limit"
+     ],
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "default": 0,
+     "flags": [
+      "--start"
+     ],
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "default": 0.5,
+     "flags": [
+      "--sleep"
+     ],
+     "help": "/api/internal throttles hard; keep this at or above 0.4",
+     "kind": "value",
+     "type": "float"
+    },
+    {
+     "default": "output/pr_note_done.json",
+     "flags": [
+      "--state"
+     ],
+     "help": "records already noted, so a re-run resumes",
+     "kind": "value"
+    }
+   ],
+   "class": "runnable",
+   "cli": "argparse",
+   "complete": true,
+   "paid_deeper": [
+    "Enformion",
+    "Firecrawl",
+    "OpenRouter",
+    "Serper",
+    "Tracerfy"
+   ],
+   "summary": "Post a pinned message-board note on probate records that name a PR.",
+   "write_flags": [
+    "--commit"
+   ],
+   "writes": "commit"
+  },
+  "proxy_resolver": {
+   "args": [],
+   "class": "runnable",
+   "cli": "none",
+   "complete": true,
+   "summary": "Resolve the egress proxy the notice scrape runs through.",
+   "writes": ""
+  },
+  "pull_by_ids": {
+   "args": [
+    {
+     "flags": [
+      "--ids"
+     ],
+     "help": "JSON list of rows carrying dataflik_id",
+     "kind": "value",
+     "required": true
+    },
+    {
+     "flags": [
+      "--list"
+     ],
+     "help": "DataSift list the records go on",
+     "kind": "value",
+     "required": true
+    },
+    {
+     "flags": [
+      "--tag"
+     ],
+     "help": "tag to add (default: the list name)",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--target"
+     ],
+     "help": "allowlisted account email, token in REISIFT_TARGET_JWT_FILE",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--key-env"
+     ],
+     "help": "env var holding another account's Open API key (default: ty+2)",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--expect-email"
+     ],
+     "help": "with --key-env: the email of the user the key belongs to; writes refuse otherwise",
+     "kind": "value"
+    },
+    {
+     "choices": [
+      "pull",
+      "qa",
+      "skiptrace",
+      "phones"
+     ],
+     "default": "pull",
+     "flags": [
+      "--phase"
+     ],
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--commit"
+     ],
+     "help": "pull: write to the account (dry by default)",
+     "kind": "switch"
+    },
+    {
+     "choices": [
+      "add",
+      "attach"
+     ],
+     "default": "add",
+     "flags": [
+      "--existing"
+     ],
+     "help": "how ids that are already records get the list",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--probe-only"
+     ],
+     "help": "pull: land and read back one new id, then stop",
+     "kind": "switch"
+    },
+    {
+     "default": 250,
+     "flags": [
+      "--chunk"
+     ],
+     "help": "ids per add call",
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "default": 5.0,
+     "flags": [
+      "--probe-wait"
+     ],
+     "help": "minutes to wait for the probe id",
+     "kind": "value",
+     "type": "float"
+    },
+    {
+     "default": 15.0,
+     "flags": [
+      "--wait-min"
+     ],
+     "help": "minutes to wait for the batch to land",
+     "kind": "value",
+     "type": "float"
+    }
+   ],
+   "class": "wired",
+   "cli": "argparse",
+   "complete": true,
+   "paid": [
+    "Trestle"
+   ],
+   "paid_deeper": [
+    "Enformion",
+    "Firecrawl",
+    "OpenRouter",
+    "Serper",
+    "Tracerfy"
+   ],
+   "summary": "Pull property ids into a DataSift account so its own unlimited skip trace runs, then read the phones back.",
+   "why": "runs inside list_pull (Atlas)",
+   "workflows": [
+    "list_pull"
+   ],
+   "write_flags": [
+    "--commit"
+   ],
+   "writes": "commit"
+  },
+  "repair_pr_owners": {
+   "args": [
+    {
+     "default": "output/mailing_map.json",
+     "flags": [
+      "--mailing"
+     ],
+     "kind": "value"
+    },
+    {
+     "default": "output/enriched_audit.json",
+     "flags": [
+      "--audit"
+     ],
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--commit"
+     ],
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--dry-run"
+     ],
+     "kind": "switch"
+    },
+    {
+     "default": 0.4,
+     "flags": [
+      "--sleep"
+     ],
+     "kind": "value",
+     "type": "float"
+    }
+   ],
+   "class": "retired",
+   "cli": "argparse",
+   "complete": true,
+   "dry_flags": [
+    "--dry-run"
+   ],
+   "paid_deeper": [
+    "Enformion",
+    "Firecrawl",
+    "OpenRouter",
+    "Serper",
+    "Tracerfy"
+   ],
+   "replacement": "",
+   "summary": "Repair the owner on records where it is not the personal representative.",
+   "why": "a one-off repair of the owner on the August probate backfill",
+   "write_flags": [
+    "--commit"
+   ],
+   "writes": "commit"
+  },
+  "restore_priority1": {
+   "args": [
+    {
+     "flags": [
+      "--commit"
+     ],
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--dry"
+     ],
+     "kind": "switch"
+    },
+    {
+     "default": "datasift-apikey",
+     "flags": [
+      "--account"
+     ],
+     "kind": "value"
+    }
+   ],
+   "class": "retired",
+   "cli": "argparse",
+   "complete": true,
+   "dry_flags": [
+    "--dry"
+   ],
+   "replacement": "",
+   "summary": "Restore the 'Priority 1' tag after it was stripped account-wide.",
+   "why": "a one-off repair after a tag was stripped account-wide",
+   "write_flags": [
+    "--commit"
+   ],
+   "writes": "commit"
+  },
+  "rod_lookup": {
+   "args": [
+    {
+     "flags": [
+      "--street"
+     ],
+     "kind": "value",
+     "required": true
+    },
+    {
+     "default": "Knox",
+     "flags": [
+      "--county"
+     ],
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--owner"
+     ],
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--notice-file"
+     ],
+     "help": "a text file holding the notice, for its instrument numbers",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--scratch"
+     ],
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--no-recorder"
+     ],
+     "help": "tax roll only (no Register of Deeds login)",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--json"
+     ],
+     "kind": "switch"
+    }
+   ],
+   "browser": [
+    "playwright"
+   ],
+   "class": "browser",
+   "cli": "argparse",
+   "complete": true,
+   "paid_deeper": [
+    "Enformion",
+    "Firecrawl",
+    "OpenRouter",
+    "Serper",
+    "Tracerfy"
+   ],
+   "summary": "What research reads first: the deed records and the tax roll (build plan 3.3).",
+   "why": "drives a browser (playwright), and the brain has none",
+   "write_calls": [
+    "/api/internal/property/%s/add-notes/",
+    "write_fields"
+   ],
+   "writes": "always"
+  },
+  "run_brice_full_workflow": {
+   "args": [],
+   "class": "retired",
+   "cli": "none",
+   "complete": true,
+   "paid": [
+    "Enformion",
+    "Tracerfy",
+    "Trestle"
+   ],
+   "replacement": "the deep_prospect workflow (Diggs)",
+   "summary": "Full end-to-end deep-prospecting workflow -- 2106 Brice St / Willis estate.",
+   "why": "a one-off for a single estate or house; the steps it ran by hand are the deep prospect chain now",
+   "writes": ""
+  },
+  "run_brice_heirs_enformion": {
+   "args": [],
+   "class": "retired",
+   "cli": "none",
+   "complete": true,
+   "paid": [
+    "Tracerfy",
+    "Trestle"
+   ],
+   "replacement": "the deep_prospect workflow (Diggs)",
+   "summary": "Deep prospecting -- 2106 Brice St / Willis estate, heirs from ENFORMION.",
+   "why": "a one-off for a single estate or house; the steps it ran by hand are the deep prospect chain now",
+   "writes": ""
+  },
+  "run_brice_st_skiptrace": {
+   "args": [],
+   "class": "retired",
+   "cli": "none",
+   "complete": true,
+   "paid": [
+    "Tracerfy",
+    "Trestle"
+   ],
+   "replacement": "the deep_prospect workflow (Diggs)",
+   "summary": "One-off deep skip trace for 2106 Brice St, Knoxville, TN 37917-4022.",
+   "why": "a one-off for a single estate or house; the steps it ran by hand are the deep prospect chain now",
+   "writes": ""
+  },
+  "run_deep_prospect": {
+   "args": [
+    {
+     "flags": [
+      "--first"
+     ],
+     "help": "Deceased owner first name",
+     "kind": "value",
+     "required": true
+    },
+    {
+     "flags": [
+      "--last"
+     ],
+     "help": "Deceased owner last name",
+     "kind": "value",
+     "required": true
+    },
+    {
+     "flags": [
+      "--street"
+     ],
+     "help": "Property street address",
+     "kind": "value",
+     "required": true
+    },
+    {
+     "default": "Knoxville",
+     "flags": [
+      "--city"
+     ],
+     "kind": "value"
+    },
+    {
+     "default": "TN",
+     "flags": [
+      "--state"
+     ],
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--zip"
+     ],
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--mail-street"
+     ],
+     "help": "Optional 2nd known address (tax mailing)",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--mail-city"
+     ],
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--mail-zip"
+     ],
+     "kind": "value"
+    },
+    {
+     "default": 8,
+     "flags": [
+      "--max-signers"
+     ],
+     "help": "Cap paid per-signer searches",
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "flags": [
+      "--fallback-urls"
+     ],
+     "help": "Comma-separated county/genealogy URLs to fetch via Scrapfly ASP (deed, obituary, court record) when the API path leaves gaps",
+     "kind": "value"
+    }
+   ],
+   "class": "retired",
+   "cli": "argparse",
+   "complete": true,
+   "paid": [
+    "Enformion",
+    "Tracerfy",
+    "Trestle"
+   ],
+   "paid_deeper": [
+    "Firecrawl",
+    "OpenRouter",
+    "Scrapfly",
+    "Serper"
+   ],
+   "replacement": "the deep_prospect workflow (Diggs)",
+   "summary": "Deep prospecting , full API-first heir waterfall for ONE deceased-owner record.",
+   "why": "the v4 Enformion heir waterfall, replaced by deep prospecting v5 (SmartSkip first)",
+   "writes": ""
+  },
+  "run_enrich_lists": {
+   "args": [
+    {
+     "default": "Probate,Foreclosure",
+     "flags": [
+      "--lists"
+     ],
+     "help": "Comma-separated DataSift list names",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--headed"
+     ],
+     "help": "Show the browser. Worth doing the first time: the enrichment modal is the one place a wrong toggle is expensive, and this is where you see i",
+     "kind": "switch"
+    }
+   ],
+   "browser": [
+    "datasift_core",
+    "datasift_uploader",
+    "playwright"
+   ],
+   "class": "browser",
+   "cli": "argparse",
+   "complete": true,
+   "paid_deeper": [
+    "Trestle"
+   ],
+   "summary": "Run DataSift's property enrichment over one or more lists.",
+   "why": "drives a browser (datasift_core, datasift_uploader, playwright), and the brain has none",
+   "writes": ""
+  },
+  "run_jarboe_linda_rd_skiptrace": {
+   "args": [],
+   "class": "retired",
+   "cli": "none",
+   "complete": true,
+   "paid": [
+    "Tracerfy",
+    "Trestle"
+   ],
+   "replacement": "the deep_prospect workflow (Diggs)",
+   "summary": "One-off deep skip trace for the 8207 Linda Rd / Jarboe estate deal.",
+   "why": "a one-off for a single estate or house; the steps it ran by hand are the deep prospect chain now",
+   "writes": ""
+  },
+  "run_laurans_brown_skiptrace": {
+   "args": [],
+   "class": "retired",
+   "cli": "none",
+   "complete": true,
+   "paid": [
+    "Tracerfy",
+    "Trestle"
+   ],
+   "replacement": "the deep_prospect workflow (Diggs)",
+   "summary": "DISCOVERY pass -- deep prospect 1833 Laurans Ave, Knoxville TN 37915-2620.",
+   "why": "a one-off for a single estate or house; the steps it ran by hand are the deep prospect chain now",
+   "writes": ""
+  },
+  "run_phone_tag_upload": {
+   "args": [
+    {
+     "default": "output/ftm_phone_tiers.csv",
+     "flags": [
+      "--csv"
+     ],
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--finish"
+     ],
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--headed"
+     ],
+     "kind": "switch"
+    }
+   ],
+   "browser": [
+    "sift_upload_wizard"
+   ],
+   "class": "browser",
+   "cli": "argparse",
+   "complete": true,
+   "summary": "Apply Trestle dial-tier tags to phones in ty+2 via the 'Tagging phones by phone numbers' update wizard, from a Phone Number / Phone Tags CSV.",
+   "why": "drives a browser (sift_upload_wizard), and the brain has none",
+   "write_flags": [
+    "--finish"
+   ],
+   "writes": "commit"
+  },
+  "run_return_mailer_skiptrace": {
+   "args": [
+    {
+     "flags": [
+      "--name"
+     ],
+     "help": "Owner full name",
+     "kind": "value",
+     "required": true
+    },
+    {
+     "flags": [
+      "--address"
+     ],
+     "help": "Last-known street address",
+     "kind": "value",
+     "required": true
+    },
+    {
+     "flags": [
+      "--city"
+     ],
+     "kind": "value",
+     "required": true
+    },
+    {
+     "default": "TN",
+     "flags": [
+      "--state"
+     ],
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--zip"
+     ],
+     "help": "5-digit ZIP",
+     "kind": "value",
+     "required": true
+    },
+    {
+     "default": "Knox",
+     "flags": [
+      "--county"
+     ],
+     "kind": "value"
+    },
+    {
+     "default": "USPS return mailer (bad address)",
+     "flags": [
+      "--source"
+     ],
+     "kind": "value"
+    }
+   ],
+   "browser": [
+    "playwright"
+   ],
+   "class": "browser",
+   "cli": "argparse",
+   "complete": true,
+   "paid": [
+    "Tracerfy",
+    "Trestle"
+   ],
+   "paid_deeper": [
+    "Enformion",
+    "Firecrawl",
+    "OpenRouter",
+    "Serper"
+   ],
+   "summary": "Deep-prospecting skip-trace + scoring for a single return-mailer lead.",
+   "why": "drives a browser (playwright), and the brain has none",
+   "writes": ""
+  },
+  "score_overton": {
+   "args": [],
+   "class": "retired",
+   "cli": "none",
+   "complete": true,
+   "paid": [
+    "Trestle"
+   ],
+   "replacement": "the deep_prospect workflow (Diggs)",
+   "summary": "Trestle-score the deduped phones for 1437 Overton Ln (forward flow Step E).",
+   "why": "a one-off for a single estate or house; the steps it ran by hand are the deep prospect chain now",
+   "writes": ""
+  },
+  "scout_overton": {
+   "args": [],
+   "class": "retired",
+   "cli": "none",
+   "complete": true,
+   "paid": [
+    "Tracerfy",
+    "Trestle",
+    "Zillow (OpenWeb Ninja)"
+   ],
+   "paid_deeper": [
+    "OpenRouter"
+   ],
+   "replacement": "the deep_prospect workflow (Diggs)",
+   "summary": "Phase-0 scout for deep prospecting 1437 Overton Ln, Knoxville, TN 37923.",
+   "why": "a one-off for a single estate or house; the steps it ran by hand are the deep prospect chain now",
+   "writes": ""
+  },
+  "scout_overton2": {
+   "args": [],
+   "class": "retired",
+   "cli": "none",
+   "complete": true,
+   "paid": [
+    "Tracerfy",
+    "Trestle"
+   ],
+   "replacement": "the deep_prospect workflow (Diggs)",
+   "summary": "Phase-0b: richer Tracerfy named lookup on the owner of record.",
+   "why": "a one-off for a single estate or house; the steps it ran by hand are the deep prospect chain now",
+   "writes": ""
+  },
+  "scrapfly_browser": {
+   "args": [
+    {
+     "flags": [
+      "url"
+     ],
+     "kind": "positional"
+    },
+    {
+     "flags": [
+      "--no-residential"
+     ],
+     "help": "use datacenter proxies",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--no-js"
+     ],
+     "help": "disable headless render",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--wait"
+     ],
+     "help": "render wait ms",
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "flags": [
+      "--retries"
+     ],
+     "help": "extra retries on transient error",
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "flags": [
+      "--raw"
+     ],
+     "help": "print raw HTML instead of text",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--out"
+     ],
+     "help": "write the HTML to this file",
+     "kind": "value"
+    }
+   ],
+   "class": "runnable",
+   "cli": "argparse",
+   "complete": true,
+   "paid": [
+    "Scrapfly"
+   ],
+   "summary": "Generic Scrapfly ASP browser fetcher -- the deep-prospecting L3 fallback.",
+   "writes": ""
+  },
+  "scrapfly_scrape": {
+   "args": [
+    {
+     "choices": [
+      "Knox",
+      "Blount"
+     ],
+     "default": "Knox",
+     "flags": [
+      "--county"
+     ],
+     "kind": "value"
+    },
+    {
+     "default": "substitute trustee",
+     "flags": [
+      "--keyword"
+     ],
+     "kind": "value"
+    },
+    {
+     "default": 5,
+     "flags": [
+      "--max"
+     ],
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "flags": [
+      "-v",
+      "--verbose"
+     ],
+     "kind": "switch"
+    }
+   ],
+   "browser": [
+    "playwright"
+   ],
+   "class": "browser",
+   "cli": "argparse",
+   "complete": true,
+   "paid_deeper": [
+    "2Captcha",
+    "OpenRouter",
+    "Scrapfly"
+   ],
+   "summary": "Scrapfly-native tnpublicnotice scraper. No Playwright, no local browser.",
+   "why": "drives a browser (playwright), and the brain has none",
+   "writes": ""
+  },
+  "scrapfly_spike": {
+   "args": [
+    {
+     "flags": [
+      "--id"
+     ],
+     "help": "Notice ID (builds Details.aspx?ID=<id>)",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--url"
+     ],
+     "help": "Full notice detail URL",
+     "kind": "value"
+    },
+    {
+     "default": "tnpn-spike",
+     "flags": [
+      "--session"
+     ],
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--no-screenshot"
+     ],
+     "kind": "switch"
+    }
+   ],
+   "class": "retired",
+   "cli": "argparse",
+   "complete": true,
+   "paid_deeper": [
+    "2Captcha",
+    "Scrapfly"
+   ],
+   "replacement": "",
+   "summary": "One-notice Scrapfly validation spike.",
+   "why": "a one-notice spike for the Scrapfly notice route, which the scraper no longer uses",
+   "writes": ""
+  },
+  "shard_guard": {
+   "args": [
+    {
+     "flags": [
+      "argv"
+     ],
+     "kind": "positional",
+     "nargs": "?"
+    }
+   ],
+   "class": "runnable",
+   "cli": "argv",
+   "complete": false,
+   "summary": "Refuse a bad month in the doors-per-deal data before anything ranks on it (build plan 5.1).",
+   "writes": ""
+  },
+  "siftmap_pull": {
+   "args": [
+    {
+     "default": "47093",
+     "flags": [
+      "--fips"
+     ],
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--keys"
+     ],
+     "help": "comma-separated segment keys to size",
+     "kind": "value"
+    }
+   ],
+   "class": "runnable",
+   "cli": "argparse",
+   "complete": true,
+   "paid_deeper": [
+    "Enformion",
+    "Firecrawl",
+    "OpenRouter",
+    "Serper",
+    "Tracerfy"
+   ],
+   "summary": "Size and bulk-pull County List Playbook segments into the DataSift account.",
+   "write_calls": [
+    "/properties/add-properties-by-query/"
+   ],
+   "writes": "always"
+  },
+  "siftmap_standalone": {
+   "args": [
+    {
+     "flags": [
+      "argv"
+     ],
+     "kind": "positional",
+     "nargs": "?"
+    }
+   ],
+   "class": "wired",
+   "cli": "argv",
+   "complete": false,
+   "siftmap_reads": [
+    "get_detail",
+    "properties/detail",
+    "search-autocomplete"
+   ],
+   "summary": "Self-contained SiftMap client, so the county pull can run in the cloud.",
+   "why": "runs inside quick_screen (Roma)",
+   "workflows": [
+    "quick_screen"
+   ],
+   "writes": ""
+  },
+  "smarter_contact_audit": {
+   "args": [
+    {
+     "flags": [
+      "--drafts"
+     ],
+     "help": "comma-separated draft campaign names",
+     "kind": "value",
+     "required": true
+    },
+    {
+     "flags": [
+      "--suppression"
+     ],
+     "help": "JSON {phone: reason} exported from the Fly agent",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--commit"
+     ],
+     "help": "remove flagged contacts from the drafts",
+     "kind": "switch"
+    }
+   ],
+   "class": "runnable",
+   "cli": "argparse",
+   "complete": true,
+   "paid": [
+    "Smarter Contact",
+    "Zillow (OpenWeb Ninja)"
+   ],
+   "summary": "Who a Smarter Contact follow-up would text, and who it must not.",
+   "write_flags": [
+    "--commit"
+   ],
+   "writes": "commit"
+  },
+  "smarter_contact_land": {
+   "args": [
+    {
+     "choices": [
+      "field",
+      "templates",
+      "create",
+      "group",
+      "deals",
+      "test",
+      "push",
+      "patch",
+      "split",
+      "qa"
+     ],
+     "flags": [
+      "--phase"
+     ],
+     "kind": "value",
+     "required": true
+    },
+    {
+     "default": "lots,tracts",
+     "flags": [
+      "--lanes"
+     ],
+     "help": "create: which land lanes",
+     "kind": "value"
+    },
+    {
+     "default": 0,
+     "flags": [
+      "--limit"
+     ],
+     "help": "create: records per lane (0 = all)",
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "flags": [
+      "--group-suffix"
+     ],
+     "help": "create: suffix for the groups, e.g. \"Late 1110\" on a pass after Touch 1 started (its own make-up campaign, never a group already sending)",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--phone"
+     ],
+     "help": "test: the number that gets the test contact",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--list"
+     ],
+     "help": "push: the DataSift list to send",
+     "kind": "value"
+    },
+    {
+     "default": 0,
+     "flags": [
+      "--expect"
+     ],
+     "help": "push: the record count the list must hold",
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "default": 10,
+     "flags": [
+      "--wait"
+     ],
+     "help": "push: minutes to wait for the group to appear",
+     "kind": "value",
+     "type": "float"
+    },
+    {
+     "default": "MOBILE,VOIP,UNKNOWN",
+     "flags": [
+      "--types"
+     ],
+     "help": "push: phone types to send (no landlines)",
+     "kind": "value"
+    },
+    {
+     "default": "UNKNOWN,NO_ANSWER,CORRECT",
+     "flags": [
+      "--statuses"
+     ],
+     "help": "push: phone statuses to send (UNKNOWN = no status; DNC, WRONG and DEAD stay out)",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--group"
+     ],
+     "help": "the Smarter Contact group the DataSift push created",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--rows"
+     ],
+     "help": "land row files (default: output/land_market/pilot/*.json)",
+     "kind": "value",
+     "nargs": "*"
+    },
+    {
+     "flags": [
+      "--commit"
+     ],
+     "help": "write (dry by default)",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--all"
+     ],
+     "help": "patch: every contact after the first read-back",
+     "kind": "switch"
+    },
+    {
+     "default": "Adriana",
+     "flags": [
+      "--sender"
+     ],
+     "help": "templates: the first name that signs the texts",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--first"
+     ],
+     "help": "deals: the record uuid to write and read back first",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--refresh"
+     ],
+     "help": "deals: rewrite Smarter Contact fields already written",
+     "kind": "switch"
+    }
+   ],
+   "browser": [
+    "playwright"
+   ],
+   "class": "browser",
+   "cli": "argparse",
+   "complete": true,
+   "paid": [
+    "Smarter Contact",
+    "Trestle"
+   ],
+   "paid_deeper": [
+    "Claude",
+    "Enformion",
+    "Firecrawl",
+    "OpenRouter",
+    "Serper",
+    "Tracerfy"
+   ],
+   "summary": "Land contacts in Smarter Contact: put the real parcel on every contact DataSift pushed, then split the group.",
+   "why": "drives a browser (playwright), and the brain has none",
+   "write_flags": [
+    "--commit"
+   ],
+   "writes": "commit"
+  },
+  "smarter_contact_launch": {
+   "args": [
+    {
+     "choices": [
+      "plan",
+      "groups",
+      "campaign",
+      "followup",
+      "touch"
+     ],
+     "flags": [
+      "--phase"
+     ],
+     "kind": "value",
+     "required": true
+    },
+    {
+     "default": 2,
+     "flags": [
+      "--touch"
+     ],
+     "help": "followup: the touch to send (2 = day 1)",
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "flags": [
+      "--source-date"
+     ],
+     "help": "followup: date in the source campaign's name, YYYY-MM-DD",
+     "kind": "value"
+    },
+    {
+     "default": 1,
+     "flags": [
+      "--wave"
+     ],
+     "help": "wave number; 0 = the no-name group",
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "flags": [
+      "--size"
+     ],
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "flags": [
+      "--start"
+     ],
+     "help": "local Eastern time, \"YYYY-MM-DD HH:MM\"",
+     "kind": "value"
+    },
+    {
+     "choices": [
+      "",
+      "east",
+      "other"
+     ],
+     "flags": [
+      "--tz"
+     ],
+     "help": "split by recipient timezone: east starts 9am, other noon",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--commit"
+     ],
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--http"
+     ],
+     "help": "use the SMS agent's own login over HTTP instead of the saved browser session",
+     "kind": "switch"
+    },
+    {
+     "choices": [
+      "",
+      "lot",
+      "tract"
+     ],
+     "flags": [
+      "--land"
+     ],
+     "help": "use the land templates for this lane (pair with --group and --wave 0 for no-name groups)",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--schedule"
+     ],
+     "help": "campaign: also start it (sends at --start)",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--group"
+     ],
+     "help": "campaign: send to this group instead of the wave's own (a make-up Touch 1 for contacts pulled out of a campaign already sending)",
+     "kind": "value"
+    },
+    {
+     "default": 0,
+     "flags": [
+      "--per-min"
+     ],
+     "kind": "value",
+     "type": "int"
+    }
+   ],
+   "browser": [
+    "playwright"
+   ],
+   "class": "browser",
+   "cli": "argparse",
+   "complete": true,
+   "paid": [
+    "Smarter Contact"
+   ],
+   "paid_deeper": [
+    "Claude"
+   ],
+   "summary": "Launch the Priority 1 empathy campaign in Smarter Contact, one wave at a time.",
+   "why": "drives a browser (playwright), and the brain has none",
+   "write_flags": [
+    "--commit",
+    "--schedule"
+   ],
+   "writes": "commit"
+  },
+  "smarter_contact_remaining": {
+   "args": [
+    {
+     "flags": [
+      "--suppression"
+     ],
+     "help": "JSON {phone: reason} exported from the Fly agent",
+     "kind": "value"
+    }
+   ],
+   "class": "runnable",
+   "cli": "argparse",
+   "complete": true,
+   "paid": [
+    "Smarter Contact",
+    "Zillow (OpenWeb Ninja)"
+   ],
+   "summary": "How many Priority 1 contacts can still get a FIRST touch, measured, not estimated.",
+   "writes": ""
+  },
+  "smarter_contact_setup": {
+   "args": [
+    {
+     "choices": [
+      "login",
+      "discover",
+      "gql",
+      "inspect",
+      "probe",
+      "build"
+     ],
+     "flags": [
+      "--phase"
+     ],
+     "kind": "value",
+     "required": true
+    },
+    {
+     "flags": [
+      "--commit"
+     ],
+     "help": "build: write (default is a dry run)",
+     "kind": "switch"
+    },
+    {
+     "default": "Adriana",
+     "flags": [
+      "--sender"
+     ],
+     "help": "build: first name that signs the texts",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--land"
+     ],
+     "help": "build: also create the land lot and tract templates",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--names"
+     ],
+     "help": "probe: comma-separated mutation names",
+     "kind": "value"
+    },
+    {
+     "default": "{}",
+     "flags": [
+      "--inputs"
+     ],
+     "help": "probe: '|'-separated JSON inputs",
+     "kind": "value"
+    },
+    {
+     "default": 20,
+     "flags": [
+      "--timeout"
+     ],
+     "help": "minutes to wait for sign-in",
+     "kind": "value",
+     "type": "int"
+    }
+   ],
+   "browser": [
+    "playwright"
+   ],
+   "class": "browser",
+   "cli": "argparse",
+   "complete": true,
+   "paid": [
+    "Smarter Contact"
+   ],
+   "paid_deeper": [
+    "Claude"
+   ],
+   "summary": "Drive Smarter Contact's web app to create what smarter_contact_templates.py defines.",
+   "why": "drives a browser (playwright), and the brain has none",
+   "write_flags": [
+    "--commit"
+   ],
+   "writes": "commit"
+  },
+  "smarter_contact_templates": {
+   "args": [
+    {
+     "flags": [
+      "--check"
+     ],
+     "help": "audit every template and exit",
+     "kind": "switch"
+    },
+    {
+     "default": 0,
+     "flags": [
+      "--preview"
+     ],
+     "help": "print N rendered samples per touch",
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "flags": [
+      "--export"
+     ],
+     "help": "write paste-ready CSVs",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--sender"
+     ],
+     "help": "first name that signs the texts",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--tag-no-name"
+     ],
+     "help": "tag Priority 1 records that need the no-name templates (dry unless --commit)",
+     "kind": "switch"
+    },
+    {
+     "default": 0.0,
+     "flags": [
+      "--tag-control"
+     ],
+     "help": "tag this share of named Priority 1 records as the control arm (dry unless --commit)",
+     "kind": "value",
+     "type": "float"
+    },
+    {
+     "flags": [
+      "--commit"
+     ],
+     "help": "write the tags",
+     "kind": "switch"
+    }
+   ],
+   "class": "runnable",
+   "cli": "argparse",
+   "complete": true,
+   "paid_deeper": [
+    "Claude"
+   ],
+   "summary": "Empathy-first cold-text templates for Smarter Contact, plus the inbox kit.",
+   "write_flags": [
+    "--commit",
+    "--tag-no-name"
+   ],
+   "writes": "commit"
+  },
+  "soi_county_pull": {
+   "args": [
+    {
+     "choices": [
+      "delaware",
+      "licking",
+      "pickaway",
+      "union"
+     ],
+     "flags": [
+      "--county"
+     ],
+     "help": "pull one county only",
+     "kind": "value"
+    }
+   ],
+   "class": "retired",
+   "cli": "argparse",
+   "complete": true,
+   "replacement": "",
+   "summary": "SOI stage 2a: pull Columbus-metro county parcel/owner rolls to local files.",
+   "why": "the Columbus sphere-of-influence beta, retired 2026-11-03",
+   "writes": ""
+  },
+  "soi_enformion": {
+   "args": [
+    {
+     "default": "output/soi_owner_matches.json",
+     "flags": [
+      "--matches"
+     ],
+     "kind": "value"
+    },
+    {
+     "default": "none",
+     "flags": [
+      "--status"
+     ],
+     "kind": "value"
+    },
+    {
+     "default": 0,
+     "flags": [
+      "--limit"
+     ],
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "default": "output/soi_enformion_resolved",
+     "flags": [
+      "--out"
+     ],
+     "kind": "value"
+    },
+    {
+     "default": 0.4,
+     "flags": [
+      "--delay"
+     ],
+     "kind": "value",
+     "type": "float"
+    }
+   ],
+   "class": "retired",
+   "cli": "argparse",
+   "complete": true,
+   "paid": [
+    "Enformion"
+   ],
+   "paid_deeper": [
+    "Firecrawl",
+    "OpenRouter",
+    "Serper",
+    "Tracerfy"
+   ],
+   "replacement": "",
+   "summary": "SOI stage 2d: Enformion resolve for contacts the county-roll join missed.",
+   "why": "the Columbus sphere-of-influence beta, retired 2026-11-03",
+   "writes": ""
+  },
+  "soi_enrich": {
+   "args": [
+    {
+     "default": "output/soi_owner_matches.json",
+     "flags": [
+      "--matches"
+     ],
+     "kind": "value"
+    },
+    {
+     "default": "unique",
+     "flags": [
+      "--status"
+     ],
+     "kind": "value"
+    },
+    {
+     "default": 0,
+     "flags": [
+      "--limit"
+     ],
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "default": "output/soi_enriched",
+     "flags": [
+      "--out"
+     ],
+     "kind": "value"
+    },
+    {
+     "default": 0.5,
+     "flags": [
+      "--delay"
+     ],
+     "kind": "value",
+     "type": "float"
+    }
+   ],
+   "class": "retired",
+   "cli": "argparse",
+   "complete": true,
+   "replacement": "",
+   "siftmap_reads": [
+    "autocomplete",
+    "get_detail"
+   ],
+   "summary": "SOI stage 3: enrich matched contacts with SiftMap property detail + AI scores.",
+   "why": "the Columbus sphere-of-influence beta, retired 2026-11-03",
+   "writes": ""
+  },
+  "soi_intake": {
+   "args": [
+    {
+     "default": "LInkedIn Contacts-Table 1.csv",
+     "flags": [
+      "--linkedin"
+     ],
+     "kind": "value"
+    },
+    {
+     "default": "Facebook contacts-Table 1.csv",
+     "flags": [
+      "--facebook"
+     ],
+     "kind": "value"
+    },
+    {
+     "default": "output/soi_contacts_normalized",
+     "flags": [
+      "--out"
+     ],
+     "kind": "value"
+    }
+   ],
+   "class": "retired",
+   "cli": "argparse",
+   "complete": true,
+   "replacement": "",
+   "summary": "Sphere-of-influence intake: normalize LinkedIn + Facebook contact exports into one roster.",
+   "why": "the Columbus sphere-of-influence beta, retired 2026-11-03",
+   "writes": ""
+  },
+  "soi_owner_db": {
+   "args": [
+    {
+     "flags": [
+      "--counties"
+     ],
+     "help": "comma list; default = all with raw files present",
+     "kind": "value"
+    }
+   ],
+   "class": "retired",
+   "cli": "argparse",
+   "complete": true,
+   "replacement": "",
+   "summary": "SOI stage 2b: build the unified Columbus-metro owners database.",
+   "why": "the Columbus sphere-of-influence beta, retired 2026-11-03",
+   "writes": ""
+  },
+  "soi_owner_match": {
+   "args": [
+    {
+     "default": "output/soi_contacts_normalized.json",
+     "flags": [
+      "--contacts"
+     ],
+     "kind": "value"
+    },
+    {
+     "default": 2.5,
+     "flags": [
+      "--min-score"
+     ],
+     "kind": "value",
+     "type": "float"
+    },
+    {
+     "default": "output/soi_owner_matches",
+     "flags": [
+      "--out"
+     ],
+     "kind": "value"
+    }
+   ],
+   "class": "retired",
+   "cli": "argparse",
+   "complete": true,
+   "replacement": "",
+   "summary": "SOI stage 2c: reverse-search normalized contacts against the metro owners DB.",
+   "why": "the Columbus sphere-of-influence beta, retired 2026-11-03",
+   "writes": ""
+  },
+  "sold_guard": {
+   "args": [],
+   "class": "runnable",
+   "cli": "argparse",
+   "complete": true,
+   "paid_deeper": [
+    "Enformion",
+    "Firecrawl",
+    "OpenRouter",
+    "Serper",
+    "Tracerfy"
+   ],
+   "siftmap_reads": [
+    "get_detail"
+   ],
+   "subcommand_required": true,
+   "subcommands": {
+    "audit": {
+     "args": [
+      {
+       "flags": [
+        "--commit"
+       ],
+       "kind": "switch"
+      },
+      {
+       "default": 0,
+       "flags": [
+        "--limit"
+       ],
+       "kind": "value",
+       "type": "int"
+      },
+      {
+       "flags": [
+        "--include-distress"
+       ],
+       "help": "also treat DataSift's own distress lists as a reason a record is a lead",
+       "kind": "switch"
+      },
+      {
+       "flags": [
+        "--fresh"
+       ],
+       "help": "judge every record again, ignoring earlier verdicts",
+       "kind": "switch"
+      },
+      {
+       "flags": [
+        "--force"
+       ],
+       "help": "run even when it is not due (re-entry outside January, an audit already written)",
+       "kind": "switch"
+      },
+      {
+       "flags": [
+        "--month"
+       ],
+       "help": "YYYY-MM to audit (default: last month)",
+       "kind": "value"
+      }
+     ]
+    },
+    "daily": {
+     "args": [
+      {
+       "flags": [
+        "--commit"
+       ],
+       "kind": "switch"
+      },
+      {
+       "default": 0,
+       "flags": [
+        "--limit"
+       ],
+       "kind": "value",
+       "type": "int"
+      },
+      {
+       "flags": [
+        "--include-distress"
+       ],
+       "help": "also treat DataSift's own distress lists as a reason a record is a lead",
+       "kind": "switch"
+      },
+      {
+       "flags": [
+        "--fresh"
+       ],
+       "help": "judge every record again, ignoring earlier verdicts",
+       "kind": "switch"
+      },
+      {
+       "flags": [
+        "--force"
+       ],
+       "help": "run even when it is not due (re-entry outside January, an audit already written)",
+       "kind": "switch"
+      },
+      {
+       "flags": [
+        "--month"
+       ],
+       "help": "YYYY-MM to audit (default: last month)",
+       "kind": "value"
+      }
+     ]
+    },
+    "detect": {
+     "args": [
+      {
+       "flags": [
+        "--commit"
+       ],
+       "kind": "switch"
+      },
+      {
+       "default": 0,
+       "flags": [
+        "--limit"
+       ],
+       "kind": "value",
+       "type": "int"
+      },
+      {
+       "flags": [
+        "--include-distress"
+       ],
+       "help": "also treat DataSift's own distress lists as a reason a record is a lead",
+       "kind": "switch"
+      },
+      {
+       "flags": [
+        "--fresh"
+       ],
+       "help": "judge every record again, ignoring earlier verdicts",
+       "kind": "switch"
+      },
+      {
+       "flags": [
+        "--force"
+       ],
+       "help": "run even when it is not due (re-entry outside January, an audit already written)",
+       "kind": "switch"
+      },
+      {
+       "flags": [
+        "--month"
+       ],
+       "help": "YYYY-MM to audit (default: last month)",
+       "kind": "value"
+      }
+     ]
+    },
+    "mark": {
+     "args": [
+      {
+       "flags": [
+        "--commit"
+       ],
+       "kind": "switch"
+      },
+      {
+       "default": 0,
+       "flags": [
+        "--limit"
+       ],
+       "kind": "value",
+       "type": "int"
+      },
+      {
+       "flags": [
+        "--include-distress"
+       ],
+       "help": "also treat DataSift's own distress lists as a reason a record is a lead",
+       "kind": "switch"
+      },
+      {
+       "flags": [
+        "--fresh"
+       ],
+       "help": "judge every record again, ignoring earlier verdicts",
+       "kind": "switch"
+      },
+      {
+       "flags": [
+        "--force"
+       ],
+       "help": "run even when it is not due (re-entry outside January, an audit already written)",
+       "kind": "switch"
+      },
+      {
+       "flags": [
+        "--month"
+       ],
+       "help": "YYYY-MM to audit (default: last month)",
+       "kind": "value"
+      }
+     ]
+    },
+    "monthly-audit": {
+     "args": [
+      {
+       "flags": [
+        "--commit"
+       ],
+       "kind": "switch"
+      },
+      {
+       "default": 0,
+       "flags": [
+        "--limit"
+       ],
+       "kind": "value",
+       "type": "int"
+      },
+      {
+       "flags": [
+        "--include-distress"
+       ],
+       "help": "also treat DataSift's own distress lists as a reason a record is a lead",
+       "kind": "switch"
+      },
+      {
+       "flags": [
+        "--fresh"
+       ],
+       "help": "judge every record again, ignoring earlier verdicts",
+       "kind": "switch"
+      },
+      {
+       "flags": [
+        "--force"
+       ],
+       "help": "run even when it is not due (re-entry outside January, an audit already written)",
+       "kind": "switch"
+      },
+      {
+       "flags": [
+        "--month"
+       ],
+       "help": "YYYY-MM to audit (default: last month)",
+       "kind": "value"
+      }
+     ]
+    },
+    "presets": {
+     "args": [
+      {
+       "flags": [
+        "--commit"
+       ],
+       "kind": "switch"
+      },
+      {
+       "default": 0,
+       "flags": [
+        "--limit"
+       ],
+       "kind": "value",
+       "type": "int"
+      },
+      {
+       "flags": [
+        "--include-distress"
+       ],
+       "help": "also treat DataSift's own distress lists as a reason a record is a lead",
+       "kind": "switch"
+      },
+      {
+       "flags": [
+        "--fresh"
+       ],
+       "help": "judge every record again, ignoring earlier verdicts",
+       "kind": "switch"
+      },
+      {
+       "flags": [
+        "--force"
+       ],
+       "help": "run even when it is not due (re-entry outside January, an audit already written)",
+       "kind": "switch"
+      },
+      {
+       "flags": [
+        "--month"
+       ],
+       "help": "YYYY-MM to audit (default: last month)",
+       "kind": "value"
+      }
+     ]
+    },
+    "reentry": {
+     "args": [
+      {
+       "flags": [
+        "--commit"
+       ],
+       "kind": "switch"
+      },
+      {
+       "default": 0,
+       "flags": [
+        "--limit"
+       ],
+       "kind": "value",
+       "type": "int"
+      },
+      {
+       "flags": [
+        "--include-distress"
+       ],
+       "help": "also treat DataSift's own distress lists as a reason a record is a lead",
+       "kind": "switch"
+      },
+      {
+       "flags": [
+        "--fresh"
+       ],
+       "help": "judge every record again, ignoring earlier verdicts",
+       "kind": "switch"
+      },
+      {
+       "flags": [
+        "--force"
+       ],
+       "help": "run even when it is not due (re-entry outside January, an audit already written)",
+       "kind": "switch"
+      },
+      {
+       "flags": [
+        "--month"
+       ],
+       "help": "YYYY-MM to audit (default: last month)",
+       "kind": "value"
+      }
+     ]
+    },
+    "repair": {
+     "args": [
+      {
+       "flags": [
+        "--commit"
+       ],
+       "kind": "switch"
+      },
+      {
+       "default": 0,
+       "flags": [
+        "--limit"
+       ],
+       "kind": "value",
+       "type": "int"
+      },
+      {
+       "flags": [
+        "--include-distress"
+       ],
+       "help": "also treat DataSift's own distress lists as a reason a record is a lead",
+       "kind": "switch"
+      },
+      {
+       "flags": [
+        "--fresh"
+       ],
+       "help": "judge every record again, ignoring earlier verdicts",
+       "kind": "switch"
+      },
+      {
+       "flags": [
+        "--force"
+       ],
+       "help": "run even when it is not due (re-entry outside January, an audit already written)",
+       "kind": "switch"
+      },
+      {
+       "flags": [
+        "--month"
+       ],
+       "help": "YYYY-MM to audit (default: last month)",
+       "kind": "value"
+      }
+     ]
+    },
+    "undo": {
+     "args": [
+      {
+       "flags": [
+        "--commit"
+       ],
+       "kind": "switch"
+      },
+      {
+       "default": 0,
+       "flags": [
+        "--limit"
+       ],
+       "kind": "value",
+       "type": "int"
+      },
+      {
+       "flags": [
+        "--include-distress"
+       ],
+       "help": "also treat DataSift's own distress lists as a reason a record is a lead",
+       "kind": "switch"
+      },
+      {
+       "flags": [
+        "--fresh"
+       ],
+       "help": "judge every record again, ignoring earlier verdicts",
+       "kind": "switch"
+      },
+      {
+       "flags": [
+        "--force"
+       ],
+       "help": "run even when it is not due (re-entry outside January, an audit already written)",
+       "kind": "switch"
+      },
+      {
+       "flags": [
+        "--month"
+       ],
+       "help": "YYYY-MM to audit (default: last month)",
+       "kind": "value"
+      }
+     ]
+    }
+   },
+   "summary": "Sold guard: a record is Sold only when the house sold AFTER it became a lead.",
+   "write_flags": [
+    "--commit"
+   ],
+   "writes": "commit"
+  },
+  "staging_build_39049": {
+   "args": [
+    {
+     "choices": "dynamic",
+     "flags": [
+      "--phase"
+     ],
+     "kind": "value",
+     "required": true
+    },
+    {
+     "flags": [
+      "--commit"
+     ],
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--only"
+     ],
+     "help": "restrict pull to one rank, e.g. P1-03",
+     "kind": "value"
+    }
+   ],
+   "class": "retired",
+   "cli": "argparse",
+   "complete": true,
+   "paid_deeper": [
+    "Enformion",
+    "Firecrawl",
+    "OpenRouter",
+    "Serper",
+    "Tracerfy"
+   ],
+   "replacement": "the account_setup workflow (Atlas)",
+   "summary": "One-shot build-out of the ty+1 staging account for Franklin County OH.",
+   "why": "the one-shot build of the ty+1 staging account (2026-08-19)",
+   "write_flags": [
+    "--commit"
+   ],
+   "writes": "commit"
+  },
+  "strip_bulk_lists": {
+   "args": [
+    {
+     "default": "output/enriched_audit.json",
+     "flags": [
+      "--audit"
+     ],
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--commit"
+     ],
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--dry-run"
+     ],
+     "kind": "switch"
+    },
+    {
+     "default": 0.3,
+     "flags": [
+      "--sleep"
+     ],
+     "kind": "value",
+     "type": "float"
+    },
+    {
+     "default": 0,
+     "flags": [
+      "--limit"
+     ],
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "default": "output/strip_done.json",
+     "flags": [
+      "--state"
+     ],
+     "kind": "value"
+    }
+   ],
+   "class": "runnable",
+   "cli": "argparse",
+   "complete": true,
+   "dry_flags": [
+    "--dry-run"
+   ],
+   "paid_deeper": [
+    "Enformion",
+    "Firecrawl",
+    "OpenRouter",
+    "Serper",
+    "Tracerfy"
+   ],
+   "summary": "Remove the DataFlik bulk lists from our first-to-market records.",
+   "write_flags": [
+    "--commit"
+   ],
+   "writes": "commit"
+  },
+  "tn_market_analysis": {
+   "args": [
+    {
+     "choices": [
+      "probe",
+      "sweep",
+      "sold",
+      "suppress",
+      "hydrate",
+      "geo",
+      "report"
+     ],
+     "flags": [
+      "--phase"
+     ],
+     "kind": "value",
+     "required": true
+    },
+    {
+     "flags": [
+      "--resume"
+     ],
+     "help": "continue a partial sweep instead of restarting",
+     "kind": "switch"
+    },
+    {
+     "default": 0.3,
+     "flags": [
+      "--min-interval"
+     ],
+     "help": "seconds between search calls",
+     "kind": "value",
+     "type": "float"
+    },
+    {
+     "flags": [
+      "--counties"
+     ],
+     "help": "comma-separated subset, e.g. Blount",
+     "kind": "value"
+    },
+    {
+     "default": 1,
+     "flags": [
+      "--passes"
+     ],
+     "help": "re-walk and union N times. MEASURED USELESS on this API: a second Blount pass returned exactly 0 new ids, and a Knox re-walk found 0 new acr",
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "default": 90.0,
+     "flags": [
+      "--min-coverage"
+     ],
+     "help": "fail the phase below this %% of reported total",
+     "kind": "value",
+     "type": "float"
+    },
+    {
+     "default": 150,
+     "flags": [
+      "--min-properties"
+     ],
+     "help": "cut a ZIP with fewer than this many SFR",
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "default": 100,
+     "flags": [
+      "--min-in-box"
+     ],
+     "help": "cut a ZIP with fewer than this many buy-box SFR",
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "default": 40000,
+     "flags": [
+      "--min-median-value"
+     ],
+     "help": "cut a ZIP whose median is below this",
+     "kind": "value",
+     "type": "float"
+    },
+    {
+     "default": 2.5,
+     "flags": [
+      "--dom-multiple"
+     ],
+     "help": "cut a ZIP whose DOM exceeds this multiple of the county median",
+     "kind": "value",
+     "type": "float"
+    },
+    {
+     "default": 12000,
+     "flags": [
+      "--limit"
+     ],
+     "help": "hydrate: how many detail calls to make",
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "default": 120,
+     "flags": [
+      "--per-zip"
+     ],
+     "help": "hydrate: minimum anchors per ZIP",
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "default": 4,
+     "flags": [
+      "--workers"
+     ],
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "default": 17,
+     "flags": [
+      "--seed"
+     ],
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "default": 60,
+     "flags": [
+      "--nb-min-properties"
+     ],
+     "help": "geo: cut a neighborhood with fewer than this many SFR",
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "default": 1,
+     "flags": [
+      "--k"
+     ],
+     "help": "geo: neighbours voting on each assignment. THE BEST k TRACKS ANCHOR DENSITY, it is not a fixed truth. At 1,597 anchors: k=1 83.6%%, k=3 83.3",
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "default": 80.0,
+     "flags": [
+      "--min-accuracy"
+     ],
+     "help": "geo: fail below this holdout accuracy",
+     "kind": "value",
+     "type": "float"
+    },
+    {
+     "flags": [
+      "--out"
+     ],
+     "help": "report: output xlsx path",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "-v",
+      "--verbose"
+     ],
+     "kind": "switch"
+    }
+   ],
+   "class": "runnable",
+   "cli": "argparse",
+   "complete": true,
+   "paid_deeper": [
+    "Enformion",
+    "Firecrawl",
+    "OpenRouter",
+    "Serper",
+    "Tracerfy"
+   ],
+   "siftmap_reads": [
+    "get_detail"
+   ],
+   "summary": "Knox and Blount market picture, rebuilt from property-level API data.",
+   "writes": ""
+  },
+  "tracerfy_ftm": {
+   "args": [
+    {
+     "flags": [
+      "--csv"
+     ],
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--all"
+     ],
+     "help": "trace ALL FTM records (default: only no-phone ones)",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--finish"
+     ],
+     "help": "merge found phones into reisift (over the API)",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--browser"
+     ],
+     "help": "merge through the browser upload wizard instead of the API (the fallback)",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--headed"
+     ],
+     "kind": "switch"
+    }
+   ],
+   "browser": [
+    "playwright",
+    "sift_upload_wizard"
+   ],
+   "class": "browser",
+   "cli": "argparse",
+   "complete": true,
+   "paid": [
+    "Tracerfy"
+   ],
+   "paid_deeper": [
+    "Enformion",
+    "Firecrawl",
+    "OpenRouter",
+    "Serper"
+   ],
+   "summary": "Layer 3: Tracerfy re-skip for FTM records, then merge found numbers back into reisift.",
+   "why": "drives a browser (playwright, sift_upload_wizard), and the brain has none",
+   "write_flags": [
+    "--finish"
+   ],
+   "writes": "commit"
+  },
+  "ty2_reactivation_rebuild": {
+   "args": [
+    {
+     "flags": [
+      "--commit"
+     ],
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--dry"
+     ],
+     "kind": "switch"
+    },
+    {
+     "choices": [
+      "backup",
+      "reactivation",
+      "tier2",
+      "bulk",
+      "legacy",
+      "hygiene",
+      "qa",
+      "all"
+     ],
+     "default": "all",
+     "flags": [
+      "--phase"
+     ],
+     "kind": "value"
+    }
+   ],
+   "class": "retired",
+   "cli": "argparse",
+   "complete": true,
+   "dry_flags": [
+    "--dry"
+   ],
+   "replacement": "",
+   "summary": "Rebuild ty+2's Not Interested campaigns + retire Tier 2 (Doors per Deal, 2026-08-25).",
+   "why": "a one-off rebuild of the Not Interested campaigns (2026-08-25)",
+   "write_flags": [
+    "--commit"
+   ],
+   "writes": "commit"
+  },
+  "upload_rei_skills_drive": {
+   "args": [],
+   "class": "retired",
+   "cli": "none",
+   "complete": true,
+   "replacement": "the plugin marketplace (python tools/build_skills.py --marketplace)",
+   "summary": "Upload the 13 current REI skill files to a Google Drive folder and make them viewable by anyone with the link. Prints the folder link + one share link per file.",
+   "why": "the old Google Drive upload of the skill files",
+   "writes": ""
+  },
+  "upload_ty2_foreclosures": {
+   "args": [
+    {
+     "flags": [
+      "--csv"
+     ],
+     "help": "foreclosure_master_active_*.csv path",
+     "kind": "value",
+     "required": true
+    },
+    {
+     "flags": [
+      "--county"
+     ],
+     "help": "Only this county (e.g. Knox)",
+     "kind": "value"
+    },
+    {
+     "default": "Foreclosure",
+     "flags": [
+      "--list"
+     ],
+     "help": "existing key list to add records to",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--finish"
+     ],
+     "help": "Click Finish Upload (commit). Default: stop at Review.",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--headed"
+     ],
+     "help": "Run browser headed (default headless)",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--include-today"
+     ],
+     "help": "keep auctions dated exactly today",
+     "kind": "switch"
+    }
+   ],
+   "browser": [
+    "playwright",
+    "sift_upload_wizard"
+   ],
+   "class": "browser",
+   "cli": "argparse",
+   "complete": true,
+   "paid_deeper": [
+    "OpenRouter"
+   ],
+   "summary": "Upload active future-auction foreclosures into ty+2 (the FTM stream), per county.",
+   "why": "drives a browser (playwright, sift_upload_wizard), and the brain has none",
+   "write_flags": [
+    "--finish"
+   ],
+   "writes": "commit"
+  },
+  "vacant_land": {
+   "args": [
+    {
+     "choices": "dynamic",
+     "flags": [
+      "--phase"
+     ],
+     "kind": "value",
+     "required": true
+    },
+    {
+     "choices": [
+      "39159"
+     ],
+     "default": "39159",
+     "flags": [
+      "--fips"
+     ],
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--acres-min"
+     ],
+     "kind": "value",
+     "type": "float"
+    },
+    {
+     "flags": [
+      "--acres-max"
+     ],
+     "kind": "value",
+     "type": "float"
+    },
+    {
+     "flags": [
+      "--refresh"
+     ],
+     "help": "re-pull cached county layers",
+     "kind": "switch"
+    },
+    {
+     "default": 0,
+     "flags": [
+      "--limit"
+     ],
+     "help": "hydrate at most N details",
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "default": 0.5,
+     "flags": [
+      "--offer-low"
+     ],
+     "help": "offer band low, share of the lot comp",
+     "kind": "value",
+     "type": "float"
+    },
+    {
+     "default": 0.65,
+     "flags": [
+      "--offer-high"
+     ],
+     "help": "offer band high, share of the lot comp",
+     "kind": "value",
+     "type": "float"
+    },
+    {
+     "flags": [
+      "--commit"
+     ],
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--key-env"
+     ],
+     "help": "env var holding the target account's Open API key (pull)",
+     "kind": "value"
+    }
+   ],
+   "class": "wired",
+   "cli": "argparse",
+   "complete": true,
+   "paid_deeper": [
+    "Enformion",
+    "Firecrawl",
+    "OpenRouter",
+    "Serper",
+    "Tracerfy"
+   ],
+   "siftmap_reads": [
+    "get_detail"
+   ],
+   "summary": "Buildable vacant lots, 0.20 to 2.00 acres, in Union County OH (39159).",
+   "why": "runs inside land_desk (Atlas)",
+   "workflows": [
+    "land_desk"
+   ],
+   "write_flags": [
+    "--commit"
+   ],
+   "writes": "commit"
+  },
+  "visual_distress": {
+   "args": [
+    {
+     "choices": [
+      "doctor",
+      "profile",
+      "ids",
+      "score",
+      "collect",
+      "purge",
+      "requeue",
+      "report",
+      "master"
+     ],
+     "flags": [
+      "--phase"
+     ],
+     "kind": "value",
+     "required": true
+    },
+    {
+     "default": "1206 Connecticut Ave, Knoxville, TN 37921",
+     "flags": [
+      "--address"
+     ],
+     "help": "doctor: the address to resolve and score",
+     "kind": "value"
+    },
+    {
+     "default": 1000,
+     "flags": [
+      "--sample"
+     ],
+     "help": "profile: how many properties to check (free)",
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "flags": [
+      "--county"
+     ],
+     "help": "profile: Knox or Blount",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--no-entity-filter"
+     ],
+     "help": "ids: keep entity-held properties (default excludes)",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--no-sold-filter"
+     ],
+     "help": "ids: keep recently sold properties (default excludes)",
+     "kind": "switch"
+    },
+    {
+     "default": 1,
+     "flags": [
+      "--value-min"
+     ],
+     "kind": "value",
+     "type": "float"
+    },
+    {
+     "default": 700000,
+     "flags": [
+      "--value-max"
+     ],
+     "kind": "value",
+     "type": "float"
+    },
+    {
+     "flags": [
+      "--zips"
+     ],
+     "help": "ids: comma-separated ZIPs to restrict the cohort to",
+     "kind": "value"
+    },
+    {
+     "default": 8,
+     "flags": [
+      "--workers"
+     ],
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "default": 17,
+     "flags": [
+      "--seed"
+     ],
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "flags": [
+      "--all-zips"
+     ],
+     "help": "ids: sample the whole universe, not just survivors",
+     "kind": "switch"
+    },
+    {
+     "default": 0,
+     "flags": [
+      "--batch"
+     ],
+     "help": "submit at most this many fresh ids this run (bulk caps at 10,000 per job); 0 means all of them",
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "default": 900,
+     "flags": [
+      "--cool-off"
+     ],
+     "help": "seconds to wait since the previous job before submitting another; 0 disables",
+     "kind": "value",
+     "type": "float"
+    },
+    {
+     "default": 25,
+     "flags": [
+      "--max-new"
+     ],
+     "help": "refuse to submit more new ids than this",
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "flags": [
+      "--commit"
+     ],
+     "help": "actually spend money; dry run otherwise",
+     "kind": "switch"
+    },
+    {
+     "default": 1800,
+     "flags": [
+      "--timeout"
+     ],
+     "help": "seconds to wait for a bulk job",
+     "kind": "value",
+     "type": "float"
+    },
+    {
+     "flags": [
+      "--job-id"
+     ],
+     "help": "collect: job to fetch",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--out"
+     ],
+     "help": "report: output xlsx path",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "-v",
+      "--verbose"
+     ],
+     "kind": "switch"
+    }
+   ],
+   "class": "runnable",
+   "cli": "argparse",
+   "complete": true,
+   "paid": [
+    "Google Maps"
+   ],
+   "siftmap_reads": [
+    "autocomplete"
+   ],
+   "summary": "Visual Distress scoring: driving for dollars, without the driving.",
+   "write_flags": [
+    "--commit"
+   ],
+   "writes": "commit"
+  },
+  "zapier_session": {
+   "args": [
+    {
+     "choices": [
+      "login",
+      "discover"
+     ],
+     "flags": [
+      "--phase"
+     ],
+     "kind": "value",
+     "required": true
+    },
+    {
+     "default": 60,
+     "flags": [
+      "--timeout"
+     ],
+     "help": "minutes to wait for sign-in",
+     "kind": "value",
+     "type": "int"
+    }
+   ],
+   "browser": [
+    "playwright"
+   ],
+   "class": "browser",
+   "cli": "argparse",
+   "complete": true,
+   "summary": "Hold a signed-in Zapier session, for building Zaps through the editor.",
+   "why": "drives a browser (playwright), and the brain has none",
+   "writes": ""
+  }
+ }
+}

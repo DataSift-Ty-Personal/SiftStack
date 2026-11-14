@@ -1,40 +1,80 @@
-"""Extract Market Finder data from DataSift.ai via Playwright automation.
+"""Extract Market Finder data from DataSift.ai, through the published API or the browser.
 
-Logs into DataSift, navigates to Market Finder, selects state/county,
-and extracts ALL ZIP code + neighborhood data tables plus summary panel.
+Two sources, one JSON shape (the shape county_market_report.py and market_analyzer.py read):
 
-IMPORTANT: Always extracts EVERY row — scrolls through infinite-scroll
-tables until no new rows appear. Never truncate or stop at visible rows.
+  api      the Market Map routes DataSift publishes (/api/internal/market-finder/...), over the Open
+           API key. No browser, no password, so it runs on the agents box and on a customer's
+           install. pull_market_finder_api() is the entry point; the team's market_report workflow
+           calls it.
+  browser  logs into the DataSift app, selects state and county on the Market Finder page and reads
+           the ZIP and neighborhood tables page by page plus the summary panel. Kept as the fallback
+           on a workstation.
+
+IMPORTANT: Always extracts EVERY row (every page of the table, every page of the API). Never
+truncate or stop at the visible rows.
 
 Usage:
     python src/extract_market_finder.py --state "Tennessee" --county "Knox"
     python src/extract_market_finder.py --state "Tennessee" --county "Knox" --headless
     python src/extract_market_finder.py --state "Tennessee" --county "Knox,Blount"
+    python src/extract_market_finder.py --state TN --county Knox --source api
+
+The command line stays on the browser unless --source api (or MARKET_FINDER_SOURCE=api) is given:
+the API's query parameter names are not in the published reference (only the routes and their
+responses are), so a pull checks itself (every ZIP row must belong to the county, every page must
+be read) and the browser stays the default until one live API pull has passed those checks.
 
 Output: JSON file(s) in --output-dir with extracted market data.
 
-Requires: playwright, python-dotenv
-          DATASIFT_EMAIL and DATASIFT_PASSWORD in .env or environment
+Requires: api: REISIFT_API_KEY. browser: playwright, python-dotenv, and DATASIFT_EMAIL and
+          DATASIFT_PASSWORD in .env or environment.
 """
 
 import argparse
 import asyncio
 import json
 import logging
+import os
 import sys
 from datetime import datetime
 from pathlib import Path
-
-from datasift_core import (
-    create_browser,
-    login,
-    dismiss_popups,
-    screenshot,
-    wait_for_spa,
-    DATASIFT_MARKET_FINDER_URL,
-)
+from urllib.parse import urlencode
 
 logger = logging.getLogger(__name__)
+
+
+# ── Browser helpers, loaded only when the browser path runs ───────────
+# datasift_core drives the DataSift web app with a password login. Importing it at the top made
+# every caller of this module (the API pull included) a browser-and-password module: the agents box
+# has neither, and the API path needs neither. The names below keep the browser code unchanged.
+
+def _core():
+    import datasift_core  # noqa: PLC0415  (the browser path only)
+    return datasift_core
+
+
+def create_browser(headless: bool = False):
+    return _core().create_browser(headless=headless)
+
+
+async def login(page, email: str = None, password: str = None) -> bool:
+    return await _core().login(page, email, password)
+
+
+async def dismiss_popups(page) -> None:
+    await _core().dismiss_popups(page)
+
+
+async def screenshot(page, name: str) -> None:
+    await _core().screenshot(page, name)
+
+
+async def wait_for_spa(page, ms: int = 5000) -> None:
+    await _core().wait_for_spa(page, ms)
+
+
+def _market_finder_url() -> str:
+    return _core().DATASIFT_MARKET_FINDER_URL
 
 # ── Column Definitions ────────────────────────────────────────────────
 
@@ -101,7 +141,7 @@ def _row_to_dict(row: list[str], columns: list[str]) -> dict:
 async def _dismiss_all_popups(page) -> None:
     """Aggressively dismiss ALL popups, overlays, and NPS surveys.
 
-    Must be called before ANY interaction — Beamer NPS iframe blocks
+    Must be called before ANY interaction: Beamer NPS iframe blocks
     ALL pointer events globally.
     """
     await dismiss_popups(page)
@@ -150,7 +190,7 @@ async def _dismiss_all_popups(page) -> None:
 
 async def _navigate_to_market_finder(page) -> bool:
     """Navigate to Market Finder page."""
-    await page.goto(DATASIFT_MARKET_FINDER_URL, wait_until="domcontentloaded")
+    await page.goto(_market_finder_url(), wait_until="domcontentloaded")
     await wait_for_spa(page, 5000)
     await _dismiss_all_popups(page)
 
@@ -428,9 +468,9 @@ async def _select_county(page, county: str) -> bool:
         }""")
 
         if verify.get("hasZips"):
-            logger.info("County selected — table now shows ZIP codes (sample: %s)", verify.get("sampleZip"))
+            logger.info("County selected: table now shows ZIP codes (sample: %s)", verify.get("sampleZip"))
         else:
-            logger.warning("County may not have loaded — no ZIP codes visible in table yet")
+            logger.warning("County may not have loaded: no ZIP codes visible in table yet")
             # Give extra time
             await page.wait_for_timeout(3000)
 
@@ -635,7 +675,7 @@ async def _extract_summary_panel(page) -> dict:
         return data;
     }""")
 
-    logger.info("Extracted summary panel: %d fields — %s", len(summary), list(summary.keys()))
+    logger.info("Extracted summary panel: %d fields: %s", len(summary), list(summary.keys()))
     return summary
 
 
@@ -646,7 +686,7 @@ async def _switch_view(page, view_name: str) -> bool:
     It contains options: "ZIP Codes" and "Neighborhoods".
     From the DOM: class="Selectstyles__SelectContainer-..."
 
-    IMPORTANT: Check current view first — if already on the requested view,
+    IMPORTANT: Check current view first: if already on the requested view,
     don't click (clicking would toggle AWAY from it).
     """
     try:
@@ -659,12 +699,12 @@ async def _switch_view(page, view_name: str) -> bool:
                 current_text = (await el.inner_text()).strip()
                 logger.info("View toggle shows '%s', requested '%s'", current_text, view_name)
 
-                # Already on the requested view — do nothing
+                # Already on the requested view: do nothing
                 if view_name in current_text:
-                    logger.info("Already on %s view — no switch needed", view_name)
+                    logger.info("Already on %s view: no switch needed", view_name)
                     return True
 
-                # Need to switch — open dropdown and click the target option
+                # Need to switch: open dropdown and click the target option
                 await el.click(force=True)
                 await page.wait_for_timeout(1000)
 
@@ -709,7 +749,7 @@ async def extract_market_finder(
 ) -> dict:
     """Extract Market Finder data for a state/county.
 
-    Extracts ALL ZIP codes and ALL neighborhoods — scrolls through the
+    Extracts ALL ZIP codes and ALL neighborhoods: scrolls through the
     entire table to ensure complete data. Never truncates.
 
     Returns:
@@ -806,15 +846,310 @@ async def extract_market_finder(
             result["neighborhood_count"],
         )
 
-    # Save JSON output
+    save_result(result, output_dir)
+    return result
+
+
+def save_result(result: dict, output_dir: str | Path) -> Path:
+    """Write one extraction the way the browser always has: market_finder_<state>_<county>_<stamp>.json."""
     out_path = Path(output_dir)
     out_path.mkdir(parents=True, exist_ok=True)
-    filename = f"market_finder_{state}_{county}_{datetime.now():%Y%m%d_%H%M%S}.json"
+    filename = f"market_finder_{result['state']}_{result['county']}_{datetime.now():%Y%m%d_%H%M%S}.json"
     json_file = out_path / filename
     json_file.write_text(json.dumps(result, indent=2), encoding="utf-8")
     logger.info("Saved extraction to %s", json_file)
+    return json_file
 
+
+# ── The published API (DataSift API 2.0, Market Map) ──────────────────
+#
+# The routes and their responses are documented (developers.datasift.ai, read 2026-11-13); the
+# query parameters are not (every Market Map route lists `parameters: []`). The names below are the
+# ones DataSift's own Market Finder page sends (read from the app's code and proven live on the key,
+# 2026-11-13): a county is `fips`, a page is `offset` + `limit`. `county=` and `page=` are SILENTLY
+# ignored (county= returned all 33,784 ZIPs in the country). They can be changed without a code
+# change: MARKET_FINDER_API_PARAMS='{"county": "...", ...}' and MARKET_FINDER_API_GROUPS. A name
+# the server does not know is silently ignored, which reads exactly like a real answer, so the pull
+# proves each filter by what comes back instead of trusting that it was accepted.
+
+API_ROUTES = {
+    "states": "/api/internal/market-finder/states/",
+    "counties": "/api/internal/market-finder/counties/",
+    "zips": "/api/internal/market-finder/counties/zips/",
+    "neighborhoods": "/api/internal/market-finder/counties/neighborhoods/",
+    "metrics": "/api/internal/market-finder/metrics/",
+    "paginated": "/api/internal/market-finder/paginated/",
+}
+API_PARAMS = {"state": "state", "county": "fips", "group": "geo_group", "offset": "offset", "size": "limit"}
+API_GROUPS = {"zip": "zip", "neighborhood": "neighborhood"}
+API_PAGE_SIZE = 100
+API_MAX_PAGES = 200          # 20,000 rows: no county has that many ZIPs or neighborhoods
+
+
+class MarketFinderApiError(RuntimeError):
+    """The API answered in a shape this pull cannot read, or a filter was not honored."""
+
+
+def api_settings() -> tuple[dict, dict]:
+    """(query parameter names, group values): the defaults above with any env override on top."""
+    params, groups = dict(API_PARAMS), dict(API_GROUPS)
+    for env, into in (("MARKET_FINDER_API_PARAMS", params), ("MARKET_FINDER_API_GROUPS", groups)):
+        raw = (os.environ.get(env) or "").strip()
+        if raw:
+            try:
+                into.update({str(k): str(v) for k, v in json.loads(raw).items()})
+            except (ValueError, AttributeError) as exc:
+                raise MarketFinderApiError("%s is not a JSON object: %s" % (env, exc)) from exc
+    return params, groups
+
+
+def _items(r) -> list:
+    if isinstance(r, list):
+        return r
+    if isinstance(r, dict):
+        for k in ("items", "results", "data"):
+            if isinstance(r.get(k), list):
+                return r[k]
+    return []
+
+
+def _fold(s) -> str:
+    s = " ".join(str(s or "").replace(",", " ").split()).casefold()
+    return s[: -len(" county")] if s.endswith(" county") else s
+
+
+def _num(v):
+    return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+
+
+def _money_raw(v) -> str:
+    """The table's own display form ("$304,569"), so the parsed and raw columns match the browser's."""
+    v = _num(v)
+    return "" if v is None else "${:,.0f}".format(v)
+
+
+def _int_raw(v) -> str:
+    v = _num(v)
+    return "" if v is None else "{:,}".format(int(round(v)))
+
+
+def _pct_raw(v) -> str:
+    """A share as the page shows it. The reference does not say whether the API sends 0.072 or 7.2."""
+    v = _num(v)
+    if v is None:
+        return ""
+    return "%.1f%%" % (v * 100 if v <= 1 else v)
+
+
+def api_row(name: str, metrics: dict, columns: list[str]) -> dict:
+    """One table row from the API: the same columns, parsed the same way, as the browser reads off the
+    page. The six numbers map onto the table's columns:
+      total_inv_trans_6mo   num_investor_transactions (the table's six-month investor count)
+      homes_on_market       homes_on_market
+      homes_sold_last_month number_of_homes_sold
+      median_days_on_market median_days_on_market
+      median_home_value     median_property_value
+      median_sale_price     median_sale_price"""
+    m = metrics or {}
+    raw = [str(name), _int_raw(m.get("num_investor_transactions")), _int_raw(m.get("homes_on_market")),
+           _int_raw(m.get("number_of_homes_sold")), _int_raw(m.get("median_days_on_market")),
+           _money_raw(m.get("median_property_value")), _money_raw(m.get("median_sale_price"))]
+    return _row_to_dict(raw, columns)
+
+
+def api_summary(m: dict) -> dict:
+    """The county summary panel, keyed the way the browser keys it (label first, then the regex keys),
+    so county_market_report reads Market Rent and Gross Rental Yield the same way from either source."""
+    m = m or {}
+    owners, renters = _num(m.get("num_owners")), _num(m.get("num_renters"))
+    own = owners / (owners + renters) if owners is not None and renters is not None and owners + renters > 0 else None
+    out = {
+        "median home value": _money_raw(m.get("median_property_value")),
+        "homes on market": _int_raw(m.get("homes_on_market")),
+        "mo investor transactions": _int_raw(m.get("median_monthly_investor_transactions")),
+        "homes sold last month": _int_raw(m.get("number_of_homes_sold")),
+        "market rent": _money_raw(m.get("median_property_rental_value")),
+        "gross rental yield": _pct_raw(m.get("gross_rental_yield")),
+        "homeownership rate": _pct_raw(own),
+        "market_rent": _money_raw(m.get("median_property_rental_value")).lstrip("$"),
+        "gross_rental_yield": _pct_raw(m.get("gross_rental_yield")),
+        "homeownership_rate": _pct_raw(own),
+        "median_home_value_summary": _money_raw(m.get("median_property_value")).lstrip("$"),
+        "homes_on_market_summary": _int_raw(m.get("homes_on_market")),
+        "mo_investor_trans": _int_raw(m.get("median_monthly_investor_transactions")),
+        "homes_sold_last_month": _int_raw(m.get("number_of_homes_sold")),
+    }
+    return {k: v for k, v in out.items() if v}
+
+
+def _get(call, route: str, query: dict | None = None):
+    path = API_ROUTES[route] + ("?" + urlencode(query) if query else "")
+    return call(path)
+
+
+def _find_state(rows: list, state: str) -> dict:
+    want = _fold(state)
+    for r in rows:
+        if want in (_fold(r.get("name")), _fold(r.get("abbreviation")), _fold(r.get("code"))):
+            return r
+    raise MarketFinderApiError("Market Finder lists no state called %r" % state)
+
+
+def _find_county(rows: list, county: str, st: dict) -> dict:
+    marks = {_fold(st.get("name")), _fold(st.get("abbreviation")), _fold(st.get("code"))} - {""}
+    hits = [r for r in rows if _fold(r.get("name")) == _fold(county)
+            and (not r.get("state") or _fold(r.get("state")) in marks)]
+    if not hits:
+        raise MarketFinderApiError("Market Finder lists no county called %r in %s (%d counties came back)"
+                                   % (county, st.get("name") or st.get("abbreviation"), len(rows)))
+    if len({str(h.get("code")) for h in hits}) > 1:
+        raise MarketFinderApiError("%d counties called %r came back for %s; the state filter was not honored"
+                                   % (len(hits), county, st.get("name")))
+    return hits[0]
+
+
+def _page_all(call, query: dict, params: dict, page_size: int, label: str) -> tuple[list, int | None, str | None]:
+    """Every page of one paginated listing: (rows, the total the server reports, its geoGroup echo).
+    A page that adds nothing new ends the walk, so a paging parameter the server ignores (it sends the
+    first page again) is caught by the total check instead of looping. Pages by offset, as the app
+    does; a `page` name set in MARKET_FINDER_API_PARAMS pages by number instead."""
+    rows, seen, total, echo = [], set(), None, None
+    for page in range(1, API_MAX_PAGES + 1):
+        at = {params["page"]: page} if params.get("page") else {params.get("offset", "offset"): (page - 1) * page_size}
+        r = _get(call, "paginated", dict(query, **at, **{params["size"]: page_size}))
+        if not isinstance(r, dict) or not isinstance(r.get("data"), list):
+            raise MarketFinderApiError("%s: the paginated listing came back as %s, not {data, total}"
+                                       % (label, type(r).__name__))
+        if total is None:
+            total = r.get("total") if isinstance(r.get("total"), int) else None
+            echo = r.get("geoGroup")
+        new = 0
+        for row in r["data"]:
+            pf = row.get("property_fields") or {}
+            code = str(pf.get("code") or pf.get("name") or "")
+            if code and code not in seen:
+                seen.add(code)
+                rows.append(row)
+                new += 1
+        if not new or (total is not None and len(rows) >= total):
+            break
+    return rows, total, echo
+
+
+def _neighborhood_names(listing) -> dict:
+    """code -> name from the county's neighborhood listing (its item shape is not documented)."""
+    out = {}
+    for it in _items(listing):
+        if isinstance(it, dict):
+            code = it.get("code") or it.get("id") or it.get("uuid")
+            name = it.get("name") or it.get("title")
+            if code and name:
+                out[str(code)] = str(name)
+    return out
+
+
+def pull_market_finder_api(state: str, county: str, call, *, page_size: int = API_PAGE_SIZE) -> dict:
+    """One county's Market Finder numbers over the published API, in the browser extractor's shape.
+
+    `call(path)` is a GET on the Open API key that returns parsed JSON (the agents box passes its
+    budgeted CRM). Never raises for a refusal: `success` is False and `problem` says what was wrong,
+    so a caller reports it instead of scoring a county off rows that belong to another one.
+
+    The checks, each one the failure a silently ignored filter would cause:
+      * every ZIP row must be one of the county's own ZIP codes (counties/zips/),
+      * every page the server reports must be read (a page parameter it ignores stops short),
+      * the listing must echo the group asked for when it echoes one at all.
+    """
+    params, groups = api_settings()
+    result = {
+        "success": False, "state": state, "county": county,
+        "zip_data": [], "neighborhood_data": [], "summary": {},
+        "extracted_at": datetime.now().isoformat(), "zip_count": 0, "neighborhood_count": 0,
+        "source": "api", "api_checks": {}, "problem": "",
+    }
+    checks = result["api_checks"]
+    try:
+        st = _find_state(_items(_get(call, "states")), state)
+        counties = _items(_get(call, "counties", {params["state"]: st.get("code") or st.get("abbreviation")}))
+        co = _find_county(counties, county, st)
+        fips = str(co.get("code") or "")
+        if not fips:
+            raise MarketFinderApiError("county %r came back with no code" % county)
+        checks.update({"state": st.get("name") or state, "state_abbreviation": st.get("abbreviation") or "",
+                       "county": co.get("name") or county, "county_code": fips})
+
+        zips_listing = _items(_get(call, "zips", {params["county"]: fips}))
+        county_zips = {str(z.get("zip_code") or "")[:5] for z in zips_listing
+                       if str(z.get("fips") or "") in ("", fips)} - {""}
+        checks["county_zip_codes"] = len(county_zips)
+        if not county_zips:
+            raise MarketFinderApiError("the county's ZIP listing came back empty, so the ZIP rows cannot be "
+                                       "checked against it")
+
+        rows, total, echo = _page_all(call, {params["group"]: groups["zip"], params["county"]: fips},
+                                      params, page_size, "zip codes")
+        codes = [str((r.get("property_fields") or {}).get("code") or "")[:5] for r in rows]
+        stray = sorted({c for c in codes if c not in county_zips})
+        checks.update({"zip_rows": len(rows), "zip_total": total, "zip_group_echo": echo,
+                       "zip_rows_outside_county": len(stray)})
+        if echo not in (None, "", groups["zip"]):
+            raise MarketFinderApiError("asked for %r rows and the listing says %r; the group parameter is "
+                                       "named differently (MARKET_FINDER_API_PARAMS)" % (groups["zip"], echo))
+        if stray:
+            raise MarketFinderApiError("%d of %d ZIP rows are not in %s County (%s ...): the county filter "
+                                       "was ignored, so these numbers are not the county's"
+                                       % (len(stray), len(rows), co.get("name") or county, ", ".join(stray[:3])))
+        if total is not None and len(rows) < total:
+            raise MarketFinderApiError("read %d of the %d ZIP rows the server reports; the page parameter "
+                                       "was not honored" % (len(rows), total))
+        if not rows:
+            raise MarketFinderApiError("no ZIP rows came back for %s County" % (co.get("name") or county))
+        result["zip_data"] = [api_row(c, r.get("metrics") or {}, ZIP_COLUMNS) for c, r in zip(codes, rows)]
+
+        names = _neighborhood_names(_get(call, "neighborhoods", {params["county"]: fips}))
+        nrows, ntotal, necho = _page_all(call, {params["group"]: groups["neighborhood"], params["county"]: fips},
+                                         params, page_size, "neighborhoods")
+        checks.update({"neighborhood_rows": len(nrows), "neighborhood_total": ntotal,
+                       "neighborhood_group_echo": necho, "neighborhood_names_listed": len(names)})
+        if necho not in (None, "", groups["neighborhood"]):
+            raise MarketFinderApiError("asked for %r rows and the listing says %r" % (groups["neighborhood"], necho))
+        if ntotal is not None and len(nrows) < ntotal:
+            raise MarketFinderApiError("read %d of the %d neighborhood rows the server reports"
+                                       % (len(nrows), ntotal))
+        nb_codes = [str((r.get("property_fields") or {}).get("code") or "") for r in nrows]
+        if set(nb_codes) & county_zips:
+            raise MarketFinderApiError("the neighborhood listing came back with ZIP codes: the group "
+                                       "parameter was ignored")
+        if names and any(c not in names for c in nb_codes):
+            raise MarketFinderApiError("%d neighborhood rows are not in the county's own neighborhood listing"
+                                       % sum(1 for c in nb_codes if c not in names))
+        result["neighborhood_data"] = [
+            api_row(names.get(c) or (r.get("property_fields") or {}).get("name") or c, r.get("metrics") or {},
+                    NEIGHBORHOOD_COLUMNS) for c, r in zip(nb_codes, nrows)]
+
+        metrics = _get(call, "metrics", {params["county"]: fips})
+        result["summary"] = api_summary(metrics if isinstance(metrics, dict) else {})
+    except MarketFinderApiError as exc:
+        result["problem"] = str(exc)
+        return result
+    result["zip_count"] = len(result["zip_data"])
+    result["neighborhood_count"] = len(result["neighborhood_data"])
+    result["success"] = result["zip_count"] > 0
     return result
+
+
+def default_source() -> str:
+    """The command line's source: the browser, unless MARKET_FINDER_SOURCE says api. The browser stays
+    the default until one live API pull has passed its own checks (the parameter names are unpublished)."""
+    src = (os.environ.get("MARKET_FINDER_SOURCE") or "browser").strip().lower()
+    return src if src in ("browser", "api") else "browser"
+
+
+def _key_call():
+    """A GET on the Open API key, budgeted like every read the agents make (src/agents/autopilot/crm.py)."""
+    from agents.autopilot.crm import CRM  # noqa: PLC0415  (the command line's API path only)
+    crm = CRM()
+    return lambda path: crm.call(path)
 
 
 # ── CLI Entry Point ───────────────────────────────────────────────────
@@ -844,6 +1179,12 @@ def main():
     parser.add_argument(
         "-v", "--verbose", action="store_true", help="Verbose logging"
     )
+    parser.add_argument(
+        "--source",
+        choices=["browser", "api"],
+        default=default_source(),
+        help="browser (the default) or api (the published routes, on REISIFT_API_KEY)",
+    )
 
     args = parser.parse_args()
 
@@ -853,21 +1194,31 @@ def main():
     )
 
     counties = [c.strip() for c in args.county.split(",")]
+    call = _key_call() if args.source == "api" else None
 
     for county in counties:
-        result = asyncio.run(
-            extract_market_finder(
-                state=args.state,
-                county=county,
-                headless=args.headless,
-                output_dir=args.output_dir,
+        if call is not None:
+            result = pull_market_finder_api(args.state, county, call)
+            if result["success"]:
+                save_result(result, args.output_dir)
+        else:
+            result = asyncio.run(
+                extract_market_finder(
+                    state=args.state,
+                    county=county,
+                    headless=args.headless,
+                    output_dir=args.output_dir,
+                )
             )
-        )
         if result["success"]:
             print(f"  {county}: {result['zip_count']} ZIP codes, "
                   f"{result['neighborhood_count']} neighborhoods")
+        elif call is not None:
+            print(f"  {county}: the API pull was refused: {result['problem']}")
+            print("  The browser still works: run again with --source browser")
+            sys.exit(1)
         else:
-            print(f"  {county}: EXTRACTION FAILED — check screenshots for debugging")
+            print(f"  {county}: EXTRACTION FAILED: check screenshots for debugging")
             sys.exit(1)
 
 

@@ -217,6 +217,224 @@ TOUCHES = {
 SC_CAP, SC_CAP_WINDOW, SC_COOLDOWN = 3, 7, 14
 SEND_DAYS = [day for *_, day in TOUCHES.values()]
 
+
+# ---------------------------------------------------------------------------
+# Land (Ty, 2026-11-10): the builder-fit lots and entitlement tracts from
+# src/land_market.py. Same touch shape, same send days and the same gates as
+# Priority 1, with three deliberate differences:
+#   * The parcel is named by its parcel number through Smarter Contact's <APN>
+#     merge tag. 405 of the 1,119 Knox pilot lots carry no house number, and
+#     "the lot on Rutledge Pike" is not something an owner recognizes; the
+#     number on their tax bill is.
+#   * "vacant" is allowed. On a land list it names the asset. Priority 1 bans it
+#     because that tier is built partly from a Vacant segment, where the word
+#     tells the owner which list they are on.
+#   * Each lane gets its true pitch. Lots: we are looking to buy the lot, as-is,
+#     no listing, no agent fees (Ty, 2026-11-10: never claim we work with
+#     builders, even though the lot desk only markets builder-fit lots). Tracts: as-is, the county and survey work at our cost,
+#     a closing date the owner picks (the entitle-and-sell model). Tracts never
+#     say "vacant", because some carry a farmhouse.
+# The APN, acres and county fields only hold the right values after
+# src/smarter_contact_land.py patches the pushed contacts: DataSift's
+# integration writes its RECORD UUID into APN and leaves acres and county empty.
+LAND_TAGS = {"apn": "<APN>", "acres": "<Parcel acres>", "county": "<Parcel county>"}
+# Worst case from the mailable land (8,157 rows, 2026-11-09), at the 99th
+# percentile like Priority 1's: addresses 25 characters, parcel numbers 13. The
+# top 1% (to 33 and 17) bills as two segments rather than shortening every text.
+LAND_WORST = {"first": "Christopher", "addr": "1234 Example Meadows Pike", "city": "Knoxville",
+              "sender": "Adriana", "apn": "000X-X-000.00", "acres": "123.45", "county": "Jefferson"}
+_LAND_WORDS = re.compile(
+    r"\b(credit|income|debt|owe\w*|equity|paid off|free and clear|absentee|out of state|"
+    r"inherit\w*|landlocked|flood\w*|steep|situation|going through|hard time|struggl\w*|"
+    r"cash offer|we buy (land|houses)|any condition)\b", re.I)
+
+LAND_LOT = {
+    # Touch 1 and touch 2 #1-2 are already live in Smarter Contact (accepted 2026-11-10); change them only
+    # together with an update there.
+    1: ([
+        "Hi {first}, quick question. Do you still own the vacant lot at {addr}, parcel {apn}? {sender}",
+        "Hey {first}, it's {sender}. Is the vacant lot at {addr} (parcel {apn}) still yours?",
+        "Hi {first}, I have you down as the owner of the lot at {addr}, parcel {apn}. Is that right? {sender}",
+        "Hey {first}, sorry for the random text. Are you the owner of the lot at {addr} (parcel {apn})? {sender}",
+        "Hi {first}, it's {sender}. Do I have the right person for the vacant lot at {addr}, parcel {apn}?",
+        "Hey {first}, hope your week's going well! Is the lot at {addr} (parcel {apn}) yours? {sender}",
+        "Hi {first}, I'll be quick. Are you still the owner of the lot at {addr}, parcel {apn}? {sender}",
+        "Hey {first}, it's {sender}. Quick one about parcel {apn}, the vacant lot at {addr}. Is it still yours?",
+    ], [
+        "Hi, is this the owner of the vacant lot at {addr}, parcel {apn}? {sender}",
+        "Hey there, it's {sender}. Do I have the right number for the owner of parcel {apn} at {addr}?",
+        "Hi, sorry for the random text. Is this the owner of the lot at {addr} (parcel {apn})? {sender}",
+        "Hey there, quick question. Are you the owner of the vacant lot at {addr}, parcel {apn}? {sender}",
+    ]),
+    2: ([
+        "Hi {first}, {sender} again. If the lot at {addr} is yours, would you ever think about selling it?",
+        "Hey {first}, following up on parcel {apn}. If it's yours, is selling the lot something you'd consider? {sender}",
+        "Hi {first}, back with one question about the vacant lot at {addr}. Is it something you'd part with? {sender}",
+        "Hey {first}, is the lot at {addr} one you plan to keep, or would you consider letting it go? {sender}",
+        "Hi {first}, {sender} here. Does selling parcel {apn} make any sense for you this year?",
+        "Hey {first}, no pressure here. Would you sell the vacant lot at {addr} for the right number? {sender}",
+        "Hi {first}, I'm still interested in the lot at {addr}. Any chance it's for sale? {sender}",
+        "Hey {first}, checking in once more on parcel {apn}. Open to selling that lot? {sender}",
+    ], [
+        "Hi, back with one question about the lot at {addr}. Would the owner ever part with it? {sender}",
+        "Hey there, {sender} here. Is parcel {apn} something you'd sell this year?",
+        "Hi, still interested in the vacant lot at {addr}. Any chance it's for sale? {sender}",
+        "Hey there, circling back on parcel {apn}. Would you consider selling that lot? {sender}",
+    ]),
+    3: ([
+        "Hi {first}, I'm looking to buy lots around {addr}. Would you be open to a quick call? {sender}",
+        "Hey {first}, I'd like to buy the lot at {addr} as-is, no agent fees. Open to a quick call? {sender}",
+        "Hi {first}, I'm a local buyer looking for land like your lot at {addr}. Worth a quick call? {sender}",
+        "Hey {first}, simple pitch on the lot at {addr}: no listing, no agent fees, your timing. Worth a call? {sender}",
+        "Hi {first}, {sender} here. I'm buying vacant lots near you, and yours at {addr} caught my eye. Open to a call?",
+        "Hey {first}, you could sell parcel {apn} without listing it or paying an agent. Want to talk it through? {sender}",
+        "Hi {first}, I keep it simple on lots like {addr}: no fees, I handle the paperwork. Worth a quick call? {sender}",
+        "Hey {first}, {sender} here. I close on your schedule and do the paperwork on the lot at {addr}. Can we talk?",
+    ], [
+        "Hey there, local buyer here, hoping to purchase the vacant lot at {addr}. Could we talk by phone? {sender}",
+        "Hi, {sender} here. I'd like to buy the lot at {addr} as-is, no listing needed. Worth a quick call?",
+        "Hi, {sender} here. Selling the lot at {addr} to me means no agent fees. Open to a quick call?",
+        "Hey there, if you'd sell parcel {apn}, I can skip the listing and the agent fees. Want to talk? {sender}",
+    ]),
+    4: ([
+        "Hi {first}, I'll stop texting about the lot at {addr} for a while. If you ever want to sell, I'm here. {sender}",
+        "Hey {first}, last one from me for a while. If parcel {apn} ever goes up for sale, can I get first look? {sender}",
+        "Hi {first}, {sender} here. I'll leave you be for a while. Keeping the lot at {addr} is fine by me!",
+        "Hey {first}, I'll give you some room after this. Sounds like you're holding the lot at {addr}? {sender}",
+    ], [
+        "Hi, {sender} again about the vacant lot at {addr}. If someone else owns it, could you point me their way?",
+        "Hey there, giving parcel {apn} a rest for a while. Should I close my file on the lot? {sender}",
+    ]),
+    5: ([
+        "Hi {first}, it's {sender}. Been a while since I asked about the vacant lot at {addr}. Any change?",
+        "Hey {first}, {sender} checking in on parcel {apn} again. Would you sell the lot this year?",
+        "Hi {first}, hope things are good! Do you still own the lot at {addr}? {sender}",
+    ], [
+        "Hi, {sender} here, checking back on the lot at {addr}. Still in your name?",
+        "Hey there, a few months since I texted about parcel {apn}. Has anything changed with the lot? {sender}",
+    ]),
+}
+LAND_TRACT = {
+    1: ([
+        "Hi {first}, do you still own the {acres} acres at {addr} in {county} County, parcel {apn}? {sender}",
+        "Hey {first}, {sender} here. Are the {acres} acres on parcel {apn} in {county} County still in your name?",
+        "Hi {first}, trying to reach the owner of parcel {apn}, {acres} acres at {addr}. Is that you? {sender}",
+        "Hey {first}, the county has you down for {acres} acres at {addr}. Do you still own it? {sender}",
+        "Hi {first}, it's {sender}. Is {addr} in {county} County, parcel {apn}, still your land?",
+        "Hey {first}, hoping I have the right number for the owner of parcel {apn} ({acres} acres). Is that you? {sender}",
+        "Hi {first}, are you still the owner of the acreage at {addr}, parcel {apn}? {sender}",
+        "Hey {first}, it's {sender}. Do you still hold the {acres} acre tract at {addr}?",
+    ], [
+        "Hi there, I'm trying to reach the owner of parcel {apn} in {county} County. Is that you? {sender}",
+        "Hey, it's {sender}. Do I have the right number for whoever owns the {acres} acres at {addr}?",
+        "Hi, sorry to text out of the blue. Do you own the land at {addr} (parcel {apn})? {sender}",
+        "Hey there, quick one. Does the {acres} acre tract at {addr} still belong to you? {sender}",
+    ]),
+    2: ([
+        "Hi {first}, {sender} again. Would you ever sell some or all of the {acres} acres at {addr}?",
+        "Hey {first}, one more question about parcel {apn}. Is any of that land for sale, even part of it? {sender}",
+        "Hi {first}, do you see yourself keeping parcel {apn} long term, or would you sell? {sender}",
+        "Hey {first}, {sender} here. Would selling the acreage at {addr} be worth a conversation?",
+        "Hi {first}, still hoping to talk about the land at {addr}. Would you consider selling part of it? {sender}",
+        "Hey {first}, circling back on parcel {apn} in {county} County. Open to selling? {sender}",
+        "Hi {first}, no pressure at all. Would you sell parcel {apn} if the terms worked for you? {sender}",
+        "Hey {first}, I'd still like to buy the land at {addr}. Is it for sale at all? {sender}",
+    ], [
+        "Hi, {sender} again. Would the owner of the {acres} acres at {addr} sell some or all of it?",
+        "Hey there, one more question about parcel {apn}. Is any of that land for sale? {sender}",
+        "Hi, circling back on the acreage at {addr} in {county} County. Open to selling? {sender}",
+        "Hey there, still hoping to buy the land at {addr}. Would you consider it? {sender}",
+    ]),
+    3: ([
+        "Hi {first}, I buy land as-is and do the survey and county work at my cost. Worth a call about {addr}? {sender}",
+        "Hey {first}, the land at {addr} can sell to me as-is, no agent fees, your date. Worth a call? {sender}",
+        "Hi {first}, I'm a local buyer. I pay for the survey and zoning work on land like {addr}. Worth a call? {sender}",
+        "Hey {first}, on parcel {apn}: as-is, no commission, and you set the closing. Open to a call? {sender}",
+        "Hi {first}, {sender} here. I work around your timing on land like {addr}, even a longer close. Worth a call?",
+        "Hey {first}, there's no listing or agent commission if you sell parcel {apn} to me. Could we talk? {sender}",
+        "Hi {first}, I keep it simple on {addr}: as-is, I handle the county work, your date. Worth a call? {sender}",
+        "Hey {first}, {sender} here. Sell the land at {addr} to me and skip agent fees and survey costs. Worth a call?",
+    ], [
+        "Hey there, I buy acreage as-is and cover the survey and county work. Could we talk about {addr}? {sender}",
+        "Hi, {sender} here. The land at {addr} could sell as-is, no agent fees, on your timing. Worth a quick call?",
+        "Hi, {sender} here. You'd skip the listing and the commission selling parcel {apn} to me. Open to a call?",
+        "Hey there, on the {acres} acres at {addr}, I can close as-is when it suits you. Can we talk? {sender}",
+    ]),
+    4: ([
+        "Hi {first}, I'll back off on parcel {apn} for a while. If selling ever makes sense, text me. {sender}",
+        "Hey {first}, taking a break from texting about parcel {apn}. Mind if I check back next season? {sender}",
+        "Hi {first}, {sender} here. If this number's wrong, my apologies. If not, keeping the land at {addr}?",
+        "Hey {first}, giving you some space after this one. Safe to say the acreage at {addr} isn't for sale? {sender}",
+    ], [
+        "Hi, {sender} again. If someone else handles the land at {addr}, could you point me their way?",
+        "Hey there, stepping back from parcel {apn} for a while. Should I close my file on the acreage? {sender}",
+    ]),
+    5: ([
+        "Hi {first}, it's {sender}, checking back on the {acres} acres at {addr}. Anything new with it?",
+        "Hey {first}, {sender} again after a while. Would you sell parcel {apn} next year?",
+        "Hi {first}, hope the season's treating you well! Still holding the acreage at {addr}? {sender}",
+    ], [
+        "Hi, {sender} checking back on the land at {addr} after a few months. Is it still yours?",
+        "Hey there, it's been a while since I asked about parcel {apn}. Any plans for that land? {sender}",
+    ]),
+}
+# Every touch is lane-specific: Smarter Contact refuses a template too close to one already in the account,
+# so a shared touch 4 and 5 would be created once and refused the second time.
+LAND_LATE = {}
+
+LAND_LANES = {"lot": ("Lot", LAND_LOT), "tract": ("Tract", LAND_TRACT)}
+
+
+def land_arms():
+    """(lane, touch number, named pool, no-name pool) for every land touch set."""
+    for lane, (_, early) in LAND_LANES.items():
+        for n in sorted({**early, **LAND_LATE}):
+            named, noname = early.get(n) or LAND_LATE[n]
+            yield lane, n, named, noname
+
+
+def land_title(lane: str, n: int, aud: str, i: int) -> str:
+    t = f"Land {LAND_LANES[lane][0]} T{n} {'No Name' if aud == 'noname' else 'Named'} {i:02d}"
+    assert len(t) <= SC_TEMPLATE_TITLE, t
+    return t
+
+
+SC_SIMILAR = 0.90   # Smarter Contact refused a template at 0.95 similarity to one in the account, accepted 0.88
+
+
+def _similar(a: str, b: str) -> float:
+    import difflib
+    return difflib.SequenceMatcher(None, a.lower(), b.lower()).ratio()
+
+
+def land_audit() -> list[str]:
+    found, seen = [], {}
+    p1 = [to_sc(t, DEFAULT_SENDER) for _, _, nm, nn in _arms() for t in nm + nn]
+    land = [(f"land {lane} T{n} {aud}[{i}]", to_sc(t, DEFAULT_SENDER))
+            for lane, n, nm, nn in land_arms() for aud, pool in (("named", nm), ("noname", nn))
+            for i, t in enumerate(pool)]
+    for k, (where, text) in enumerate(land):
+        close = max([_similar(text, x) for x in p1] + [_similar(text, x) for j, (_, x) in enumerate(land) if j != k])
+        if close >= SC_SIMILAR:
+            found.append(f"{where}: {close:.2f} similar to another template (Smarter Contact refuses near-duplicates)")
+    for lane, n, named, noname in land_arms():
+        for label, pool in (("named", named), ("noname", noname)):
+            for i, t in enumerate(pool):
+                where = f"land {lane} T{n} {label}[{i}]"
+                if t in seen and seen[t] != (lane, n, label) and n <= 3:
+                    found.append(f"{where}: duplicate of {seen[t]}")
+                seen.setdefault(t, (lane, n, label))
+                if label == "noname" and "{first}" in t:
+                    found.append(f"{where}: uses {{first}}")
+                if lane == "tract" and re.search(r"\bvacant\b", t, re.I):
+                    found.append(f"{where}: says vacant, and some tracts carry a house")
+                found += [f"{where}: {p}" for p in problems(t, kind="touch", key=str(n), profile="land")]
+        if n <= 3 and len(named) < 8:
+            found.append(f"land {lane} T{n}: needs 8+ named variations (one per 50 contacts)")
+        if n <= 3 and len(noname) < 4:
+            found.append(f"land {lane} T{n}: needs 4+ no-name variations")
+    return found
+
 # ---------------------------------------------------------------------------
 # Labels, matched to the account's own scheme (read live 2026-10-20) so nothing
 # is duplicated. Lead, Not interested and Wrong Number are Smarter Contact system
@@ -377,20 +595,22 @@ WORST = {"first": "Christopher", "addr": "12345 Old Maryville Pike",
 PLACEHOLDER_RX = re.compile(r"\{(\w+)\}")
 
 
-def problems(text: str, *, kind: str, key: str = "") -> list[str]:
-    """Every reason this template must not ship."""
+def problems(text: str, *, kind: str, key: str = "", profile: str = "p1") -> list[str]:
+    """Every reason this template must not ship. profile "land" swaps Priority 1's sensitive words for the
+    land list's (so "vacant" is allowed) and checks length against land's worst-case address and parcel."""
     out = list(_ttb.human_voice_problems(text))
     if respond._BANNED.search(text):
         out.append(f"banned phrase: {respond._BANNED.search(text).group(0)}")
     if respond._LIST_WORDS.search(text):
         out.append(f"names the list: {respond._LIST_WORDS.search(text).group(0)}")
-    for m in _P1_WORDS.finditer(text):
-        out.append(f"Priority 1 sensitive word: {m.group(0)}")
-    unknown = set(PLACEHOLDER_RX.findall(text)) - set(WORST)
+    sensitive, worst = (_LAND_WORDS, LAND_WORST) if profile == "land" else (_P1_WORDS, WORST)
+    for m in sensitive.finditer(text):
+        out.append(f"{'land' if profile == 'land' else 'Priority 1'} sensitive word: {m.group(0)}")
+    unknown = set(PLACEHOLDER_RX.findall(text)) - set(worst)
     if unknown:
         out.append(f"unknown placeholder {sorted(unknown)}")
         return out
-    rendered = text.format(**WORST)
+    rendered = text.format(**worst)
     bad = sorted({c for c in rendered if c not in _GSM7})
     if bad:
         out.append(f"non-GSM-7 characters {bad} (message bills as UCS-2)")
@@ -589,8 +809,25 @@ def tag_control(fraction: float, commit: bool) -> int:
 
 def to_sc(text: str, sender: str) -> str:
     """Neutral placeholders -> Smarter Contact merge tags, sender as a literal."""
+    tags = {**SC_TAGS, **LAND_TAGS}
     return PLACEHOLDER_RX.sub(
-        lambda m: sender if m.group(1) == "sender" else SC_TAGS[m.group(1)], text)
+        lambda m: sender if m.group(1) == "sender" else tags[m.group(1)], text)
+
+
+def export_land(sender: str) -> Path:
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    path = OUT_DIR / "sc_land_templates.csv"
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        w.writerow(["title", "lane", "type", "touch", "job", "send day", "template",
+                    "worst-case chars before opt-out"])
+        for lane, n, named, noname in land_arms():
+            job, day = TOUCHES[n][0], TOUCHES[n][3]
+            for aud, pool in (("named", named), ("noname", noname)):
+                for i, t in enumerate(pool, 1):
+                    w.writerow([land_title(lane, n, aud, i), lane, "Initial" if n == 1 else "Follow-up", n, job,
+                                day, to_sc(t, sender), len(t.format(**dict(LAND_WORST, sender=sender)))])
+    return path
 
 
 def export(sender: str) -> list[Path]:
@@ -655,7 +892,7 @@ def main() -> int:
     if a.tag_control:
         return tag_control(a.tag_control, a.commit)
 
-    found = audit()
+    found = audit() + land_audit()
     if found:
         print("TEMPLATE PROBLEMS (nothing ships until these are fixed):")
         for p in found:
@@ -666,6 +903,8 @@ def main() -> int:
     print(f"OK: {n_t} touch variants, {len(QUICK_REPLIES)} quick replies and {n_w} "
           "workflow steps pass the human-voice, list-word, Priority 1, GSM-7, "
           f"length (touches <= {TOUCH_CAP} before opt-out) and question checks.")
+    n_l = sum(len(p) + len(q) for _, _, p, q in land_arms())
+    print(f"OK: {n_l} land touch variants (lots and tracts) pass the same checks on the land profile.")
     if a.preview:
         sample = dict(WORST, sender=a.sender)
         for n, (job, named, _, day) in TOUCHES.items():
@@ -673,8 +912,15 @@ def main() -> int:
             for t in named[: a.preview]:
                 r = t.format(**sample)
                 print(f"  ({len(r)}c) {r}")
+    if a.preview:
+        sample = dict(LAND_WORST, sender=a.sender)
+        for lane, n, named, _ in land_arms():
+            print(f"\nLand {lane} touch {n}")
+            for t in named[: a.preview]:
+                r = t.format(**sample)
+                print(f"  ({len(r)}c) {r}")
     if a.export:
-        for path in export(a.sender):
+        for path in export(a.sender) + [export_land(a.sender)]:
             print(f"wrote {path.relative_to(ROOT)}")
     return 0
 

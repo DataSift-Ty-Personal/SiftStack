@@ -81,6 +81,14 @@ def _authorized(secret: str, request: Request) -> bool:
 def _dedupe_key(source: str, payload: dict) -> str:
     """Stable per event, not per delivery, so a retry collapses onto the first."""
     event = str(payload.get("event") or "")
+    if source == "datasift" and config.SPEED_TO_LEAD != "off" and payload.get("event_id"):
+        # DataSift's documented webhook body names its event `event_type` and its id `event_id`,
+        # neither of which the keys below look for, so every delivery fell through to the same
+        # content key ("datasift:") and all but the first were dropped as duplicates. Nothing
+        # acted on these webhooks, so nothing noticed. The call-is-coming text (build plan 2.2)
+        # does act on them, so with that switch on each delivery keeps its own id. With it off
+        # this function is exactly what it was.
+        return f"{source}:{payload.get('event_type') or ''}:{payload['event_id']}"
     for key in ("smsId", "callId", "dialerCallId", "id"):
         if payload.get(key):
             # A delivery callback progresses sent -> delivered/undelivered
@@ -223,10 +231,35 @@ def alive():
 @app.get("/stats")
 def stats() -> dict:
     """The counters. Separate from /health so a slow read can never restart us."""
-    return {
+    out = {
         "ok": True,
         "phase": config.PHASE,
         "dry_run": config.DRY_RUN,
         "config_gaps": config.missing(),
         "stats": store.stats(),
     }
+    if config.RATE_BUDGET:
+        # Each app reports its own use of the account's DataSift budget (build plan 0.14).
+        from . import ratebudget
+
+        out["datasift_budget"] = ratebudget.usage()
+    return out
+
+
+@app.get("/hooks/{secret}/touches")
+def touches(secret: str, request: Request, day: str = "") -> Any:
+    """The texts this app sent on one day, for the brain's touch audit (build plan 0.23).
+
+    Off unless SMS_AGENT_TOUCH_FEED is on, and behind the same secret path and allowlist as the
+    webhooks. A row is a record id, the last four digits of the number, the time and which
+    system: never the message and never the whole number, because this is the one route here
+    that hands data OUT.
+    """
+    if not config.TOUCH_FEED or not _authorized(secret, request):
+        return Response(status_code=status.HTTP_404_NOT_FOUND)
+    from . import touchlog
+
+    try:
+        return touchlog.feed(day)
+    except ValueError:
+        return Response(status_code=status.HTTP_400_BAD_REQUEST)

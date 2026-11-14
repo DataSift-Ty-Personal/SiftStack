@@ -71,6 +71,9 @@ def load_debtors(scratch: str) -> list[dict]:
     for r in out.values():
         r["types"] = sorted(r["types"])
         r["n_liens"] = len(r["instruments"])
+        # The full set, for the daily "is any of this new" test. `instruments`
+        # below is cut to 8 for the note, and a ninth lien would hide behind it.
+        r["all_instruments"] = sorted(r["instruments"])
         r["instruments"] = sorted(r["instruments"])[:8]
         r["creditors"] = sorted(r["creditors"])[:5]
         r["is_entity"] = bool(ENTITY_RE.search(r["name"]))
@@ -100,11 +103,21 @@ def resolve(rec: dict, timeout: int = 40) -> dict:
 
     toks = set(norm(rec["name"]).split())
     hits = []
+    seen_accounts: set = set()
     for p in (d.get("parcels") or []):
         owner_toks = set(norm(p.get("owner")).split())
         # every token must appear: the API is relevance-ranked and over-matches
         if toks and toks.issubset(owner_toks):
-            hits.append({"account": p.get("account_number"),
+            # The search returns one row per OPEN BILL, not per parcel. Once the
+            # new year's bills are issued (October) a parcel with last year's
+            # still unpaid comes back twice. Unchecked, that doubled 283 of 396
+            # addresses on the 2026-11-11 pull and pushed real 8-parcel owners
+            # over the 15-parcel "institutional" line.
+            account = p.get("account_number")
+            if account in seen_accounts:
+                continue
+            seen_accounts.add(account)
+            hits.append({"account": account,
                          "owner": p.get("owner"),
                          "address": p.get("parcel_address"),
                          "amount_due": p.get("amount_due")})

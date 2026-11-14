@@ -43,6 +43,93 @@ from notice_parser import NoticeData, is_target_county, parse_notice_page
 logger = logging.getLogger(__name__)
 
 
+class LoginFailed(RuntimeError):
+    """The site login could not be completed, so nothing was scraped.
+
+    Raised only when a caller asks for it (scrape_all's raise_on_login_failure).
+    Distinct from an empty result on purpose: the usual cause is a dead or slow
+    proxy IP, which three in-place retries on the SAME IP cannot fix, and which
+    used to surface as "0 notices scraped, check the saved searches".
+    """
+
+
+class SubscriptionExpired(RuntimeError):
+    """The Smart Search subscription has lapsed, so there are no saved searches.
+
+    THE OUTAGE THIS NAMES. The account is a paid Smart Search subscription. On
+    2026-10-04 a 365-day term ran out. Login kept working, but the saved-search
+    dropdown collapsed to one option, "Subscription or free trial expired", so
+    every configured search was missing and each run reported "0 notices
+    scraped" for 39 days. Nothing in that message said what had happened.
+    Raised only on request (raise_on_login_failure), like LoginFailed, and never
+    retried: no proxy rotation fixes an unpaid account.
+    """
+
+
+# The last reading of the account's subscription block, for callers that want
+# to warn before it lapses. {"expires": "YYYY-MM-DD", "expired": bool, "product": str}
+SUBSCRIPTION: dict = {}
+
+# What the last scrape_all saw of each saved search, keyed by its dropdown label:
+#   {"reached": bool, "pages": int, "rows": int, "notices": int}
+# `rows` counts the View buttons actually read off the search's grid, seen before or not, and it
+# is the only proof that the search was opened: a label that is missing from the dropdown falls
+# through to the same "0 results" return as a search with nothing new. `reached` only says the
+# paging step ran. A caller that must tell "read, and nothing new" from "could not be opened"
+# reads `rows`, because a feed that publishes twice a year cannot be judged by whether it
+# produced something today. Bookkeeping only; nothing in the scrape reads it back.
+SEARCH_STATS: dict = {}
+
+
+def _stat(name: str, key: str, value=None, add: int = 0) -> None:
+    """Record one fact about a saved search. Never raises: a counter must not cost a notice."""
+    try:
+        row = SEARCH_STATS.setdefault(name, {"reached": False, "pages": 0, "rows": 0, "notices": 0})
+        if value is not None:
+            row[key] = value
+        if add:
+            row[key] = int(row.get(key) or 0) + int(add)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+_SUB_EXPIRY_RE = re.compile(
+    r"Current\s+Sub\.?\s+Expiration:\s*(\d{1,2})/(\d{1,2})/(\d{4})", re.IGNORECASE)
+_SUB_PRODUCT_RE = re.compile(r"Current\s+Product:\s*([^\r\n]+)", re.IGNORECASE)
+
+
+def parse_subscription(page_text: str, option_labels: list) -> dict:
+    """Subscription state from the dashboard text and the saved-search options.
+
+    `expired` comes from the dropdown, not the date: the dropdown is the thing
+    that actually stops the scrape, and it is what the site itself shows.
+    """
+    expired = any("expired" in (label or "").lower() for label in (option_labels or []))
+    expires = ""
+    m = _SUB_EXPIRY_RE.search(page_text or "")
+    if m:
+        expires = f"{int(m.group(3)):04d}-{int(m.group(1)):02d}-{int(m.group(2)):02d}"
+    p = _SUB_PRODUCT_RE.search(page_text or "")
+    return {"expires": expires, "expired": expired,
+            "product": p.group(1).strip() if p else ""}
+
+
+async def read_subscription(page: Page) -> dict:
+    """Read the subscription block off the Smart Search dashboard. Never raises."""
+    try:
+        if not await _navigate_to_dashboard(page):
+            return {}
+        text = await page.inner_text("body")
+        labels = await page.eval_on_selector_all(
+            f"{SEL_SAVED_SEARCHES_DROPDOWN} option",
+            "els => els.map(e => e.textContent.trim())",
+        )
+        return parse_subscription(text, labels)
+    except Exception as exc:
+        logger.debug("Could not read the subscription block: %s", exc)
+        return {}
+
+
 async def delay() -> None:
     """Random delay between requests to avoid detection."""
     wait = random.uniform(REQUEST_DELAY_MIN, REQUEST_DELAY_MAX)
@@ -399,6 +486,8 @@ async def run_saved_search(
     notices: list[NoticeData] = []
     current_page, total_pages = await _get_page_info(page)
     logger.info("  %d pages of results for %s", total_pages, search.saved_search_name)
+    _stat(search.saved_search_name, "reached", True)
+    _stat(search.saved_search_name, "pages", add=total_pages)
 
     # Skip ahead to start_page if needed
     if start_page > 1:
@@ -468,6 +557,7 @@ async def run_saved_search(
             break
 
     logger.info("  Found %d notices for %s", len(notices), search.saved_search_name)
+    _stat(search.saved_search_name, "notices", add=len(notices))
     return notices
 
 
@@ -530,6 +620,7 @@ async def _scrape_results_page(
     view_buttons = await page.query_selector_all(SEL_VIEW_BUTTON_PATTERN)
     num_results = len(view_buttons)
     logger.info("  %d results on this page", num_results)
+    _stat(search.saved_search_name, "rows", add=num_results)
 
     if num_results == 0:
         logger.warning(
@@ -1204,11 +1295,16 @@ async def scrape_all(
     persist_state: bool = True,
     backfill_months: int = 0,
     backfill_offset: int = 0,
+    raise_on_login_failure: bool = False,
 ) -> list[NoticeData]:
     """Main entry point for scraping.
 
     Args:
         mode: "daily" (only new since last run) or "historical" (last 12 months).
+        raise_on_login_failure: When True, a login that cannot complete raises
+                  LoginFailed instead of returning []. An empty list is what a
+                  genuinely empty search returns, so a caller that wants to
+                  retry through a different egress IP needs to tell them apart.
         backfill_months: When > 0, run every search once per calendar month over
                   the last N months instead of once over the whole period. This
                   is the only way past the site's 1000-row result cap, which
@@ -1231,6 +1327,7 @@ async def scrape_all(
     """
     if searches is None:
         searches = SAVED_SEARCHES
+    SEARCH_STATS.clear()
 
     # Load the cross-run seen-ID cache (caller may have pre-loaded for KVS-backed stores)
     if seen_ids is None:
@@ -1310,9 +1407,33 @@ async def scrape_all(
             if not await login(page):
                 logger.error("Login failed — aborting scrape")
                 await browser.close()
+                if raise_on_login_failure:
+                    raise LoginFailed(
+                        "could not reach or complete the tnpublicnotice login "
+                        "(page timed out or credentials were refused)"
+                    )
                 return []
             # Save cookies for next run
             await _save_cookies(context)
+
+        # Is the account still paid for? Read on every run so a lapse is named
+        # the morning it happens and a coming one can be warned about.
+        sub = await read_subscription(page)
+        SUBSCRIPTION.clear()
+        SUBSCRIPTION.update(sub)
+        if sub.get("expires"):
+            logger.info("Smart Search subscription: %s, expires %s",
+                        sub.get("product") or "unknown product", sub["expires"])
+        if sub.get("expired"):
+            when = f" on {sub['expires']}" if sub.get("expires") else ""
+            logger.error("Smart Search subscription has EXPIRED%s: no saved searches exist", when)
+            if raise_on_login_failure:
+                await browser.close()
+                raise SubscriptionExpired(
+                    f"the tnpublicnotice Smart Search subscription expired{when}. "
+                    "Renew it on the site (My Smart Search, then Renew). "
+                    "Nothing can be scraped until then"
+                )
 
         # Backfill runs each search once per calendar month; a normal run is
         # modelled as the single "no window" job so the loop below is identical.

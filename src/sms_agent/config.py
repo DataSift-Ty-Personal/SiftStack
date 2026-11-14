@@ -417,3 +417,166 @@ def missing() -> list[str]:
 # Keep the prospector channel to interested parties only (Ty, 2026-08-11).
 # Opt-out bookkeeping and DNT notes were burying the leads.
 SLACK_INTERESTED_ONLY = _env("SMS_AGENT_SLACK_INTERESTED_ONLY", "1") not in ("0", "false", "no")
+
+
+# ---------------------------------------------------------------- build plan switches (2026-11-13)
+#
+# Every setting below belongs to the build plan (packages 0.1, 0.4, 0.14, 0.17, 0.22, 0.23, 2.2,
+# 2.3 and 4.7) and every one of them defaults to what this app did the day before it was written.
+# This app is live: a deploy with none of these set must behave exactly as the last deploy did.
+# `SWITCHES` at the bottom is the same list in a form the CLI and the selftest can read.
+
+def _flag(key: str, default: str = "0") -> bool:
+    return _env(key, default).lower() in ("1", "true", "yes", "on")
+
+
+def _choice(key: str, default: str, allowed: tuple) -> str:
+    """One of a fixed set of words. An unknown word is the default, never a guess: a typo in a
+    Fly secret must not switch a safety check into a mode nobody chose."""
+    value = _env(key, default).lower()
+    return value if value in allowed else default
+
+
+def _int(key: str, default: int) -> int:
+    try:
+        return int(float(_env(key, str(default)) or default))
+    except ValueError:
+        return default
+
+
+# 0.1 The suppression gate (gate_rules.py) in front of the seeder and the Smarter Contact loaders.
+#   off      today: the seeder's own checks only.
+#   report   the gate runs and says what it would hold; nothing is held because of it.
+#   enforce  a record the gate refuses is held, with the gate's reason.
+GATE_MODE = _choice("SMS_AGENT_GATE", "off", ("off", "report", "enforce"))
+# Also read the record's custom fields (the Owner Deceased field). One more request a record.
+GATE_READ_FIELDS = _flag("SMS_AGENT_GATE_READ_FIELDS")
+# The same keys as the `gate:` block of the brain's playbook, as JSON, for an install whose tag
+# or list names differ: {"working_statuses": ["My Status"], "deceased_tags": ["deceased"]}.
+GATE_SETTINGS_RAW = _env("SMS_AGENT_GATE_SETTINGS", "")
+
+# 0.17 A no stops what is already in motion.
+# OWNER_REVOKE: an opt-out, a no, a hand raise or a reported death on one number pulls the queued
+#   and held texts to every other number of that owner (and its Smarter Contact campaigns).
+# SEND_RECHECK: the last look before each text leaves.
+#   off    today: this number's own suppression and thread state.
+#   local  plus the owner's other numbers, from this app's own store (no network).
+#   full   plus the gate on the record as DataSift holds it right then (one read a send).
+OWNER_REVOKE = _flag("SMS_AGENT_OWNER_REVOKE")
+SEND_RECHECK = _choice("SMS_AGENT_SEND_RECHECK", "off", ("off", "local", "full"))
+
+# 0.4 One table for every no (dispositions.py). Off: each texting path keeps its own handling.
+DISPOSITION_TABLE = _flag("SMS_AGENT_DISPOSITION_TABLE")
+# Where "not now" goes. follow_up is the status Smarter Contact's Nurture label already writes.
+NOT_NOW_STATUS = _env("SMS_AGENT_NOT_NOW_STATUS", "follow_up")
+# A reply that is probably the owner but never said so gets one confirmation call. The tag is how
+# a caller's queue finds it; nothing in this app dials.
+TAG_CONFIRM_CALL = _env("SMS_AGENT_TAG_CONFIRM_CALL", "Confirm By Call")
+# A phone that reaches a relative of the owner (a valid contact on an estate, not a wrong number).
+TAG_RELATIVE = _env("SMS_AGENT_TAG_RELATIVE", "Relative")
+# Records with simply no number get their own tag, so Mail Only keeps one meaning: a person asked
+# not to be called. This app never writes it; the name lives here so every tool spells it alike.
+TAG_NO_NUMBER = _env("SMS_AGENT_TAG_NO_NUMBER", "No Number")
+# Tag a record when a reply reports a death, so research picks it up (the gate's deceased_tags
+# already hold "Verify Deceased"). Empty, the default, writes no tag: today's behavior.
+TAG_DEATH_REPORTED = _env("SMS_AGENT_TAG_DEATH_REPORTED", "")
+
+# The three Smarter Contact labels the plan adds, plus Nurture. They must EXIST in Smarter Contact
+# before this goes on: a label the account does not have fails the write and pages the channel.
+SC_EXTRA_LABELS = _flag("SMARTERCONTACT_EXTRA_LABELS")
+SC_LABEL_CORRECT = _env("SMARTERCONTACT_LABEL_CORRECT", "Correct Number")
+SC_LABEL_WRONG_DNC = _env("SMARTERCONTACT_LABEL_WRONG_DNC", "Wrong DNC")
+SC_LABEL_RELATIVE = _env("SMARTERCONTACT_LABEL_RELATIVE", "Relative")
+SC_LABEL_NURTURE = _env("SMARTERCONTACT_LABEL_NURTURE", "Nurture")
+
+# 2.3 A hand raise becomes a New Lead. Off since 2026-08-11, because the status change fired a
+# sequence that assigned the record to someone other than the person who was paged. Turn it on
+# only once the alert and the Call New Lead sequence name the same person (plan 2.1).
+HAND_RAISE_NEW_LEAD = _flag("SMS_AGENT_HAND_RAISE_NEW_LEAD")
+NEW_LEAD_STATUS = _env("SMS_AGENT_NEW_LEAD_STATUS", "new_lead")
+# Statuses a hand raise never overwrites and never treats as a lead: a person looks first.
+NEW_LEAD_PROTECTED = {s.strip().lower() for s in _env(
+    "SMS_AGENT_NEW_LEAD_PROTECTED",
+    "sold,closed,close_out,dnc,opt_out,buyer,buyer_found,buyer_lost").split(",") if s.strip()}
+TAG_REPLY_ON_LEAD = _env("SMS_AGENT_TAG_REPLY_ON_LEAD", "Reply On Lead")
+# Decision D14 (not made): a reply asking well over value.
+#   not_interested  today's rule (Ty, 2026-10-30).
+#   cold_lead       passed as a Cold lead with an "ask over value" tag.
+OVER_VALUE = _choice("SMS_AGENT_OVER_VALUE", "not_interested", ("not_interested", "cold_lead"))
+COLD_LEAD_STATUS = _env("SMS_AGENT_COLD_LEAD_STATUS", "Cold Lead")
+TAG_OVER_VALUE = _env("SMS_AGENT_TAG_OVER_VALUE", "Ask Over Value")
+# An interested reply on a listed house. Empty = today's rule (Not Interested); a status name
+# (follow_up) sends it to nurture instead.
+LISTED_STATUS = _env("SMS_AGENT_LISTED_STATUS", "")
+
+# 2.2 The text that says a call is coming, about three minutes after a hand raise.
+#   off   today: an interested owner gets no text from the agent at all.
+#   held  the text is staged and waits for a person to release it.
+#   auto  the text goes out on its own, inside both send windows.
+SPEED_TO_LEAD = _choice("SMS_AGENT_SPEED_TO_LEAD", "off", ("off", "held", "auto"))
+SPEED_TO_LEAD_DELAY = _int("SMS_AGENT_SPEED_TO_LEAD_DELAY", 180)
+# DataSift sequences whose webhook means "this record just became a New Lead" (a lead that came
+# in by phone or web form, which this app would not otherwise hear about).
+SPEED_TO_LEAD_SEQUENCES = [s.strip().lower() for s in _env(
+    "SMS_AGENT_SPEED_TO_LEAD_SEQUENCES", "Call New Lead,New Lead").split(",") if s.strip()]
+# Who makes the call the text promises. Defaults to the person the handoff pages.
+LEAD_CALLER_NAME = _env("SMS_AGENT_LEAD_CALLER_NAME", "") or HANDOFF_NAME
+
+# 0.14 This app's share of the account's DataSift request budget (ratebudget.py).
+#   off    today: nothing is counted, and the client paces itself.
+#   count  every request is counted and reported (the digest, /stats); nothing is delayed.
+#          The step to take first, so the share is set from a measured week and not a guess.
+#   on     the count is also the limit.
+# 1, true and yes read as on, like every other switch here.
+_rate_mode = _env("SMS_AGENT_RATE_BUDGET", "off").lower()
+_rate_mode = {"1": "on", "true": "on", "yes": "on", "0": "off", "false": "off", "no": "off"}.get(_rate_mode, _rate_mode)
+RATE_BUDGET_MODE = _rate_mode if _rate_mode in ("off", "count", "on") else "off"
+RATE_BUDGET = RATE_BUDGET_MODE != "off"       # are this app's requests counted at all
+RATE_ENFORCE = RATE_BUDGET_MODE == "on"       # does the count also delay a request
+RATE_PER_MIN = _int("SMS_AGENT_RATE_PER_MIN", 10)
+RATE_PER_HOUR = _int("SMS_AGENT_RATE_PER_HOUR", 0)        # 0 = sixty times the minute share
+# While the first-to-market box makes its morning run, this app's scans drop to a trickle.
+# Reply dispositions are never slowed by it. "off" disables the window.
+RATE_QUIET = _env("SMS_AGENT_RATE_QUIET", "06:25-07:15")
+RATE_QUIET_PER_MIN = _int("SMS_AGENT_RATE_QUIET_PER_MIN", 3)
+RATE_MAX_WAIT = _int("SMS_AGENT_RATE_MAX_WAIT", 180)
+
+# 0.23 The day's sent texts, for the brain's touch audit: GET /hooks/<secret>/touches.
+TOUCH_FEED = _flag("SMS_AGENT_TOUCH_FEED")
+
+# 4.7 Number health: a flagged sending number is rested, not replaced.
+REST_FLAGGED = _flag("SMS_AGENT_REST_FLAGGED")
+REST_DAYS = _int("SMS_AGENT_REST_DAYS", 5)
+# Our own handset for the canary text. Nothing is staged without it.
+CANARY_TO = _env("SMS_AGENT_CANARY_TO", "")
+
+# (environment name, the default, what the default means, what turning it on changes).
+SWITCHES = [
+    ("SMS_AGENT_GATE", "off", "the seeder's own checks only",
+     "report: the suppression gate says what it would hold. enforce: it holds them."),
+    ("SMS_AGENT_GATE_READ_FIELDS", "0", "the gate reads a death from the owner flag, tags and lists",
+     "also reads the Owner Deceased field (one more DataSift request a record)."),
+    ("SMS_AGENT_OWNER_REVOKE", "0", "a stop cancels the texts queued to that one number",
+     "a stop, a no, a hand raise or a reported death pulls every number of that owner."),
+    ("SMS_AGENT_SEND_RECHECK", "off", "the worker checks this number's own suppression and thread",
+     "local: also the owner's other numbers. full: also the gate on the live record."),
+    ("SMS_AGENT_DISPOSITION_TABLE", "0", "each texting path handles a no its own way",
+     "both paths use dispositions.py: a smrtPhone no sets Not Interested, not now goes to Follow Up."),
+    ("SMARTERCONTACT_EXTRA_LABELS", "0", "Not interested, Wrong Number and Unknown DNC only",
+     "adds Correct Number, Wrong DNC, Relative and Nurture (create them in Smarter Contact first)."),
+    ("SMS_AGENT_HAND_RAISE_NEW_LEAD", "0", "an interested reply is tagged and assigned, status untouched",
+     "an interested reply sets New Lead, never over an existing lead status."),
+    ("SMS_AGENT_OVER_VALUE", "not_interested", "a reply asking over 1.25 times value is closed Not Interested",
+     "cold_lead: it is passed as a Cold lead with an Ask Over Value tag (decision D14)."),
+    ("SMS_AGENT_LISTED_STATUS", "", "an interested reply on a listed house is closed Not Interested",
+     "a status name here (follow_up) sends it to nurture instead."),
+    ("SMS_AGENT_SPEED_TO_LEAD", "off", "an interested owner gets no text from the agent",
+     "held: a call-is-coming text is staged for release. auto: it sends about three minutes later."),
+    ("SMS_AGENT_RATE_BUDGET", "off", "DataSift requests are paced only by the client's own half second gap",
+     "count: every request is counted and reported, nothing is delayed. on: the count is also a limit "
+     "of 10 a minute, shared by every process on this database."),
+    ("SMS_AGENT_TOUCH_FEED", "0", "no route serves the day's sent texts",
+     "GET /hooks/<secret>/touches returns them (record id, last four digits, time, system)."),
+    ("SMS_AGENT_REST_FLAGGED", "0", "every pool number is used",
+     "a number on the rest list sends no outreach and takes no new conversation until its rest ends."),
+]

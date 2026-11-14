@@ -90,17 +90,24 @@ def _condemnation_money(note: str) -> dict:
     (spotted on 3240 Wilson Ave, whose note says "1 bill $254.00, county tax
     $271.36 (2025)"). Agenda wording varies: "2 liens = $422.00",
     "City tax: $3,884.46 (2022)", "county $2,113.47 (2022)", "1 bill = $254.00".
+
+    The layout the City adopted in October 2026 states the same facts as bare
+    labelled values, which the note renders as "City taxes: $633.85 (2025)" and
+    "Fees: BOARDING BILL $208.00": plural "taxes", upper case, and no count in
+    front of the bill. All of those are accepted here, or every record from the
+    new agendas would upload with blank money fields again.
     """
     note = note or ""
     tax, years, liens = 0.0, [], 0.0
-    for pat in (r"[Cc]ity tax[:\s]*" + _MONEY, r"[Cc]ounty(?: tax)?[:\s]*" + _MONEY):
+    for pat in (r"[Cc]ity tax(?:es)?[:\s]*" + _MONEY,
+                r"[Cc]ounty(?: tax(?:es)?)?[:\s]*" + _MONEY):
         for m in re.finditer(pat + r"\s*\((\d{4})\)", note):
             tax += float(m.group(1).replace(",", ""))
             years.append(int(m.group(2)))
     # abatement liens and billed charges both become a claim on the parcel
-    for m in re.finditer(r"\d+\s+liens?\s*=?\s*" + _MONEY, note):
+    for m in re.finditer(r"\bliens?\s*=?\s*" + _MONEY, note, re.I):
         liens += float(m.group(1).replace(",", ""))
-    for m in re.finditer(r"\d+\s+bills?\s*=?\s*" + _MONEY, note):
+    for m in re.finditer(r"\bbills?\s*=?\s*" + _MONEY, note, re.I):
         liens += float(m.group(1).replace(",", ""))
     return {"tax_due": round(tax, 2) or None,
             "tax_years": sorted(set(years)),
@@ -123,7 +130,7 @@ def load_condemnations(scratch: str) -> list[dict]:
             "case_number": r.get("record", ""),
             "event_date": r.get("hearing", ""),
             "filed_date": r.get("hearing", ""),   # BBB/Public Officer hearing date
-            "source_url": "https://www.knoxvilletn.gov/government/boards_commissions/better_building_board",
+            "source_url": "https://www.knoxvilletn.gov/173/Better-Building-Board-Public-Officer-Hea",
         })
         out[-1].update(_condemnation_money(r.get("notes", "")))
     return out
@@ -395,17 +402,18 @@ def load_liens(scratch: str) -> list[dict]:
         for p in r.get("parcels", []):
             if not p.get("address"):
                 continue
+            # No tax figure in the prose here: the search row's amount_due is
+            # not a delinquency (see apply_true_delinquency), and a number
+            # written into Notes cannot be corrected afterwards.
             note = ("Lien debtor %s: %d lien instrument(s) recorded (%s). "
                     "%d of %d still active. Outstanding lien total $%s "
                     "(across %d priced instrument(s)). Creditors: %s. "
-                    "County tax account %s, amount due %s.%s"
+                    "County tax account %s."
                     % (r["name"], r.get("n_liens", 0), "/".join(r.get("types") or []),
                        len(active), len(instruments) or r.get("n_liens", 0),
                        format(total_active, ",.2f"), len(active_amts),
                        ", ".join(r.get("creditors") or [])[:120] or "n/a",
-                       p.get("account"), p.get("amount_due"),
-                       (" Unpaid county tax years: %s." % ", ".join(str(y) for y in unpaid))
-                       if unpaid else ""))
+                       p.get("account")))
             out.append({
                 "source": "register_of_deeds_lien",
                 "notice_type": "lien",
@@ -419,12 +427,121 @@ def load_liens(scratch: str) -> list[dict]:
                 "lien_active": len(active),
                 "lien_recorded": len(instruments) or r.get("n_liens", 0),
                 "lien_types": r.get("types") or [],
+                "tax_account": p.get("account") or "",
                 "tax_due": p.get("amount_due"),
                 "tax_years": unpaid,
                 "notes": note,
                 "source_url": "https://paxsub.knoxrod.org/views/search",
             })
     return out
+
+
+def load_staged(scratch: str, feeds=()) -> list[dict]:
+    """Rows the newer feeds staged for this upload: substitute trustee appointments, the county
+    tax sale report, the code violation file (see ftm_staging).
+
+    Each of those stages writes records already in this module's shape, so they pass through the
+    same buy box, the same true-delinquency check and the same upside-down rule as a lien.
+
+    Only the feeds NAMED are read (--staged-feeds; the runner names the ones whose stage is in
+    the run). With none named, which is today's command line, nothing is read even when a
+    pending file exists: a file left by a hand-run must not upload in a run that never asked."""
+    if not feeds:
+        return []
+    try:
+        import ftm_staging
+    except Exception:      # the staging module is optional to this aggregator
+        return []
+    out = []
+    for feed in [f for f in ftm_staging.STAGED_FEEDS if f in set(feeds)]:
+        for r in ftm_staging.pending_rows(scratch, feed):
+            if isinstance(r, dict) and r.get("address") and r.get("notice_type"):
+                out.append(dict(r))
+    return out
+
+
+def _list_name(r: dict) -> str:
+    """The DataSift list for one record. A staged feed names its own list (a setting in
+    ftm_feeds), because two feeds can share a notice type and still belong on different lists:
+    a code violation from the City's file is not a condemnation."""
+    if r.get("list_name"):
+        return str(r["list_name"])
+    feed = r.get("feed")
+    if feed:
+        try:
+            import ftm_feeds
+            if feed in ftm_feeds.BY_KEY:
+                return ftm_feeds.BY_KEY[feed].list_name
+        except Exception:
+            pass
+    return LIST_NAME.get(r.get("notice_type", ""), "")
+
+
+def one_lien_row_per_address(records: list[dict]) -> list[dict]:
+    """Collapse lien rows to one per property, keeping the largest open lien.
+
+    Two debtors named on one lien (a married couple) each resolve to the same
+    house, and a DataSift record is an address, so the second row only posts a
+    second note and overwrites the first row's fields. Other sources pass
+    through untouched and order is preserved.
+    """
+    best: dict[str, dict] = {}
+    out: list = []
+    for r in records:
+        if r.get("source") != "register_of_deeds_lien":
+            out.append(r)
+            continue
+        key = " ".join((r.get("address") or "").upper().split())
+        held = best.get(key)
+        if held is None:
+            best[key] = r
+            out.append(key)
+        elif float(r.get("lien_total") or 0) > float(held.get("lien_total") or 0):
+            best[key] = r
+    return [best[x] if isinstance(x, str) else x for x in out]
+
+
+def apply_true_delinquency(records: list[dict], lookup=None, sleep: float = 0.4) -> dict:
+    """Replace the county's "amount due" with what is actually DELINQUENT.
+
+    `amount_due` on a parcel search row is every unpaid bill, including the
+    current year's, which is not late until the end of February. In August
+    that was harmless because the new bills had not been issued. By November
+    it marked 1,274 of 1,451 lien parcels as tax delinquent and listed 2026 as
+    an unpaid year for 450 of 464 debtors. The per-account bill route flags
+    each bill, so only bills that are both delinquent and unpaid count.
+
+    Runs on records that carry a `tax_account`. A record whose bills cannot be
+    read gets a BLANK tax figure, never the raw one: blank means not checked.
+    """
+    if lookup is None:
+        from tax_enricher import _knox_lookup_by_parcel as lookup
+    stats = {"checked": 0, "delinquent": 0, "unreadable": 0}
+    for r in records:
+        account = r.get("tax_account")
+        if not account:
+            continue
+        res = lookup(account)
+        stats["checked"] += 1
+        if res is None:
+            stats["unreadable"] += 1
+            r["tax_due"], r["tax_years"] = None, []
+            said = "County tax bills could not be read."
+        elif res.get("delinquent_amount", 0) > 0:
+            stats["delinquent"] += 1
+            years = res.get("delinquent_year_list") or []
+            r["tax_due"], r["tax_years"] = res["delinquent_amount"], years
+            said = "Delinquent county tax $%s%s." % (
+                format(res["delinquent_amount"], ",.2f"),
+                (" for " + ", ".join(years)) if years else "")
+        else:
+            r["tax_due"], r["tax_years"] = None, []
+            said = "No delinquent county tax."
+        # Leads the note so the 900-character cap cannot cut it off.
+        r["notes"] = (said + " " + (r.get("notes") or "")).strip()
+        if sleep:
+            time.sleep(sleep)
+    return stats
 
 
 _ADDR_RE = re.compile(
@@ -499,12 +616,18 @@ def enrich(records: list[dict], city: str = "Knoxville", state: str = "TN",
         from siftmap_standalone import SiftMapClient as StandaloneSiftMap
         c = StandaloneSiftMap()
         print("SiftMap: using the standalone client (Api-Key auth)")
+    try:
+        from ftm_budget import acquire as _slot     # this box's SiftMap share; a no-op unless switched on
+    except Exception:
+        def _slot(*_a, **_k):
+            return 0.0
     resolved = 0
     for i, r in enumerate(records):
         if not r.get("address"):
             continue
-        q = "%s, %s, %s" % (normalize_address(r["address"]), city, state)
+        q = "%s, %s, %s" % (normalize_address(r["address"]), (r.get("city") or city), state)
         try:
+            _slot("siftmap")
             hits = c.autocomplete(q, limit=3)
             if not hits:
                 continue
@@ -512,10 +635,16 @@ def enrich(records: list[dict], city: str = "Knoxville", state: str = "TN",
             pid = hits[0].get("id")
             if not pid:
                 continue
+            _slot("siftmap")
             d = c.get_detail(pid)
             r["sm"] = d
             resolved += 1
         except Exception as e:
+            if type(e).__name__ == "BudgetExhausted":
+                # The hour's SiftMap share is spent. Every record after this would read as "no
+                # SiftMap match", be rejected by the buy box, and then be marked handled as if
+                # it had been judged. Stop the pull instead: the stage fails and nothing settles.
+                raise
             r["sm_error"] = "%s: %s" % (type(e).__name__, e)
         if (i + 1) % 25 == 0:
             print("  enriched %d/%d (resolved %d)" % (i + 1, len(records), resolved), flush=True)
@@ -596,10 +725,13 @@ def to_datasift(r: dict, run_date: str) -> dict:
     if m:
         zip_code = m.group(1)
 
+    # Every source this module read before 2026-11 was Knox, so the county and city were
+    # constants. A staged feed may say otherwise; a record that says nothing is still Knox.
+    county = (r.get("county") or "Knox").strip() or "Knox"
     row = {k: "" for k in OUT_COLUMNS}
     row.update({
         "Property Street Address": r.get("address", ""),
-        "Property City": "Knoxville",
+        "Property City": (r.get("city") or "Knoxville").strip() or "Knoxville",
         "Property State": "TN",
         "Property ZIP Code": zip_code,
         "Owner First Name": first,
@@ -609,12 +741,12 @@ def to_datasift(r: dict, run_date: str) -> dict:
         "Mailing State": m_state,
         "Mailing ZIP Code": m_zip,
         "Tags": ", ".join(t for t in [
-            "Courthouse Data", r.get("notice_type", ""), "Knox",
+            "Courthouse Data", r.get("notice_type", ""), county,
             r.get("source", ""),
             ("filed_" + _quarter(filed)) if filed else "filed_unknown",
             _band(r["lien_total"]) if r.get("lien_total") else "",
             "pulled_" + run_date] if t),
-        "Lists": LIST_NAME.get(r.get("notice_type", ""), ""),
+        "Lists": _list_name(r),
         "Notes": build_notes(r),
         "Estimated Value": d.get("total_market_value") or "",
         "Last Sale Date": d.get("last_sale_date") or "",
@@ -629,10 +761,14 @@ def to_datasift(r: dict, run_date: str) -> dict:
         "Tax Deliquent Value": _tax_due(r),                # DataSift's own typo
         "Tax Delinquent Year": _tax_year(r),
         "Notice Type": r.get("notice_type", ""),
-        "County": "Knox",
+        "County": county,
         "Date Added": filed or run_date,
         "Source URL": r.get("source_url", ""),
     })
+    # A tax sale record rides the hot auction lane by its sale date, so the date has to land in
+    # a field, not only in the note.
+    if r.get("sale_date"):
+        row["Tax Auction Date"] = _iso(r["sale_date"]) or r["sale_date"]
     row.update(_equity_block(r))
     if r.get("lien_total"):
         row["Outstanding Lien Amount"] = round(float(r["lien_total"]), 2)
@@ -766,7 +902,11 @@ def main() -> int:
     ap.add_argument("--value-max", type=float, default=700000.0)
     ap.add_argument("--scratch", default=os.environ.get("FTM_SCRATCH", "."))
     ap.add_argument("--no-enrich", action="store_true")
+    ap.add_argument("--staged-feeds", default="",
+                    help="comma list of staged feeds to include (substitute_trustee, tax_sale_report, "
+                         "code_violations); none by default")
     a = ap.parse_args()
+    staged_feeds = tuple(x.strip() for x in a.staged_feeds.split(",") if x.strip())
 
     run_date = date.today().isoformat()
     # Evictions and trustee deeds retired 2026-08-25 (Ty). Evictions were not
@@ -776,7 +916,7 @@ def main() -> int:
     # foreclosure notices the scraper already takes. load_landlords() and
     # load_rod() are kept intact so re-wiring is a one-line change.
     records = (load_condemnations(a.scratch) + load_probate(a.scratch)
-               + load_tnpn(a.scratch) + load_liens(a.scratch))
+               + load_tnpn(a.scratch) + load_liens(a.scratch) + load_staged(a.scratch, staged_feeds))
     if not records:
         print("no source records found in", a.scratch)
         return 1
@@ -794,8 +934,26 @@ def main() -> int:
         if not r.get("address"):
             rejected.append((r, "no property address in the record"))
             continue
+        if not _list_name(r):
+            # A record with no list uploads fine and lands nowhere: no lane reads it and nobody
+            # finds it. Every source this pull has always read names its list, so this only
+            # ever stops a newer feed whose rows were staged without one.
+            rejected.append((r, "no DataSift list is named for this record"))
+            continue
         ok, why = in_buybox(r.get("sm"), a.value_min, a.value_max)
         (kept if ok else rejected).append((r, why) if not ok else r)
+
+    before = len(kept)
+    kept = one_lien_row_per_address(kept)
+    if len(kept) != before:
+        print("liens: %d rows -> %d (one per address)" % (before, len(kept)))
+
+    # After the buy box on purpose: one bill read per KEPT record, not per parcel.
+    if not a.no_enrich:
+        tax = apply_true_delinquency(kept)
+        if tax["checked"]:
+            print("county tax: %(checked)d checked, %(delinquent)d delinquent, "
+                  "%(unreadable)d unreadable" % tax)
 
     # Create the parent of every output path, not just --out. The rejects and
     # upside-down files default under output/, which does not exist in the

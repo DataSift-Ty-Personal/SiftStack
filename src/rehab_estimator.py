@@ -552,7 +552,7 @@ def generate_rehab_report(full_est: RehabEstimate, wholetail_est: RehabEstimate 
 
     row = 5
     data = [
-        ("Finish Tier", f"Tier {full_est.tier} — {TIER_NAMES[full_est.tier]}"),
+        ("Finish Tier", f"Tier {full_est.tier}: {TIER_NAMES[full_est.tier]}"),
         ("Region", f"{full_est.region.title()} (×{full_est.regional_multiplier:.2f})"),
         ("Property Size", f"{full_est.sqft:,} sqft"),
         ("Bed/Bath", f"{full_est.bedrooms}bd / {full_est.bathrooms}ba"),
@@ -695,18 +695,18 @@ def generate_rehab_report(full_est: RehabEstimate, wholetail_est: RehabEstimate 
 
     _write_header_row(ws7, 4, ["Category", "Duration (weeks)", "Phase"])
     phase_map = {
-        "Foundation/Structural": "1 — Structural",
-        "Roof": "1 — Structural",
-        "Plumbing": "2 — Mechanical",
-        "Electrical": "2 — Mechanical",
-        "HVAC": "2 — Mechanical",
-        "Windows": "2 — Mechanical",
-        "Kitchen": "3 — Interior",
-        "Master Bathroom": "3 — Interior",
-        "Secondary Bathroom(s)": "3 — Interior",
-        "Flooring": "4 — Finish",
-        "Paint (Interior)": "4 — Finish",
-        "Exterior": "5 — Exterior",
+        "Foundation/Structural": "1: Structural",
+        "Roof": "1: Structural",
+        "Plumbing": "2: Mechanical",
+        "Electrical": "2: Mechanical",
+        "HVAC": "2: Mechanical",
+        "Windows": "2: Mechanical",
+        "Kitchen": "3: Interior",
+        "Master Bathroom": "3: Interior",
+        "Secondary Bathroom(s)": "3: Interior",
+        "Flooring": "4: Finish",
+        "Paint (Interior)": "4: Finish",
+        "Exterior": "5: Exterior",
     }
     for i, room in enumerate(full_est.rooms, 5):
         ws7.cell(row=i, column=1, value=room.category)

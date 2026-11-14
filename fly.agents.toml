@@ -13,12 +13,17 @@ primary_region = "iad"
 
 [env]
   AGENTS_PUBLIC_URL = "https://siftstack-agents.fly.dev"
+  AGENTS_SANDBOX_MEM_MB = "1280"   # one sandbox run; the brain and the Claude engine keep the rest of 2 GB
   # Secrets beat [env]: if AGENTS_MODE is ever set as a secret, that value wins and this line
   # lies. Ask the box: GET /health reports the effective mode.
   AGENTS_MODE = "dry"
   AGENTS_RUN_CAP_USD = "5"
   AGENTS_DAILY_CAP_USD = "25"
   AGENTS_DP_COLUMN = "Check Relatives"
+  # The deep prospect's research runs on the low-cost engine (two inexpensive models, cross-checked,
+  # a referee on a hard disagreement; measured $1.21 a record live against more than $4). The
+  # analysis passes stay on Claude. Remove this line and the Claude researcher does the research.
+  AGENTS_RESEARCH_ENGINE = "open"
 
 [mounts]
   source = "agents_data"
@@ -34,4 +39,4 @@ primary_region = "iad"
 
 [[vm]]
   size = "shared-cpu-1x"
-  memory = "1gb"
+  memory = "2gb"   # the code sandbox (pandas) runs beside an employee turn

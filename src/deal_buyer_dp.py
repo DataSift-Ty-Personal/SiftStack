@@ -45,12 +45,11 @@ try:
 except Exception:
     pass
 
-from enterprise_prospects import norm_name  # noqa: E402
+from deal_buyer_match import REG_DIR, norm_name  # noqa: E402  (one registry folder, one name key)
 
 log = logging.getLogger("deal_buyer_dp")
 
 ROOT = Path(__file__).resolve().parent.parent
-REG_DIR = ROOT / "output" / "dispo_buyers"
 SKILL_SCRIPTS = ROOT / "skills/deep-prospecting-v5/scripts"
 REAL_CONTACT = "https://api.trestleiq.com/1.1/real_contact"
 SMARTSKIP_PER_HIT = 0.15
@@ -135,13 +134,31 @@ def _dm(dm: dict, source: str, via: str = "") -> dict:
             "seen": dm.get("phones_or_emails_seen") or []}
 
 
-def phase_crm(a, out: Path) -> None:
-    """Read the live CRM record of every slot and group member (read only)."""
+def _read_record(crm, uuid: str) -> dict:
+    """One record over the Open API key. `crm` is the agents' budgeted client
+    (record()) or the standalone key client (get_record()); a read that fails
+    returns {} and is counted, never mistaken for an empty record."""
+    try:
+        if hasattr(crm, "record"):
+            return crm.record(uuid) or {}
+        return crm.get_record(uuid) or {}
+    except Exception as exc:  # noqa: BLE001  (counted as unreadable by the caller)
+        log.warning("record %s unreadable: %s", uuid, str(exc)[:160])
+        return {}
+
+
+def phase_crm(a, out: Path, crm=None) -> None:
+    """Read the live CRM record of every slot and group member (read only).
+
+    Over the Open API key alone: it used to go through the texting app's CRM
+    client, which prefers the Deal Room checkout and does not exist on the
+    agents box."""
     ranked = _load(out / "ranked.json", None)
     if not ranked:
         raise SystemExit("run deal_buyer_match.py --phase rank first")
-    from sms_agent import crm
-    from dispo_buyers import _get_record
+    if crm is None:
+        import crm_key_client
+        crm = crm_key_client.from_env()
     rows = [r for r in ranked["ranked"] if r.get("top") or r.get("same_group_as")]
     recs = _load(out / "crm_records.json", {})
     miss = 0
@@ -149,7 +166,7 @@ def phase_crm(a, out: Path) -> None:
         u = r.get("saved_uuid") or ""
         if not u or u in recs:
             continue
-        rec = _get_record(crm, u)
+        rec = _read_record(crm, u)
         if rec:
             recs[u] = rec
         else:
@@ -545,6 +562,9 @@ def phase_export(a, out: Path) -> None:
         by_rank.setdefault(r["rank"], []).append(r)
     top = {r["top"]: r for r in ranked.get("ranked", []) if r.get("top")}
     subj = ranked.get("subject", {})
+    # The titles name THIS deal. They carried the first deal's street (5123 Odell)
+    # as a literal, so every later workbook was headed with the wrong house.
+    where = (subj.get("address") or getattr(a, "slug", "") or "this deal").split(",")[0]
 
     navy, line_c = "0A1130", "D7DCE5"
     head_font = Font(bold=True, color=navy)
@@ -604,8 +624,8 @@ def phase_export(a, out: Path) -> None:
         data.append([d["rank"], label, t.get("score"), t.get("buyer_type") or "",
                      dm.get("name") or "Not verified", dm.get("role") or "", dm.get("confidence") or "",
                      number, tier, grade, why])
-    sheet(ws, "5123 Odell Rd: top 10 buyers (ask $%s, contract $%s)"
-          % ("{:,.0f}".format(subj.get("ask") or 0), "{:,.0f}".format(subj.get("contract") or 0)),
+    sheet(ws, "%s: top %d buyers (ask $%s, contract $%s)"
+          % (where, len(dossier), "{:,.0f}".format(subj.get("ask") or 0), "{:,.0f}".format(subj.get("contract") or 0)),
           ["#", "Buyer", "Fit score", "Model", "Decision maker", "Role", "Confidence",
            "Best verified number", "Tier", "Grade", "Why this buyer"],
           data, [4, 30, 8, 14, 24, 22, 10, 16, 11, 7, 70])
@@ -625,7 +645,7 @@ def phase_export(a, out: Path) -> None:
         for o in (top.get(d["rank"], {}).get("local") or []):
             lb.append([d["rank"], d["buyer"], o["address"], o["dist"], o["date"], o["price"],
                        o["exit"], o["txn"], o["beds"], o["sqft"], "Cash" if o["cash"] else ""])
-    sheet(ws, "What each buyer bought near 5123 Odell (deed records)",
+    sheet(ws, "What each buyer bought near %s (deed records)" % where,
           ["#", "Buyer", "Property", "Miles", "Bought", "Paid", "Resold for", "Type", "Beds", "Sqft", "Cash"],
           lb, [4, 28, 40, 7, 11, 11, 11, 11, 6, 7, 6])
     for row in ws.iter_rows(min_row=4):
@@ -637,7 +657,9 @@ def phase_export(a, out: Path) -> None:
     cr = [[c["address"], c["dist"], c["date"], c["price"], c["ppsf"], c["beds"], c["baths"], c["sqft"],
            "Investor/cash" if (c["cash"] or c["entity_buyer"]) else "Retail", c["seller"], c["buyer"]]
           for c in comps.get("rows", []) if c.get("in_size")]
-    sheet(ws, "Sold within 1 mile, last 18 months, %s-%s sqft" % tuple(comps.get("size_window", ["", ""])),
+    sheet(ws, "Sold within %g mi, last %d months, %s-%s sqft" % (
+              (subj.get("comp_mi") or getattr(a, "comp_mi", 1.0)), (subj.get("comp_months") or getattr(a, "comp_months", 18)),
+              *tuple(comps.get("size_window", ["", ""]))),
           ["Address", "Miles", "Sold", "Price", "$/sf", "Beds", "Baths", "Sqft", "Kind", "Seller", "Buyer"],
           cr, [36, 7, 11, 11, 7, 6, 6, 7, 13, 28, 28])
     for row in ws.iter_rows(min_row=4):

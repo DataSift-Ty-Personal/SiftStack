@@ -15,7 +15,8 @@ import logging
 import re
 from typing import Optional
 
-from . import classify, config, crm, escalate, respond, sender_pool, smrtphone, store
+from . import (classify, config, crm, dispositions, escalate, ratebudget, respond, revocation,
+               sender_pool, smrtphone, store)
 from .knowledge import touches
 
 log = logging.getLogger(__name__)
@@ -160,6 +161,21 @@ def handle_inbound(payload: dict) -> dict:
         if context:
             store.map_phone(phone, record_uuid=record_uuid, context=context)
 
+    # ---- one table for every no (build plan 0.4) ----
+    # Off by default. On, this reply is dispositioned by the same table the Smarter Contact path
+    # uses, so "not interested" writes the same thing whichever number it was sent to. A hand
+    # raise that is worth the call falls through to the handoff below, as it always has.
+    if config.DISPOSITION_TABLE:
+        done = _table_disposition(phone, record_uuid, body, result, context, matches, program)
+        if done is not None:
+            outcome["actions"] += done.actions
+            outcome["action"] = done.action
+            outcome["disposition"] = done.kind
+            if conv.get("state") == "opted_out":
+                # A later "not for sale" from someone who already said stop must not reopen it.
+                store.update_conversation(phone, state="opted_out")
+            return outcome
+
     # ---- terminal intents: write, suppress, stop talking ----
     if result.intent == "OPT_OUT":
         outcome["actions"] += _do_opt_out(phone, record_uuid, matches, body)
@@ -245,6 +261,36 @@ def handle_inbound(payload: dict) -> dict:
     return outcome
 
 
+def _table_disposition(phone: str, record_uuid: str, body: str, result, context: dict,
+                       matches: Optional[list], program: str):
+    """Run one smrtPhone reply through the shared table (dispositions.py).
+
+    Returns None when the table leaves the reply to the flow that follows: a question, small
+    talk, or a hand raise that is worth the call. Only reached with SMS_AGENT_DISPOSITION_TABLE on.
+    """
+    kind = dispositions.decide(result.intent, body, program)
+    if not kind:
+        return None
+    env = dispositions.Env(phone=phone, record_uuid=record_uuid, body=body, result=result,
+                           context=context or {}, matches=matches, program=program, inbox="smrtPhone",
+                           allow_status=config.PHASE >= 2)
+    if kind != "hand_raise":
+        return dispositions.apply(kind, env)
+    if program in ("buyer", "dispo"):
+        return None
+    # The same test the Smarter Contact path applies: a listed house, or an ask far over value,
+    # is not worth the call today.
+    quality, why = dispositions.lead_quality(record_uuid, body)
+    if not quality:
+        return None
+    env.reason = f"not pushed: {why}"
+    out = dispositions.apply(quality, env)
+    out.actions = ([f"not pushed: {why}"]
+                   + dispositions.skip_notice(phone, record_uuid, body, context or {}, why, out.action)
+                   + out.actions)
+    return out
+
+
 def _do_opt_out(phone: str, record_uuid: str, matches: Optional[list] = None,
                 body: str = "") -> list[str]:
     """Honor an opt-out completely: local, remote, CRM, and anything queued.
@@ -309,6 +355,11 @@ def _do_opt_out(phone: str, record_uuid: str, matches: Optional[list] = None,
             f"(no API route), so add it there by hand if you want its inbox blocked too.\n{detail}",
             record_uuid,
         )
+    # Build plan 0.17: the stop reaches the owner's OTHER numbers too. Five of nine measured
+    # replies came from a different number than the one texted, so a stop that only clears this
+    # number's queue leaves tomorrow's touch on its way to the next one. Nothing happens here
+    # unless SMS_AGENT_OWNER_REVOKE is on.
+    acts += revocation.on_event("stop", phone, record_uuid, matches=[{"record_uuid": u} for u in targets])
     return acts
 
 
@@ -376,6 +427,11 @@ def _do_hot_lead(
 
     # Set CORRECT: they engaged about the property, so the number is good.
     acts.append(f"phone status -> CORRECT: {_report(crm.set_phone_status(record_uuid, phone, 'CORRECT'))}")
+    # Build plan 2.3 and 0.17. Both lines are empty lists until their switch is on: the first
+    # sets New Lead (never over a status that already means lead), the second pauses the owner's
+    # other numbers, so touch 2 does not land on their second line while a person is dialing.
+    acts += dispositions.hand_raise(phone, record_uuid, body, program, context)
+    acts += revocation.on_event("handoff", phone, record_uuid)
     return acts
 
 
@@ -496,6 +552,24 @@ def _do_needs_answer(phone: str, record_uuid: str, body: str, result,
 
 def _do_sensitive(phone: str, record_uuid: str, body: str, result,
                   matches: Optional[list] = None) -> list[str]:
+    """A sensitive reply, then its reach to the owner's other numbers (build plan 0.17).
+
+    The handling itself is `_sensitive` below, unchanged. What is added reads the result rather
+    than repeating the logic: if the handler suppressed this number, the owner told us to stop,
+    and that holds for every number of theirs; if it only paused the thread, a person is looking,
+    so the owner's other numbers wait too. Nothing is added unless SMS_AGENT_OWNER_REVOKE is on.
+    """
+    acts = _sensitive(phone, record_uuid, body, result, matches)
+    if config.OWNER_REVOKE:
+        reason = store.is_suppressed(phone) or ""
+        stopped = reason.startswith(("sensitive", "asked to be left alone", "opt_out"))
+        acts += revocation.on_event("stop" if stopped else "pause", phone, record_uuid,
+                                    matches=matches if stopped else None, why="a sensitive reply")
+    return acts
+
+
+def _sensitive(phone: str, record_uuid: str, body: str, result,
+               matches: Optional[list] = None) -> list[str]:
     """A sensitive reply, handled by WHICH KIND of sensitive it is.
 
     These were all treated the same for the first week: pause the thread, tag
@@ -768,10 +842,13 @@ def _close_not_interested(phone: str, record_uuid: str, reason: str, verified: b
     # has proved the line reaches the owner, which is worth more than the single
     # conversation it just ended: this is the number the next campaign dials.
     # Not for a bare "No" we could not read: that can mean the number is not theirs.
+    # Build plan 0.17: a no on one number closes the owner's other numbers as well. The extra
+    # words are empty unless SMS_AGENT_OWNER_REVOKE is on, so the sentence reads as it always did.
+    reach = "".join("; " + a for a in revocation.on_event("no", phone, record_uuid))
     if not verified:
-        return f"closed as a {label}, phone left unverified (may be a wrong number)"
+        return f"closed as a {label}, phone left unverified (may be a wrong number)" + reach
     crm.set_phone_status(record_uuid, phone, "CORRECT")
-    return f"closed as a {label}, phone marked CORRECT"
+    return f"closed as a {label}, phone marked CORRECT" + reach
 
 
 # --------------------------------------------------------------- outbound
@@ -963,7 +1040,11 @@ def handle_dnt(payload: dict) -> dict:
     store.suppress(phone, "opt_out")
     store.update_conversation(phone, state="opted_out", paused_reason="added to DNT")
     cancelled = store.cancel_queued(phone, "DNT")
-    return {"action": "suppressed", "phone": phone, "cancelled": cancelled}
+    out = {"action": "suppressed", "phone": phone, "cancelled": cancelled}
+    reach = revocation.on_event("stop", phone)      # empty unless SMS_AGENT_OWNER_REVOKE is on
+    if reach:
+        out["actions"] = reach
+    return out
 
 
 # --------------------------------------------------------------- DataSift
@@ -991,11 +1072,24 @@ def handle_datasift(payload: dict) -> dict:
         first = phones[0]
         phone = store.clean_phone(first.get("number") if isinstance(first, dict) else first)
 
+    # Build plan 2.2: a lead that came in by phone or web form is one this app would not hear
+    # about. When the New Lead sequence carries a webhook to this app, that delivery is the
+    # signal. Read only with SMS_AGENT_SPEED_TO_LEAD on; otherwise this handler is as it was.
+    lead_text = None
+    if config.SPEED_TO_LEAD != "off" and record_uuid:
+        from . import speedtolead
+
+        lead_text = speedtolead.from_webhook(payload, record_uuid)
+
     if record_uuid and phone:
         store.map_phone(phone, record_uuid=record_uuid)
-        return {"action": "mapped", "record_uuid": record_uuid, "phone": phone}
-    return {"action": "logged", "record_uuid": record_uuid, "phone": phone,
-            "note": "payload shape not recognized; see events table"}
+        out = {"action": "mapped", "record_uuid": record_uuid, "phone": phone}
+    else:
+        out = {"action": "logged", "record_uuid": record_uuid, "phone": phone,
+               "note": "payload shape not recognized; see events table"}
+    if lead_text is not None:
+        out["speed_to_lead"] = lead_text
+    return out
 
 
 # ---------------------------------------------------------------- dispatch
@@ -1010,6 +1104,14 @@ HANDLERS = {
 
 
 def process(source: str, payload: dict) -> dict:
+    # Everything a webhook sets off is reply disposition or speed-to-lead work, which goes first
+    # in this app's DataSift share (build plan 0.14). The marker costs nothing when the budget
+    # is off: nothing reads it.
+    with ratebudget.priority():
+        return _process(source, payload)
+
+
+def _process(source: str, payload: dict) -> dict:
     if source == "datasift":
         return handle_datasift(payload)
     if source == "smartercontact":

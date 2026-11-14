@@ -280,6 +280,12 @@ def assign(phone: str, owner: str = "") -> Optional[str]:
         if sticky_ok:
             return conv["from_number"]
 
+    # A NEW conversation never starts on a resting number (build plan 4.7). The sticky rule above
+    # is untouched: a thread already on a resting number keeps it. With SMS_AGENT_REST_FLAGGED
+    # off, `usable` hands the list straight back.
+    from . import numberhealth
+
+    numbers = numberhealth.usable(numbers)
     load = store.number_load()
     ranked = sorted(numbers, key=lambda n: (load.get(n, 0), n))
     for n in ranked:

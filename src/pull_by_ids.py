@@ -14,7 +14,7 @@ skip traces new records on its own on the unlimited plan at $0.
 
 Which account
   default          ty+2 (the .env login or REISIFT_API_KEY)
-  --key-env NAME   another account by its Open API key (.env NAME) plus --expect-email <a user on it>; the
+  --key-env NAME   another account by its Open API key (.env NAME) plus --expect-email <the key owner's email>; the
                    search and the add route both take the key (verified 2026-11-05)
   --target EMAIL   an allowlisted account by a pasted bearer token in REISIFT_TARGET_JWT_FILE; the token's
                    email AND account id must match before anything is written
@@ -24,8 +24,8 @@ pull    probe one new id with a read-back, then send the rest in chunks. Ids tha
         time (--existing attach). Resumable: an id is never sent twice.
 qa      how many records the list holds and how many the skip trace has not reached yet. Read-only.
 skiptrace  trace the list's untraced records (an existing record that only gets the list is never traced).
-        Guarded: unlimited plan only, a free estimate no wider than the list's own untraced count, and the
-        account's traced counter read before and after. Dry by default.
+        Guarded: a free estimate (a metered plan's estimate carries a cost and refuses) no wider than the
+        list's own untraced count, and that count read before and after. Dry by default.
 phones  read each record's owner phones, which is what DataSift's skip trace wrote. Read-only and about
         two records a second, so a 20,000 pool takes hours.
 
@@ -52,9 +52,15 @@ from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from datasift_api_upload import Api, attach_to_record, env  # noqa: E402
 import d4d_call_list as d4d  # noqa: E402
-import siftmap_pull as sp  # noqa: E402
+from d4d_call_list import Api, attach_to_record, env  # noqa: E402  (the uploader, loaded on first use)
+
+
+def _sp():
+    """siftmap_pull, loaded only by the command-line phases that use it (its allowance read is not a
+    published route; the team's list_pull workflow reads the allowance off the documented quote)."""
+    import siftmap_pull  # noqa: PLC0415
+    return siftmap_pull
 
 # Same allowlist as franklin_top30k.TARGETS: a pasted token may only ever write to one of these.
 TARGETS = {"ty+1@dataflik.com": "e2415c08-d4f1-4c70-9b6c-5dcc70d4a23d",
@@ -94,7 +100,7 @@ class _MapSearch:
     """search_by_ids / poll_saved call `_request`; siftmap_pull.Map speaks a key and a pasted JWT alike."""
 
     def __init__(self, api):
-        self.map = sp.Map(api)
+        self.map = _sp().Map(api)
 
     def _request(self, path, method="POST", body=None):
         return self.map._post(path, body or {})
@@ -124,15 +130,17 @@ def clients(args) -> tuple:
 
 
 def verify_account(api, expect: str, commit: bool) -> None:
-    """The key decides which account gets written, so a named user must be on it before anything is."""
-    r = d4d._call(api, "/api/internal/account/user/")
-    rows = r.get("results") if isinstance(r, dict) else r
-    emails = {str(u.get("email") or "").strip().lower() for u in rows or [] if isinstance(u, dict)}
-    ok = bool(expect) and expect.strip().lower() in emails
-    print("target account: %d users; %s %s" % (len(emails), expect or "no --expect-email given",
-                                                "is a user" if ok else "is NOT a user"))
+    """The key decides which account gets written, so the key's own user must be the one named before
+    anything is. The published API answers who a key belongs to (GET /api/internal/user/, the key's
+    own user); it has no route that lists an account's users, so --expect-email is the key owner's
+    email, which is the stricter check of the two anyway."""
+    r = d4d._call(api, "/api/internal/user/")
+    own = str((r or {}).get("email") or "").strip().lower() if isinstance(r, dict) else ""
+    ok = bool(expect) and expect.strip().lower() == own
+    print("target account: the key belongs to %s; %s %s" % (
+        own or "an unknown user", expect or "no --expect-email given", "matches" if ok else "does not match"))
     if commit:
-        d4d.gate(ok, "refusing to write: --expect-email must be a user on the key's account")
+        d4d.gate(ok, "refusing to write: --expect-email must be the email of the user the key belongs to")
 
 
 def load_ids(path: Path) -> list:
@@ -189,7 +197,7 @@ def phase_pull(args, run: Path, tag: str) -> None:
     else:
         existing = {i: u for i, u in saved.items() if i not in new}
     todo = [i for i in ids if i not in saved and i not in unknown and i not in sent]
-    used, limit = sp.usage(api)
+    used, limit = _sp().usage(api)
     print("pull: %d ids, %d already records, %d to pull, %d unknown to SiftMap, %d sent before; allowance %s / %s"
           % (len(ids), len(existing), len(todo), len(unknown), len(sent), used, limit), flush=True)
     d4d.gate(used + len(todo) <= limit, "the pull would cross the record allowance")
@@ -276,42 +284,40 @@ def phase_qa(args, run: Path) -> None:
 
 
 SKIP_TRACE = "/api/internal/property/skip-trace/"
-SKIP_STATS = "/api/internal/activity/skiptrace/stats/"
 
 
 def phase_skiptrace(args, run: Path) -> None:
     """Skip trace the list's records nobody has traced. Attaching a list to a record that already existed
     never triggers a trace, and on 2026-11-05 most of a 6,251-record list sat untraced for that reason.
     The route ignores a uuid scope and once traced a whole account (datasift_skiptrace.py), so the
-    list-query scope must be confirmed by a free estimate no wider than an independent count first."""
+    list-query scope must be confirmed by a free estimate no wider than an independent count first.
+
+    The plan check rides on that estimate: on a metered plan it carries a cost, and a cost refuses. The
+    account-wide skip trace stats this used to read are not a published route; the list's own untraced
+    count (the published records search) says, before and after, what the trace reached on THIS list."""
     api = clients(args)[0]
     uuid = list_uuid(api, args.list_name)
     d4d.gate(bool(uuid), "list %r does not exist on this account" % args.list_name)
-    stats = d4d._call(api, SKIP_STATS)
-    spent, saved = float(stats.get("value_spent") or 0), float(stats.get("saved_by_unlimited_skiptracing") or 0)
-    d4d.gate(spent == 0 and saved > 0, "refusing: not the unlimited plan (value_spent %s, saved_by_unlimited %s)"
-             % (spent, saved))
     body = {"query": {"must": {"any_lists": [uuid], "skiptraced": 0}}}
     want = list_count(api, uuid, skiptraced=0)
     est = d4d._call(api, SKIP_TRACE, "POST", dict(body, estimate=1))
     d4d.gate(isinstance(est, dict) and "number_of_records" in est, "unexpected estimate response: %s" % str(est)[:200])
     n, cost = int(est.get("number_of_records") or 0), float(est.get("cost") or 0)
     print("skiptrace: %d untraced on %r; the estimate covers %d at $%.2f" % (want, args.list_name, n, cost), flush=True)
-    d4d.gate(cost == 0, "refusing: the estimate is not free")
+    d4d.gate(cost == 0, "refusing: the estimate is not free (this is not the unlimited plan)")
     d4d.gate(n <= max(int(want * 1.02), want + 25),
              "refusing: the estimate (%d) is wider than the list's untraced records (%d), so the scope is not held" % (n, want))
     if not args.commit or n == 0:
         print("%s nothing sent" % ("DRY RUN." if n else "Nothing to trace:"))
         return
-    before = int(stats.get("total_properties") or 0)
     resp = d4d._call(api, SKIP_TRACE, "POST", body)
     time.sleep(10)
-    after = int(d4d._call(api, SKIP_STATS).get("total_properties") or 0)
-    print("skiptrace: sent; response %s; account traced count %d -> %d (+%d)" % (
-        str(resp)[:120], before, after, after - before), flush=True)
+    after = list_count(api, uuid, skiptraced=0)
+    print("skiptrace: sent; response %s; untraced on the list %d -> %d (the trace runs in the background)" % (
+        str(resp)[:120], want, after), flush=True)
     d4d._save(run / ("skiptrace_%s.json" % datetime.now().strftime("%Y%m%d_%H%M%S")),
               {"list": args.list_name, "untraced": want, "estimate": n, "response": resp,
-               "traced_before": before, "traced_after": after})
+               "untraced_after": after})
 
 
 def phase_phones(args, run: Path) -> None:
@@ -359,7 +365,8 @@ def main() -> int:
     ap.add_argument("--tag", default="", help="tag to add (default: the list name)")
     ap.add_argument("--target", default="", help="allowlisted account email, token in REISIFT_TARGET_JWT_FILE")
     ap.add_argument("--key-env", default="", help="env var holding another account's Open API key (default: ty+2)")
-    ap.add_argument("--expect-email", default="", help="with --key-env: a user on that account; writes refuse otherwise")
+    ap.add_argument("--expect-email", default="",
+                    help="with --key-env: the email of the user the key belongs to; writes refuse otherwise")
     ap.add_argument("--phase", default="pull", choices=["pull", "qa", "skiptrace", "phones"])
     ap.add_argument("--commit", action="store_true", help="pull: write to the account (dry by default)")
     ap.add_argument("--existing", default="add", choices=["add", "attach"],

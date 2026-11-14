@@ -106,6 +106,80 @@ def test_owner_change_is_patched():
     assert patch and patch[0][2] == {"owner": body["owner"]}
 
 
+def _attach(rec, body):
+    uuid = "11111111-2222-3333-4444-555555555555"
+    api = Stub({("POST", U.CREATE_ROUTE): err(400, U.CREATE_ROUTE, DUP),
+                ("GET", "/api/internal/property/%s/" % uuid): rec})
+    U.create_property(api, body)
+    patches = [c[2] for c in api.calls if c[0] == "PATCH"]
+    notes = [c[2]["notes"] for c in api.calls if c[1].endswith("/add-notes/")]
+    return patches, notes
+
+
+def test_a_researched_record_keeps_its_owner():
+    # Research put a verified heir in the owner slot. A republished notice names the dead borrower again.
+    rec = {"tags": ["FTM", "Deep Prospected"], "owner": {"first_name": "Dana", "last_name": "Heir"}}
+    body = {"address": {"street": "1 A St"}, "owner": {"first_name": "Morgan", "last_name": "Borrower"}, "tags": ["FTM"]}
+    patches, notes = _attach(rec, body)
+    assert not any("owner" in p for p in patches), patches
+    assert notes and "Morgan Borrower" in notes[0] and "kept" in notes[0], notes
+
+
+def test_the_same_notice_sent_again_does_not_repeat_its_note():
+    # The county stage re-sends the same rows every morning. The note was written the first time.
+    rec = {"tags": ["FTM", "Deep Prospected"], "owner": {"first_name": "Dana", "last_name": "Heir"}}
+    body = {"address": {"street": "1 A St"}, "owner": {"first_name": "Morgan", "last_name": "Borrower"}, "tags": ["FTM"]}
+    _, first = _attach(rec, body)
+    assert len(first) == 1
+    again = dict(rec, notes="Older note.\n" + first[0])
+    patches, notes = _attach(again, body)
+    assert not notes and not any("owner" in p for p in patches), (patches, notes)
+
+
+def test_a_deceased_owner_is_not_replaced_by_a_notice():
+    rec = {"tags": [], "owner": {"first_name": "Morgan", "last_name": "Borrower", "deceased": True}}
+    body = {"address": {"street": "1 A St"}, "owner": {"first_name": "Riley", "last_name": "Guess"}}
+    patches, notes = _attach(rec, body)
+    assert not any("owner" in p for p in patches) and notes, (patches, notes)
+
+
+def test_a_probate_notice_still_names_the_personal_representative():
+    # The court named this person: the one case where an upload replaces a deceased owner, with a note.
+    rec = {"tags": ["Heir Identified"], "owner": {"first_name": "Morgan", "last_name": "Borrower", "deceased": True}}
+    body = {"address": {"street": "1 A St"}, "owner": {"first_name": "Casey", "last_name": "Executor"}, "lists": "Probate"}
+    patches, notes = _attach(rec, body)
+    assert any(p.get("owner") == body["owner"] for p in patches), patches
+    assert notes and "personal representative" in notes[0] and "Morgan Borrower" in notes[0], notes
+
+
+def test_an_ordinary_record_is_patched_without_a_note():
+    rec = {"tags": ["FTM"], "owner": {"first_name": "Wrong", "last_name": "Person"}}
+    body = {"address": {"street": "1 A St"}, "owner": {"first_name": "Right", "last_name": "Person"}}
+    patches, notes = _attach(rec, body)
+    assert any(p.get("owner") == body["owner"] for p in patches) and not notes, (patches, notes)
+
+
+def test_first_upload_owner_slot_is_switchable():
+    # Off by default: the enricher's decision maker goes in the owner slot, as it always has.
+    # With the switch on, a deceased owner of record stays, except on a probate notice.
+    import importlib
+    import datasift_formatter as F
+    from notice_parser import NoticeData
+    n = NoticeData()
+    n.owner_name, n.owner_deceased, n.decision_maker_name = "Morgan Borrower", "yes", "Riley Guess"
+    n.address, n.city, n.state, n.zip, n.notice_type = "1 A St", "Knoxville", "TN", "37917", "foreclosure"
+    os.environ.pop("UPLOAD_KEEP_OWNER_OF_RECORD", None)
+    assert F._get_contact_info(n)["first"] == "Riley"
+    os.environ["UPLOAD_KEEP_OWNER_OF_RECORD"] = "1"
+    try:
+        assert F._get_contact_info(n)["first"] == "Morgan", F._get_contact_info(n)
+        n.notice_type = "probate"
+        assert F._get_contact_info(n)["first"] == "Riley"
+    finally:
+        os.environ.pop("UPLOAD_KEEP_OWNER_OF_RECORD", None)
+    assert importlib  # noqa
+
+
 def test_address_only_body_is_a_lookup():
     uuid = "aaaa"
     api = Stub({
@@ -151,6 +225,52 @@ def test_build_property_contract():
         "entity owner: company, and NO person keys at all"
     row2 = dict(row, **{"Owner First Name": "Clyde", "Owner Last Name": "Lay"})
     assert U.build_property(row2)["owner"]["first_name"] == "Clyde"
+
+
+
+
+IDX = {"Notice Type": {"uuid": "f-type", "field_type": "select", "options": {"foreclosure": "opt-fc"}},
+       "County": {"uuid": "f-county", "field_type": "select", "options": {"Knox": "opt-knox"}},
+       "Foreclosure Date": {"uuid": "f-sale", "field_type": "date", "options": {}}}
+
+
+def test_sale_date_is_mapped_and_iso():
+    """The 2026-11-11 find: the sale date was not in FIELD_MAP, so no foreclosure uploaded since
+    2026-08-14 carried one. The formatter writes M/D/YYYY; DataSift stores YYYY-MM-DD."""
+    warn = set()
+    pairs = U.field_pairs({"Notice Type": "foreclosure", "County": "Knox", "Foreclosure Date": "11/24/2026"}, IDX, warn)
+    assert {"field_uuid": "f-sale", "value": "2026-11-24"} in pairs, pairs
+    assert not warn, warn
+
+
+def test_unreadable_date_is_skipped_not_guessed():
+    warn = set()
+    pairs = U.field_pairs({"Notice Type": "foreclosure", "Foreclosure Date": "sometime in May"}, IDX, warn)
+    assert [p["field_uuid"] for p in pairs] == ["f-type"], pairs
+    assert any("Foreclosure Date" in w for w in warn), warn
+
+
+def test_a_refused_batch_is_retried_field_by_field():
+    path = "/api/internal/property/u1/custom-field/update-values/"
+
+    class Picky:
+        def __init__(self):
+            self.calls = []
+
+        def call(self, p, method="GET", body=None, headers=None):
+            self.calls.append(body)
+            if any(x["field_uuid"] == "f-sale" for x in body):
+                raise U.ApiError(400, method, p, '{"value":["bad date"]}')
+            return {}
+
+    api, warn = Picky(), set()
+    pairs = [{"field_uuid": "f-type", "value": "opt-fc"}, {"field_uuid": "f-county", "value": "opt-knox"},
+             {"field_uuid": "f-sale", "value": "2026-11-24"}]
+    landed = U.write_fields(api, "u1", pairs, warn)
+    assert landed == 2, landed
+    assert [len(b) for b in api.calls] == [3, 1, 1, 1], api.calls
+    assert any("refused" in w for w in warn), warn
+    assert path
 
 
 if __name__ == "__main__":

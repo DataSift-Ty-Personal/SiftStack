@@ -1,5 +1,5 @@
 # Build context for every Dockerfile in this repo (Fly apps and the Apify Actor). They COPY only
-# src/, deploy/, skills/, .actor/ and requirements.txt, so everything else stays home: output/
+# src/, deploy/, skills/, team/, .actor/ and requirements.txt, so everything else stays home: output/
 # carries seller data and runs to gigabytes, and .env carries every key.
 .env
 .env.*

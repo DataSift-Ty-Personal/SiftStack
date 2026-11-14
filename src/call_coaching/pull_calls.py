@@ -78,8 +78,9 @@ def fetch_page(cookie: str, start: int, length: int) -> dict:
     with urllib.request.urlopen(req, timeout=60) as r:
         body = r.read().decode("utf-8", "replace")
     if body.lstrip().startswith("<"):
-        raise PermissionError("HTML response - SmrtPhone session expired. "
-                              "Re-run _api/smrtphone_login.py in the Deal Room Coaching Call project.")
+        raise PermissionError("HTML response: the SmrtPhone session expired. Log in again by running "
+                              "skills/cold-call-coach/scripts/smrtphone_login.py from the SiftStack root "
+                              "(it saves smrtphone_state.json there).")
     return json.loads(body)
 
 

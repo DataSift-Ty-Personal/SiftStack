@@ -16,6 +16,11 @@ wrote them by hand. Here Claude writes them on its own, in two passes:
 Guards in code, not in the prompt alone: the owner is marked deceased only when an obituary URL
 from this run backs it AND the decedent's name matches the owner of record (the spouse-obituary
 trap); an ss_key must exist in people.json; a call-order number must exist on someone.
+
+The free look (free_look, saved_deed) is what is free and already known about a record: the notice
+text on it, the county obituary index, a deed lookup when one was saved. The chain builds it only
+in the free-first order (AGENTS_DP_ORDER), and only then does record_brief carry it; in today's
+order the brief, and so every prompt, is exactly what it was.
 """
 from __future__ import annotations
 
@@ -151,7 +156,7 @@ def record_brief(run, row) -> dict:
     ow = rec.get("owner") or {}
     tax = x.get("tax") or {}
     sm = x.get("siftmap") or {}
-    return {
+    brief = {
         "property": {"street": row.get("street"), "city": row.get("city"), "zip": row.get("zip"),
                      "beds": row.get("beds"), "baths": row.get("baths"), "sqft": row.get("sqft"),
                      "year_built": row.get("year"), "estimated_value": row.get("value"),
@@ -173,6 +178,133 @@ def record_brief(run, row) -> dict:
         "crm_board_notes": [_trim(m.get("message"), 500) for m in (x.get("messages") or [])[:10]],
         "context": row.get("context"),
     }
+    # Only where the chain built a free look (AGENTS_DP_ORDER=free_first). In today's order the
+    # file does not exist and the brief is exactly what it was.
+    look = run.load("free_look.json")
+    if look:
+        brief["read_first"] = free_look_brief(look)
+    return brief
+
+
+# --------------------------------------------------------------- free look --
+# What is free and already known about a record, gathered before any paid trace (build plan 3.3):
+# the notice text on the record, the county obituary index, and a deed lookup when one was saved.
+
+NOTICE_CHARS = 4000
+DEATH_WORDS = re.compile(r"\b(deceased|estate of|heirs? of|heirs[- ]at[- ]law|unknown heirs|decedent|"
+                         r"surviving spouse|died on|date of death)\b", re.I)
+INDEX_ROW = re.compile(r"^(?P<name>[^|]+)\|\s*age\s*(?P<age>[^|]*)\|(?P<mid>[^|]*)\|\s*obituary date\s*(?P<date>.*)$", re.I)
+DEED_KEYS = ("looked_up", "source", "still_owns", "owner_now", "last_deed", "total_debt", "liens", "chain", "notes")
+READ_FIRST = ("Free facts already on file for this record. Read them before you search, and spend searches only on "
+              "what they leave open. A row in the obituary index is a lead, not proof: the index lists strangers who "
+              "share a name, so match age and family before you treat one as this owner's death. Words in a notice "
+              "are a lead too.")
+
+
+def index_candidates(rows: str, first: str, last: str, this_year: int, years: int = 3, age=None) -> list[dict]:
+    """The index rows that could be this owner, by the death screen's own rule: the same surname,
+    the same first name (an initial is not a match), an obituary in the last `years`, and an age
+    within five years of the record's when the record carries one. A candidate is never a verdict."""
+    out = []
+    f, s = (first or "").strip().lower(), (last or "").strip().lower()
+    if len(f) < 2 or not s:
+        return out
+    for line in (rows or "").splitlines():
+        m = INDEX_ROW.match(line.strip())
+        if not m or "," not in m.group("name"):
+            continue
+        sur, given = [part.strip().lower() for part in m.group("name").split(",", 1)]
+        if sur != s and sur.split()[-1:] != [s]:
+            continue
+        if re.split(r"[\s.]+", given)[:1] != [f]:
+            continue
+        year = re.search(r"(19|20)\d\d", m.group("date") or "")
+        if not year or int(year.group(0)) < this_year - years:
+            continue
+        row_age = re.sub(r"\D", "", m.group("age") or "")
+        if age and row_age and abs(int(row_age) - int(age)) > 5:
+            continue
+        out.append({"name": m.group("name").strip(), "age": row_age, "date": m.group("date").strip()})
+    return out
+
+
+def saved_deed(run, uuid: str, deed_dir) -> dict | None:
+    """A deed lookup somebody saved for this record, or None. The run folder's own deed_lookup.json
+    wins; otherwise <deed_dir>/<record uuid>.json, which is where a Register of Deeds lookup that
+    runs on another box leaves its result. A file that does not parse is treated as no lookup."""
+    found = run.load("deed_lookup.json")
+    if isinstance(found, dict) and found:
+        return found
+    if uuid and deed_dir:
+        f = Path(deed_dir) / ("%s.json" % uuid)
+        if f.exists():
+            try:
+                data = json.loads(f.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                return None
+            return data if isinstance(data, dict) and data else None
+    return None
+
+
+def free_look(x: dict, row: dict, *, lookup=None, deed: dict | None = None, today=None) -> dict:
+    """Everything free about one record, in one place, before money is spent on it.
+
+    `lookup(last, first)` answers the county obituary index (None skips it); it is asked only for a
+    Knox County record, because the index is the Knoxville paper's and says nothing about a Blount
+    death. `deed` is a saved deed lookup. The one thing here that stops a run is a deed lookup that
+    says the owner no longer owns the house: nothing else in a free look is proof of anything."""
+    from datetime import date as _date
+    today = today or _date.today()
+    rec = (x or {}).get("record") or {}
+    ow = rec.get("owner") or {}
+    notes = str(rec.get("notes") or "")
+    out = {"built": today.isoformat(), "notice_text": notes[:NOTICE_CHARS],
+           "notice_mentions": sorted({m.group(0).lower() for m in DEATH_WORDS.finditer(notes)}),
+           "obituary_index": {"covered": "knox" in str((rec.get("address") or {}).get("county") or "").lower(),
+                              "lookups": []},
+           "deed": None, "stop": ""}
+    names = []
+    if (ow.get("first_name") or "").strip() and (ow.get("last_name") or "").strip():
+        names.append((ow["first_name"].split()[0], ow["last_name"].strip(), ow.get("age")))
+    for so in rec.get("secondary_owners") or []:
+        parts = str(so.get("full_name") or "").split()
+        if len(parts) >= 2:
+            names.append((parts[0], parts[-1], None))
+    if lookup and out["obituary_index"]["covered"]:
+        for first, last, age in names[:3]:
+            rows = str(lookup(last, first) or "")
+            failed = rows.startswith("index lookup failed")
+            out["obituary_index"]["lookups"].append({
+                "name": "%s, %s" % (last, first), "rows": "" if failed else rows[:3000],
+                "failed": failed,
+                "possible": [] if failed else index_candidates(rows, first, last, today.year, age=age)})
+    if isinstance(deed, dict) and deed:
+        out["deed"] = {k: deed[k] for k in DEED_KEYS if deed.get(k) not in (None, "", [], {})}
+        if deed.get("still_owns") is False:
+            sold = deed.get("last_deed") if isinstance(deed.get("last_deed"), dict) else {}
+            detail = ", ".join(part for part in ("to %s" % sold["grantee"] if sold.get("grantee") else "",
+                                                 "on %s" % sold["date"] if sold.get("date") else "") if part)
+            out["stop"] = "The deed records show the owner no longer owns this house%s." % (
+                " (deeded %s)" % detail if detail else "")
+    return out
+
+
+def free_look_brief(look: dict) -> dict:
+    """The free look as the research brief carries it: only what holds something."""
+    out = {"how_to_use": READ_FIRST}
+    if look.get("notice_text"):
+        out["notice_text_on_the_record"] = look["notice_text"]
+    if look.get("notice_mentions"):
+        out["notice_mentions"] = look["notice_mentions"]
+    rows = [{"lookup": x.get("name"), "rows": x.get("rows"), "could_be_this_owner": x.get("possible")}
+            for x in (look.get("obituary_index") or {}).get("lookups") or [] if x.get("rows")]
+    if rows:
+        out["county_obituary_index"] = rows
+    elif not (look.get("obituary_index") or {}).get("covered"):
+        out["county_obituary_index"] = "No index covers this county. An absence of rows here says nothing."
+    if look.get("deed"):
+        out["deed_records"] = look["deed"]
+    return out
 
 
 def people_brief(run, *, with_phones: bool) -> list[dict]:

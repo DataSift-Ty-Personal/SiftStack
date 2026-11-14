@@ -564,6 +564,9 @@ def cmd_seed(args) -> int:
     print(f"touch {args.touch}: {info['ready']} ready, {info['held']} held, of {info['total']}")
     for reason, n in info["held_reasons"].items():
         print(f"  held: {n:4}  {reason}")
+    if info.get("gate", {}).get("mode") == "report":
+        for reason, n in info["gate"]["reasons"].items():
+            print(f"  gate would hold: {n:4}  {reason}   (report mode: not held)")
     cap = info["capacity"]
     print(f"pool capacity today: {cap['remaining']} of {cap['capacity']}"
           f" across {cap['numbers']} number(s)")
@@ -591,9 +594,189 @@ def cmd_release(args) -> int:
     store.init()
     n = seed.release(args.touch, limit=args.limit or 0)
     print(f"released {n} touch-{args.touch} message(s) into the send queue")
+    last = seed.LAST_RELEASE
+    if last.get("gate", "off") != "off":
+        # The gate asks about each staged text once more at release (build plan 0.1).
+        held = ", ".join(f"{k} {v}" for k, v in last.get("held_by_gate", {}).items()) or "nothing"
+        if last["gate"] == "enforce":
+            print(f"the gate cancelled {last.get('cancelled', 0)} and left {last.get('left_staged', 0)}"
+                  f" staged that it could not re-read ({held})")
+        else:
+            print(f"the gate would have held: {held} (report mode: they were released)")
     if config.DRY_RUN:
         print("SMS_AGENT_DRY_RUN is on, so the worker will log instead of send.")
     return 0
+
+
+def cmd_switches(args) -> int:
+    """Every build-plan switch, what it is set to, and what turning it on changes."""
+    import os
+
+    for name, default, off_means, on_means in config.SWITCHES:
+        value = (os.getenv(name) or "").strip() or default
+        mark = " " if value.lower() == default.lower() else "*"
+        print(f"{mark} {name} = {value or '(empty)'}")
+        print(f"      default {default or '(empty)'}: {off_means}")
+        print(f"      on: {on_means}")
+    print("\n* = not at its default. Fly secrets override fly.toml; ask the running app, not the file.")
+    return 0
+
+
+def cmd_dispositions(args) -> int:
+    """The one table for every no, as it would write on this install."""
+    from . import dispositions
+
+    print("table in use: " + ("yes" if config.DISPOSITION_TABLE else
+                              "no (SMS_AGENT_DISPOSITION_TABLE is off: each path keeps its own handling)"))
+    for line in dispositions.describe():
+        print(line)
+    if args.text:
+        intent = classify.classify(args.text).intent
+        print(f"\n{args.text!r} reads {intent}; the table calls it:"
+              f" {dispositions.decide(intent, args.text, args.program) or '(not a disposition)'}")
+    return 0
+
+
+def cmd_gate(args) -> int:
+    """Ask the suppression gate about one record. Reads DataSift; writes nothing."""
+    from . import gatekeeper
+
+    rec, custom = gatekeeper.read(args.record, fresh=True)
+    if not rec:
+        print("the record could not be read:", crm.unavailable_reason() or "no such record")
+        return 1
+    found = gatekeeper.reasons(rec, phone=args.phone or "", program=args.program, custom=custom,
+                               allow=[a for a in (args.allow or "").split(",") if a])
+    print(f"gate mode: {config.GATE_MODE}")
+    if not found:
+        print("may be texted" + (f" on {args.phone}" if args.phone else ""))
+        return 0
+    print("held:")
+    for why in found:
+        print("  " + why)
+    return 2
+
+
+def cmd_touches(args) -> int:
+    """The texts this app sent on one day (build plan 0.23). No network."""
+    from . import touchlog
+
+    store.init()
+    data = touchlog.feed(args.day or "")
+    if args.json:
+        print(json.dumps(data, indent=2))
+        return 0
+    print(f"{data['day']}: {data['count']} text(s)")
+    for key, n in sorted(data["by_system"].items()):
+        print(f"  {key}: {n}")
+    for row in data["texts"][: args.show]:
+        print(f"  {row['at'][11:16]} UTC  ...{row['last4']}  {row['system']:14} {row['author']:6} "
+              f"{row['kind']:16} record {row['record_uuid'][:8] or '(none)'}")
+    print("not in this list: " + data["not_seen"])
+    return 0
+
+
+def cmd_budget(args) -> int:
+    """This app's use of the DataSift request budget (build plan 0.14)."""
+    from . import ratebudget
+
+    store.init()
+    use = ratebudget.usage()
+    print("counting: " + ("yes" if use["on"] else "no (SMS_AGENT_RATE_BUDGET is off: nothing is counted or delayed)"))
+    if use["on"]:
+        print("limiting: " + ("yes" if use["enforcing"] else
+                              "no (SMS_AGENT_RATE_BUDGET=count: requests are counted, never delayed)"))
+    print(ratebudget.line())
+    print(f"scans may use {use['minute_cap_scans']} of the {use['minute_cap']} a minute"
+          + (" (quiet window)" if use["quiet"] else ""))
+    return 0
+
+
+def cmd_number_health(args) -> int:
+    """Rest list, canary and readout for the sending numbers (build plan 4.7)."""
+    from . import numberhealth
+
+    store.init()
+    if args.rest:
+        out = numberhealth.rest(args.rest, args.reason or "flagged", days=args.for_days or None)
+        print(f"{out['number']} rests until {out['until'][:10]} ({out['reason']})")
+        if not config.REST_FLAGGED:
+            print("NOTE: SMS_AGENT_REST_FLAGGED is off, so this is a note only. Nothing is held yet.")
+        return 0
+    if args.unrest:
+        print("back in the pool" if numberhealth.unrest(args.unrest) else "that number was not resting")
+        return 0
+    if args.canary:
+        out = numberhealth.canary_stage(to=args.to or "", pool=args.pool or "")
+        if out.get("refused"):
+            print("not staged:", out["refused"])
+            return 1
+        print(f"staged {out['staged']} line-check text(s) to our handset ending {out['to_last4']}, HELD.")
+        print("nothing has been sent. Release with: cli.py number-health --release-canary")
+        return 0
+    if args.release_canary:
+        n = numberhealth.canary_release()
+        print(f"released {n} line-check text(s) into the send queue")
+        if config.DRY_RUN:
+            print("SMS_AGENT_DRY_RUN is on, so the worker will log instead of send.")
+        return 0
+    text = numberhealth.report(days=args.days, db_path=args.db)
+    print(text)
+    if args.post:
+        escalate._post(text, [{"type": "section", "text": {"type": "mrkdwn", "text": text}}])
+        print("\nposted to the escalation channel")
+    return 0
+
+
+def cmd_lead_text(args) -> int:
+    """Stage, or release, the call-is-coming text for one lead (build plan 2.2)."""
+    from . import speedtolead
+
+    store.init()
+    if args.release:
+        late = speedtolead.expired(args.release)
+        n = speedtolead.release(args.release)
+        if late:
+            print(f"not released for {store.clean_phone(args.release)}: {speedtolead.TOO_LATE}. It was cancelled.")
+            return 1
+        print(f"released {n} call-is-coming text(s) for {store.clean_phone(args.release)}")
+        return 0 if n else 1
+    if not args.record:
+        print("give --record <uuid> to stage one, or --release <phone> to release one")
+        return 1
+    out = speedtolead.stage(args.record, phone=args.phone or "", source="by hand", require_lead=not args.phone)
+    if not out.get("staged"):
+        print("not staged:", out.get("skipped"))
+        return 1
+    print(f"{out['status']} for {out['at']} via {out['system']}: {out['message']}")
+    if out["status"] == "held":
+        print(f"release with: cli.py lead-text --release {out['phone']}")
+    return 0
+
+
+def cmd_labels_check(args) -> int:
+    """Do the Smarter Contact labels the table uses exist? Reads Smarter Contact; writes nothing."""
+    from . import dispositions, sc_client
+    from .knowledge import sc_replies
+
+    wanted = sorted(set(sc_replies.LABELS.values()) | {
+        config.SC_LABEL_CORRECT, config.SC_LABEL_WRONG_DNC, config.SC_LABEL_RELATIVE, config.SC_LABEL_NURTURE})
+    missing = []
+    for title in wanted:
+        try:
+            sc_client._label_ids([title])
+            print(f"  ok       {title}")
+        except sc_client.SCError as exc:
+            if "not found" not in str(exc):
+                print(f"could not read Smarter Contact labels: {exc}")
+                return 2
+            missing.append(title)
+            print(f"  MISSING  {title}")
+    in_use = sorted({dispositions.sc_label(k) for k in dispositions.TABLE} - {""})
+    print(f"\nextra labels switched {'on' if config.SC_EXTRA_LABELS else 'off'}; the table would set: {', '.join(in_use)}")
+    if missing:
+        print("Create the missing labels in Smarter Contact before SMARTERCONTACT_EXTRA_LABELS goes on.")
+    return 1 if missing else 0
 
 
 def cmd_senders(args) -> int:
@@ -787,6 +970,52 @@ def main() -> int:
     p.set_defaults(fn=cmd_senders)
 
     sub.add_parser("status", help="counters and pool capacity").set_defaults(fn=cmd_status)
+
+    # ---- the build plan's texting packages (2026-11-13) ----
+    sub.add_parser("switches", help="every build-plan switch and what it is set to").set_defaults(fn=cmd_switches)
+
+    p = sub.add_parser("dispositions", help="the one table for every no")
+    p.add_argument("--text", help="a reply to read through the table")
+    p.add_argument("--program", choices=("seller", "buyer"), default="seller")
+    p.set_defaults(fn=cmd_dispositions)
+
+    p = sub.add_parser("gate", help="ask the suppression gate about one record (reads DataSift)")
+    p.add_argument("--record", required=True)
+    p.add_argument("--phone", help="the number you mean to text")
+    p.add_argument("--program", choices=("seller", "buyer"), default="seller")
+    p.add_argument("--allow", help="comma-separated rules this caller may lift, e.g. heir")
+    p.set_defaults(fn=cmd_gate)
+
+    p = sub.add_parser("touches", help="the texts this app sent on one day, for the touch audit")
+    p.add_argument("--day", help="YYYY-MM-DD, business-local (default yesterday)")
+    p.add_argument("--json", action="store_true")
+    p.add_argument("--show", type=int, default=20)
+    p.set_defaults(fn=cmd_touches)
+
+    sub.add_parser("budget", help="this app's use of the DataSift request budget").set_defaults(fn=cmd_budget)
+
+    p = sub.add_parser("number-health", help="rest list, canary and readout for the sending numbers")
+    p.add_argument("--days", type=int, default=14)
+    p.add_argument("--db", default=None, help="read a specific sqlite file (e.g. a copy pulled from Fly)")
+    p.add_argument("--rest", help="put this sending number on the rest list")
+    p.add_argument("--reason", help="why it is resting")
+    p.add_argument("--for-days", type=int, default=0, help="how long (default SMS_AGENT_REST_DAYS)")
+    p.add_argument("--unrest", help="take this number off the rest list")
+    p.add_argument("--canary", action="store_true", help="stage one line-check text per number, HELD")
+    p.add_argument("--to", help="our own handset for the canary (default SMS_AGENT_CANARY_TO)")
+    p.add_argument("--pool", help="only this pool's numbers")
+    p.add_argument("--release-canary", action="store_true", help="release the staged line-check texts")
+    p.add_argument("--post", action="store_true", help="also post the readout to Slack")
+    p.set_defaults(fn=cmd_number_health)
+
+    p = sub.add_parser("lead-text", help="stage or release the call-is-coming text for one lead")
+    p.add_argument("--record", help="the lead's record uuid")
+    p.add_argument("--phone", help="the number the owner texted from")
+    p.add_argument("--release", metavar="PHONE", help="release the staged text for this number")
+    p.set_defaults(fn=cmd_lead_text)
+
+    sub.add_parser("labels-check",
+                   help="do the Smarter Contact labels exist? (reads Smarter Contact)").set_defaults(fn=cmd_labels_check)
 
     args = ap.parse_args()
     return args.fn(args)

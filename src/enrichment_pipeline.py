@@ -483,6 +483,22 @@ def run_enrichment_pipeline(
     elif opts.skip_smarty:
         logger.info("── Step 6: Smarty (skipped) ──")
 
+    # ── Step 6-fallback: city + ZIP without Smarty ───────────────────
+    # A county lookup (TPAD, KGIS) returns a street line only, and the ZIP used
+    # to come from Smarty alone. When that subscription lapsed every probate
+    # record was dropped at validation for "missing zip" while the run still
+    # reported OK. Anything still without a ZIP here is resolved through
+    # SiftMap's free address lookup, so a vendor outage cannot empty a feed.
+    if not opts.has_smarty and any(
+        (n.address or "").strip() and not (n.zip or "").strip() for n in notices
+    ):
+        try:
+            from address_fallback import fill_missing_city_zip
+
+            fill_missing_city_zip(notices)
+        except Exception as e:
+            logger.warning("  ZIP fallback failed: %s", e)
+
     # ── Step 6a: Commercial Property Filter ─────────────────────────
     if not opts.skip_commercial_filter:
         logger.info("── Step 6a: Commercial Property Filter ──")

@@ -32,10 +32,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from mls_listings import ActiveListings  # noqa: E402
-from sms_agent import config, crm, sc_client as C, store  # noqa: E402
+from sms_agent import config, crm, gate_rules, sc_client as C, store  # noqa: E402
 
 OUT = Path(__file__).resolve().parent.parent / "output" / "smarter_contact" / "audits"
-SKIP_PHONE = {"DNC", "CORRECT_DNC", "WRONG_DNC", "WRONG", "DEAD"}
+# The same set the seeder and the gate use (sms_agent/gate_rules.py). The name stays because
+# smarter_contact_remaining.py imports it from here.
+SKIP_PHONE = gate_rules.BAD_PHONE
 # A status means someone has acted on the record. Only untouched P1 records keep
 # getting automated touches; everything else is a person's call.
 OPEN_STATUSES = {"", "prospecting"}
@@ -83,7 +85,7 @@ def _names(items) -> list[str]:
 
 
 def audit_draft(draft: dict, sc_supp: dict, agent_supp: dict, apn_field: str,
-                listings: ActiveListings) -> dict:
+                listings: ActiveListings, sift_field: str = "") -> dict:
     camp = C.gql(Q_CAMP, {"id": draft["id"]})["getCampaign"]
     parent_id = (camp.get("parentCampaign") or {}).get("ids", [None])[0]
     parent = C.gql(Q_CAMP, {"id": parent_id})["getCampaign"]
@@ -91,6 +93,7 @@ def audit_draft(draft: dict, sc_supp: dict, agent_supp: dict, apn_field: str,
     for g in parent.get("groups") or []:
         contacts += _pages(Q_CONTACTS, "findContacts", {"f": {"status": "ACTIVE", "groups": [g["id"]]}})
     keep, flagged, responders, reasons = [], [], 0, Counter()
+    gate_would = Counter()      # report mode: what the gate would flag beyond the checks below
     for ct in contacts:
         msgs = C.gql(Q_MSGS, {"c": ct["id"], "p": {"limit": 40}})["findConversationMessages"]["items"]
         if any(C.direction(m) == "in" for m in msgs):
@@ -105,12 +108,18 @@ def audit_draft(draft: dict, sc_supp: dict, agent_supp: dict, apn_field: str,
             why.append(f"sc_suppressed:{sc_supp[phone]}")
         if phone in agent_supp:
             why.append(f"agent_suppressed:{agent_supp[phone].split(':')[0]}")
-        record = next((a["value"] for a in ct.get("attrs") or [] if a["fieldId"] == apn_field), "")
+        # Sift Record first, then a uuid in APN: land contacts carry the PARCEL NUMBER in APN, and
+        # reading it as a record id would flag every land contact "sift_record_missing" (2026-11-10).
+        vals = {a["fieldId"]: (a.get("value") or "").strip() for a in ct.get("attrs") or []}
+        record = next((vals.get(f, "") for f in (sift_field, apn_field)
+                       if f and C._is_uuid(vals.get(f, ""))), "")
         rec = crm.get_record(record, fresh=True) if record else None
+        gate_says = ""
         if rec:
             _, obj = crm.find_phone_object(record, phone)
             pst = ((obj or {}).get("status") or "").upper()
-            if pst in SKIP_PHONE:
+            # One rule decides whether a phone may be texted (gate_rules.do_not_text): here, its status.
+            if gate_rules.do_not_text({"status": pst}):
                 why.append(f"sift_phone:{pst}")
             if config.LIST_DNC in _names(rec.get("lists")):
                 why.append("sift_dnc_list")
@@ -122,18 +131,49 @@ def audit_draft(draft: dict, sc_supp: dict, agent_supp: dict, apn_field: str,
             addr = rec.get("address") or {}
             if listings.lookup(addr.get("street") or "", addr.get("postal_code") or ""):
                 why.append("mls_listed")
+            gate_says = gate_extra(rec)
         elif record:
             why.append("sift_record_missing")
-        if crm.phone_is_dnc(phone) is True:
+        # ...and here, the do-not-call registry flag, where Sift exposes it (decision D32: never texted).
+        if gate_rules.do_not_text({"number": phone, "doNotCall": crm.phone_is_dnc(phone) is True}) == gate_rules.REGISTRY:
             why.append("registry_dnc")
+        if gate_says:
+            # The suppression gate (build plan 0.1), behind SMS_AGENT_GATE. `enforce` flags the contact;
+            # `report` only counts it, so the effect can be read before it removes anyone.
+            if config.GATE_MODE == "enforce":
+                why.append(f"gate:{gate_says}")
+            else:
+                gate_would[gate_says] += 1
         if why:
             flagged.append({"contact_id": ct["id"], "phone": phone, "record": record, "why": why})
             reasons.update(w.split(":")[0] if w.split(":")[0] in HARD else w for w in why)
         else:
             keep.append(ct["id"])
-    return {"draft": draft["name"], "draft_id": draft["id"], "draft_contacts": draft["contacts"],
-            "group_contacts": len(contacts), "responders": responders, "rebuilt_recipients": len(keep) + len(flagged),
-            "keep": len(keep), "flagged": flagged, "reasons": dict(reasons.most_common())}
+    out = {"draft": draft["name"], "draft_id": draft["id"], "draft_contacts": draft["contacts"],
+           "group_contacts": len(contacts), "responders": responders, "rebuilt_recipients": len(keep) + len(flagged),
+           "keep": len(keep), "flagged": flagged, "reasons": dict(reasons.most_common())}
+    if config.GATE_MODE == "report":
+        out["gate_would_flag"] = dict(gate_would.most_common())
+    return out
+
+
+# What the audit above already says in its own words. The gate's version of the same fact is
+# left out, so one reason is not counted twice.
+_ALREADY_CHECKED = ("status ", "tagged Do Not Market", "already a lead", "phone status", "held out for research")
+
+
+def gate_extra(rec: dict) -> str:
+    """What the suppression gate adds for this record beyond the audit's own checks ('' = nothing,
+    or SMS_AGENT_GATE is off): a death recorded as a tag or on the Obituary list, a litigator, the
+    owner's own opt-out flags, Mail Only, Not Single Family, a listed house by Sift's own field."""
+    if config.GATE_MODE == "off":
+        return ""
+    from sms_agent import gatekeeper
+    for why in gatekeeper.reasons(rec, program="seller"):
+        if why.startswith("the owner opted out (DNC list)") or why.startswith(_ALREADY_CHECKED):
+            continue
+        return why
+    return ""
 
 
 def main() -> int:
@@ -149,18 +189,23 @@ def main() -> int:
         raise SystemExit(f"drafts not found: {missing}")
     agent_supp = json.loads(Path(a.suppression).read_text(encoding="utf-8")) if a.suppression else {}
     sc_supp = suppressions()
-    fields = C.gql("query { findFields { id key } }")["findFields"]
+    fields = C.gql("query { findFields { id key name } }")["findFields"]
     apn = next(f["id"] for f in fields if f["key"] == "ASSESSOR_PARCEL_NUMBER")
+    sift = next((f["id"] for f in fields
+                 if (f.get("name") or "").strip().casefold() == C.SIFT_RECORD_FIELD.casefold()), "")
     listings = ActiveListings()
     OUT.mkdir(parents=True, exist_ok=True)
     results = []
     for n in names:
         if camps[n]["state"]["status"] != "DRAFT":
             raise SystemExit(f"{n} is {camps[n]['state']['status']}, not a draft; audit before it starts")
-        r = audit_draft(camps[n], sc_supp, agent_supp, apn, listings)
+        r = audit_draft(camps[n], sc_supp, agent_supp, apn, listings, sift)
         results.append(r)
         print(f"{n}: draft {r['draft_contacts']} | group {r['group_contacts']} - replied {r['responders']} = "
               f"{r['rebuilt_recipients']} | keep {r['keep']} | flagged {len(r['flagged'])} {r['reasons']}", flush=True)
+        if r.get("gate_would_flag"):
+            print(f"  the suppression gate would also flag (report mode, nobody removed): {r['gate_would_flag']}",
+                  flush=True)
         if a.commit:
             removed = 0
             for f in r["flagged"]:
