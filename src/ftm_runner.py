@@ -797,9 +797,14 @@ def _stage_sold(args) -> StageResult:
     res.status = "failed" if st.get("rc") else "ok"
     res.records = st.get("restored", 0) + st.get("marked", 0)
     res.detail = (f"{st.get('restored', 0)} leads revived, {st.get('marked', 0)} real sales marked "
-                  f"({st.get('repair_judged', 0) + st.get('mark_judged', 0)} judged)")
+                  f"({st.get('repair_judged', 0) + st.get('mark_judged', 0)} judged); "
+                  f"{st.get('held_back', 0)} wait for the next run; {st.get('for_a_person', 0)} for a person")
     if errors:
         res.warnings.append(f"sold guard could not read {errors} record(s)")
+    if st.get("deed_problem"):
+        res.warnings.append("sold guard deeds: " + str(st["deed_problem"]))
+    if st.get("detect_note"):
+        res.warnings.append("sale search: " + str(st["detect_note"]))
     res.seconds = time.time() - t0
     return res
 

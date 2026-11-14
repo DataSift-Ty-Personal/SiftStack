@@ -1,6 +1,10 @@
 """Sold guard: a record is Sold only when the house sold AFTER it became a lead.
-Zero network, invented streets and dates."""
+Zero network, invented names, streets and dates."""
+import argparse
+import copy
+import json
 import sys
+from datetime import date
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -188,6 +192,462 @@ def test_sale_weeks_are_fixed_calendar_weeks_and_a_row_signature_moves_with_the_
     assert len(w) in (57, 58)
     a = {"list_count": 3, "tag_count": 5, "status": "sold"}
     assert g.row_sig(a) == g.row_sig(dict(a)) != g.row_sig(dict(a, list_count=4))
+
+
+# ------------------------------------------------------------- the deed --
+
+OWNER = {"first_name": "Tobias R", "last_name": "Quillfeather"}
+
+
+def lien(last_sold=None, st="", tags=("recently sold", "filed_2026-Q3"), owner=OWNER, **extra):
+    """A lien record we uploaded: the debtor is the owner of record, the filing quarter is the floor."""
+    r = rec(last_sold, st=st, tags=tags)
+    r.update(owner=dict(owner), dataflik_id="9000001", **extra)
+    return r
+
+
+def deed(day, buyer, price=185000, seller=""):
+    return {"date": day, "price": price, "buyer": buyer, "seller": seller}
+
+
+def replaced(day, source="bulk", event="property.owner.replaced", payload=None):
+    return {"event_type": event, "timestamp": day + "T04:10:00Z", "source": source, "payload": payload or {}}
+
+
+UPLOADED = [created("2026-10-20"), joined("2026-10-20", "Liens")]
+
+
+def test_a_deed_name_matches_the_owner_in_any_form():
+    own = g.owner_names({"owner": OWNER})
+    for name in ("QUILLFEATHER TOBIAS R", "Tobias R. Quillfeather", "QUILLFEATHER TOBIAS & MAREN",
+                 "TOBIAS AND MAREN QUILLFEATHER", "TOBIAS R QUILLFEATHER REVOCABLE LIVING TRUST",
+                 "ESTATE OF TOBIAS QUILLFEATHER", "QUILLFEATHER T", "Quillfeather, Tobias et al"):
+        assert g.name_match(own, name) == "owner", name
+    # the wife alone, a son, or the family trust share the surname and are not the owner we hold
+    for name in ("QUILLFEATHER MAREN J", "QUILLFEATHER FAMILY TRUST", "MAREN QUILLFEATHER",
+                 "QUILLFEATHER MAREN & BRISTOW TOBIAS"):
+        assert g.name_match(own, name) == "surname", name
+    assert g.name_match(own, "BRISTOW HOLDINGS LLC") == "stranger"
+    assert g.name_match(own, "") == "nobody" and g.name_match([], "QUILLFEATHER TOBIAS") == "no owner"
+    # a surname spelled another way is never a stranger: that would mark a live lead Sold on a typo
+    assert g.name_match(own, "QUILFEATHER TOBIAS") == "surname"
+    obr = g.owner_names({"owner": {"first_name": "Ansel", "last_name": "O'Brannick"}})
+    assert g.name_match(obr, "OBRANNICK ANSEL") == "surname" and g.name_match(obr, "O BRANNICK ANSEL") == "owner"
+    assert g._one_edit("QUILLFEATHER", "QUILFEATHER") and not g._one_edit("QUILLFEATHER", "QUILFETHER")
+    # an initial on the record still matches the full name on the deed
+    ini = g.owner_names({"owner": {"first_name": "T", "last_name": "Quillfeather"}})
+    assert g.name_match(ini, "QUILLFEATHER TOBIAS") == "owner"
+    # a secondary owner on the record counts: a deed to either spouse is the household's own
+    two = g.owner_names({"owner": OWNER, "secondary_owners": [{"full_name": "Maren Quillfeather"}]})
+    assert g.name_match(two, "QUILLFEATHER MAREN J") == "owner"
+    # a company must be there whole; a shared distinctive word is not enough, a generic one is nothing
+    co = g.owner_names({"owner": {"company": "Lanternfield Homes LLC"}})
+    assert g.name_match(co, "LANTERNFIELD HOMES L.L.C.") == "owner"
+    assert g.name_match(co, "LANTERNFIELD BUILDERS INC") == "partial"
+    assert g.name_match(co, "ORCHARD HOMES LLC") == "stranger"
+
+
+def test_the_lien_bought_inside_its_filing_quarter_loses_the_tag_on_the_deed():
+    # the owner's second record: bought 08-11 inside the Q3 filing quarter, tagged, no status
+    r = lien("2026-08-11")
+    old = g.decide(r, UPLOADED, LISTS)
+    assert (old["verdict"], old["action"]) == ("sold between the filing and our pull", "leave")
+    d = g.decide(r, UPLOADED, LISTS, deed=deed("2026-08-11", "QUILLFEATHER TOBIAS R"))
+    assert (d["action"], d["verdict"]) == ("untag", "own purchase: the newest deed names the owner")
+    # the first record: bought before the quarter; right before, still right
+    d = g.decide(lien("2026-04-14"), UPLOADED, LISTS, deed=deed("2026-04-14", "QUILLFEATHER TOBIAS"))
+    assert d["action"] == "untag"
+    # the third record: bought the year before and never tagged, so there is nothing to fix
+    d = g.decide(lien("2025-08-28", tags=("filed_2026-Q3",)), UPLOADED, LISTS,
+                 deed=deed("2025-08-28", "QUILLFEATHER TOBIAS"))
+    assert (d["action"], d["tagged"]) == ("leave", False) and d["verdict"].startswith("own purchase")
+
+
+def test_a_stale_last_sold_gives_way_to_the_deed():
+    # the fourth record: DataSift still shows a 2021 sale, the deed a 2026 purchase by our owner,
+    # and the duplicate sequence set Sold: the status comes back for the right reason now
+    ev = UPLOADED + [status("2026-11-12", None, "sold")]
+    r = lien("2021-05-02", st="sold", tags=("filed_2026-Q3",))
+    d = g.decide(r, ev, LISTS, deed=deed("2026-08-17", "QUILLFEATHER TOBIAS R"))
+    assert (d["action"], d["status_to"], d["sale_day"], d["tagged"]) == ("restore", None, "2026-08-17", False)
+    # a stale last_sold also hid a real sale: the dates call it the owner's purchase, the deed a sale
+    ev = [created("2026-07-01"), status("2026-11-12", None, "sold")]
+    plain = lien("2019-03-01", st="sold", tags=("recently sold",))
+    assert g.decide(plain, ev, LISTS)["action"] == "restore"
+    d = g.decide(plain, ev, LISTS, deed=deed("2026-09-12", "BRISTOW HOLDINGS LLC", 240000))
+    assert (d["action"], d["verdict"]) == ("leave", "sold since: the newest deed names someone else")
+    # the deed day stands in for an older last_sold; a last_sold a little newer is the same sale;
+    # one much newer is a sale the deed has not reached, and then the dates decide
+    assert g.deed_sale_day(deed("2026-08-17", "X"), "2021-05-02") == "2026-08-17"
+    assert g.deed_sale_day(deed("2026-08-17", "X"), "2026-09-10") == "2026-09-10"
+    assert g.deed_sale_day(deed("2026-08-17", "X"), "2026-12-30") == ""
+    assert g.deed_sale_day({}, "2026-08-17") == "" and g.deed_sale_day(None, "") == ""
+    d = g.decide(lien("2026-08-11"), UPLOADED, LISTS, deed=deed("2025-01-03", "QUILLFEATHER TOBIAS"))
+    assert (d["verdict"], d["deed"]) == ("sold between the filing and our pull", "older than the last sale")
+
+
+def test_a_relative_buying_the_family_house_is_left_for_a_person():
+    # the fifth record: probate, bought by a family member with the same surname, Sold by a sequence
+    ev = [created("2026-11-11"), joined("2026-11-11", "Probate"), status("2026-11-12", None, "sold")]
+    r = rec("2026-07-29", st="sold", tags=("2026-10", "probate"))
+    r["owner"] = {"first_name": "Corwin", "last_name": "Pellwright"}
+    d = g.decide(r, ev, LISTS, deed=deed("2026-07-29", "PELLWRIGHT JUNA M", 0))
+    assert (d["action"], d["person"]) == ("leave", "the buyer on the newest deed shares only the surname")
+    # a deed with no buyer, or a record with no owner, cannot be judged either
+    assert g.decide(r, ev, LISTS, deed=deed("2026-07-29", ""))["person"] == "the newest deed names no buyer"
+    bare = dict(r, owner={})
+    assert g.decide(bare, ev, LISTS, deed=deed("2026-07-29", "PELLWRIGHT JUNA"))["person"].startswith("the record names no owner")
+    # the usual probate record: the decedent bought decades ago and the personal representative we
+    # hold is not on that deed; that is the family's own purchase, not a case for a person
+    d = g.decide(dict(r, last_sold="1994-05-02"), ev, LISTS, deed=deed("1994-05-02", "PELLWRIGHT ORVILLE & EDNA", 64000))
+    assert (d["action"], d.get("person"), d["status_to"]) == ("restore", None, None)
+
+
+def test_a_stranger_buying_after_the_lead_is_a_real_sale():
+    ev = [created("2026-07-22")]
+    buy = deed("2026-10-16", "BRISTOW HOLDINGS LLC", 210000)
+    tagged = rec("2026-10-16", st="", tags=("recently sold",))
+    tagged["owner"] = dict(OWNER)
+    assert g.decide(tagged, ev, LISTS, deed=buy)["action"] == "set sold"
+    untagged = dict(tagged, tags=[])
+    d = g.decide(untagged, ev, LISTS, deed=buy)
+    assert (d["action"], d["status_to"]) == ("mark", "sold")
+    assert g.decide(dict(tagged, status="sold"), ev + [status("2026-10-20", None, "sold")], LISTS, deed=buy)["action"] == "leave"
+    # noticed in July, sold at its own auction in August, uploaded in November: a real sale now
+    late = rec(None, st="", tags=("recently sold", "2026-07", "foreclosure"))
+    late["owner"] = dict(OWNER)
+    up = [created("2026-11-11")]
+    d = g.decide(late, up, LISTS, deed=deed("2026-08-05", "ORCHARD RENTALS LLC", 151000))
+    assert (d["action"], d["verdict"]) == ("set sold", "sold after the filing: the newest deed names someone else")
+    # a deed years older than the filing is the current owner's purchase whoever it names
+    d = g.decide(late, up, LISTS, deed=deed("2018-03-05", "ORCHARD RENTALS LLC"))
+    assert (d["action"], d["verdict"]) == ("untag", "own purchase: the newest deed is older than the filing")
+    # a sale learned late whose seller is our owner is a real sale; a stranger selling to a stranger
+    # weeks before we pulled it means the owner we hold is not on the deed at all: a person looks
+    pulled = dict(untagged, last_sold=None)
+    d = g.decide(pulled, [created("2026-10-19")], LISTS,
+                 deed=deed("2026-10-15", "ORCHARD RENTALS LLC", 199000, seller="QUILLFEATHER TOBIAS"))
+    assert (d["action"], d["verdict"]) == ("mark", "sold just before we pulled it: the newest deed names the owner as the seller")
+    d = g.decide(pulled, [created("2026-10-19")], LISTS,
+                 deed=deed("2026-10-15", "ORCHARD RENTALS LLC", 199000, seller="FENWICK DALE"))
+    assert (d["action"], d["person"]) == ("leave", "the newest deed names someone else, dated just before the lead")
+    # changing hands for nothing is not a sale anyone can act on unseen; DataSift's own price counts
+    # only when it is the same sale
+    free = dict(untagged, last_sale_price=None)
+    d = g.decide(free, ev, LISTS, deed=deed("2026-10-16", "BRISTOW HOLDINGS LLC", 0))
+    assert (d["action"], d["person"]) == ("leave", "the house changed hands with no real price")
+    assert g.decide(untagged, ev, LISTS, deed=deed("2026-10-16", "BRISTOW HOLDINGS LLC", 0))["action"] == "mark"
+
+
+def test_an_owner_a_machine_copied_in_after_the_sale_proves_nothing():
+    buy = deed("2026-09-20", "QUILLFEATHER TOBIAS")
+    r = rec("2026-09-20", st="sold")
+    r["owner"] = dict(OWNER)
+    base = [created("2026-07-01"), status("2026-10-03", None, "sold")]
+    d = g.decide(r, base + [replaced("2026-10-03")], LISTS, deed=buy)
+    assert (d["action"], d["person"]) == ("leave", "the owner was replaced by a bulk add after the sale")
+    # our own uploader choosing the owner is not the trap, nor is a copy made before the sale
+    assert g.decide(r, base + [replaced("2026-10-03", source="internal-api")], LISTS, deed=buy)["action"] == "restore"
+    assert g.decide(r, base + [replaced("2026-08-01")], LISTS, deed=buy)["action"] == "restore"
+    # an owner.updated from a machine counts only when it changed a name
+    renamed = replaced("2026-10-03", event="owner.updated",
+                       payload={"owner": {"last_name": ["Bristow", "Quillfeather"]}})
+    assert g.decide(r, base + [renamed], LISTS, deed=buy)["person"].startswith("the owner was replaced")
+    moved = replaced("2026-10-03", event="owner.updated", payload={"owner": {"mailing_city": ["A", "B"]}})
+    assert g.decide(r, base + [moved], LISTS, deed=buy)["action"] == "restore"
+    # a copy made after the sale but BEFORE the record became our lead overwrote nobody we worked:
+    # the uploader set the owner on the lead day, so the deed still speaks
+    lien_ev = UPLOADED + [status("2026-11-12", None, "sold")]
+    r2 = lien("2026-08-11", st="sold")
+    early = g.decide(r2, lien_ev + [replaced("2026-09-01")], LISTS, deed=deed("2026-08-11", "QUILLFEATHER TOBIAS"))
+    assert (early["action"], early.get("person")) == ("restore", None)
+    late = g.decide(r2, lien_ev + [replaced("2026-10-25")], LISTS, deed=deed("2026-08-11", "QUILLFEATHER TOBIAS"))
+    assert (late["action"], late["owner_copied"]) == ("leave", "2026-10-25")
+
+
+def test_the_guard_may_undo_a_sold_it_set_itself_but_never_a_persons():
+    log = [{"uuid": "u7", "action": "set sold", "status_from": "", "status_to": "sold"},
+           {"uuid": "u8", "action": "mark", "status_from": "prospecting", "status_to": "sold"},
+           {"uuid": "u8", "action": "restore", "status_from": "sold", "status_to": "prospecting"},
+           {"uuid": "u9", "action": "mark", "status_from": "sold", "status_to": "sold"},
+           {"uuid": "u10", "action": "mark", "status_from": "", "status_to": "sold", "error": "400"},
+           {"action": "preset auto-add off", "preset": 4076}]
+    own = g.guard_sold_flips(log)
+    assert own == {"u7": None}                  # u8 came off Sold again, u9 was Sold already, u10 failed
+    # the guard set this lien Sold on the dates alone; its deed names the owner: the guard undoes it
+    ours = dict(lien("2026-08-11", st="sold"), uuid="u7")
+    ev = UPLOADED + [status("2026-11-12", None, "sold", "internal-api")]
+    buy = deed("2026-08-11", "QUILLFEATHER TOBIAS")
+    assert g.needs_deed(ours, ev, LISTS, own) is True and g.needs_deed(ours, ev, LISTS) is False
+    d = g.decide(ours, ev, LISTS, deed=buy, own_flips=own)
+    assert (d["action"], d["status_to"], d["undoes"]) == ("restore", None, "a Sold the guard set itself")
+    # the same flip with no line in the guard's log, or a person's flip, is a person's call
+    assert g.decide(ours, ev, LISTS, deed=buy)["verdict"] == "marked sold by a person"
+    web = UPLOADED + [status("2026-11-12", None, "sold", "web")]
+    assert g.decide(ours, web, LISTS, deed=buy, own_flips=own)["verdict"] == "marked sold by a person"
+
+
+def test_a_deed_is_read_only_where_it_can_change_the_answer():
+    r = rec("2025-01-02", st="sold")
+    born = created("2026-06-25", ["recently sold"])
+    assert g.needs_deed(r, [born], LISTS) is False                                     # never a lead
+    assert g.needs_deed(r, [created("2026-08-01"), status("2026-09-01", "prospecting", "sold", "web")], LISTS) is False
+    assert g.needs_deed(r, [created("2026-08-01"), status("2026-09-01", None, "sold")], LISTS) is True
+    assert g.needs_deed(rec("2025-01-02", st=""), [created("2026-08-01")], LISTS) is True
+
+
+def test_the_newest_deed_is_the_latest_dated_row():
+    detail = {"sale_history": [{"sale_date": "2019-01-02", "buyer_name": "OLD OWNER", "sale_price": 90000},
+                               {"sale_date": "2026-08-19T00:00:00", "buyer_name": " NEW OWNER ", "sale_price": 1}]}
+    assert g.newest_deed(detail) == {"date": "2026-08-19", "price": 1, "buyer": "NEW OWNER", "seller": ""}
+    assert g.newest_deed({"sale_history": []}) == {} and g.newest_deed(None) == {}
+
+
+class Map:
+    """A fake SiftMap: recent-sale search rows, and a deed per dataflik id."""
+
+    def __init__(self, rows, deeds, floor_bites=True):
+        self.rows, self.deeds, self.floor_bites = rows, deeds, floor_bites
+        self.details, self.searches = [], []
+
+    def search(self, body):
+        self.searches.append(body)
+        bites = "extra_last_sale_date_min" in body["filters"] and self.floor_bites
+        if body["size"] == 1:
+            return {"total_results": len(self.rows) if bites else len(self.rows) + 900}
+        start = body["result_index"]
+        return {"data": self.rows[start:start + body["size"]], "total_results": len(self.rows)}
+
+    def get_detail(self, pid):
+        self.details.append(pid)
+        return {"sale_history": [self.deeds[pid]]} if pid in self.deeds else {"sale_history": []}
+
+
+class PassCrm(FakeCrm):
+    """A fake account for whole passes: records, their logs, and every write applied in memory."""
+
+    def __init__(self, records, logs, tagged_rows=()):
+        super().__init__()
+        self.records, self.logs, self.rows, self.reads = records, logs, list(tagged_rows), 0
+
+    def titles(self, path):
+        return {"recently sold": "tag-rs"} if "/tag/" in path else {"Liens": "list-liens"}
+
+    def page(self, must):
+        return [dict(r) for r in self.rows] if "created" in must else []
+
+    def record(self, uuid):
+        self.reads += 1
+        return copy.deepcopy(self.records[uuid])
+
+    def events(self, uuid):
+        return list(self.logs.get(uuid, []))
+
+    def untag(self, uuid):
+        super().untag(uuid)
+        self.records[uuid]["tags"] = [t for t in self.records[uuid]["tags"] if t["title"] != "recently sold"]
+
+    def tag(self, uuid):
+        super().tag(uuid)
+        self.records[uuid]["tags"].append({"title": "recently sold"})
+
+    def set_status(self, uuid, status):
+        super().set_status(uuid, status)
+        self.records[uuid]["status"] = status or ""
+
+
+TODAY = date(2026, 11, 14)          # a Saturday; its week starts 2026-11-09
+
+
+def house(n, tags=()):
+    return {"uuid": "s%d" % n, "status": "", "last_sold": None, "last_sale_price": None,
+            "tags": [{"title": t} for t in tags], "owner": dict(OWNER), "dataflik_id": "d%d" % n,
+            "address": {"street": "%d Invented Way" % n}}
+
+
+def search_args(crm, fmap, commit, cap, cache=None):
+    a = argparse.Namespace(commit=commit, limit=0, include_distress=False, fresh=False, stats={}, crm=crm,
+                           siftmap=fmap, today=TODAY)
+    a.cache = cache or g._cache()
+    a.deeds = g.Deeds(a.cache["deeds"], client=fmap, cap=cap, today=TODAY)
+    return a
+
+
+def recent_world(floor_bites=True):
+    rows = [{"id": "d%d" % n, "saved_uuid": "s%d" % n, "address": "%d Invented Way, Testville, TN" % n} for n in range(1, 6)]
+    rows.append({"id": "d99", "saved_uuid": None, "address": "99 Elsewhere Rd, Testville, TN"})
+    deeds = {"d%d" % n: {"sale_date": "2026-10-20", "sale_price": 199000, "buyer_name": "BRISTOW HOLDINGS LLC"}
+             for n in range(1, 6)}
+    records = {"s%d" % n: house(n) for n in range(1, 6)}
+    logs = {"s%d" % n: [created("2026-07-01")] for n in range(1, 6)}
+    return rows, Map(rows, deeds, floor_bites), records, logs
+
+
+def test_the_nightly_search_proves_its_floor_judges_each_house_once_a_week_and_stops_at_the_cap(tmp_path, monkeypatch):
+    monkeypatch.setattr(g, "OUT", tmp_path)
+    monkeypatch.setattr(g, "COUNTIES", (("00001", "Testcounty", "TN"),))
+    monkeypatch.setattr(g, "SEARCH_PAGE", 2)
+    rows, fmap, records, logs = recent_world()
+    crm = PassCrm(records, logs)
+    cache = g._cache()
+    cache["detect"]["s5"] = {"week": "2026-11-09", "why": "own purchase"}     # judged earlier this week
+    a = search_args(crm, fmap, commit=False, cap=2, cache=cache)
+    assert g.detect(a) == 0
+    st = a.stats
+    assert fmap.details == ["d1", "d2"]                      # the cap held: two deed reads, no more
+    assert (st["detect_rows"], st["detect_outside"], st["detect_judged"], st["detect_held"]) == (5, 1, 2, 2)
+    assert st["detect_would"] == 2 and crm.calls == []       # a dry run writes nothing
+    floor = [b["filters"].get("extra_last_sale_date_min") for b in fmap.searches if b["size"] == 1]
+    assert floor == ["2026-09-30", None]                     # proven by a count that moved, 45 days back
+    assert all(b["filters"]["in_my_account_mode"] == "in" and b["filters"]["type_single_family"]
+               and b["filters"]["extra_is_last_sale_interfamily"] is False for b in fmap.searches)
+    # live, on a fresh account: the two judged houses are tagged and set Sold, and remembered this week
+    monkeypatch.setattr(g, "OUT", tmp_path / "live")
+    rows, fmap, records, logs = recent_world()
+    crm = PassCrm(records, logs)
+    a = search_args(crm, fmap, commit=True, cap=2)
+    assert g.detect(a) == 0
+    assert crm.calls == [("status", "s1", "sold"), ("tag", "s1"), ("status", "s2", "sold"), ("tag", "s2")]
+    assert a.cache["detect"]["s1"]["week"] == "2026-11-09" and "s3" not in a.cache["detect"]
+    assert a.stats["detect_marked"] == 2 and a.cache["deeds"]["d1"]["deed"]["buyer"] == "BRISTOW HOLDINGS LLC"
+
+
+def test_a_search_whose_date_floor_is_ignored_reads_nothing(tmp_path, monkeypatch):
+    monkeypatch.setattr(g, "OUT", tmp_path)
+    monkeypatch.setattr(g, "COUNTIES", (("00001", "Testcounty", "TN"),))
+    rows, fmap, records, logs = recent_world(floor_bites=False)
+    crm = PassCrm(records, logs)
+    a = search_args(crm, fmap, commit=True, cap=150)
+    assert g.detect(a) == 0
+    assert fmap.details == [] and crm.reads == 0 and crm.calls == []
+    assert "did not change the count" in a.stats["detect_note"] and a.stats["detect_rows"] == 0
+
+
+def test_the_repair_pass_keeps_reads_for_the_search_and_counts_what_waits(tmp_path, monkeypatch):
+    monkeypatch.setattr(g, "OUT", tmp_path)
+    records, logs, tagged = {}, {}, []
+    for n in (1, 2, 3):
+        r = house(n, tags=("recently sold", "filed_2026-Q3"))
+        r["last_sold"] = "2026-08-11"
+        records["s%d" % n], logs["s%d" % n] = r, list(UPLOADED)
+        tagged.append({"uuid": "s%d" % n, "address": r["address"], "list_count": 2, "tag_count": 2, "status": ""})
+    fmap = Map([], {"d%d" % n: {"sale_date": "2026-08-11", "sale_price": 99000, "buyer_name": "QUILLFEATHER TOBIAS"}
+                    for n in (1, 2, 3)})
+    crm = PassCrm(records, logs, tagged)
+    a = search_args(crm, fmap, commit=False, cap=g.DETECT_RESERVE + 1)
+    assert g.repair(a) == 0
+    assert fmap.details == ["d1"]                            # the reserve is kept for the sale search
+    assert (a.stats["repair_judged"], a.stats["repair_held"], a.stats["repair_would"]) == (1, 2, 1)
+    plan = json.loads((tmp_path / "repair_plan.json").read_text(encoding="utf-8"))
+    assert [(p["uuid"], p["action"]) for p in plan] == [("s1", "untag")]
+
+
+def test_a_deed_read_is_reused_for_a_week_and_a_refused_key_stops_the_reads():
+    fmap = Map([], {"d1": {"sale_date": "2026-08-11", "buyer_name": "QUILLFEATHER TOBIAS"}})
+    store = {"d2": {"at": "2026-11-10", "deed": {"date": "2026-01-02", "buyer": "X"}},
+             "d3": {"at": "2026-10-01", "deed": {"date": "2025-01-02", "buyer": "Y"}}}
+    dd = g.Deeds(store, client=fmap, cap=3, today=TODAY)
+    assert dd.get("") is None and dd.get(None) is None            # no SiftMap id, nothing to read
+    assert dd.get("d2")["buyer"] == "X" and fmap.details == []    # four days old: reused
+    assert dd.get("d3") == {} and fmap.details == ["d3"]          # six weeks old: read again
+    assert store["d3"]["at"] == "2026-11-14" and dd.reads == 1
+
+    class Refusing(Map):
+        def get_detail(self, pid):
+            raise RuntimeError("401 on GET /properties/detail/x/. The Api-Key was rejected.")
+
+    dd = g.Deeds({}, client=Refusing([], {}), cap=10, today=TODAY)
+    try:
+        dd.get("d1")
+        raise AssertionError("the refusal was swallowed")
+    except RuntimeError:
+        pass
+    try:
+        dd.get("d4")
+        raise AssertionError("a refused key kept reading")
+    except g.HeldBack as hb:
+        assert "refused the key" in str(hb)
+
+
+def test_verdicts_made_before_the_deed_are_judged_again(tmp_path, monkeypatch):
+    monkeypatch.setattr(g, "OUT", tmp_path)
+    (tmp_path / "judged.json").write_text(json.dumps({"repair": {"u1": "3|8|"}, "mark": {"u2|2026-11-02": "own purchase"},
+                                                     "reentry": {"u3": "2|4|sold"}}), encoding="utf-8")
+    c = g._cache()
+    assert (c["v"], c["repair"], c["mark"], c["reentry"]) == (2, {}, {}, {"u3": "2|4|sold"})
+    c["repair"]["u1"] = "3|8|"
+    g._save_cache(c)
+    assert g._cache()["repair"] == {"u1": "3|8|"}             # a verdict made with the deed stays
+
+
+def test_the_person_list_holds_a_record_until_a_later_judgment_decides_it(tmp_path, monkeypatch):
+    monkeypatch.setattr(g, "OUT", tmp_path)
+    a = argparse.Namespace(stats={}, today=TODAY)
+    g._person(a, "u5", "5 Invented Way", {"person": "the buyer on the newest deed shares only the surname",
+                                         "status": "sold", "tagged": False})
+    g._write_person(a)
+    held = json.loads((tmp_path / "for_a_person.json").read_text(encoding="utf-8"))
+    assert held["u5"]["first_seen"] == "2026-11-14" and a.stats["for_a_person"] == 1
+    assert "shares only the surname" in (tmp_path / "for_a_person.csv").read_text(encoding="utf-8")
+    g._person(a, "u5", "5 Invented Way", {"verdict": "own purchase", "action": "restore"})
+    g._write_person(a)
+    assert json.loads((tmp_path / "for_a_person.json").read_text(encoding="utf-8")) == {}
+    assert (a.stats["for_a_person"], a.stats["for_a_person_new"]) == (0, 1)
+
+
+def test_a_restore_without_the_tag_never_touches_tags_and_undo_does_not_add_one(tmp_path, monkeypatch):
+    monkeypatch.setattr(g, "OUT", tmp_path)
+    ev = UPLOADED + [status("2026-11-12", None, "sold")]
+    d = g.decide(lien("2021-05-02", st="sold", tags=("filed_2026-Q3",)), ev, LISTS,
+                 deed=deed("2026-08-17", "QUILLFEATHER TOBIAS"))
+    crm = FakeCrm()
+    assert g.apply(crm, "u4", "4 Invented Way", d, commit=True) is True
+    assert crm.calls == [("status", "u4", None)]
+    e = g.read_log()[0]
+    assert (e["tag_removed"], e["tag_added"], e["deed_day"]) == (False, False, "2026-08-17")
+    back = FakeCrm()
+    monkeypatch.setattr(g, "Crm", lambda: back)
+    g.undo(argparse.Namespace(commit=True))
+    assert back.calls == [("status", "u4", "sold")]
+
+
+def test_daily_runs_the_search_between_repair_and_mark_and_keeps_the_runner_keys(tmp_path, monkeypatch):
+    import ftm_runner as r
+    monkeypatch.setattr(g, "OUT", tmp_path)
+    monkeypatch.setattr(g, "COUNTIES", (("00001", "Testcounty", "TN"),))
+    rows, fmap, records, logs = recent_world()
+    monkeypatch.setattr(g, "Crm", lambda: PassCrm(records, logs))
+    monkeypatch.setattr(g, "_siftmap", lambda: fmap)
+    st = g.daily(commit=False)
+    for k in ("rc", "restored", "marked", "repair_judged", "mark_judged", "repair_errors", "mark_errors",
+              "held_back", "deed_reads", "for_a_person"):
+        assert k in st, k
+    assert (st["rc"], st["detect_judged"], st["deed_reads"], st["mark_judged"]) == (0, 5, 5, 5)
+    res = r._stage_sold(argparse.Namespace(commit=False))
+    assert res.status == "ok" and "judged" in res.detail
+
+
+def test_the_audit_stays_read_only_and_shows_tonights_slice(monkeypatch, capsys):
+    monkeypatch.setattr(g, "COUNTIES", (("00001", "Testcounty", "TN"),))
+    rows, fmap, records, logs = recent_world()
+
+    class Counting(PassCrm):
+        def search(self, must, limit=1, offset=0):
+            return {"count": 7, "results": []}
+
+    crm = Counting(records, logs)
+    monkeypatch.setattr(g, "Crm", lambda: crm)
+    monkeypatch.setattr(g, "_siftmap", lambda: fmap)
+    assert g.audit(argparse.Namespace()) == 0
+    out = capsys.readouterr().out
+    assert "sale search, Testcounty: 6 house(s)" in out and "floor proven" in out
+    assert crm.calls == [] and fmap.details == []            # counts only: no write, no deed read
+
+
+def test_the_detect_command_is_wired(monkeypatch):
+    seen = []
+    monkeypatch.setattr(g, "detect", lambda a: seen.append((a.cmd, a.commit, a.limit)) or 0)
+    assert g.main(["detect", "--limit", "3"]) == 0 and seen == [("detect", False, 3)]
 
 
 def test_the_daily_runner_carries_the_sold_stage_last():

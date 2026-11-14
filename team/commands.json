@@ -7901,6 +7901,9 @@
     "Serper",
     "Tracerfy"
    ],
+   "siftmap_reads": [
+    "get_detail"
+   ],
    "subcommand_required": true,
    "subcommands": {
     "audit": {
@@ -7950,6 +7953,52 @@
      ]
     },
     "daily": {
+     "args": [
+      {
+       "flags": [
+        "--commit"
+       ],
+       "kind": "switch"
+      },
+      {
+       "default": 0,
+       "flags": [
+        "--limit"
+       ],
+       "kind": "value",
+       "type": "int"
+      },
+      {
+       "flags": [
+        "--include-distress"
+       ],
+       "help": "also treat DataSift's own distress lists as a reason a record is a lead",
+       "kind": "switch"
+      },
+      {
+       "flags": [
+        "--fresh"
+       ],
+       "help": "judge every record again, ignoring earlier verdicts",
+       "kind": "switch"
+      },
+      {
+       "flags": [
+        "--force"
+       ],
+       "help": "run even when it is not due (re-entry outside January, an audit already written)",
+       "kind": "switch"
+      },
+      {
+       "flags": [
+        "--month"
+       ],
+       "help": "YYYY-MM to audit (default: last month)",
+       "kind": "value"
+      }
+     ]
+    },
+    "detect": {
      "args": [
       {
        "flags": [
