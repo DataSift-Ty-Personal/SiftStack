@@ -896,15 +896,19 @@ def apply_changes(ctx, o, tag, adds, removes, state, spath, summary, streets) ->
     The first add and the first remove are read back before any other write of that kind."""
     done = state.get("applied") or {"added": [], "removed": []}
     have = {"add": set(done["added"]), "remove": set(done["removed"])}
+    # A record that answered 404 while being tagged is gone (merged or deleted since the sweep): it is
+    # skipped and remembered, never retried. Found live 2026-11-13: one such record stopped the first
+    # run at 1,417 of 1,526, and every later run would have stopped on it again.
+    gone = set(state.get("gone") or [])
 
     def keep(phase: str, **more) -> None:
         save_json(spath, dict(state, phase=phase, applied={"added": sorted(have["add"]), "removed": sorted(have["remove"])},
-                              updated=ctx.now.isoformat(timespec="seconds"), **more))
+                              gone=sorted(gone), updated=ctx.now.isoformat(timespec="seconds"), **more))
 
     writes, stopped = 0, ""
     for kind, todo in (("add", adds), ("remove", removes)):
         for u in todo:
-            if u in have[kind]:
+            if u in have[kind] or u in gone:
                 continue
             if writes >= int(o["max_writes"]):
                 stopped = "cap"
@@ -920,6 +924,10 @@ def apply_changes(ctx, o, tag, adds, removes, state, spath, summary, streets) ->
                 stopped = str(exc)
                 break
             except Exception as exc:  # noqa: BLE001  (a failed write is said, and what landed is kept)
+                if getattr(exc, "code", None) == 404:
+                    gone.add(u)
+                    ctx.out.tally["left out: the record is gone (404 when tagged)"] += 1
+                    continue
                 stopped = "the %s of the tag on %s failed (%s)" % (kind, streets.get(u) or u[:8], str(exc)[:80])
                 break
             writes += 1
@@ -940,7 +948,8 @@ def apply_changes(ctx, o, tag, adds, removes, state, spath, summary, streets) ->
             break
     ctx.out.acted = writes
     if stopped:
-        left = len([u for u in adds if u not in have["add"]]) + len([u for u in removes if u not in have["remove"]])
+        left = (len([u for u in adds if u not in have["add"] and u not in gone])
+                + len([u for u in removes if u not in have["remove"] and u not in gone]))
         if stopped == "cap":
             ctx.out.line("Wrote %d tag change(s) this run (the cap is %d); %d still to write, the next run continues." % (
                 writes, int(o["max_writes"]), left))

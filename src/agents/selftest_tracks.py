@@ -83,6 +83,12 @@ class TrackCRM(Crm):
         self.custom.setdefault(u, {})["Sent to Agency" if label == "sent to agency" else label] = value
 
     def add_tags(self, u, add, rec=None):
+        self.tag_tries = getattr(self, "tag_tries", []) + [u]
+        if getattr(self, "gone_first", False) and not getattr(self, "gone_seen", None):
+            self.gone_seen = u
+            err = RuntimeError("HTTP 404 on POST add-tags")
+            err.code = 404
+            raise err
         if self.broken_tags:
             self.writes.append(("add_tags", u, tuple(add)))
             return
@@ -686,6 +692,24 @@ def _cycle_checks(check, tmp) -> None:
     check(any("the tag did not stick on 1 Track St" in p for p in bad.problems) and len(crm_b.writes) == 1
           and any("nothing more is written until a person looks" in p for p in nxt.problems) and len(crm_b.writes) == 1,
           "a tag that does not read back stops the run after the first write, and the next run refuses until a person looks")
+    config.MODE = "dry"
+
+    # --- a record that is gone (404 on the tag write) is skipped and remembered, never a stop
+    print("  a record that is gone")
+    _wipe()
+    config.DATA_DIR = tmp / "two_tracks_gone"
+    crm_g = TrackCRM(account())
+    crm_g.gone_first = True
+    top1000.search = FakeMap(crm_g)
+    config.MODE = "live"
+    g1 = sweep.run("t_top", crm=crm_g, now=NOV, pol=policy.parse(playbook(tmp, top_mode="live"), EMPLOYEES))
+    tries1 = list(crm_g.tag_tries)
+    g2 = sweep.run("t_top", crm=crm_g, now=NOV + timedelta(hours=1), pol=policy.parse(playbook(tmp, top_mode="live"), EMPLOYEES))
+    check(not any("stopped writing early" in p for p in g1.problems) and len(tries1) > 1
+          and g1.tally.get("left out: the record is gone (404 when tagged)") == 1,
+          "a record that answers 404 while being tagged is counted as gone and the run carries on with the rest")
+    check(crm_g.tag_tries.count(crm_g.gone_seen) == 1 and not any("stopped writing early" in p for p in g2.problems),
+          "a gone record is never tried again on a later run")
     config.MODE = "dry"
 
     # --- the sweep splits a value band that is too big, and says when the in-account filter did not hold
