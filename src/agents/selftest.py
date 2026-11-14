@@ -107,6 +107,7 @@ EXTRA_SECTIONS: list[tuple[str, str]] = [
     ("two tracks for the presets", "selftest_restructure"),
     ("the two tracks", "selftest_tracks"),
     ("three pipelines", "selftest_pipeline"),
+    ("deal odds", "selftest_deal_odds"),
 ]
 
 

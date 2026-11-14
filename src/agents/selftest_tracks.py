@@ -173,9 +173,11 @@ def account() -> list:
 def playbook(tmp: Path, top_mode="plan", agency_mode="plan", **top_over) -> dict:
     cohort = Path(tmp) / "tracks_d4d.json"
     cohort.write_text(json.dumps([{"saved_uuid": "m1", "score": 100, "rank": 1}]), encoding="utf-8")
+    # These checks were written for the old Dream 100 points, so the blocks pin them; the deal-odds
+    # path (the default since 2026-11-14) has its own section, selftest_deal_odds.
     top = {"kind": "top1000", "owner": "analysis", "mode": top_mode, "schedule": ["1st 00:20", "2nd 00:20"], "lane": "top1000",
            "presets": ["Agency - 01 Queue"], "counties": COUNTIES, "size": 2, "finalists": 1.5, "read_fields": False,
-           "pool_lists": ["Agency"], "d4d_cohort": str(cohort), "max_reads": 50, "max_writes": 50}
+           "pool_lists": ["Agency"], "d4d_cohort": str(cohort), "max_reads": 50, "max_writes": 50, "score": "dream100"}
     top.update(top_over)
     return {
         "business": {"tz": "America/New_York", "hours": "09:00-18:00", "days": ["Mon", "Tue", "Wed", "Thu", "Fri"]},
@@ -187,7 +189,7 @@ def playbook(tmp: Path, top_mode="plan", agency_mode="plan", **top_over) -> dict
             "t_agency": {"kind": "agencyexport", "owner": "ops", "mode": agency_mode, "schedule": "every 60 min 00:00-05:00 daily",
                          "lane": "agency", "presets": ["Agency - 01 Queue"], "counties": COUNTIES, "size": 3, "margin": 0.5,
                          "after_stage": "t_top", "read_fields": False, "release_writes": 1, "max_writes": 50,
-                         "list_name": "Example agency list"},
+                         "list_name": "Example agency list", "score": "dream100"},
             "t_limits": {"kind": "limits", "owner": "ops", "mode": "plan", "schedule": "19:20 Mon-Fri"},
             "t_text": {"kind": "textlane", "owner": "ops", "mode": "live", "schedule": "08:45 Mon-Fri", "lane": "ftm",
                        "lanes": ["ftm", "top1000"], "series": "opening", "presets": ["Priority - 02 Ready to Call"],

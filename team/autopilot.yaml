@@ -1411,7 +1411,13 @@ stages:
     lane: top1000
     mode: "plan"
     schedule: ["1st 00:20", "1st 03:20", "2nd 00:20", "3rd 00:20"]   # monthly; the later slots only finish what the first could not
-    summary: The Top 1,000 owners re-ranked once a month by the Dream 100 score, one owner one slot; who would gain and lose the tag is listed, with the ranking as a file.
+    summary: The Top 1,000 owners re-ranked once a month on deal odds (the chance an investor buys one of their houses within six months, learned from what sold), one owner one slot; who would gain and lose the tag is listed, with the ranking as a file.
+    # Ranked on deal odds since 2026-11-14 (src/deal_odds.py, fitted by src/deal_odds_train.py):
+    # tested on the half-year after its training window, its top 1,000 houses held 17 of 574 investor
+    # deals, against 10 for the old Dream score's core and 4 for the Priority 1 combinations.
+    # score: dream100 puts the old points back for comparison.
+    score: deal_odds
+    min_room: 15000               # a house with under $15,000 of discount room has no room for a fee
     # The pool: the agency track's own rows (owner and status of each house), plus the records that
     # hold the tag now and the records on the Agency list, so a house sent last month can still be
     # promoted. If the parallel preset build splits the queue in two, list both titles here.

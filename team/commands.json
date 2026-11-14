@@ -3,9 +3,9 @@
  "counts": {
   "browser": 24,
   "package": 1,
-  "paid": 12,
+  "paid": 13,
   "retired": 32,
-  "runnable": 53,
+  "runnable": 54,
   "wired": 28,
   "writes": 21
  },
@@ -1571,6 +1571,64 @@
    "workflows": [
     "deal_buyers"
    ],
+   "writes": ""
+  },
+  "deal_odds_train": {
+   "args": [
+    {
+     "choices": [
+      "pull",
+      "history",
+      "listings",
+      "aiscores",
+      "build",
+      "fit",
+      "forward",
+      "score",
+      "all"
+     ],
+     "flags": [
+      "--phase"
+     ],
+     "kind": "value",
+     "required": true
+    },
+    {
+     "flags": [
+      "--work"
+     ],
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--model"
+     ],
+     "kind": "value"
+    },
+    {
+     "default": 8,
+     "flags": [
+      "--streams"
+     ],
+     "kind": "value",
+     "type": "int"
+    }
+   ],
+   "class": "runnable",
+   "cli": "argparse",
+   "complete": true,
+   "paid": [
+    "Enformion",
+    "Tracerfy",
+    "Trestle"
+   ],
+   "paid_deeper": [
+    "Firecrawl",
+    "OpenRouter",
+    "Serper",
+    "Zillow (OpenWeb Ninja)"
+   ],
+   "summary": "Fit and test the deal-odds model (src/deal_odds.py) on what actually sold in Knox and Blount.",
    "writes": ""
   },
   "deal_package": {

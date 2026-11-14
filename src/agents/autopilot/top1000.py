@@ -103,7 +103,16 @@ DEFAULTS = {
     # the obituary lane and its research, which ranks above the Top 1,000. The Priority presets do not
     # exclude it (the first-to-market lane keeps it on purpose), so the selection itself must.
     "exclude_lists": ["Obituary"],
+    # How owners are ranked. deal_odds (2026-11-14, the owner's ask: "as objectively as possible") is
+    # the chance an investor buys one of the owner's houses within six months, learned from what sold
+    # (src/deal_odds.py); dream100 is the old hand-set points, kept so the two can be compared.
+    "score": "deal_odds", "odds_model": "",
+    # A deal needs room for a fee: a house whose discount room (the smaller of its equity and 30% of
+    # its value) is under this is left out whatever its odds.
+    "min_room": 15000,
 }
+SCORES = ("deal_odds", "dream100")
+SLIM_VERSION = 2      # the month's sweep keeps what the deal-odds model reads; a sweep made before is re-made
 # Tests swap this for a fake SiftMap. In production the search goes through the ladder check's
 # transport, which can reach only the search route.
 search = None
@@ -151,6 +160,12 @@ def block_problems(st) -> list[str]:
     w = str(st.get("weights") or "today").strip().lower()
     if w not in ("today", "taught"):
         out.append("stage %s: weights must be today or taught (the Dream 100 weight sets)" % st.id)
+    sc = str(st.get("score") or "deal_odds").strip().lower()
+    if sc not in SCORES:
+        out.append("stage %s: score must be %s" % (st.id, " or ".join(SCORES)))
+    mr = st.get("min_room")
+    if mr is not None and (isinstance(mr, bool) or not isinstance(mr, (int, float)) or mr < 0):
+        out.append("stage %s: min_room is the smallest discount room in dollars, 0 or more" % st.id)
     return out
 
 
@@ -227,7 +242,11 @@ def mls_word(row: dict) -> str:
 
 
 def slim_row(row: dict) -> dict:
-    """The few fields of a SiftMap search row the score and the exclusions read."""
+    """The fields of a SiftMap search row the scores and the exclusions read. Since SLIM_VERSION 2 it
+    also keeps what the deal-odds model reads (size, lot, place, a cash purchase, free and clear,
+    high equity) and the on-market AI score, so a month's AI scores exist later to be tested against
+    what sold."""
+    import deal_odds
     d = row.get("distressors") or {}
     flags = sorted(k for k, v in d.items() if (v.get("is_active") if isinstance(v, dict) else v))
     pre = row.get("presets") or {}
@@ -235,7 +254,11 @@ def slim_row(row: dict) -> dict:
             "r": row.get("realtor_score"), "abs": bool(row.get("absenteeOwner")), "corp": bool(row.get("corporateOwned")),
             "use": row.get("propertyUse") or "", "mls": mls_word(row), "tags": list(row.get("saved_tags") or []),
             "lists": list(row.get("saved_lists") or []), "flags": flags, "vac": bool(pre.get("vacant")),
-            "addr": row.get("address") or "", "fips": str(row.get("fips") or "")}
+            "addr": row.get("address") or "", "fips": str(row.get("fips") or ""), "id": str(row.get("id") or ""),
+            "sq": row.get("squareFeet"), "bd": row.get("bedrooms"), "ba": row.get("bathrooms"), "lot": row.get("lotAcres"),
+            "lat": row.get("latitude"), "lon": row.get("longitude"), "cash": bool(pre.get("cash_buyer")),
+            "fc": bool(pre.get("free_clear")), "he": bool(pre.get("high_equity")), "zip": deal_odds.zip_of(row.get("address")),
+            "ion": row.get("investor_on_market_score"), "mc": bool(row.get("mlsCancelled"))}
 
 
 class _Asked:
@@ -291,7 +314,7 @@ def sweep_exclusions(ctx) -> list[str]:
 
 def sweep_key(counties: list[dict], exclude: list[str]) -> str:
     raw = json.dumps({"counties": [(c.get("fips"), c.get("name"), c.get("state")) for c in counties],
-                      "box": BUY_BOX, "exclude": sorted(exclude)}, sort_keys=True)
+                      "box": BUY_BOX, "exclude": sorted(exclude), "slim": SLIM_VERSION}, sort_keys=True)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
 
 
@@ -340,11 +363,79 @@ def month_sweep(ctx, o: dict) -> dict | None:
 
 
 # ---------------------------------------------------------------------- the account's own rows (the owner of each house)
-def pool_rows(ctx, o: dict, presets: list[str], tag_titles=(), list_titles=(), holder_tag: str = "") -> dict | None:
+def _with_range(must: dict, key: str, lo, hi) -> dict | None:
+    """`must` with `key` held to [lo, hi], inside any range the preset already sets on it (a band
+    outside the preset's own range would add records the preset leaves out). None when they do not meet."""
+    m = dict(must)
+    have = m.get(key)
+    if isinstance(have, (list, tuple)) and len(have) == 2:
+        a, b = have
+        if a is not None:
+            lo = max(lo, a)
+        if b is not None:
+            hi = min(hi, b)
+    if lo > hi:
+        return None
+    m[key] = [lo, hi]
+    return m
+
+
+def band_windows(today) -> tuple[list, list]:
+    """The deal-odds model's tenure and year-built bands as record-search ranges: last_sold dates and
+    year-built years. A record with no last sale, or no year, falls in no band and reads unknown,
+    exactly as a house with no sale on record does in training."""
+    import datetime as _dt
+    import deal_odds
+
+    def ago(years):
+        try:
+            return today.replace(year=today.year - int(years))
+        except ValueError:                       # 29 February
+            return today.replace(year=today.year - int(years), day=28)
+    tenure = []
+    for lo, hi, name in deal_odds.TENURE_BANDS:
+        start = _dt.date(1900, 1, 1) if hi == float("inf") else ago(hi) + timedelta(days=1)
+        tenure.append((name, start.isoformat(), ago(lo).isoformat()))
+    years = [(name, int(max(lo, 1700)), int(min(hi, 2101)) - 1) for lo, hi, name in deal_odds.YEAR_BANDS]
+    return tenure, years
+
+
+def band_rows(ctx, sources: list, out: dict) -> None:
+    """Each pool record's tenure band and year-built band, written onto its pool row as `ten` and `yb`.
+    The search rows carry neither, and both are among the strongest signals the model has, so each
+    source is scanned once per band (the records search filters last_sold and year; both proven by
+    count delta). Every record falls in at most one band, so the bands cost about one more pass of
+    the pool each, and they are kept with the pool for pool_days."""
+    from agents.autopilot.lanecheck import scan
+    tenure, years = band_windows(ctx.now.date())
+    hit = Counter()
+    for label, must, _holds in sources:
+        for key, field, bands in (("ten", "last_sold", tenure), ("yb", "year", years)):
+            for name, lo, hi in bands:
+                m = _with_range(must, field, lo, hi)
+                if m is None:
+                    continue
+                for r in scan(ctx, m):
+                    u = r.get("uuid")
+                    if u in out:
+                        out[u][key] = name
+                        hit[key] += 1
+    have_ten = sum(1 for r in out.values() if r.get("ten"))
+    have_yb = sum(1 for r in out.values() if r.get("yb"))
+    ctx.out.tally["pool rows with a tenure band"] = have_ten
+    ctx.out.tally["pool rows with a year-built band"] = have_yb
+    if out and have_ten == 0 and have_yb == 0:
+        ctx.out.problem("the band searches found no record in any tenure or year-built band, so the search may "
+                        "no longer honor last_sold or year; every house was scored with both unknown")
+
+
+def pool_rows(ctx, o: dict, presets: list[str], tag_titles=(), list_titles=(), holder_tag: str = "",
+              bands: bool = False) -> dict | None:
     """record uuid -> {owner, status, street, city, holds} from the stage's pool presets, the records
     carrying the pool tags and the records on the pool lists. A search row is the only place the
     owner's id is, and a page of 250 costs one request. None when a source is larger than the
-    block's max_pool allows (the run says which)."""
+    block's max_pool allows (the run says which). With `bands`, each row also gets its tenure and
+    year-built band (band_rows)."""
     from agents.autopilot.lanecheck import scan
     out: dict = {}
     room = int(o["max_pool"])
@@ -394,6 +485,8 @@ def pool_rows(ctx, o: dict, presets: list[str], tag_titles=(), list_titles=(), h
                 have["from"].append(label)
             out[u] = have
         ctx.out.tally["pool rows from the %s" % label] = len(rows)
+    if bands and out:
+        band_rows(ctx, sources, out)
     return out
 
 
@@ -412,34 +505,82 @@ def facts_of(key: str) -> dict:
 
 def cached_pool(ctx, o: dict, path: Path, presets, tag_titles=(), list_titles=(), holder_tag: str = "") -> dict | None:
     """The pool, read once and kept for `pool_days`: a run that continues reading the next night
-    must not page the account again to learn the same owners."""
+    must not page the account again to learn the same owners. A pool kept without the bands the
+    deal-odds score needs is read again."""
+    bands = score_of(o) == "deal_odds"
     have = load_json(path, {})
     try:
         fresh = ctx.now - datetime.fromisoformat(have.get("at") or "") < timedelta(days=float(o["pool_days"]))
     except (TypeError, ValueError):
         fresh = False
-    if fresh and isinstance(have.get("rows"), dict):
+    if fresh and isinstance(have.get("rows"), dict) and (have.get("bands") or not bands):
         ctx.out.tally["pool rows (kept from %s)" % str(have["at"])[:10]] = len(have["rows"])
         return have["rows"]
-    rows = pool_rows(ctx, o, presets, tag_titles, list_titles, holder_tag)
+    rows = pool_rows(ctx, o, presets, tag_titles, list_titles, holder_tag, bands=bands)
     if rows is not None:
-        save_json(path, {"at": ctx.now.isoformat(timespec="seconds"), "rows": rows})
+        save_json(path, {"at": ctx.now.isoformat(timespec="seconds"), "rows": rows, "bands": bands})
     return rows
 
 
-# ---------------------------------------------------------------------- the score (Dream 100's)
+# ---------------------------------------------------------------------- the score
+# The run's deal-odds model, set by scoring() and cleared by restore(), so candidates() and
+# owner_score() (shared with the agency export) see the same model without a new argument.
+_ODDS: dict = {"model": None, "min_room": 0.0}
+
+
+def score_of(o: dict) -> str:
+    return str(o.get("score") or "deal_odds").strip().lower()
+
+
 def scoring(o: dict):
-    """dream100_build with the block's weight set on it. Imported here, not at the top: it carries
-    the workbook code and the D4D client, which a playbook check should not have to load."""
+    """dream100_build with the block's weight set on it (its buy-box rules and discount room are used
+    by both scores), plus the deal-odds model when the block ranks on it. Imported here, not at the
+    top: it carries the workbook code and the D4D client, which a playbook check should not have to
+    load. A deal-odds block with no model file is refused, never quietly ranked on the old points."""
     import dream100
     import dream100_build as build
     dream100.apply_weights(str(o.get("weights") or "today"), build)
+    if score_of(o) == "deal_odds":
+        import deal_odds
+        try:
+            _ODDS["model"] = deal_odds.load(o.get("odds_model") or None)
+        except (OSError, ValueError) as exc:
+            restore(build)
+            raise RuntimeError("the deal-odds model could not be read (%s); fit it with python src/deal_odds_train.py, "
+                               "or set score: dream100 on the stage" % str(exc)[:120])
+        _ODDS["min_room"] = float(o.get("min_room") if o.get("min_room") is not None else DEFAULTS["min_room"])
     return build
 
 
 def restore(build) -> None:
     import dream100
     dream100.apply_weights(dream100.DEFAULT_WEIGHTS, build)
+    _ODDS["model"], _ODDS["min_room"] = None, 0.0
+
+
+def odds_reach(model: dict, word: str) -> float:
+    """How much likelier an owner is to be reached on their best number than on an unscored one, from
+    the model's measured reach table (the account's own call log); 1 where nothing was measured."""
+    table = (model or {}).get("reach") or {}
+    base = float(table.get("untiered") or 0) or None
+    rate = table.get(word)
+    if not base or rate is None:
+        return 1.0
+    return float(rate) / base
+
+
+def odds_owner_score(model: dict, houses: list[dict], reach_word: str | None = None) -> dict:
+    """An owner on deal odds: the chance at least one of their houses in the pool sells to an investor
+    within six months, times how reachable they are (1 until their phones are read). `score` is
+    that chance in percent, so the CSV reads as odds, not points."""
+    import deal_odds
+    p = deal_odds.owner_prob(float(h["odds"]) for h in houses)
+    f = odds_reach(model, reach_word or "")
+    best = max(houses, key=lambda h: (float(h["odds"]), h["uuid"]))
+    room = sum(float(h.get("deal_size") or 0) for h in houses)
+    return {"score": round(100.0 * p * f, 3), "odds": p, "reach_factor": round(f, 3), "best": best["uuid"],
+            "room": round(room, -2), "pts": {"odds": round(100.0 * p, 3), "reach": round(f, 3)}, "missing": [],
+            "why": deal_odds.reasons(model, best.get("facts") or {}) if best.get("facts") is not None else []}
 
 
 def weights(build) -> dict:
@@ -486,10 +627,15 @@ def house(uuid: str, s: dict, tags: list[str], lists: list[str], status: str, d4
             "mls": s.get("mls") or ""}
 
 
-def owner_score(build, houses: list[dict], reach_pts: float | None = None) -> dict:
-    """The owner's score: their best house's Dream 100 score, with deal size counted over every house
-    they hold in the buy box. A component the data does not have (condition with no D4D score,
+def owner_score(build, houses: list[dict], reach_pts: float | None = None, reach_word: str | None = None) -> dict:
+    """The owner's score. On deal odds (the default since 2026-11-14) it is odds_owner_score. On the
+    old Dream 100 points it is their best house's Dream 100 score, with deal size counted over every
+    house they hold in the buy box; a component the data does not have (condition with no D4D score,
     reach before the record is read) is left out and the rest are scaled back to 100."""
+    if _ODDS["model"] is not None and houses and all("odds" in h for h in houses):
+        if reach_word is None and reach_pts is not None:
+            reach_word = next((t for t, v in build.TIER_PTS.items() if t and float(v) == float(reach_pts)), "")
+        return odds_owner_score(_ODDS["model"], houses, reach_word)
     W = weights(build)
     room = sum(float(h.get("deal_size") or 0) for h in houses)
     deal = W["deal"] * build.ramp(room, build.DEAL_LO, build.DEAL_HI)
@@ -614,6 +760,15 @@ def candidates(ctx, build, sift: dict, pool: dict, target: str, d4d: dict, skip=
                 dropped.setdefault(key, why)
             continue
         build.score(r)
+        model = _ODDS["model"]
+        if model is not None:
+            if float(r.get("deal_size") or 0) < _ODDS["min_room"]:
+                out_by["under $%s of discount room (no room for a fee)" % format(int(_ODDS["min_room"]), ",")] += 1
+                continue
+            import deal_odds
+            facts = deal_odds.with_bands(deal_odds.facts_from_search_row(s), p.get("ten"), p.get("yb"))
+            r["facts"] = facts
+            r["odds"] = deal_odds.prob(model, facts)
         r["holds"] = bool(p.get("holds"))
         r["city"] = p.get("city") or ""
         owners.setdefault(key, {"houses": []})["houses"].append(r)
@@ -633,7 +788,7 @@ def ranked(owners: dict, field: str = "pre") -> list[str]:
 # ---------------------------------------------------------------------- the finalists' records
 PRUNE_KEEP = ("uuid", "dataflik_id", "status", "mls", "do_not_mail_ever", "predictivecall_attempts", "sms_attempts",
               "directmail_attempts", "estimate_value", "equity_percent", "year", "bedrooms", "bathrooms", "sqft",
-              "structure_type")
+              "structure_type", "owned_since", "last_sold")
 OWNER_KEEP = ("uuid", "first_name", "last_name", "company", "deceased", "opt_out", "dnc", "skiptraced", "do_not_mail_ever",
               "emails", "type")
 
@@ -752,7 +907,11 @@ def run_top1000(ctx: Ctx) -> None:
         if index(ctx.crm, kind) is None:
             ctx.out.problem("the account's %s index could not be read, so the houses' %ss are unknown; nothing was ranked" % (kind, kind))
             return
-    build = scoring(o)
+    try:
+        build = scoring(o)
+    except RuntimeError as exc:
+        ctx.out.problem(str(exc))
+        return
     try:
         _work(ctx, o, build, tag, sift, pool, state, spath)
     finally:
@@ -809,8 +968,16 @@ def _work(ctx, o, build, tag, sift, pool, state, spath) -> None:
             out_by[v.reason()] += 1
             if not houses:
                 continue
+        model = _ODDS["model"]
+        if model is not None:
+            # The full record knows the exact purchase date and year built, where the search knew only bands.
+            import deal_odds
+            for h in houses:
+                if h["uuid"] == rec.get("uuid") and h.get("facts") is not None:
+                    h["facts"] = deal_odds.facts_from_record(rec, h["facts"], today=ctx.now.date())
+                    h["odds"] = deal_odds.prob(model, h["facts"])
         pts, words = reach_of(build, rec)
-        final[key] = {"houses": houses, "score": owner_score(build, houses, pts), "reach": words}
+        final[key] = {"houses": houses, "score": owner_score(build, houses, pts, words), "reach": words}
     picked = sorted(final, key=lambda k: (-final[k]["score"]["score"], -final[k]["score"]["room"], k))[: o["size"]]
     tag_set = {h["uuid"] for k in picked for h in final[k]["houses"]}
     kept, leads, reads_left = set(), set(), 0
@@ -854,11 +1021,24 @@ def _work(ctx, o, build, tag, sift, pool, state, spath) -> None:
     if len(picked) < o["size"]:
         ctx.out.line("Only %d owners passed every check, short of %s (raise finalists to read more of the ranking)." % (
             len(picked), format(o["size"], ",")))
-    if missing_cond:
+    model = _ODDS["model"]
+    if model is not None:
+        t = (model.get("test") or {}).get("capture") or [{}]
+        ctx.out.line("Ranked on deal odds (fitted %s; tested on the half-year after its training window, its top 1,000 "
+                     "houses held %s investor deals, %.1f times the base rate). Expected investor sales in six months "
+                     "across the chosen owners: %.0f." % (
+                         model.get("fitted") or "?", t[0].get("deals", "?"), float(t[0].get("lift") or 0),
+                         sum(final[k]["score"].get("odds", 0.0) for k in picked)))
+    elif missing_cond:
         ctx.out.line("%d of the %d owners were scored without a condition score (no D4D visual score): their other "
                      "components were scaled to 100." % (missing_cond, len(picked)))
     for i, k in enumerate(picked[:3], 1):
         sc = final[k]["score"]
+        if model is not None:
+            ctx.out.line("rank %d: %s, %.1f%% in six months, %d house(s), $%s discount room, %s; %s" % (
+                i, streets.get(sc["best"]) or sc["best"][:8], 100.0 * sc.get("odds", 0.0), len(final[k]["houses"]),
+                format(int(sc["room"]), ","), final[k]["reach"], ", ".join(sc.get("why") or []) or "no single strong signal"))
+            continue
         ctx.out.line("rank %d: %s, score %.1f, %d house(s), $%s discount room, %s" % (
             i, streets.get(sc["best"]) or sc["best"][:8], sc["score"], len(final[k]["houses"]),
             format(int(sc["room"]), ","), final[k]["reach"]))
@@ -978,20 +1158,31 @@ CSV_HEAD = ["Rank", "Score", "Houses", "Best house", "City", "Discount room", "D
             "Decision", "Record id"]
 
 
+CSV_HEAD_ODDS = ["Rank", "Odds in six months (%)", "Houses", "Best house", "City", "Discount room", "Why",
+                 "Reach", "Reach factor", "Holds the tag now", "Decision", "Record id"]
+
+
 def _csv_rows(picked, final, holders, kept, tag_set, streets, leads=frozenset()) -> list[list]:
-    rows = [CSV_HEAD]
+    odds = any("odds" in final[k]["score"] for k in picked)
+    rows = [CSV_HEAD_ODDS if odds else CSV_HEAD]
     for i, k in enumerate(picked, 1):
         f = final[k]
         sc = f["score"]
         best = next((h for h in f["houses"] if h["uuid"] == sc["best"]), f["houses"][0])
         holds = any(h["uuid"] in holders for h in f["houses"])
+        if odds:
+            rows.append([i, round(100.0 * float(sc.get("odds") or 0.0), 2), len(f["houses"]), best.get("street") or "",
+                         best.get("city") or "", int(sc["room"]), "; ".join(sc.get("why") or []), f["reach"],
+                         sc.get("reach_factor", ""), "yes" if holds else "", "keep" if holds else "add", best["uuid"]])
+            continue
         rows.append([i, sc["score"], len(f["houses"]), best.get("street") or "", best.get("city") or "", int(sc["room"]),
                      sc["pts"].get("deal", ""), sc["pts"].get("cond", ""), sc["pts"].get("inv", ""), sc["pts"].get("evid", ""),
                      sc["pts"].get("reach", ""), f["reach"], ", ".join(sc["missing"]), "yes" if holds else "",
                      "keep" if holds else "add", best["uuid"]])
     for u in sorted(holders - tag_set):
         why = ("kept while its round finishes" if u in kept else "kept: a live lead, not touched" if u in leads else "remove")
-        rows.append(["", "", "", streets.get(u) or "", "", "", "", "", "", "", "", "", "", "yes", why, u])
+        # rank, score, houses, street, then blanks up to the last three columns: holds, decision, record id
+        rows.append(["", "", "", streets.get(u) or ""] + [""] * (len(rows[0]) - 7) + ["yes", why, u])
     return rows
 
 
