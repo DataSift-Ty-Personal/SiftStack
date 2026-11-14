@@ -328,20 +328,23 @@ def _shipped_checks(check) -> None:
           and (ag.kind, ag.owner, ag.mode, ag.get("lane")) == ("agencyexport", "ops", "plan", "agency")
           and top.presets == ag.presets == ["Agency - 01 Queue"] and "Obituary" in top.get("exclude_lists"),
           "the Top 1,000 refresh (Atlas) and the agency export (Quinn) ship in plan, reading the agency queue")
-    two = ["ftm_texts", "ftm_followup_texts", "ftm_assign", "ftm_attempts", "ftm_score", "ftm_mail", "ftm_death_screen"]
-    check(all(list(pol.stage(s).get("lanes") or []) == ["ftm", "top1000"] for s in two),
-          "the Priority stages (texts, assign, the attempt keeper, scoring, mail, the death screen) work both lanes")
-    reads = [t for s in two + ["ftm_registry_scrub", "ftm_native_trace", "ftm_retrace", "ftm_refresh"]
-             for t in pol.stage(s).presets + [p.get("preset") for p in (pol.stage(s).get("pieces") or [])]]
-    check(reads and all(t.startswith("Priority - ") for t in reads), "they read the Priority presets, none of the old FTM ones")
+    # Three pipelines (2026-11-14): each stage that worked both lanes is two now.
+    from .autopilot import stages
+    from .selftest_pipeline import TWINS, mixes
+    check(all(stages.stage_lanes(pol.stage(s)) == ["ftm"] and stages.stage_lanes(pol.stage(t)) == ["top1000"] for s, t in TWINS.items()),
+          "each stage that worked both lanes is two now: the county one works the ftm lane, its twin the Top 1,000")
+    reads = [x for t in TWINS.values() for x in pol.stage(t).presets + [p.get("preset") for p in (pol.stage(t).get("pieces") or [])]]
+    check(reads and all(x.startswith("Priority - ") for x in reads), "the Top 1,000 twins read the Priority presets")
+    check(not [sid for sid, st in pol.stages.items() if mixes(st)], "no stage mixes the two pipelines")
     every = {t for st in pol.stages.values()
              for t in list(st.presets) + [p.get("preset") for p in (st.get("pieces") or []) if isinstance(p, dict)]}
     stray = sorted(t for t in every if (t.startswith(("Priority - ", "Agency - ")) and t not in PRIORITY_TITLES)
                    or t.strip() != t or t in ("Not Yet Called", "Priority - 02 Texted"))
     check(not stray, "every Priority and Agency preset the playbook names is a title the account holds, none split at "
                      "a comma by a [flow, list]: %s" % (stray or "ok"))
-    check(pol.stage("ftm_texts").get("urgent_lanes") == ["ftm"] and pol.stage("ftm_texts").get("labels") == {"ftm": "FTM", "top1000": "Top 1000"},
-          "the sale-date copy is for first to market only, and each lane gets its own group prefix")
+    check(pol.stage("ftm_texts").get("label") == "FTM" and pol.stage("top1000_texts").get("label") == "Top 1000"
+          and pol.stage("top1000_texts").get("urgent_copy") is False,
+          "the sale-date copy is for first to market only, and each pipeline gets its own group prefix")
     cat = kpi.load()
     check(set(cat.pacing["ai_lanes"]) == {"top1000", "agency"} and set(pacing.LADDER) <= set(lanes.ORDER)
           and all(ln in lanes.ORDER for ln in cat.pacing["preset_prefixes"]),

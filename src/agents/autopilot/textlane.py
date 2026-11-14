@@ -799,6 +799,7 @@ def run_textlane(ctx: Ctx) -> None:
     # acknowledge the noise and never the situation. A lane with its own opening copy names its set.
     opening_set = str(st.get("opening_set", "p1")).strip() or "p1"
 
+    from . import ftmpipeline
     plans = {}
     for ln in work:
         p = _lane_plan(lanes_cfg, ln, series)
@@ -807,6 +808,9 @@ def run_textlane(ctx: Ctx) -> None:
                 ln.replace("_", " "), "opening texts" if series == "opening" else "follow-up texts")] += 1
             continue
         p["label"] = _label(st, ln)
+        # A lane worked on the live First to Market board takes its day from the card's column
+        # (ftmpipeline.text_slot), not from the calendar since the record landed.
+        p["board"] = bool(ftmpipeline.follows(ctx, ln))
         plans[ln] = p
     if not plans:
         ctx.out.head = "The %s lane's timeline has no %s." % (
@@ -829,7 +833,10 @@ def run_textlane(ctx: Ctx) -> None:
     by_step: Counter = Counter()
     tally = ctx.out.tally
     series_words = "opening texts" if series == "opening" else "follow-up texts"
-    keys = {ln: (CLOSED_FACT % (series, ln), UNKNOWN_FACT % ln, "lane_entry:%s" % ln) for ln in plans}
+    # On the board the series closes by the card's column, so it is remembered under its own key: a
+    # series closed by the calendar before the board went live does not stop the board's texts.
+    keys = {ln: (CLOSED_FACT % (series, ln) + (":board" if plans[ln]["board"] else ""), UNKNOWN_FACT % ln,
+                 "lane_entry:%s" % ln) for ln in plans}
     facts = _facts(sorted({k for trio in keys.values() for k in trio} | {"death_screen"}))
 
     # Order of work, decided from what is already remembered and with no request made: lane by lane,
@@ -882,38 +889,54 @@ def run_textlane(ctx: Ctx) -> None:
         if messages >= room_left:
             tally[ROOM_WORDS["capacity"]] += 1
             continue
-        # Which day of the lane is it for this record? The first look reads the record's log once;
-        # after that the answer is remembered, and a record whose series is over is never read again.
-        if u not in facts[entry_key]:
-            if new_reads >= max_new:
-                tally["not looked at yet (read cap, next run)"] += 1
-                continue
-            new_reads += 1
-        entered_at = lane_entry(ctx, row, lane, resolve=False)     # the lane is known: the row came from its own pass
-        if entered_at.year <= 2000:
-            # The log does not show when the record entered the lane. When a log read failed in this
-            # run that proves nothing about the record, so it is not counted against it; and when
-            # the failure was the hour's request budget, reading stops here with what is built.
-            log_failed = [p for p in ctx.out.problems if "could not read a record's log" in p]
-            if log_failed:
-                tally["lane entry date not read (the log did not answer)"] += 1
-                if any("for this hour" in p or "free slot" in p for p in log_failed):
-                    ctx.out.problem("stopped reading early: this hour's share of DataSift requests is used; what was built so far is kept")
-                    break
-                continue
-            # It has been in the lane longer than the log reaches. Ask again on a later day, and
-            # after three such answers take it as old.
-            n = int((facts[unknown_key].get(u) or {}).get("n", 0)) + 1
-            if n >= UNKNOWN_TRIES:
-                ledger.set_fact(u, closed_key, {"why": "in the lane longer than the log reaches",
-                                                "at": ctx.now.isoformat(timespec="seconds")})
-                tally["%s closed for the record (in the lane longer than the log reaches)" % series_words] += 1
-            else:
-                ledger.set_fact(u, unknown_key, {"n": n, "at": ctx.now.isoformat(timespec="seconds")})
-                tally["lane entry date not known yet (the log is asked again tomorrow)"] += 1
+        slot = ftmpipeline.text_slot(ctx, u, lane, series, today) if plan_.get("board") else None
+        if slot is not None and slot.get("hold"):
+            tally[slot["hold"]] += 1
             continue
-        entered = entered_at.astimezone(zone).date()
-        day = lanes.business_days(entered, today)
+        if slot is not None:
+            # The card's column says which day of the round it is: the round follows the full
+            # attempts, so a card held a day keeps its text, and no log read is needed.
+            entered = date.fromisoformat(slot["since"]) if slot.get("since") else today
+            day = int(slot["day"])
+            if series == "opening" and owner:
+                had = {int(t["step"]) for t in limits.touches(owner, today_s, since_day=entered.isoformat(), series=series)}
+                if had and max(had) >= int(slot.get("max_step") or 0) > 0:
+                    # Asked before the record is opened: a card held for its call costs no read.
+                    tally["the text for the card's day went already: the card waits on its call"] += 1
+                    continue
+        else:
+            # Which day of the lane is it for this record? The first look reads the record's log once;
+            # after that the answer is remembered, and a record whose series is over is never read again.
+            if u not in facts[entry_key]:
+                if new_reads >= max_new:
+                    tally["not looked at yet (read cap, next run)"] += 1
+                    continue
+                new_reads += 1
+            entered_at = lane_entry(ctx, row, lane, resolve=False)     # the lane is known: the row came from its own pass
+            if entered_at.year <= 2000:
+                # The log does not show when the record entered the lane. When a log read failed in this
+                # run that proves nothing about the record, so it is not counted against it; and when
+                # the failure was the hour's request budget, reading stops here with what is built.
+                log_failed = [p for p in ctx.out.problems if "could not read a record's log" in p]
+                if log_failed:
+                    tally["lane entry date not read (the log did not answer)"] += 1
+                    if any("for this hour" in p or "free slot" in p for p in log_failed):
+                        ctx.out.problem("stopped reading early: this hour's share of DataSift requests is used; what was built so far is kept")
+                        break
+                    continue
+                # It has been in the lane longer than the log reaches. Ask again on a later day, and
+                # after three such answers take it as old.
+                n = int((facts[unknown_key].get(u) or {}).get("n", 0)) + 1
+                if n >= UNKNOWN_TRIES:
+                    ledger.set_fact(u, closed_key, {"why": "in the lane longer than the log reaches",
+                                                    "at": ctx.now.isoformat(timespec="seconds")})
+                    tally["%s closed for the record (in the lane longer than the log reaches)" % series_words] += 1
+                else:
+                    ledger.set_fact(u, unknown_key, {"n": n, "at": ctx.now.isoformat(timespec="seconds")})
+                    tally["lane entry date not known yet (the log is asked again tomorrow)"] += 1
+                continue
+            entered = entered_at.astimezone(zone).date()
+            day = lanes.business_days(entered, today)
         if day > window[1]:
             ledger.set_fact(u, closed_key, {"day": day, "at": ctx.now.isoformat(timespec="seconds")})    # knowledge, kept in plan mode too
             tally["%s closed for the record (past day %d of the lane)" % (series_words, window[1])] += 1
@@ -962,6 +985,8 @@ def run_textlane(ctx: Ctx) -> None:
             tally["the owner's other record is already in today's load"] += 1
             continue
         counter = int(rec.get("predictivecall_attempts") or 0)
+        if slot is not None:
+            counter = int(slot.get("counter", counter))     # the full attempts the board counted
         ok, why = lanes.channel_open(lanes_cfg, lane, "text" if series == "opening" else "followup_text", day, counter,
                                      None, today.weekday())
         if not ok:
@@ -988,6 +1013,10 @@ def run_textlane(ctx: Ctx) -> None:
             if step > steps_total:
                 tally["finished the opening texts"] += 1
                 continue
+            if slot is not None and step > int(slot.get("max_step") or 0):
+                # Day N allows text N. A card held for its call already had the day's text.
+                tally["the text for the card's day went already: the card waits on its call"] += 1
+                continue
             if step > 1:
                 keep = [n for n in keep if n["number"] in threads]
                 if not keep:
@@ -998,16 +1027,21 @@ def run_textlane(ctx: Ctx) -> None:
                 ledger.set_fact(u, closed_key, {"day": day, "at": ctx.now.isoformat(timespec="seconds")})
                 tally["finished the follow-up texts"] += 1
                 continue
-            anchor = ledger.fact(u, ANCHOR_FACT % lane)
+            anchor_key = ANCHOR_FACT % lane + (":board" if slot is not None else "")
+            anchor = ledger.fact(u, anchor_key)
             if not isinstance(anchor, int):
                 anchor = day
-                ledger.set_fact(u, ANCHOR_FACT % lane, anchor)       # the day the series opened for the record: knowledge
+                ledger.set_fact(u, anchor_key, anchor)       # the day the series opened for the record: knowledge
             k = (max(done_steps) + 1) if done_steps else 1
             if day < anchor + fplan["offsets"][min(k, steps_total) - 1]:
                 tally["not yet: the next follow-up is not due"] += 1
                 continue
             if mine:
-                last_day = lanes.business_days(entered, date.fromisoformat(mine[-1]["day"]))
+                if slot is not None and slot.get("base_date"):
+                    last_day = int(slot["base_day"]) + lanes.business_days(date.fromisoformat(slot["base_date"]),
+                                                                           date.fromisoformat(mine[-1]["day"]))
+                else:
+                    last_day = lanes.business_days(entered, date.fromisoformat(mine[-1]["day"]))
                 if day - last_day < fplan["gap"]:
                     tally["not yet: %d business days between follow-ups" % fplan["gap"]] += 1
                     continue

@@ -251,9 +251,10 @@ FOLDER_KINDS = [
     (r"caller queues?", "caller_queue"),
     (r"(^|[^a-z])qc([^a-z]|$)|lead management|acquisitions|transactions|my tasks", "qc_board"),
 ]
-# "priority" is the two-track restructure's Priority folder (first-to-market plus the Top 1,000, 2026-11-13):
-# it follows the first-to-market lane's rules, which leave the Obituary-list rule off on purpose.
-LANE_WORDS = [("hottest", "hottest"), ("strong", "strong"), ("ftm", "ftm"), ("priority", "ftm"), ("bulk", "bulk"),
+# "priority" is the Top 1,000 since the three pipelines (2026-11-14): the county records went back to
+# the FTM presets, so a Priority preset takes the old Priority 1 (hottest) rules, the Obituary-list
+# rule included (the obituary records are worked on the county board, never in the Top 1,000).
+LANE_WORDS = [("hottest", "hottest"), ("strong", "strong"), ("ftm", "ftm"), ("priority", "hottest"), ("bulk", "bulk"),
               ("obituary", "obituary")]
 
 # Numbers worth knowing beside the plan. Tags and lists are named by title.

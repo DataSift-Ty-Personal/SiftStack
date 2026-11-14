@@ -106,6 +106,7 @@ EXTRA_SECTIONS: list[tuple[str, str]] = [
     ("code sandbox", "selftest_sandbox"),
     ("two tracks for the presets", "selftest_restructure"),
     ("the two tracks", "selftest_tracks"),
+    ("three pipelines", "selftest_pipeline"),
 ]
 
 

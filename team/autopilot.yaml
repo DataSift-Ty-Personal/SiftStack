@@ -84,18 +84,68 @@ stages:
 
   # ------------------------------------------------------------------ Phase 0: safe before anything goes live
   # Every stage below reads, checks or corrects. None of them contacts a homeowner.
+  ftm_pipeline:
+    kind: ftmpipeline
+    owner: ops
+    mode: "plan"
+    schedule: ["02:50 Mon-Fri", "08:35 Mon-Fri", "17:00 Mon-Fri"]   # the night and the morning judge the days that are over; 5pm says who is short today
+    summary: Every county record on the First to Market board, Research, Day 1 to Day 5, Exhausted, one column a business day and only after that day's call and text.
+    # Three pipelines (2026-11-14): county records on this board, the Top 1,000 on its own presets,
+    # the agency outside. A probate or obituary record waits in Research for a decision maker with a
+    # number; a record whose owner is known starts at Day 1. A day without its full attempt holds the
+    # card. Any lead status takes the card off the board. Before going live: run the account tool
+    # (python src/agents/autopilot/pipelines.py plan, then apply) and put the column ids it prints
+    # under column_ids.
+    board: First to Market
+    column_ids: {}
+    presets:
+      - FTM - 00 Needs Skipped
+      - FTM - 01 Skipped No Numbers
+      - FTM - 02 Ready to Call
+      - FTM - 03 Call Attempt 1
+      - FTM - 04 Call Attempt 2
+      - FTM - 05 Call Attempt 3
+      - FTM - 06 Call Attempt 4
+    obituary_presets: [Obituary - All]       # a preset cannot say "tag FTM or list Obituary": this is the board's second door
+    research_first: [Probate, Obituary]
+    researched_tags: [Deep Prospected, Heir Identified, Heirs Resolved]
+    dm_fields: [Decision Maker]
+    off_board_tags: [Wrong House]
+    text_days: [1, 2, 3]            # the opening texts; add 4 and 5 once the afternoon text is live (full_attempt)
+    require_text: auto              # the text half counts only while ftm_texts is live on a live box
+    text_stage: ftm_texts
+    call_alone_lanes: [hot_auction] # a sale inside the window moves on its call alone, as that lane always counted it
+    lead_column: ""                 # a lead's card leaves the board; the lead board owns it
+    backlog: counter                # a record called before the board went live starts where its counter says
+    max_reads: 200
+    night_reads: 400
+    max_creates: 200
+    max_moves: 300
+
   ftm_death_screen:
     kind: screen
     owner: research
     mode: "plan"
     schedule: "every 30 min 07:00-19:00 daily"    # ahead of assign and the first text
-    summary: New Priority records (first to market and the Top 1,000) checked for a death before any text or assignment, and held for research when one may have happened.
-    # Between a fifth and a third of distressed owners have died. The screen reads the record, the
-    # notice words in its notes and, for Knox, the county library's obituary index (free). A hit is
-    # not a verdict: it tags the record and research decides who died. The text lane waits for it
-    # (require_screen), so the Top 1,000 is screened here too, first to market first.
+    summary: New first-to-market records checked for a death before any text or assignment, and held for research when one may have happened.
     lane: ftm
-    lanes: [ftm, top1000]
+    presets:
+      - FTM - 00 Needs Skipped
+      - FTM - 01 Skipped No Numbers
+      - FTM - 02 Ready to Call
+    tag: Verify Deceased
+    index_counties: [knox]
+    years: 3
+    on_hit: tag
+    max_records: 60
+
+  top1000_death_screen:
+    kind: screen
+    owner: research
+    mode: "plan"
+    schedule: "every 30 min 07:15-19:15 daily"
+    summary: New Top 1,000 records checked for a death before any text or assignment, and held for research when one may have happened.
+    lane: top1000
     presets:
       - Priority - 00 Needs Skipped
       - Priority - 01 Skipped No Numbers
@@ -103,7 +153,7 @@ stages:
       - Priority - 02 Texted, Not Yet Called
       - Priority - 02 Ready to Call
     tag: Verify Deceased
-    index_counties: [knox]      # Blount has no index: those records rely on the notice and the trace
+    index_counties: [knox]
     years: 3
     on_hit: tag
     max_records: 60
@@ -113,13 +163,33 @@ stages:
     owner: ops
     mode: "plan"
     schedule: "every 60 min 09:00-19:00 Mon-Fri"
-    summary: The call counter written from the account's own call log, so a record moves on whichever dialer made the call.
-    # Measured 2026-11-12: 18 of 130 Ready to Call records had been dialed through Kixie and still
-    # read zero. An attempt is a DAY with at least one outbound dial, counted only since the record
-    # entered the lane: a Top 1,000 house from the day it got its tag, a first-to-market one from its
-    # FTM tag (each record's own lane). The first live run is staged for a person to approve.
+    summary: The call counter of every first-to-market record written from the call log, and on the live board from the board's full attempts.
+    # On the live First to Market board a day counts once it is a full attempt, so the counter is the
+    # board's count and every preset keyed on it shows what the board shows (ftmpipeline).
     lane: ftm
-    lanes: [ftm, top1000]
+    pipeline: ftm_pipeline
+    presets:
+      - FTM - 02 Ready to Call
+      - FTM - 03 Call Attempt 1
+      - FTM - 04 Call Attempt 2
+      - FTM - 05 Call Attempt 3
+      - FTM - 06 Call Attempt 4
+    counters:
+      "FTM - 02 Ready to Call": 0
+      "FTM - 03 Call Attempt 1": 1
+      "FTM - 04 Call Attempt 2": 2
+      "FTM - 05 Call Attempt 3": 3
+      "FTM - 06 Call Attempt 4": 4
+    floor_days: 45
+    first_run: staged
+
+  top1000_attempts:
+    kind: attempts
+    owner: ops
+    mode: "plan"
+    schedule: "every 60 min 09:30-19:30 Mon-Fri"
+    summary: The call counter of every Top 1,000 record written from the account's own call log, whichever dialer made the call.
+    lane: top1000
     presets:
       - Priority - 01 Ready to Text
       - Priority - 02 Texted, Not Yet Called
@@ -127,8 +197,8 @@ stages:
       - Priority - 03 Call Attempt 1
       - Priority - 04 Call Attempt 2
       - Priority - 05 Call Attempt 3
-      - Priority - 06 Call Attempt 4    # the round ends at 5
-    counters:                   # the call counter a record in each preset holds (a dial before the texts end counts too)
+      - Priority - 06 Call Attempt 4
+    counters:
       "Priority - 01 Ready to Text": 0
       "Priority - 02 Texted, Not Yet Called": 0
       "Priority - 02 Ready to Call": 0
@@ -219,18 +289,13 @@ stages:
     mode: "plan"
     schedule: "16:30 Mon-Fri"
     summary: The owners dialed today who still have a top-tier number nobody tried, listed while there is time to finish them.
-    # Plan 1.3. A full attempt dials every Dial First and Second number. Shows the last four digits
-    # of a number. A number the do-not-call registry flags is left off the list while those calls
-    # are held (D32).
     short_by: 2
-    lane: ftm                   # the lane whose timeline says which call days get the afternoon text
-    # The afternoon text: one short text to a number dialed today and not reached, in the thread the
-    # owner already has, staged for a person to release before 5:30pm. Keep it false until one
-    # one-off text has been proven to land in an existing Smarter Contact thread (proofs.py, thread_text).
+    lane: ftm                       # the afternoon text's days; on the live board, the card's column
+    pipeline: ftm_pipeline
     afternoon_text: false
-    sender: Adriana             # who signs it: the caller who dialed
+    sender: Adriana
     text_by: "17:30"
-    reached_seconds: 60         # an answered call this long means the owner was reached: no text
+    reached_seconds: 60
 
   lead_check:
     kind: leadcheck
@@ -255,11 +320,28 @@ stages:
     lane: ftm
     mode: "plan"
     schedule: "every 30 min 08:00-18:00 Mon-Fri"
-    summary: New Priority records (first to market, then the Top 1,000) handed to a caller within 30 minutes of landing, balanced by open workload.
-    # Challenge C8.2: every new FTM record is in the CRM by morning and in every flow the same day.
-    # The Top 1,000 is read after first to market, so under max_per_run a new notice is never behind
-    # a monthly refresh of a thousand owners.
-    lanes: [ftm, top1000]
+    summary: New first-to-market records handed to a caller within 30 minutes of landing, balanced by open workload.
+    presets:
+      - FTM - 00 Needs Skipped
+      - FTM - 01 Skipped No Numbers
+      - FTM - 02 Ready to Call
+      - FTM - 03 Call Attempt 1
+      - FTM - 04 Call Attempt 2
+      - FTM - 05 Call Attempt 3
+      - FTM - 06 Call Attempt 4
+    strategy: balanced
+    caller_cap: 2000
+    backlog: false
+    max_per_run: 200
+    routes: {}
+
+  top1000_assign:
+    kind: assign
+    owner: analysis
+    lane: top1000
+    mode: "plan"
+    schedule: "every 30 min 08:15-18:15 Mon-Fri"   # after first to market, so a new notice is never behind the monthly refresh
+    summary: New Top 1,000 records handed to a caller, balanced by open workload, after first to market.
     presets:
       - Priority - 00 Needs Skipped
       - Priority - 01 Skipped No Numbers
@@ -270,11 +352,11 @@ stages:
       - Priority - 04 Call Attempt 2
       - Priority - 05 Call Attempt 3
       - Priority - 06 Call Attempt 4
-    strategy: balanced      # fewest records waiting to start; round_robin also works
-    caller_cap: 2000        # one caller tops out near 2,000 open records; past it the stage says so every run
-    backlog: false          # records already unassigned on the first run stay as they are
+    strategy: balanced
+    caller_cap: 2000
+    backlog: false
     max_per_run: 200
-    routes: {}              # e.g. {Probate: [Adriana]} sends probate to one caller
+    routes: {}
 
   ftm_auction:
     kind: auction
@@ -318,44 +400,75 @@ stages:
     owner: research
     lane: ftm
     mode: "plan"
-    schedule: "every 30 min 07:00-19:00 daily"   # challenge C2.2 (Oct 6 workshop): trace no-number records every 30 minutes
-    summary: Priority records that land with no trace get DataSift's own skip trace, scoped to exactly them, estimate first.
-    lanes: [ftm, top1000]
+    schedule: "every 30 min 07:00-19:00 daily"
+    summary: First-to-market records that land with no trace get DataSift's own skip trace, scoped to exactly them, estimate first.
+    presets: [FTM - 00 Needs Skipped]
+    min_age_hours: 1
+    scoped: true
+    every_hours: 12
+
+  top1000_native_trace:
+    kind: native_trace
+    owner: research
+    lane: top1000
+    mode: "plan"
+    schedule: "every 30 min 07:15-19:15 daily"
+    summary: Top 1,000 records with no trace get DataSift's own skip trace, scoped to exactly them, estimate first.
     presets: [Priority - 00 Needs Skipped]
-    min_age_hours: 1        # DataSift traces new uploads on its own (lesson 4-06); give it an hour first
-    scoped: true            # the trace covers exactly the waiting records, checked against DataSift's estimate
-    every_hours: 12         # only for scoped: false, where the route traces the whole account
+    min_age_hours: 1
+    scoped: true
+    every_hours: 12
 
   ftm_retrace:
     kind: retrace
     owner: research
     lane: ftm
-    covers: [tracerfy]   # the org-chart agent whose job this stage does
+    covers: [tracerfy]
     mode: "plan"
     schedule: "11:00 Mon-Fri"
-    summary: Priority records DataSift traced with no number found, traced again with the next source nobody has tried, first to market first.
-    lanes: [ftm, top1000]
-    presets: [Priority - 01 Skipped No Numbers]
-    # Lesson 5-01: DataSift's free trace first, then re-trace only what is still unreached, at most
-    # three passes on first-to-market records: DataSift, SmartSkip (15 cents a hit), one more.
-    # Tracerfy ($0.02 a row) is the third pass here; Enformion ($0.10 a match, street-anchored) can
-    # be added as a fourth.
+    summary: First-to-market records DataSift traced with no number found, traced again with the next source nobody has tried.
+    presets: [FTM - 01 Skipped No Numbers]
     sources: [smartskip, tracerfy]
-    callable_tiers: [Dial First, Dial Second]   # lessons 4-05, 14-13, 5-03: only these are dialed
-    deceased: deep_prospect          # a dead owner or a probate record goes to Diggs, never a blind trace
-    entity: principals               # plan 1.15: the person behind an LLC or trust (the entity_principals handler is needed before live)
+    callable_tiers: [Dial First, Dial Second]
+    deceased: deep_prospect
+    entity: principals
     principals_per_day: 10
-    after_sources: mail_only         # lessons 4-06, 4-05: no numbers means mail at minimum, then deep prospecting
+    after_sources: mail_only
     mail_only_tag: Mail Only
     deep_prospect_per_day: 3
     max_records: 50
     daily_usd: 10
-    # Plan 1.13 and 1.14 (11-13): a number two sources agree on is marked, at most three usable
-    # numbers kept a person, a Drop number marked dead, and an incomplete record goes to the fix-up
-    # queue before any paid trace. Each pass is judged 14 days later.
-    # every_record_sources: 1        # D11 (yours): SmartSkip on every FTM record, Tracerfy only on a miss
     agreement_tag: Two Sources
-    write_tiers: [Dial First, Dial Second]   # D12
+    write_tiers: [Dial First, Dial Second]
+    reserve_tiers: [Dial Third]
+    keep_numbers: 3
+    drop_status: DEAD
+    write_line_type: true
+    fixup_queue: 100
+    fixup_tag: Needs Fix-Up
+    lookback_days: 14
+
+  top1000_retrace:
+    kind: retrace
+    owner: research
+    lane: top1000
+    covers: [tracerfy]
+    mode: "plan"
+    schedule: "11:20 Mon-Fri"
+    summary: Top 1,000 records DataSift traced with no number found, traced again with the next source nobody has tried.
+    presets: [Priority - 01 Skipped No Numbers]
+    sources: [smartskip, tracerfy]
+    callable_tiers: [Dial First, Dial Second]
+    deceased: deep_prospect
+    entity: principals
+    principals_per_day: 10
+    after_sources: mail_only
+    mail_only_tag: Mail Only
+    deep_prospect_per_day: 3
+    max_records: 50
+    daily_usd: 10
+    agreement_tag: Two Sources
+    write_tiers: [Dial First, Dial Second]
     reserve_tiers: [Dial Third]
     keep_numbers: 3
     drop_status: DEAD
@@ -398,13 +511,30 @@ stages:
     kind: score
     owner: research
     lane: ftm
-    covers: [phone]   # the org-chart agent whose job this stage does
+    covers: [phone]
     mode: "plan"
     schedule: "08:30 Mon-Fri"
-    summary: Every unscored number in the Priority text and call lane tiered before the texts and the callers start, first to market first.
-    # Challenge C3.1-C3.3: Trestle-score every phone, dial only Dial First and Second, always run the litigator check.
-    # The texts use only Dial First and Second numbers too, so Ready to Text is scored before text 1.
-    lanes: [ftm, top1000]
+    summary: Every unscored number on a first-to-market record in the call round tiered before the texts and the callers start.
+    presets:
+      - FTM - 02 Ready to Call
+      - FTM - 03 Call Attempt 1
+      - FTM - 04 Call Attempt 2
+      - FTM - 05 Call Attempt 3
+      - FTM - 06 Call Attempt 4
+    max_records: 200
+    recheck_days: 7
+    daily_usd: 5
+    drop_status: DEAD
+    write_line_type: true
+
+  top1000_score:
+    kind: score
+    owner: research
+    lane: top1000
+    covers: [phone]
+    mode: "plan"
+    schedule: "08:40 Mon-Fri"
+    summary: Every unscored number in the Top 1,000 text and call lane tiered before the texts and the callers start.
     presets:
       - Priority - 01 Ready to Text
       - Priority - 02 Texted, Not Yet Called
@@ -416,7 +546,7 @@ stages:
     max_records: 200
     recheck_days: 7
     daily_usd: 5
-    drop_status: DEAD                # D12: a Drop number is marked dead; a Correct mark is never overwritten
+    drop_status: DEAD
     write_line_type: true
 
   ftm_deep_prospect:
@@ -473,32 +603,40 @@ stages:
     kind: mail
     owner: ops
     lane: ftm
+    pipeline: ftm_pipeline             # on the live board the mail waits for Exhausted, unless the timeline mails at once (a foreclosure)
     mode: "plan"
     schedule: "10:00 Mon-Fri"
-    summary: The Priority mail lane (first to market and the Top 1,000) dropped a month apart through DataSift's own mail, staged for a person to release.
-    # Challenge C6.7-C6.9 (Oct 2026): one piece every 30 days, stop after 12 months for FTM and obituary records.
-    # The Top 1,000 shares the six presets; its own timeline (lanes.top1000) holds it to six pieces
-    # and never mails it at once for a foreclosure. mail.py's mail_open reads the record's own lane
-    # once the integration routes it through stages.record_lane (see the build report).
-    lanes: [ftm, top1000]
-    # Open decision (C6.2): the presets mail from day one (Feb 2026); the newest teaching mails only records
-    # the call and text lane did not reach. Add a call-attempts gate to the Mail 01 preset to follow it.
-    # siftmail: DataSift's own direct mail (printed by Open Letter Connect). It sets the record's
-    # mail counter and last-mailed date itself, which is what moves a record from Mail 01 to Mail 02.
-    # csv: a file for any outside mail house; the counter is then written back on release.
-    # SiftMail's campaign route is NOT in the published API (developers.datasift.ai), so the engine
-    # refuses it unless internal_routes is true. True here because this playbook drives OUR account
-    # (ty+2), and only after one record is verified on staging. A user's install ships false + csv.
+    summary: The first-to-market mail lane dropped a month apart through DataSift's own mail, staged for a person to release.
     vendor: siftmail
     internal_routes: true
-    send: staged           # staged: a person releases each batch; auto: sends inside the caps
+    send: staged
     daily_pieces: 50
     daily_usd: 60
     wait_days: 30
-    offer_pct: 0           # the soft-offer check needs an offer; 0 skips that piece and says why
-    # design: the Mail Design template uuid for the piece (list them: cli.py autopilot mail-designs).
-    # product_id: 16 Real Penned letter ($1.89), 13 Postcard 4x6 ($0.67), 5 Personal Letter ($1.23).
-    # The three FTM designs do not exist yet in ty+2 (it holds "Test" and "Ramis Mail List").
+    offer_pct: 0
+    pieces:
+      - {preset: FTM - Mail 01 Handwritten Letter, piece: handwritten_letter, product_id: 16, design: ""}
+      - {preset: FTM - Mail 02 Family Postcard, piece: family_postcard, product_id: 13, design: ""}
+      - {preset: FTM - Mail 03 Soft-Offer Check, piece: soft_offer_check, product_id: 5, design: ""}
+      - {preset: FTM - Mail 04 Handwritten Letter, piece: handwritten_letter, product_id: 16, design: ""}
+      - {preset: FTM - Mail 05 Family Postcard, piece: family_postcard, product_id: 13, design: ""}
+      - {preset: FTM - Mail 06 Soft-Offer Check, piece: soft_offer_check, product_id: 5, design: ""}
+    sender: {}
+
+  top1000_mail:
+    kind: mail
+    owner: ops
+    lane: top1000
+    mode: "plan"
+    schedule: "10:30 Mon-Fri"
+    summary: The Top 1,000 mail lane, six pieces a month apart through DataSift's own mail, staged for a person to release.
+    vendor: siftmail
+    internal_routes: true
+    send: staged
+    daily_pieces: 50
+    daily_usd: 60
+    wait_days: 30
+    offer_pct: 0
     pieces:
       - {preset: Priority - Mail 01 Handwritten Letter, piece: handwritten_letter, product_id: 16, design: ""}
       - {preset: Priority - Mail 02 Family Postcard, piece: family_postcard, product_id: 13, design: ""}
@@ -506,7 +644,7 @@ stages:
       - {preset: Priority - Mail 04 Handwritten Letter, piece: handwritten_letter, product_id: 16, design: ""}
       - {preset: Priority - Mail 05 Family Postcard, piece: family_postcard, product_id: 13, design: ""}
       - {preset: Priority - Mail 06 Soft-Offer Check, piece: soft_offer_check, product_id: 5, design: ""}
-    sender: {}             # return name, address and tracking phone come from AUTOPILOT_MAIL_FROM_*
+    sender: {}
 
   # ------------------------------------------------------------------ retired lanes: Priority 1 (Hottest), Strong, Bulk
   # Off since 2026-11-13: the marketing became two tracks. Priority 1, Priority 2 and Bulk records
@@ -551,13 +689,14 @@ stages:
     owner: ops
     mode: "plan"
     schedule: "08:00 Mon-Fri"
-    summary: The morning readout of the two tracks, what the autopilot did, what it cost, what waits on a person.
+    summary: The morning readout of the three pipelines, what the autopilot did, what it cost, what waits on a person.
     presets:
-      - Priority - 01 Skipped No Numbers
+      - FTM - 01 Skipped No Numbers
+      - FTM - 02 Ready to Call
+      - FTM - 06 Call Attempt 4
+      - FTM - Mail 01 Handwritten Letter
       - Priority - 01 Ready to Text
       - Priority - 02 Ready to Call
-      - Priority - 05 Call Attempt 3
-      - Priority - 06 Call Attempt 4
       - Priority - Mail 01 Handwritten Letter
       - Hot Auction + Buy Box
       - "03 Exhausted Call -> DP"
@@ -589,9 +728,9 @@ stages:
     kind: conventions
     owner: analysis
     mode: "plan"
-    schedule: "Sun 03:40"       # the night list, once a week
+    schedule: "Sun 03:40"
     summary: The account's naming rules checked once a week; what breaks one is listed and nothing is changed.
-    caller_folders: ["02. PRIORITY - CALL", "20. CALLER QUEUES"]   # matched on letters and digits (05. FTM - CALL was archived 2026-11-13)
+    caller_folders: ["05. FTM - CALL", "02. TOP 1000 - CALL", "20. CALLER QUEUES"]
     starred_field: quick_filter
     inbound_field: Inbound Source
     mail_tag: "Mailed {yyyy}-{mm}"
@@ -765,12 +904,25 @@ stages:
     owner: ops
     lane: ftm
     mode: "plan"
-    schedule: "08:20 Mon-Fri"       # ahead of the text stage and the callers' day
-    summary: The do-not-call registry flags on the Priority text and call lane remembered and counted, so no flagged number is texted or put on a call list.
-    # Decision D32 (11-13): a number DataSift's registry scrub flags is never texted, and is held
-    # from calls until the attorney answers. The flag shows only on a search row, for one number a
-    # record, so every flag seen is remembered and applies wherever that number turns up.
-    lanes: [ftm, top1000]
+    schedule: "08:20 Mon-Fri"
+    summary: The do-not-call registry flags on the first-to-market call lane remembered and counted, so no flagged number is texted or put on a call list.
+    presets:
+      - FTM - 02 Ready to Call
+      - FTM - 03 Call Attempt 1
+      - FTM - 04 Call Attempt 2
+      - FTM - 05 Call Attempt 3
+      - FTM - 06 Call Attempt 4
+    calls: hold
+    hold_unseen: false
+    max_records: 60
+
+  top1000_registry_scrub:
+    kind: scrub
+    owner: ops
+    lane: top1000
+    mode: "plan"
+    schedule: "08:25 Mon-Fri"
+    summary: The do-not-call registry flags on the Top 1,000 text and call lane remembered and counted, so no flagged number is texted or put on a call list.
     presets:
       - Priority - 01 Ready to Text
       - Priority - 02 Texted, Not Yet Called
@@ -779,58 +931,93 @@ stages:
       - Priority - 04 Call Attempt 2
       - Priority - 05 Call Attempt 3
       - Priority - 06 Call Attempt 4
-    calls: hold                 # hold until the attorney answers; allow lifts it for calls only
-    hold_unseen: false          # true also holds a number no row has shown with the flag off
-    max_records: 60             # flagged records opened a run, to say how many have nothing left to text or call
+    calls: hold
+    hold_unseen: false
+    max_records: 60
 
   ftm_texts:
     kind: textlane
     owner: ops
     lane: ftm
+    pipeline: ftm_pipeline             # on the live board each card gets the text its column stands for (Day N, text N)
     mode: "plan"
-    schedule: "08:45 Mon-Fri"       # after the death screen (07:00 on) and the scrub (08:20), before the window opens at 9
-    summary: New Priority owners (first to market, then the Top 1,000) loaded for text 1 the day they land and texts 2 and 3 on the next two days, staged for a person to release.
-    covers: [sccampaign, texttouch]   # the org-chart agents whose job this stage does (sms_campaign retired 2026-11-13)
-    # Plan 1.4. The stage never sends: it stages a batch, a person releases it, and the release
-    # writes the load file for the Smarter Contact loader. The days come from each lane's own
-    # timeline (lanes.ftm, lanes.top1000). First to market is read first under the same caps.
+    schedule: "08:45 Mon-Fri"       # after the board's morning pass (08:35), before the window opens at 9
+    summary: First-to-market owners texted on Days 1 to 3 of the board, one opening text a full attempt, staged for a person to release.
+    covers: [sccampaign, texttouch]
     series: opening
-    lanes: [ftm, top1000]
+    presets:
+      - FTM - 02 Ready to Call
+      - FTM - 03 Call Attempt 1
+      - FTM - 04 Call Attempt 2
+    system: smarter_contact
+    label: FTM
+    numbers_per_owner: 3
+    require_screen: true
+    stop_on_correct: true
+    urgent_copy: true
+    urgent_tag: Auction Critical
+    text_usd: 0.02
+    daily_usd: 10
+    daily_owners: 150
+    max_records: 150
+    max_new: 150
+
+  top1000_texts:
+    kind: textlane
+    owner: ops
+    lane: top1000
+    mode: "plan"
+    schedule: "08:50 Mon-Fri"       # after the county texts, so first to market is first under the day's caps
+    summary: New Top 1,000 owners loaded for text 1 the day they land and texts 2 and 3 on the next two days, staged for a person to release.
+    covers: [sccampaign, texttouch]
+    series: opening
     presets:
       - Priority - 01 Ready to Text
       - Priority - 02 Texted, Not Yet Called
       - Priority - 02 Ready to Call
       - Priority - 03 Call Attempt 1
       - Priority - 04 Call Attempt 2
-    system: smarter_contact     # D4: Smarter Contact for every campaign
-    label: FTM                  # the group name prefix in Smarter Contact
-    labels: {ftm: FTM, top1000: Top 1000}
-    urgent_lanes: [ftm]         # the sale-date copy is for a courthouse notice: a Top 1,000 house has no sale date
+    system: smarter_contact
+    label: Top 1000
     numbers_per_owner: 3
-    require_screen: true        # never before the death screen has seen the record (plan 0.21)
-    stop_on_correct: true       # a number marked CORRECT means the owner answered: a person has the thread
-    urgent_copy: true           # D21: for a sale inside 14 days, texts 2 and 3 use the time-sensitive templates
-    urgent_tag: Auction Critical
-    text_usd: 0.02              # what one text costs, for the plan and the stage cap
+    require_screen: true
+    stop_on_correct: true
+    urgent_copy: false              # the sale-date copy is for a courthouse notice: a Top 1,000 house has no sale date
+    text_usd: 0.02
     daily_usd: 10
     daily_owners: 150
-    max_records: 150            # full records opened a run
-    max_new: 150                # records looked at for the first time a run
+    max_records: 150
+    max_new: 150
 
   ftm_followup_texts:
     kind: textlane
     owner: ops
     lane: ftm
+    pipeline: ftm_pipeline             # on the live board the follow-ups start when the card reaches Exhausted
     mode: "plan"
     schedule: "10:15 Mon-Fri"
-    summary: After the call round, the follow-up texts on the lane's timeline, ending with the breakup text, staged for a person to release.
-    covers: [scaudit]   # the pre-send audit of a follow-up: the stage checks each owner when it stages and again at release
-    # Plan 4.5 (decision D20). Count, first day and last day come from each lane's timeline.followup_texts.
+    summary: First-to-market follow-up texts from Exhausted on, ending with the breakup text, staged for a person to release.
+    covers: [scaudit]
     series: followup
-    lanes: [ftm, top1000]
     system: smarter_contact
     label: FTM
-    labels: {ftm: FTM, top1000: Top 1000}
+    numbers_per_owner: 3
+    require_screen: true
+    stop_on_correct: true
+    text_usd: 0.02
+    daily_usd: 10
+
+  top1000_followup_texts:
+    kind: textlane
+    owner: ops
+    lane: top1000
+    mode: "plan"
+    schedule: "10:20 Mon-Fri"
+    summary: Top 1,000 follow-up texts after the call round, ending with the breakup text, staged for a person to release.
+    covers: [scaudit]
+    series: followup
+    system: smarter_contact
+    label: Top 1000
     numbers_per_owner: 3
     require_screen: true
     stop_on_correct: true
@@ -867,10 +1054,25 @@ stages:
     lane: ftm
     mode: "plan"
     schedule: "Sun 05:00"
-    summary: Active Priority records last traced 180 or more days ago traced again by DataSift, free and outside the per-record cap.
-    lanes: [ftm, top1000]
-    # Block style on purpose: the title "Priority - 02 Texted, Not Yet Called" carries a comma, and a
-    # [flow, list] splits it into two titles that match no preset.
+    summary: Active first-to-market records last traced 180 or more days ago traced again by DataSift, free and outside the per-record cap.
+    presets:
+      - FTM - 01 Skipped No Numbers
+      - FTM - 02 Ready to Call
+      - FTM - 03 Call Attempt 1
+      - FTM - 04 Call Attempt 2
+      - FTM - 05 Call Attempt 3
+      - FTM - 06 Call Attempt 4
+    retrace_after_days: 180
+    min_batch: 20
+    max_records: 1000
+
+  top1000_trace_refresh:
+    kind: native_trace
+    owner: research
+    lane: top1000
+    mode: "plan"
+    schedule: "Sun 05:20"
+    summary: Active Top 1,000 records last traced 180 or more days ago traced again by DataSift, free and outside the per-record cap.
     presets:
       - Priority - 01 Skipped No Numbers
       - Priority - 01 Ready to Text
@@ -1030,19 +1232,18 @@ stages:
     kind: alarms
     owner: ops
     mode: "plan"
-    schedule: "19:25 Mon-Fri"      # ten minutes after the daily capture writes the day
+    schedule: "19:25 Mon-Fri"
     summary: The day's numbers checked against the catalog's alarms; each one is said once, with what to check first and the list to move to.
     covers: [kpi]
-    # Plan 6.3. Five rules: 500 dials with no lead, talk time low for the dials, dials up 20%, an
-    # answer rate under 50%, a first trace under 90%. The thresholds are figures in team/kpi.yaml.
-    ready_lists:                   # the ladder, first to market first: the list an alarm suggests moving to
-      - {lane: ftm, preset: Priority - 02 Ready to Call}   # one call lane now: first to market and the Top 1,000 share it
-    trace_check:                   # where the first-trace rate is read from: these presets, no record opened
+    ready_lists:
+      - {lane: ftm, preset: FTM - 02 Ready to Call}
+      - {lane: top1000, preset: Priority - 02 Ready to Call}
+    trace_check:
       label: first-to-market records
       scope_tags: [FTM]
-      waiting_preset: Priority - 00 Needs Skipped
-      no_number_preset: Priority - 01 Skipped No Numbers
-    stale_days: 4                  # a capture older than this is not judged, and the stage says so
+      waiting_preset: FTM - 00 Needs Skipped
+      no_number_preset: FTM - 01 Skipped No Numbers
+    stale_days: 4
 
   goal_sheet:
     kind: goals

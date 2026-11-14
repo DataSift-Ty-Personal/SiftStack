@@ -30,7 +30,8 @@ The whole team also listens in #ai-team.
 | sold_cleanup | Recently sold properties tagged and pulled out of marketing. | schedule (06:30 America/New_York) | free | by hand today |
 | account_setup | The account blueprint planned, checked or applied on this install's own Open API key, with statuses, sequences and board columns listed as by-hand steps. | ask in Slack | free | live |
 | land_desk | Buildable lots and land tracts matched to the builders who buy them, rendered from a finished analysis on the box. | ask in Slack | free | live |
-| ftm_assign | New Priority records (first to market, then the Top 1,000) handed to a caller within 30 minutes of landing, balanced by open workload. | schedule (every 30 min 08:00-18:00 Mon-Fri), ask in Slack | free | live |
+| ftm_assign | New first-to-market records handed to a caller within 30 minutes of landing, balanced by open workload. | schedule (every 30 min 08:00-18:00 Mon-Fri), ask in Slack | free | live |
+| top1000_assign | New Top 1,000 records handed to a caller, balanced by open workload, after first to market. | schedule (every 30 min 08:15-18:15 Mon-Fri), ask in Slack | free | live |
 | ftm_auction | Auction Soon kept true on every courthouse foreclosure, so the Hot Auction preset is the real hot list. | schedule (07:45 daily), ask in Slack | free | live |
 | ftm_reactivate | Not-interested first-to-market records whose wait is over handed back to a caller. | schedule (Mon 08:15), ask in Slack | free | live |
 | ladder_check | The lists checked against real investor sales once a month, and the Priority 1 feeders against the ladder. | schedule (1st 03:10), ask in Slack | free | live |
@@ -52,17 +53,22 @@ The whole team also listens in #ai-team.
 | probate_property | The decedent's house found on the county roll for a probate filing that names no address. | after ftm_pull, ask in Slack | free | live |
 | buyer_registry | Deed-verified local buyers, their principals and scored phones, refreshed one bounded slice when asked. | ask in Slack | paid, inside the caps | live |
 | vendor_directory | A vetted contractor and vendor directory for a market, every field verified. | ask in Slack | free | by hand today |
-| ftm_death_screen | New Priority records (first to market and the Top 1,000) checked for a death before any text or assignment, and held for research when one may have happened. | schedule (every 30 min 07:00-19:00 daily), ask in Slack | free | live |
-| ftm_native_trace | Priority records that land with no trace get DataSift's own skip trace, scoped to exactly them, estimate first. | schedule (every 30 min 07:00-19:00 daily), ask in Slack | free | live |
-| ftm_retrace | Priority records DataSift traced with no number found, traced again with the next source nobody has tried, first to market first. | schedule (11:00 Mon-Fri), ask in Slack | paid, inside the caps | live |
+| ftm_death_screen | New first-to-market records checked for a death before any text or assignment, and held for research when one may have happened. | schedule (every 30 min 07:00-19:00 daily), ask in Slack | free | live |
+| top1000_death_screen | New Top 1,000 records checked for a death before any text or assignment, and held for research when one may have happened. | schedule (every 30 min 07:15-19:15 daily), ask in Slack | free | live |
+| ftm_native_trace | First-to-market records that land with no trace get DataSift's own skip trace, scoped to exactly them, estimate first. | schedule (every 30 min 07:00-19:00 daily), ask in Slack | free | live |
+| top1000_native_trace | Top 1,000 records with no trace get DataSift's own skip trace, scoped to exactly them, estimate first. | schedule (every 30 min 07:15-19:15 daily), ask in Slack | free | live |
+| ftm_retrace | First-to-market records DataSift traced with no number found, traced again with the next source nobody has tried. | schedule (11:00 Mon-Fri), ask in Slack | paid, inside the caps | live |
+| top1000_retrace | Top 1,000 records DataSift traced with no number found, traced again with the next source nobody has tried. | schedule (11:20 Mon-Fri), ask in Slack | paid, inside the caps | live |
 | ftm_exhausted | Called through with nothing left to dial, traced with a source not yet tried, then Diggs. | schedule (11:30 Mon-Fri), ask in Slack | paid, inside the caps | live |
-| ftm_score | Every unscored number in the Priority text and call lane tiered before the texts and the callers start, first to market first. | schedule (08:30 Mon-Fri), ask in Slack | paid, inside the caps | live |
+| ftm_score | Every unscored number on a first-to-market record in the call round tiered before the texts and the callers start. | schedule (08:30 Mon-Fri), ask in Slack | paid, inside the caps | live |
+| top1000_score | Every unscored number in the Top 1,000 text and call lane tiered before the texts and the callers start. | schedule (08:40 Mon-Fri), ask in Slack | paid, inside the caps | live |
 | ftm_deep_prospect | First-to-market records whose owner has died go to Diggs for the full heir and signer research, two a day. | schedule (13:00 Mon-Fri), ask in Slack | paid, inside the caps | live |
 | ftm_return_mail | First-to-market records whose mail came back go to Diggs, one a day. | schedule (13:15 Mon-Fri), ask in Slack | paid, inside the caps | live |
 | ftm_no_numbers | First-to-market records still without a number after every trace go to Diggs, one a day. | schedule (13:30 Mon-Fri), ask in Slack | paid, inside the caps | live |
 | hottest_retrace | Records with no callable number traced again with the next source nobody has tried. | schedule (11:15 Mon-Fri), ask in Slack | paid, inside the caps | live |
 | hottest_score | Every new number scored and tiered (Dial First to Drop) on the phone itself. | schedule (08:45 Mon-Fri), ask in Slack | paid, inside the caps | live |
-| ftm_refresh | Active Priority records last traced 180 or more days ago traced again by DataSift, free and outside the per-record cap. | schedule (Sun 05:00), ask in Slack | free | live |
+| ftm_refresh | Active first-to-market records last traced 180 or more days ago traced again by DataSift, free and outside the per-record cap. | schedule (Sun 05:00), ask in Slack | free | live |
+| top1000_trace_refresh | Active Top 1,000 records last traced 180 or more days ago traced again by DataSift, free and outside the per-record cap. | schedule (Sun 05:20), ask in Slack | free | live |
 | strong_native_trace | Records waiting on a skip trace get DataSift's own (free on the unlimited plan). | schedule (every 60 min 08:00-18:00 Mon-Fri), ask in Slack | free | live |
 | strong_score | Every new number scored and tiered (Dial First to Drop) on the phone itself. | schedule (09:00 Mon-Fri), ask in Slack | paid, inside the caps | live |
 | bulk_native_trace | Records waiting on a skip trace get DataSift's own (free on the unlimited plan). | schedule (every 60 min 08:00-18:00 Mon-Fri), ask in Slack | free | live |
@@ -98,22 +104,28 @@ The whole team also listens in #ai-team.
 | sop_writer | SOPs, step guides and training manuals from a narrated video or notes. | ask in Slack | free | by hand today |
 | outreach_health | What the brain can see of outreach health (limits broken, the touch audit, caller ID lines to rest, the registry scrub, batches waiting), and where to read what only the texting side sees. | schedule (08:05 Mon-Fri America/New_York), ask in Slack | free | live |
 | run_script | Any SiftStack command-line script (src/<script>.py) run on the brain the way the owner types it in Claude Code, checked against team/commands.json; a run that writes or pays is staged as a batch a named person releases. | ask in Slack | free | live |
-| ftm_attempts | The call counter written from the account's own call log, so a record moves on whichever dialer made the call. | schedule (every 60 min 09:00-19:00 Mon-Fri), ask in Slack | free | live |
+| ftm_pipeline | Every county record on the First to Market board, Research, Day 1 to Day 5, Exhausted, one column a business day and only after that day's call and text. | schedule (02:50 Mon-Fri), schedule (08:35 Mon-Fri), schedule (17:00 Mon-Fri), ask in Slack | free | live |
+| ftm_attempts | The call counter of every first-to-market record written from the call log, and on the live board from the board's full attempts. | schedule (every 60 min 09:00-19:00 Mon-Fri), ask in Slack | free | live |
+| top1000_attempts | The call counter of every Top 1,000 record written from the account's own call log, whichever dialer made the call. | schedule (every 60 min 09:30-19:30 Mon-Fri), ask in Slack | free | live |
 | owner_lanes | Each owner placed in one lane across all of their records; an owner sitting in two lanes is listed. | schedule (02:30 daily), ask in Slack | free | live |
 | sequence_watchdog | Yesterday's sequence triggers checked against what each sequence should have produced; only failures are posted. | schedule (07:20 daily), ask in Slack | free | live |
 | touch_audit | Every dial and mail piece from yesterday checked against the gate; anything that should not have gone out is named. | schedule (07:30 daily), ask in Slack | free | live |
 | daily_capture | Each caller's day written down from the call log, dials, answers, conversations and talk time, whichever dialer was used. | schedule (19:15 Mon-Fri), ask in Slack | free | live |
 | lead_check | Every lead checked for an open task, an assignee and a confirmed number; what is missing goes to the lead manager. | schedule (08:10 Mon-Fri), ask in Slack | free | live |
-| ftm_mail | The Priority mail lane (first to market and the Top 1,000) dropped a month apart through DataSift's own mail, staged for a person to release. | schedule (10:00 Mon-Fri), ask in Slack | staged, a human releases | live |
-| autopilot_digest | The morning readout of the two tracks, what the autopilot did, what it cost, what waits on a person. | schedule (08:00 Mon-Fri), ask in Slack | free | live |
+| ftm_mail | The first-to-market mail lane dropped a month apart through DataSift's own mail, staged for a person to release. | schedule (10:00 Mon-Fri), ask in Slack | staged, a human releases | live |
+| top1000_mail | The Top 1,000 mail lane, six pieces a month apart through DataSift's own mail, staged for a person to release. | schedule (10:30 Mon-Fri), ask in Slack | staged, a human releases | live |
+| autopilot_digest | The morning readout of the three pipelines, what the autopilot did, what it cost, what waits on a person. | schedule (08:00 Mon-Fri), ask in Slack | free | live |
 | lead_clock | Lead cards moved between phases on time, measured from the last real conversation, never from time in a column. | schedule (07:40 Mon-Fri), ask in Slack | free | live |
 | lead_drips | Ghosting, cold and said-no leads kept on a slow drip of staged texts, emails and review tasks; a reply or a status change ends it. | schedule (every 60 min 09:00-18:00 Mon-Fri), ask in Slack | staged, a human releases | live |
 | lead_tasks | A lead with no open task gets the task its column's own sequence would have created. | schedule (08:05 Mon-Fri), ask in Slack | free | live |
 | lead_weekly | The weekly deeper pass on every lead, card against status, notes after conversations, overdue and undated tasks, and the check presets themselves. | schedule (Wed 08:20), ask in Slack | free | live |
 | lead_exits | Dead and Not Interested cards leave the board after 30 days with the status kept; a dead lead returns to marketing after 180 days if the house has not sold. | schedule (1st 07:10), ask in Slack | free | live |
-| ftm_registry_scrub | The do-not-call registry flags on the Priority text and call lane remembered and counted, so no flagged number is texted or put on a call list. | schedule (08:20 Mon-Fri), ask in Slack | free | live |
-| ftm_texts | New Priority owners (first to market, then the Top 1,000) loaded for text 1 the day they land and texts 2 and 3 on the next two days, staged for a person to release. | schedule (08:45 Mon-Fri), ask in Slack | staged, a human releases | live |
-| ftm_followup_texts | After the call round, the follow-up texts on the lane's timeline, ending with the breakup text, staged for a person to release. | schedule (10:15 Mon-Fri), ask in Slack | staged, a human releases | live |
+| ftm_registry_scrub | The do-not-call registry flags on the first-to-market call lane remembered and counted, so no flagged number is texted or put on a call list. | schedule (08:20 Mon-Fri), ask in Slack | free | live |
+| top1000_registry_scrub | The do-not-call registry flags on the Top 1,000 text and call lane remembered and counted, so no flagged number is texted or put on a call list. | schedule (08:25 Mon-Fri), ask in Slack | free | live |
+| ftm_texts | First-to-market owners texted on Days 1 to 3 of the board, one opening text a full attempt, staged for a person to release. | schedule (08:45 Mon-Fri), ask in Slack | staged, a human releases | live |
+| top1000_texts | New Top 1,000 owners loaded for text 1 the day they land and texts 2 and 3 on the next two days, staged for a person to release. | schedule (08:50 Mon-Fri), ask in Slack | staged, a human releases | live |
+| ftm_followup_texts | First-to-market follow-up texts from Exhausted on, ending with the breakup text, staged for a person to release. | schedule (10:15 Mon-Fri), ask in Slack | staged, a human releases | live |
+| top1000_followup_texts | Top 1,000 follow-up texts after the call round, ending with the breakup text, staged for a person to release. | schedule (10:20 Mon-Fri), ask in Slack | staged, a human releases | live |
 | outreach_limits | The day's dials and texts checked against the outreach limits; every one broken is named by caller and by a number's last four digits. | schedule (19:20 Mon-Fri), schedule (07:25 daily), ask in Slack | free | live |
 | strong_dial_file | The current Strong tranche as a daily power-dialer file of Dial First and Second numbers nobody has reached, landlines last. | schedule (07:40 Mon-Fri), ask in Slack | free | live |
 | bulk_dial_file | The current Bulk tranche as a weekly power-dialer file; each record is dialed about once a month to attempt 6. | schedule (Mon 07:50), ask in Slack | free | live |

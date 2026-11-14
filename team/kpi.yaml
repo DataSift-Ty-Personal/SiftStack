@@ -592,7 +592,8 @@ pacing:
   first_to_market_ready: FTM - 02 Ready to Call      # the preset that holds first-to-market records waiting for a first call
   ai_lanes: [top1000, agency]                        # the lanes fed by AI data (the two tracks since 2026-11-13)
   preset_prefixes:                                   # how a stage with no `lane` is placed: by how its preset titles start
-    ftm: [FTM, Priority]
+    ftm: [FTM]
+    top1000: [Priority]
     agency: [Agency]
   rules:
     - id: first_to_market_first

@@ -77,7 +77,8 @@ PHASES = {
 BOARD_TITLES = {"lead": "Lead Management", "offers": "Acquisitions"}
 
 # Change kinds the lead stages record that undo.py does not know yet. undo_step below puts each back.
-UNDOABLE = ("card_move", "card_remove", "task_create", "task_delete", "add_lists", "remove_lists")
+# card_create is the First to Market board's (ftmpipeline): the card it placed is taken off again.
+UNDOABLE = ("card_move", "card_remove", "card_create", "task_create", "task_delete", "add_lists", "remove_lists")
 
 
 # ---------------------------------------------------------------------- small helpers
@@ -746,6 +747,9 @@ def undo_step(crm, change: dict) -> str:
     if what == "card_remove":
         create_card(crm, before["column"], u)
         return "card created again"
+    if what == "card_create":
+        from .ftmpipeline import undo_create
+        return undo_create(crm, change)
     if what == "task_create":
         ids = [e["detail"].get("task") for e in ledger.events(u) if e["run_id"] == change.get("run_id")
                and e["detail"].get("task")]

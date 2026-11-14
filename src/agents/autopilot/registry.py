@@ -49,6 +49,7 @@ EXTRA: dict[str, tuple[str, str, str, bool, bool]] = {
     # the two tracks (2026-11-13): the Top 1,000 kept in-house, everything else sent to the agency
     "top1000": ("top1000", "run_top1000", "free", True, False),
     "agencyexport": ("agencyexport", "run_agencyexport", "outreach", True, False),
+    "ftmpipeline": ("ftmpipeline", "run_ftmpipeline", "free", True, False),
 }
 
 

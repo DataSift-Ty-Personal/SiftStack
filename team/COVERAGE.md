@@ -18,6 +18,7 @@ Every agent on docs/agents.json (the public org chart), the team workflow that r
 | account_setup | live | Schema Setup (schema), Preset Manager (presets), Sequence Builder (sequences), Account Blueprint Export (bpexport), Account Blueprint Apply (bpapply), Upload Wizard Driver (wizard) |
 | land_desk | live | Builder Land Desk (builderland), Buildable Lot Finder (vacantland) |
 | ftm_assign | autopilot stage | none: not on the org chart yet |
+| top1000_assign | autopilot stage | none: not on the org chart yet |
 | ftm_auction | autopilot stage | none: not on the org chart yet |
 | ftm_reactivate | autopilot stage | none: not on the org chart yet |
 | ladder_check | autopilot stage | none: not on the org chart yet |
@@ -40,16 +41,21 @@ Every agent on docs/agents.json (the public org chart), the team workflow that r
 | buyer_registry | live | Buyer Sweep (sweep), Dispo Buyer Registry (dispobuyers), Dispo Skiptrace (disposkip), Buyer Prospector (prospector) |
 | vendor_directory | by hand today | Vendor Directory Builder (vendordir), Contractor Call Sheet (callsheet) |
 | ftm_death_screen | autopilot stage | none: not on the org chart yet |
+| top1000_death_screen | autopilot stage | none: not on the org chart yet |
 | ftm_native_trace | autopilot stage | none: not on the org chart yet |
+| top1000_native_trace | autopilot stage | none: not on the org chart yet |
 | ftm_retrace | autopilot stage | Tracerfy Skip Trace (tracerfy) |
+| top1000_retrace | autopilot stage | Tracerfy Skip Trace (tracerfy) |
 | ftm_exhausted | autopilot stage | Tracerfy Skip Trace (tracerfy) |
 | ftm_score | autopilot stage | Phone Validator (phone) |
+| top1000_score | autopilot stage | Phone Validator (phone) |
 | ftm_deep_prospect | autopilot stage | none: not on the org chart yet |
 | ftm_return_mail | autopilot stage | none: not on the org chart yet |
 | ftm_no_numbers | autopilot stage | none: not on the org chart yet |
 | hottest_retrace | autopilot stage | Tracerfy Skip Trace (tracerfy) |
 | hottest_score | autopilot stage | Phone Validator (phone) |
 | ftm_refresh | autopilot stage | none: not on the org chart yet |
+| top1000_trace_refresh | autopilot stage | none: not on the org chart yet |
 | strong_native_trace | autopilot stage | none: not on the org chart yet |
 | strong_score | autopilot stage | none: not on the org chart yet |
 | bulk_native_trace | autopilot stage | none: not on the org chart yet |
@@ -85,13 +91,16 @@ Every agent on docs/agents.json (the public org chart), the team workflow that r
 | sop_writer | by hand today | Playbook Creator (playbookgen) |
 | outreach_health | live | Deliverability Readout (deliver), Caller Reputation Monitor (callerrep) |
 | run_script | live | none: not on the org chart yet |
+| ftm_pipeline | autopilot stage | none: not on the org chart yet |
 | ftm_attempts | autopilot stage | none: not on the org chart yet |
+| top1000_attempts | autopilot stage | none: not on the org chart yet |
 | owner_lanes | autopilot stage | none: not on the org chart yet |
 | sequence_watchdog | autopilot stage | none: not on the org chart yet |
 | touch_audit | autopilot stage | none: not on the org chart yet |
 | daily_capture | autopilot stage | none: not on the org chart yet |
 | lead_check | autopilot stage | none: not on the org chart yet |
 | ftm_mail | autopilot stage | none: not on the org chart yet |
+| top1000_mail | autopilot stage | none: not on the org chart yet |
 | autopilot_digest | autopilot stage | none: not on the org chart yet |
 | lead_clock | autopilot stage | none: not on the org chart yet |
 | lead_drips | autopilot stage | none: not on the org chart yet |
@@ -99,8 +108,11 @@ Every agent on docs/agents.json (the public org chart), the team workflow that r
 | lead_weekly | autopilot stage | none: not on the org chart yet |
 | lead_exits | autopilot stage | none: not on the org chart yet |
 | ftm_registry_scrub | autopilot stage | none: not on the org chart yet |
+| top1000_registry_scrub | autopilot stage | none: not on the org chart yet |
 | ftm_texts | autopilot stage | Smarter Contact Campaign Builder (sccampaign), Text Touch Builder (texttouch) |
+| top1000_texts | autopilot stage | Smarter Contact Campaign Builder (sccampaign), Text Touch Builder (texttouch) |
 | ftm_followup_texts | autopilot stage | Pre-Send Audit (scaudit) |
+| top1000_followup_texts | autopilot stage | Pre-Send Audit (scaudit) |
 | outreach_limits | autopilot stage | none: not on the org chart yet |
 | strong_dial_file | autopilot stage | none: not on the org chart yet |
 | bulk_dial_file | autopilot stage | none: not on the org chart yet |

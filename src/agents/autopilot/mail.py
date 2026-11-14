@@ -280,15 +280,20 @@ def mail_open(ctx: Ctx, rec: dict) -> tuple[bool, str]:
     cfg = getattr(ctx.policy, "lanes", None)
     if not lane or cfg is None or not cfg.timeline(lane):
         return True, ""
-    from . import gate
+    from . import ftmpipeline, gate
     from .stages import lane_entry
     from zoneinfo import ZoneInfo
     zone = ZoneInfo(ctx.policy.tz)
-    entered = lane_entry(ctx, rec, lane).astimezone(zone).date()
     today = ctx.now.astimezone(zone).date()
     low = {str(t).lower() for t in (rec.get("tags") or []) + (rec.get("lists") or []) if isinstance(t, str)}
     facts = {"no_number": not gate.usable_numbers(rec, "call", getattr(ctx.policy, "gate", None) or gate.GateConfig()),
              "foreclosure": "foreclosure" in low}
+    # On the live First to Market board the mail opens when the card reaches Exhausted, unless the
+    # timeline mails the record at once (ftmpipeline.mail_point); a record in Research keeps its days.
+    point = ftmpipeline.mail_point(ctx, rec.get("uuid") or "", lane, today)
+    if point is not None:
+        return lanes.channel_open(cfg, lane, "mail", int(point["day"]), int(point["counter"]), facts, today.weekday())
+    entered = lane_entry(ctx, rec, lane).astimezone(zone).date()
     return lanes.channel_open(cfg, lane, "mail", lanes.business_days(entered, today),
                               int(rec.get("predictivecall_attempts") or 0), facts, today.weekday())
 

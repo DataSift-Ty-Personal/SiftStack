@@ -31,7 +31,7 @@ from collections import Counter
 from datetime import date, datetime, timedelta, timezone
 
 from .. import store
-from . import activity, ledger
+from . import activity, ftmpipeline, ledger
 from .stages import Ctx, Summary, addr, lane_entry, stage_rows
 
 log = logging.getLogger(__name__)
@@ -85,13 +85,20 @@ def plan_changes(ctx: Ctx) -> list[dict]:
             ctx.out.tally["counter lowered by a person (counted again from that day)"] += 1
         days = activity.dial_days(owner_uuid, since=since, tz=ctx.policy.tz)
         want = len(days)
+        board = ftmpipeline.counter_for(ctx, u, lane)
+        if board is not None:
+            # On the live First to Market board a day counts once it is a full attempt (its call and,
+            # when the day needs one, its text), so the counter is what the board counted and every
+            # preset keyed on it shows what the board shows (ftmpipeline).
+            want = board
         if want <= have:
             continue
         numbers = set()
         for d in days.values():
             numbers |= d
         out.append({"record_uuid": u, "owner_uuid": owner_uuid, "street": addr(row), "preset": title, "have": have,
-                    "want": want, "days": sorted(days), "numbers": len(numbers - {""})})
+                    "want": want, "days": sorted(days), "numbers": len(numbers - {""}),
+                    "board": (ftmpipeline.position(u) or {}).get("column", "") if board is not None else ""})
     return out
 
 
@@ -134,7 +141,10 @@ def run_attempts(ctx: Ctx) -> None:
         ctx.out.tally["phone statuses the dialer wrote back by itself"] = len(wrote)
     by = Counter("%d to %d" % (c["have"], c["want"]) for c in changes)
     for c in changes:
-        ctx.out.line("%s: %d to %d (dialed %s)" % (c["street"], c["have"], c["want"], _nice_days(c["days"])))
+        if c.get("board"):
+            ctx.out.line("%s: %d to %d (on the board in %s)" % (c["street"], c["have"], c["want"], c["board"]))
+        else:
+            ctx.out.line("%s: %d to %d (dialed %s)" % (c["street"], c["have"], c["want"], _nice_days(c["days"])))
     mix = ", ".join("%s on %d" % kv for kv in sorted(by.items()))
     if not changes:
         ctx.out.head = "Every call counter in the lane matches the call log."

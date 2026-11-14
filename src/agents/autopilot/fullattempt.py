@@ -31,7 +31,7 @@ It shows the last four digits of a number, never the whole of it.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from . import activity, gate, scrub
@@ -122,19 +122,27 @@ def _clock_today(text: str, start: datetime) -> datetime:
 def afternoon_texts(ctx: Ctx, worked: list, dialed: dict, start: datetime) -> None:
     """The second half of plan 1.3: stage one short text to each number that was dialed today and
     not reached, for the owners on the call days after the opening texts. Nothing is sent here."""
-    from . import lanes, ledger, limits, textlane
+    from . import ftmpipeline, lanes, ledger, limits, textlane
+    from .stages import stage_lanes
 
     st = ctx.stage
     tally = ctx.out.tally
-    lane = str(st.get("lane") or "")
     lanes_cfg = getattr(ctx.policy, "lanes", None) or lanes.Lanes()
-    tl = lanes_cfg.timeline(lane) if lane else None
-    if not tl:
+    # Each lane the stage works keeps its own call days and markers. The stage used to read one lane
+    # only, so a dialed Top 1,000 owner was counted as "not in the lane" and never got the text.
+    plans = {}
+    for ln in stage_lanes(st):
+        tl = lanes_cfg.timeline(ln)
+        if not tl or tl.get("outside"):
+            continue
+        # The call days that come after the opening texts: days 3 to 5 on the first-to-market timeline.
+        last_opening = max(tl.get("opening_texts") or [0])
+        marks = lanes_cfg.markers.get(ln) or {}
+        plans[ln] = {"days": [d for d in (tl.get("call_days") or []) if d > last_opening],
+                     "marks": {str(t).lower() for t in (marks.get("tags") or []) + (marks.get("lists") or [])}}
+    if not plans:
         ctx.out.problem("the afternoon text reads its days from a lane's timeline; set `lane` in the stage block (for example ftm)")
         return
-    # The call days that come after the opening texts: days 3 to 5 on the first-to-market timeline.
-    last_opening = max(tl.get("opening_texts") or [0])
-    days = [d for d in (tl.get("call_days") or []) if d > last_opening]
     callers = [c for c in (getattr(ctx.policy, "callers", None) or []) if isinstance(c, str)]
     sender = str(st.get("sender") or (callers[0] if len(callers) == 1 else "")).strip()
     if not sender:
@@ -163,8 +171,7 @@ def afternoon_texts(ctx: Ctx, worked: list, dialed: dict, start: datetime) -> No
     for e in activity.events("owner.call.answered", since=start, until=ctx.now + timedelta(seconds=1)):
         if e["data"].get("direction") != "inbound" and int(e["data"].get("duration") or 0) >= reached_s:
             reached.setdefault(e["resource"], set()).add(e["data"].get("number") or "")
-    marks = lanes_cfg.markers.get(lane) or {}
-    lane_marks = {str(t).lower() for t in (marks.get("tags") or []) + (marks.get("lists") or [])}
+    words = " or ".join(ln.replace("_", " ") for ln in plans)
     stop_on_correct = bool(st.get("stop_on_correct", True))
     text_usd = float(st.get("text_usd", 0.02))
     room_left = limits.capacity_left(ctx.now, lim, tz)
@@ -181,15 +188,26 @@ def afternoon_texts(ctx: Ctx, worked: list, dialed: dict, start: datetime) -> No
             continue
         names = {str(t.get("title") or t.get("name") or "").lower() if isinstance(t, dict) else str(t).lower()
                  for t in (rec.get("tags") or []) + (rec.get("lists") or [])}
-        if not names & lane_marks:
-            tally["dialed today, not in the %s lane: no text" % lane.replace("_", " ")] += 1
+        lane = next((ln for ln, pl in plans.items() if names & pl["marks"]), "")
+        if not lane:
+            tally["dialed today, not in the %s lane: no text" % words] += 1
             continue
-        entered = lane_entry(ctx, rec, lane).astimezone(zone).date()
-        day = lanes.business_days(entered, today)
+        days = plans[lane]["days"]
+        # On the live First to Market board the day is the card's column, not the calendar.
+        slot = ftmpipeline.afternoon_day(ctx, u, lane, today)
+        if slot is not None and slot.get("hold"):
+            tally["no afternoon text: %s" % slot["hold"]] += 1
+            continue
+        if slot is not None:
+            entered = date.fromisoformat(slot["since"]) if slot.get("since") else today
+            day = int(slot["day"])
+        else:
+            entered = lane_entry(ctx, rec, lane).astimezone(zone).date()
+            day = lanes.business_days(entered, today)
         if day not in days:
             tally["not on an afternoon-text day (days %s of the lane)" % ", ".join(str(d) for d in days)] += 1
             continue
-        v = ctx.verdict(rec, "text", row=row)
+        v = ctx.verdict(rec, "text", row=row, lane=lane)
         if not v.ok:
             tally["no text, held back: %s" % v.reason()] += 1
             continue
