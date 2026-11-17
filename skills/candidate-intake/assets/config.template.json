@@ -1,0 +1,74 @@
+{
+  "role": "Cold Caller",
+  "company": "Your Company Name",
+  "sender_first_name": "Ty",
+  "sheet_url": "https://docs.google.com/spreadsheets/d/PASTE_SHEET_ID_HERE",
+  "channels_enabled": ["indeed", "gmail", "facebook", "manual"],
+  "gmail_search_query": "subject:(application OR applying OR resume) newer_than:7d",
+  "facebook_post_urls": [],
+  "must_haves": [
+    {
+      "label": "Sales or phone experience",
+      "keywords": ["cold call", "sales", "telemarket", "call center", "appointment set", "phone"]
+    },
+    {
+      "label": "Fluent spoken English",
+      "keywords": ["fluent", "native english", "c1", "c2", "bilingual"]
+    }
+  ],
+  "nice_to_haves": [
+    {
+      "label": "Real estate familiarity",
+      "keywords": ["real estate", "wholesal", "investor", "reisift", "datasift", "crm"]
+    },
+    {
+      "label": "Worked US hours remotely",
+      "keywords": ["est", "cst", "us hours", "remote", "eastern time"]
+    }
+  ],
+  "screener_questions": [
+    {
+      "question": "Have you done outbound cold calling before? For how long?",
+      "ideal_keywords": ["yes", "year", "month"]
+    },
+    {
+      "question": "What hours can you work in US Eastern time?",
+      "ideal_keywords": ["9", "10", "morning", "est", "eastern", "full time"]
+    }
+  ],
+  "scoring": {
+    "weights": {
+      "must_haves": 40,
+      "experience": 20,
+      "english": 15,
+      "screeners": 15,
+      "nice_to_haves": 10
+    },
+    "experience_full_credit_years": 2,
+    "english_levels": {
+      "fluent": 1.0,
+      "advanced": 0.85,
+      "conversational": 0.6,
+      "basic": 0.3,
+      "none": 0.0
+    },
+    "unknown_english_credit": 0.5,
+    "tiers": {
+      "interview_min": 75,
+      "maybe_min": 50
+    }
+  },
+  "outreach": {
+    "video_ask": true,
+    "templates": {
+      "indeed": "Hey {first_name}, thanks for applying for the {role} role. Quick next step: can you send a 1-2 minute video introducing yourself and telling me about your phone sales experience? A phone selfie video is perfect, nothing fancy.",
+      "gmail": "Hey {first_name}, got your application for the {role} role, thanks for reaching out. Next step is a quick 1-2 minute intro video: who you are, your experience, and why this role. Reply with a link or attachment whenever you can.",
+      "facebook": "Hey {first_name}, saw your reply on the {role} post. Next step is quick: send me a 1-2 minute video introducing yourself and your experience. A phone video is perfect."
+    }
+  },
+  "daily_sweep": {
+    "enabled": false,
+    "channels": ["gmail", "facebook"],
+    "auto_outreach": false
+  }
+}

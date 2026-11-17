@@ -1,0 +1,20 @@
+{
+  "name": "siftstack-operations",
+  "description": "Every SiftStack Operations skill in one install.",
+  "author": {
+    "name": "DataSift"
+  },
+  "dependencies": [
+    "caller-reputation-monitor",
+    "candidate-intake",
+    "contractor-call-sheet",
+    "dispo-deal-blast",
+    "phone-validator",
+    "playbook-creator",
+    "sequential-presets",
+    "siftstack-core",
+    "team-hiring",
+    "text-touch-builder",
+    "vendor-directory-builder"
+  ]
+}

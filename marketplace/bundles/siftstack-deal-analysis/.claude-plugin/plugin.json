@@ -1,0 +1,16 @@
+{
+  "name": "siftstack-deal-analysis",
+  "description": "Every SiftStack Deal Analysis skill in one install.",
+  "author": {
+    "name": "DataSift"
+  },
+  "dependencies": [
+    "comp-package",
+    "deal-analyzer",
+    "deep-prospecting-v5",
+    "probate-property-finder",
+    "real-estate-comping",
+    "rehab-estimator",
+    "siftstack-core"
+  ]
+}

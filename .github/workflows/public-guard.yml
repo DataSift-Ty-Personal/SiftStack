@@ -1,0 +1,30 @@
+name: Public guard
+
+# Main is the public, installable SiftStack. It is built by tools/public_release.py, one commit per
+# release, and nothing personal may land on it: no real street address, phone number or email, and none
+# of the words the owner keeps out (stored hashed in tools/public_scan_rules.json, so this repo does not
+# spell them). The check reads the text inside the .skill and .plugin archives too, because those are
+# what people download. It prints file and line, never the private word itself, since these logs are public.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Nothing personal in the tree or in the downloadable archives
+        run: python tools/public_scan.py . --quiet-words

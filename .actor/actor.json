@@ -1,0 +1,53 @@
+{
+    "actorSpecification": 1,
+    "name": "tn-public-notice-scraper",
+    "title": "SiftStack — REI Operations Platform",
+    "description": "Full-stack real estate investing operations platform. Data acquisition (web scrape, PDF, courthouse photos), enrichment (Smarty, Zillow, tax, obituary, skip trace), deal analysis (comps, rehab, MAO), CRM automation (DataSift sequences, niche sequential), and lead management.",
+    "version": "1.0",
+    "buildTag": "latest",
+    "input": "./input_schema.json",
+    "dockerfile": "../Dockerfile",
+    "storages": {
+        "dataset": {
+            "actorSpecification": 1,
+            "title": "SiftStack Records",
+            "views": {
+                "overview": {
+                    "title": "Overview",
+                    "transformation": {
+                        "fields": [
+                            "date_added",
+                            "address",
+                            "city",
+                            "state",
+                            "zip",
+                            "owner_name",
+                            "notice_type",
+                            "county",
+                            "mls_status",
+                            "estimated_value",
+                            "estimated_equity",
+                            "property_type",
+                            "source_url"
+                        ]
+                    },
+                    "display": {
+                        "component": "table",
+                        "properties": {
+                            "date_added": { "label": "Date", "format": "text" },
+                            "address": { "label": "Address", "format": "text" },
+                            "city": { "label": "City", "format": "text" },
+                            "owner_name": { "label": "Owner", "format": "text" },
+                            "notice_type": { "label": "Type", "format": "text" },
+                            "county": { "label": "County", "format": "text" },
+                            "mls_status": { "label": "MLS Status", "format": "text" },
+                            "estimated_value": { "label": "Zestimate", "format": "text" },
+                            "estimated_equity": { "label": "Est. Equity", "format": "text" },
+                            "property_type": { "label": "Prop Type", "format": "text" }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

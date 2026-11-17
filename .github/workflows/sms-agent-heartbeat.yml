@@ -1,0 +1,89 @@
+name: SMS agent heartbeat
+
+# Watches the SMS agent from OUTSIDE the box.
+#
+# This has to run somewhere else to be worth anything. The agent already knows
+# whether its own worker is passing, and it exposes that at /alive, but a
+# process cannot report that the machine it lives on has stopped. That is the
+# exact failure this exists for: when the Fly trial ended the box went down
+# silently, no texts went out, no replies were received, and nothing said a
+# word until someone went looking.
+#
+# GitHub runs this on its own infrastructure, so it keeps checking even when
+# every part of ours is down.
+
+on:
+  schedule:
+    # Every 5 minutes. GitHub queues rather than guarantees this, so treat a
+    # single missed run as normal and a sustained gap as the signal.
+    - cron: "*/5 * * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  # Never stack checks. A slow run must not race the next one into a duplicate
+  # alert about the same outage.
+  group: sms-agent-heartbeat
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Ask the agent whether its worker is alive
+        id: probe
+        run: |
+          set +e
+          BODY=$(curl -sS --max-time 25 -w "\n%{http_code}" https://siftstack.fly.dev/alive)
+          CURL_RC=$?
+          set -e
+
+          if [ "$CURL_RC" -ne 0 ]; then
+            # Unreachable is worse than stale: stale means the worker is behind,
+            # unreachable means the whole box is gone.
+            echo "status=unreachable" >> "$GITHUB_OUTPUT"
+            echo "detail=The box did not respond at all (curl exit $CURL_RC). It is most likely stopped, out of credit, or mid-deploy." >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          CODE=$(printf '%s' "$BODY" | tail -n1)
+          JSON=$(printf '%s' "$BODY" | sed '$d')
+          echo "HTTP $CODE :: $JSON"
+
+          if [ "$CODE" = "200" ]; then
+            echo "status=ok" >> "$GITHUB_OUTPUT"
+          else
+            AGE=$(printf '%s' "$JSON" | grep -o '"minutes_ago":[0-9.]*' | cut -d: -f2)
+            echo "status=stale" >> "$GITHUB_OUTPUT"
+            echo "detail=The receiver answered but the worker has not run a pass in ${AGE:-?} minutes. Replies are landing in the queue and nothing is draining it." >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Tell Slack when it is down
+        if: steps.probe.outputs.status != 'ok'
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SMS_AGENT_SLACK_WEBHOOK }}
+        run: |
+          if [ -z "$SLACK_WEBHOOK" ]; then
+            echo "::error::SMS agent is ${{ steps.probe.outputs.status }} and no Slack webhook is configured."
+            exit 1
+          fi
+          # Built with printf rather than a heredoc on purpose: inside a YAML
+          # block scalar every line is indented, and an indented closing EOF
+          # does not terminate a heredoc, so the step would fail on the alert
+          # path only. That is the worst place to hide a bug.
+          printf -v TEXT '%s\n%s\n\n%s\n%s' \
+            "*SMS agent is ${{ steps.probe.outputs.status }}*" \
+            "${{ steps.probe.outputs.detail }}" \
+            "No texts are going out and no replies are being processed while this is true." \
+            'Check: `fly status -a siftstack` then `fly machine start -a siftstack`'
+
+          jq -nc --arg t "$TEXT" '{text: $t}' \
+            | curl -sS -X POST -H 'Content-Type: application/json' -d @- "$SLACK_WEBHOOK"
+          echo
+          # Fail the run too, so the outage is visible in the Actions tab even
+          # if the Slack post itself is what is broken.
+          echo "::error::SMS agent is ${{ steps.probe.outputs.status }}"
+          exit 1

@@ -1,0 +1,2915 @@
+"""One deduped buyer registry for Knox and Blount, ready to skip trace and text.
+
+The dispo side has never had what the acquisition side has: a list of PEOPLE.
+`buyer_sweep.py` resolves deed-level buyers one zip at a time,
+`dispo_flip_buyers.py` landed pending-flip PROPERTIES in the CRM, and the
+buyer-prospector skill ships a nationwide CSV that is 176 rows here and mostly
+Opendoor. None of them answer "who are the two thousand people who buy houses in
+these two counties, and what is their phone number".
+
+That is what this builds, in phases, each resumable and DRY by default:
+
+    sweep       search rows per county x investor-transaction type  (cheap)
+    hydrate     get_detail per row -> owner name + mailing address  (slow)
+    aggregate   dedupe into buyer identities                        (free)
+    unmask      LLC -> human principal by reverse address           (FREE)
+    principals  the ones unmask missed, via Enformion BusinessV2    (BILLED)
+    skipinput   project the registry into a SmartSkip upload        (free)
+    phones      join the SmartSkip return back onto buyer_key         (free)
+    score       Trestle dial tiers (--source registry|preset)         (BILLED)
+    rules       what the taught deed rules would change               (free, writes nothing)
+    qa          the gate table
+
+How a deed is read is a named ruleset (see RULESETS below). `today` is the default and reads
+every deed as this file always has; `--rules taught` adds the rules from the buyer lessons
+(institutions by count, a flip within 18 months, back-to-back companies, a loan standing in
+for a missing price, new construction left out of flips). `--phase rules` shows the before
+and after from the cache without writing anything.
+
+The order of the two principal phases is the whole cost story: an LLC's mailing
+address is usually a person's house, so reversing it through the map we already
+pay for names the principal for nothing. Only what that misses is worth $0.10.
+
+THE SEMANTIC TRAP THIS FILE EXISTS TO SURVIVE. The SiftMap filter key labels the
+LAST SALE, not the current owner. For `pending`, `wholesale`, `wholetail` and
+`rental` the investor bought and still holds, so the CURRENT OWNER is the buyer.
+For `flip` the exit already happened, so the current owner is a RETAIL HOMEBUYER
+and the person we want is the last-sale SELLER. Reading the flip bucket the same
+way as the others puts ordinary families on a cash-buyer call list.
+
+Verified live 2026-08-28 before any of this was written:
+  * `search` in the address block must be the bare county name. "Knox" returns
+    153,675; "Knox County, TN" returns 0, which is indistinguishable from an
+    empty segment.
+  * An unknown filter key is SILENTLY IGNORED. A deliberately bogus key returned
+    a byte-identical count, so a key is only proven by a count delta.
+  * `extra_collapse_by_owner` is real: Knox pending 1,633 -> 1,140 rows.
+  * Search rows carry NO owner name, so hydration is unavoidable. They do carry
+    `saved_uuid`, the CRM record id, which the mirror phase reuses.
+  * `sale_history` is ordered NEWEST FIRST (18 of 18 multi-sale properties came
+    back strictly descending). The flip branch below reads `sale_history[0]`, so
+    that ordering is load-bearing: reversed, every flipper we resolved would be
+    whoever sold the house years before the investor ever touched it.
+
+    python src/dispo_buyers.py --phase sweep
+    python src/dispo_buyers.py --phase hydrate --workers 4
+    python src/dispo_buyers.py --phase aggregate
+    python src/dispo_buyers.py --phase qa
+"""
+from __future__ import annotations
+
+import argparse
+import io
+import json
+import logging
+import os
+import re
+import sys
+import threading
+from collections import Counter, defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
+from pathlib import Path
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+try:
+    import config  # noqa: F401  loads .env
+    OUTPUT_ROOT = Path(getattr(config, "OUTPUT_DIR", "output"))
+except Exception:
+    OUTPUT_ROOT = Path("output")
+
+from siftmap_standalone import SiftMapClient, SiftMapError  # noqa: E402
+from enterprise_prospects import (  # noqa: E402
+    ENTITY_RX, ORG_RX, SearchClient, WORLD, _match_candidate, classify_one,
+    county_address, norm_name, strip_unit,
+)
+# The principal rules live beside the BusinessV2 client (both principal finders use them); they
+# are imported back here so every phase and test reads them by the same names as before.
+from enformion_business import (  # noqa: E402,F401
+    AGENT_FRONT_RX, FIRM_RX, OWNER_TITLES, PLACEHOLDER_NAMES, STATUS_TOKENS,
+    _is_human, _officer_in_state, person_first_last, principal_confidence, rank_officers, split_mail,
+)
+
+log = logging.getLogger("dispo_buyers")
+
+# The registry's folder is a setting (DISPO_BUYERS_DIR) with the repo's output/ as the default. The
+# agents brain keeps it on its own volume through use_dir(): output/ inside the image is wiped by
+# every deploy, and losing details.json means reading thousands of deeds again.
+OUT = Path(os.environ.get("DISPO_BUYERS_DIR") or (OUTPUT_ROOT / "dispo_buyers"))
+STATE_PATH = OUT / "state.json"
+
+
+def use_dir(path) -> Path:
+    """Point every phase at another folder. Phases read OUT and STATE_PATH when they run, so
+    rebinding the two is all it takes (the tests have always done the same)."""
+    global OUT, STATE_PATH
+    OUT = Path(path)
+    STATE_PATH = OUT / "state.json"
+    OUT.mkdir(parents=True, exist_ok=True)
+    return OUT
+
+
+class KeyOnlySearch(SearchClient):
+    """The SiftMap search with no password fallback.
+
+    SearchClient answers a refused key by minting a token from DATASIFT_EMAIL and the password.
+    The agents brain carries no password and a user's install never will, so a refused key here is
+    an error that names the key, never a quiet switch to another login."""
+
+    def _bearer(self):
+        raise RuntimeError("SiftMap refused the Open API key (REISIFT_API_KEY); this client does not "
+                           "fall back to a password token")
+
+
+
+K_TXN = "extra_last_sale_investor_transaction_type"
+
+COUNTIES = [("47093", "Knox", "TN"), ("47009", "Blount", "TN")]
+
+# The four types where the current owner IS the buyer, and the one where it is
+# not. Kept as separate constants because every bug in this area comes from
+# treating them the same.
+HOLD_TYPES = ["pending", "wholesale", "wholetail", "rental"]
+EXIT_TYPES = ["flip"]
+ALL_TYPES = HOLD_TYPES + EXIT_TYPES
+
+PAGE_SIZE = 250
+
+# Suite markers force a name check before two buyers at one address are merged.
+# Measured on the existing sweeps: 9111 Example Park Dr Ste D200 hosts QT Homes
+# LLC and J K Properties Group LLC, unrelated companies sharing an agent.
+UNIT_MARK_RX = re.compile(r"\b(STE|SUITE|UNIT|APT|BLDG|FL|FLOOR|PMB|RM)\b", re.I)
+
+STREET_WORD_RX = re.compile(
+    r"\b(STREET|ST|ROAD|RD|DRIVE|DR|LANE|LN|AVENUE|AVE|BOULEVARD|BLVD|COURT|"
+    r"CT|CIRCLE|CIR|PIKE|PKWY|PARKWAY|WAY|TRAIL|TRL|PLACE|PL)\b")
+
+
+# ---------------------------------------------------------------- rules ----
+# How a deed is read, by name (build plan 5.6). "today" is the registry as it has always been
+# built. "taught" adds the rules from the buyer lessons:
+#
+#   institution_buys_6mo  a buyer with this many purchases in six months is an institution whatever
+#                         its name says. The name lists catch Opendoor; they cannot catch a fund
+#                         that buys through "Sample 14 LLC". 0 switches the rule off.
+#   flip_months           a flip is a purchase resold within this many months. A house an entity
+#                         held for eight years and then sold is a landlord's sale, and counting it
+#                         as a flip puts a 2016 purchase price in a flipper's buy box.
+#   double_close_days     two entities back to back on the deeds, this many days apart or fewer,
+#                         are a wholesaler and then the buyer. The first never held the house.
+#   loan_as_price         where the deed carries no price, the buyer's loan recorded with it stands
+#                         in (it is close to the truth and often includes the rehab), and says so.
+#   flip_built_by         a "flip" of a house built after this year is a builder selling new
+#                         construction, so it is not read as a flip.
+#
+# Nothing here is on by default: each rule moves buyers between types on a list the deal blast
+# already runs on, so it is switched on by name (--rules taught, or DISPO_BUYER_RULES=taught) once
+# the before and after has been read (--phase rules prints it and writes nothing).
+RULESETS = {
+    "today": {"institution_buys_6mo": 0, "flip_months": 0, "double_close_days": 0,
+              "loan_as_price": False, "flip_built_by": 0},
+    "taught": {"institution_buys_6mo": 100, "flip_months": 18, "double_close_days": 30,
+               "loan_as_price": True, "flip_built_by": 2010},
+}
+DEFAULT_RULES = "today"
+RULES_ENV = "DISPO_BUYER_RULES"
+SIX_MONTHS_DAYS = 182
+LOAN_MATCH_DAYS = 45           # a purchase loan is recorded with its deed, give or take the clerk
+LOAN_LOOKBACK_DAYS = 730       # with no purchase deed in the history, how far back a flipper's loan may sit
+_ACTIVE = {"name": ""}         # set from --rules; empty means the environment, then the default
+
+
+def rules_name(name: str | None = None) -> str:
+    chosen = (name or _ACTIVE["name"] or os.environ.get(RULES_ENV) or DEFAULT_RULES).strip().lower()
+    if chosen not in RULESETS:
+        raise ValueError("unknown ruleset %r (use %s)" % (chosen, " or ".join(sorted(RULESETS))))
+    return chosen
+
+
+def rules_for(name: str | None = None) -> dict:
+    """The named ruleset as its own dict, with its name on it."""
+    return dict(RULESETS[rules_name(name)], name=rules_name(name))
+
+
+def _day(value):
+    """A date from 'YYYY-MM-DD...' or None. A deed date that cannot be read is unknown, never today."""
+    from datetime import date
+    try:
+        return date.fromisoformat(str(value)[:10])
+    except (TypeError, ValueError):
+        return None
+
+
+def _days_between(first, second):
+    a, b = _day(first), _day(second)
+    return (b - a).days if a and b else None
+
+
+def six_month_buys(obs: list, today=None, days: int = SIX_MONTHS_DAYS) -> int:
+    """Purchases dated inside the last six months. A holder bought on the deed that made them the
+    owner; an exited flipper bought on the deed before the exit, and a resale date is not a
+    purchase. An observation with no readable purchase date is not counted."""
+    from datetime import date, timedelta
+    cut = (today or date.today()) - timedelta(days=days)
+    n = 0
+    for o in obs:
+        when = _day(o.get("date") if o.get("role") == "holder" else o.get("buy_date"))
+        if when and when >= cut:
+            n += 1
+    return n
+
+
+def is_flip(buy_date, exit_date, months: int):
+    """True when the resale came within `months` of the purchase, False when it came later, None
+    when either date is missing (the label is then all there is to go on)."""
+    held = _days_between(buy_date, exit_date)
+    if held is None or held < 0:
+        return None
+    return held <= months * 30.44
+
+
+def _same_party(a: str, b: str) -> bool:
+    return bool(a and b) and norm_name(a) == norm_name(b)
+
+
+def _loan_near(mortgages: list, borrower: str, when, days: int = LOAN_MATCH_DAYS):
+    """The borrower's loan recorded within `days` of a deed: the one closest in time."""
+    best = None
+    for m in mortgages or []:
+        gap = _days_between(when, m.get("date"))
+        amount = m.get("amount")
+        if gap is None or abs(gap) > days or not isinstance(amount, (int, float)) or amount <= 0:
+            continue
+        if not _same_party(m.get("borrower") or "", borrower):
+            continue
+        if best is None or abs(gap) < best[0]:
+            best = (abs(gap), m)
+    return best[1] if best else None
+
+
+def _first_loan_before(mortgages: list, borrower: str, before, lookback: int = LOAN_LOOKBACK_DAYS):
+    """With no purchase deed in the history: the borrower's earliest loan on this house in the
+    `lookback` days before they sold it. That is the loan they bought it with, or close to it."""
+    found = []
+    for m in mortgages or []:
+        gap = _days_between(m.get("date"), before)
+        amount = m.get("amount")
+        if gap is None or gap < 0 or gap > lookback or not isinstance(amount, (int, float)) or amount <= 0:
+            continue
+        if _same_party(m.get("borrower") or "", borrower):
+            found.append((str(m.get("date")), m))
+    return sorted(found, key=lambda x: x[0])[0][1] if found else None
+
+
+def _middleman(sh: list, at: int, days: int):
+    """The deed pair that makes a double closing, or None. `sh[at]` is the deed the observed buyer
+    bought on; if its seller bought the house on the deed before it, `days` or fewer earlier, and
+    both are companies, the seller only passed the contract along."""
+    if not days or at + 1 >= len(sh):
+        return None
+    buy, prior = sh[at], sh[at + 1]
+    seller, buyer = (buy.get("seller") or "").strip(), (buy.get("buyer") or "").strip()
+    if not seller or not buyer or not _same_party(prior.get("buyer") or "", seller):
+        return None
+    if _same_party(seller, buyer) or not (_is_entity(seller) and _is_entity(buyer)):
+        return None
+    gap = _days_between(prior.get("date"), buy.get("date"))
+    if gap is None or gap < 0 or gap > days:
+        return None
+    return {"name": seller, "bought": prior, "sold": buy, "days": gap}
+
+
+# ---------------------------------------------------------------- state ----
+
+def _load(p: Path, default):
+    if p.exists():
+        return json.loads(p.read_text(encoding="utf-8"))
+    return default
+
+
+def _save(p: Path, obj) -> None:
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_suffix(p.suffix + ".tmp")
+    tmp.write_text(json.dumps(obj, indent=1, default=str), encoding="utf-8")
+    tmp.replace(p)
+
+
+def state() -> dict:
+    return _load(STATE_PATH, {})
+
+
+def mark_done(phase: str, **facts) -> None:
+    s = state()
+    s[phase] = {"when": datetime.now().isoformat(timespec="seconds"), **facts}
+    _save(STATE_PATH, s)
+
+
+def require(phase: str) -> None:
+    if phase not in state():
+        raise SystemExit("phase '" + phase + "' has not run yet; run it first")
+
+
+def gate(ok: bool, msg: str) -> None:
+    """A phase that produced nothing is a failure, not an empty market."""
+    if not ok:
+        raise SystemExit("GATE FAILED: " + msg)
+
+
+# ---------------------------------------------------------------- sweep ----
+
+def _body(fips: str, name: str, state_ab: str, txn: str, page: int,
+          collapse: bool, since: str = "", built_by: int = 0) -> dict:
+    filters = {
+        "type_single_family": True,
+        K_TXN: [txn],
+        # Gift deeds and intra-family paper are not investor purchases.
+        "extra_last_sale_value_min": 1000,
+        "extra_is_last_sale_interfamily": False,
+    }
+    if built_by and txn in EXIT_TYPES:
+        # A flip search with no age floor returns builders selling new houses (the lesson asks for
+        # built 2010 or older). The key is in the published filter reference; the plain
+        # year_built_max spelling measured as ignored on saved filters (2026-09). The sweep proves
+        # the key with a count before it trusts it, and each property's own year built is checked
+        # again when the deed is read.
+        filters["extra_year_built_max"] = int(built_by)
+    if since:
+        # Verified by count delta 2026-08-28: Knox 6,912 unbounded drops to
+        # 1,151 at 12 months, while a deliberately bogus key returns the
+        # unfiltered 6,912. Without this the sweep has NO date bound at all and
+        # silently spans 2019 to 2026.
+        filters["extra_last_sale_date_min"] = since
+    if collapse:
+        filters["extra_collapse_by_owner"] = True
+    return {
+        # result_index is a ROW OFFSET, not a page number.
+        "result_index": 1 + (page - 1) * PAGE_SIZE,
+        "with_boundaries": False,
+        "filters": filters,
+        "addresses": [county_address(fips, name, state_ab)],
+        "polygon": WORLD,
+    }
+
+
+def _year_filter_proven(sc, fips: str, name: str, st: str, txn: str, collapse: bool, since: str,
+                        built_by: int) -> bool:
+    """One extra count, with the year key and without it. SiftMap ignores a key it does not know
+    and answers as if it were not there, so the only proof a filter works is a count that moves."""
+    if not built_by or txn not in EXIT_TYPES:
+        return True
+    with_key = sc.search(_body(fips, name, st, txn, 1, collapse, since, built_by)).get("total_results") or 0
+    without = sc.search(_body(fips, name, st, txn, 1, collapse, since)).get("total_results") or 0
+    if without and with_key >= without:
+        log.warning("%s:%s the built-by-%s filter did not change the count (%s both ways); it may be "
+                    "ignored. Each property's own year built is still checked.", name, txn, built_by, without)
+        return False
+    log.info("%s:%s built by %s: %s of %s", name, txn, built_by, with_key, without)
+    return True
+
+
+def phase_sweep(args) -> None:
+    sc = getattr(args, "search_client", None) or KeyOnlySearch(min_interval=args.min_interval)
+    rows_path = OUT / "rows.json"
+    store = _load(rows_path, {})
+    counts: dict = {}
+    built_by = rules_for()["flip_built_by"]
+    each = bool(getattr(args, "each_purchase", False))
+
+    for fips, name, st in COUNTIES:
+        for txn in ALL_TYPES:
+            key = name + ":" + txn
+            if key in store and not args.refresh:
+                counts[key] = len(store[key])
+                log.info("%s already swept (%s rows)", key, len(store[key]))
+                continue
+            # Hold types collapse to one row per owner, which is exactly the
+            # aggregation. Exit types must NOT collapse: we need each sale so
+            # the seller (the flipper) can be read off its history.
+            # --each-purchase keeps one row per purchase for the hold types too, which is what
+            # counting a buyer's purchases needs (and costs that many more detail reads).
+            collapse = txn in HOLD_TYPES and not each
+            _year_filter_proven(sc, fips, name, st, txn, collapse, "", built_by)
+            seen: dict = {}
+            page = 1
+            total = None
+            while True:
+                r = sc.search(_body(fips, name, st, txn, page, collapse, built_by=built_by))
+                if total is None:
+                    total = r.get("total_results") or 0
+                    log.info("%s: %s total%s", key, total,
+                             " (collapsed)" if collapse else "")
+                batch = r.get("data") or []
+                if not batch:
+                    break
+                for row in batch:
+                    rid = str(row.get("id") or "")
+                    if rid:
+                        seen[rid] = {
+                            "id": rid,
+                            "address": row.get("address"),
+                            "county": row.get("county"),
+                            "corporateOwned": row.get("corporateOwned"),
+                            "absenteeOwner": row.get("absenteeOwner"),
+                            "estimatedValue": row.get("estimatedValue"),
+                            "saved_uuid": row.get("saved_uuid"),
+                            "txn": txn,
+                            # The physical buy box. A first version kept only
+                            # the eight fields above and threw these away, which
+                            # left no way to answer "what does this buyer
+                            # actually buy" without re-pulling everything.
+                            # 93 to 96% populated live. yearBuilt is NOT
+                            # returned by this endpoint at all (0 of 250), so
+                            # there is deliberately no property-age dimension,
+                            # and propertyUse is constant because the sweep
+                            # filters type_single_family.
+                            "bedrooms": row.get("bedrooms"),
+                            "bathrooms": row.get("bathrooms"),
+                            "squareFeet": row.get("squareFeet"),
+                            "lotAcres": row.get("lotAcres"),
+                            "equityPercent": row.get("equityPercent"),
+                            "investorScore": row.get("investor_off_market_score"),
+                            "realtorScore": row.get("realtor_score"),
+                            # Only the ACTIVE flags. The raw blob is a 27-key
+                            # nested dict per property and would bloat rows.json
+                            # for information that is almost all False.
+                            "distress": sorted(
+                                k for k, v in (row.get("distressors") or {}).items()
+                                if isinstance(v, dict) and v.get("is_active")),
+                        }
+                page += 1
+                if len(seen) >= (total or 0) or page > args.max_pages:
+                    break
+            store[key] = list(seen.values())
+            counts[key] = len(seen)
+            _save(rows_path, store)
+            log.info("%s: kept %s rows", key, len(seen))
+
+    total_rows = sum(counts.values())
+    uniq = len({r["id"] for v in store.values() for r in v})
+    gate(total_rows > 0, "sweep returned zero rows across both counties")
+    mark_done("sweep", per_segment=counts, rows=total_rows, unique_ids=uniq,
+              **({"each_purchase": True} if each else {}))
+    print(json.dumps(counts, indent=1))
+    print("sweep: " + str(total_rows) + " rows, " + str(uniq) + " unique properties")
+
+
+# ----------------------------------------------------------------- recent --
+# WHO is still buying. The main sweep has no date bound, so it answers "who has
+# ever bought here" and half that list stopped years ago: the median buyer last
+# purchased 456 days ago and only 41% bought inside a year. This phase runs the
+# same sweep with extra_last_sale_date_min and is the qualification layer.
+# Recency decides who is on the list; the unbounded history decides what they
+# buy. It is cheap because the recent set is a near-subset of what is already
+# hydrated (1,101 of 1,129 on the first run).
+
+
+def _since(days: int) -> str:
+    from datetime import date, timedelta
+    return (date.today() - timedelta(days=days)).isoformat()
+
+
+def phase_recent(args) -> None:
+    sc = getattr(args, "search_client", None) or KeyOnlySearch(min_interval=args.min_interval)
+    since = _since(args.recent_days)
+    details = _load(OUT / "details.json", {})
+    rows_path = OUT / "recent_rows.json"
+    store: dict = {}
+    log.info("qualifying window: last sale on or after %s", since)
+
+    built_by = rules_for()["flip_built_by"]
+    each = bool(getattr(args, "each_purchase", False))
+    for fips, name, st in COUNTIES:
+        for txn in ALL_TYPES:
+            collapse = txn in HOLD_TYPES and not each
+            seen: dict = {}
+            page, total = 1, None
+            while True:
+                r = sc.search(_body(fips, name, st, txn, page, collapse, since, built_by))
+                if total is None:
+                    total = r.get("total_results") or 0
+                batch = r.get("data") or []
+                if not batch:
+                    break
+                for row in batch:
+                    rid = str(row.get("id") or "")
+                    if rid:
+                        seen[rid] = {"id": rid, "address": row.get("address"),
+                                     "county": row.get("county"), "txn": txn,
+                                     "saved_uuid": row.get("saved_uuid")}
+                page += 1
+                if len(seen) >= (total or 0) or page > args.max_pages:
+                    break
+            store[name + ":" + txn] = list(seen.values())
+            log.info("%s:%s -> %s in window", name, txn, len(seen))
+
+    _save(rows_path, store)
+    ids = {r["id"] for v in store.values() for r in v}
+    unhydrated = [i for i in ids if i not in details]
+    gate(len(ids) > 0, "the recent sweep returned nothing; check the date bound")
+
+    # Resolve each qualifying property to the buyer, using the SAME hold-vs-exit
+    # rule as the main sweep. For a flip the qualifying party is the last-sale
+    # SELLER, and a recent exit is its own strong signal: that operator just
+    # freed up capital and needs the next deal.
+    active: dict = {}
+    unresolved = 0
+    for key, seg in store.items():
+        county, txn = key.split(":", 1)
+        for r in seg:
+            d = details.get(r["id"]) or {}
+            if d.get("miss") or not d.get("owner_name"):
+                unresolved += 1
+                continue
+            sh = d.get("sale_history") or []
+            last = sh[0] if sh else {}
+            if txn in HOLD_TYPES:
+                who = d["owner_name"]
+            else:
+                who = (last.get("seller") or "").strip()
+            if not who:
+                unresolved += 1
+                continue
+            k = norm_name(who)
+            e = active.setdefault(k, {"name": who, "n_in_window": 0,
+                                      "last_active_buy": "", "counties": set(),
+                                      "txns": set()})
+            e["n_in_window"] += 1
+            e["counties"].add(county)
+            e["txns"].add(txn)
+            when = str(last.get("date") or "")
+            if when > e["last_active_buy"]:
+                e["last_active_buy"] = when
+    for e in active.values():
+        e["counties"] = sorted(e["counties"])
+        e["txns"] = sorted(e["txns"])
+
+    _save(OUT / "recent.json", active)
+    mark_done("recent", days=args.recent_days, since=since,
+              properties=len(ids), unhydrated=len(unhydrated),
+              buyers=len(active), unresolved=unresolved)
+    print("recent: %d properties sold in the last %d days"
+          % (len(ids), args.recent_days))
+    print("  already hydrated          : %d" % (len(ids) - len(unhydrated)))
+    print("  NEW, need hydrating       : %d" % len(unhydrated))
+    print("  buyers active in window   : %d" % len(active))
+    print("  properties with no owner  : %d" % unresolved)
+    if unhydrated:
+        print("")
+        print("  run --phase hydrate next, then --phase aggregate")
+
+
+# -------------------------------------------------------------- hydrate ----
+
+_HYDRATE_LOCK = threading.Lock()
+
+
+def _owner_name(oi: dict) -> str:
+    raw = (oi.get("owner_name")
+           or " ".join(p for p in [oi.get("first_name"), oi.get("last_name")] if p)
+           or oi.get("name") or "")
+    return re.sub(r"\s+", " ", raw).strip()
+
+
+def _mail_line(oi: dict) -> str:
+    """owner_info carries the mailing address as ONE string, not a dict."""
+    m = oi.get("owner_mail_address") or ""
+    if isinstance(m, dict):
+        m = ", ".join(p for p in [m.get("street"), m.get("city"),
+                                  m.get("state"), m.get("zip")] if p)
+    return (m or "").strip()
+
+
+def _hydrate_one(smc: SiftMapClient, rid: str) -> dict:
+    d = smc.get_detail(rid)
+    oi = d.get("owner_info") or {}
+    sh = d.get("sale_history") or []
+    return {
+        "id": rid,
+        "owner_name": _owner_name(oi),
+        "owner_mail": _mail_line(oi),
+        "portfolio_n": oi.get("total_properties"),
+        "portfolio_value": oi.get("portfolio_value"),
+        "secondary_owners": oi.get("secondary_owner_names") or [],
+        "sale_history": [{"date": s.get("sale_date"),
+                          "price": s.get("sale_price"),
+                          "buyer": s.get("buyer_name"),
+                          "seller": s.get("seller_name"),
+                          "cash": s.get("is_cash_sale")} for s in sh[:4]],
+        # Two more things the same read already returns, kept so the taught rules can use them
+        # without a second request: the loans recorded against the house (a loan stands in for a
+        # deed price that is missing) and the year it was built (new construction is not a flip).
+        # Nothing reads either unless a ruleset asks for it.
+        "mortgages": [{"date": m.get("record_date"), "amount": m.get("amount"),
+                       "borrower": m.get("grantee_name"), "lender": m.get("lender_name")}
+                      for m in (d.get("mortgage_history") or [])[:8] if isinstance(m, dict)],
+        "year_built": d.get("years_built"),
+    }
+
+
+def hydrate_todo(rows: dict | None = None, recent: dict | None = None, details: dict | None = None) -> list:
+    """Every swept property whose deed has not been read yet, from both sweeps. The date-bounded
+    qualification sweep finds properties the unbounded one missed, and they need owners too:
+    reading only rows.json left 28 of them permanently unhydrated while the phase reported
+    "nothing to do"."""
+    rows = _load(OUT / "rows.json", {}) if rows is None else rows
+    recent = _load(OUT / "recent_rows.json", {}) if recent is None else recent
+    details = _load(OUT / "details.json", {}) if details is None else details
+    todo = []
+    for source in (rows, recent):
+        for seg_rows in source.values():
+            for r in seg_rows:
+                if r["id"] not in details:
+                    todo.append(r["id"])
+    return sorted(set(todo))
+
+
+def unmask_left(floor: int = 0) -> int:
+    """Entities still waiting for the free reverse-address check, at or above a purchase floor."""
+    reg = _load(OUT / "registry.json", [])
+    found = _load(OUT / "principals.json", {})
+    return sum(1 for b in unmask_targets(reg, found) if int(b.get("n_buys") or 0) >= floor)
+
+
+def phase_hydrate(args) -> None:
+    require("sweep")
+    rows = _load(OUT / "rows.json", {})
+    recent = _load(OUT / "recent_rows.json", {})
+    det_path = OUT / "details.json"
+    details = _load(det_path, {})
+
+    todo = hydrate_todo(rows, recent, details)
+    if getattr(args, "reread_unpriced", False):
+        # A detail read before the loans were kept cannot fill a missing price. Read again only
+        # the properties whose purchase has no deed price and whose cached read carries no loans.
+        seen_rules = dict(RULESETS["taught"], name="taught", loan_as_price=False)
+        for o in _observations(rows, details, seen_rules):
+            if o.get("id") and not _priced(o.get("price")) and "mortgages" not in (details.get(o["id"]) or {}):
+                todo.append(o["id"])
+    todo = sorted(set(todo))
+    if args.limit:
+        todo = todo[:args.limit]
+    log.info("hydrating %s properties (%s already cached)", len(todo), len(details))
+    if not todo:
+        mark_done("hydrate", details=len(details))
+        print("hydrate: nothing to do, " + str(len(details)) + " cached")
+        return
+
+    done = 0
+    errors = 0
+    clients: dict = {}
+
+    def work(rid: str):
+        tid = threading.get_ident()
+        if tid not in clients:
+            clients[tid] = getattr(args, "detail_client", None) or SiftMapClient(min_interval=args.min_interval)
+        return _hydrate_one(clients[tid], rid)
+
+    # Detail throughput caps near 2-4 req/s AGGREGATE regardless of worker
+    # count, with escalating Retry-After under sustained load. More workers
+    # than that just buys 429s.
+    with ThreadPoolExecutor(max_workers=args.workers) as ex:
+        futs = {ex.submit(work, rid): rid for rid in todo}
+        for fut in as_completed(futs):
+            rid = futs[fut]
+            try:
+                details[rid] = fut.result()
+            except SiftMapError as e:
+                if "401" in str(e):
+                    raise
+                errors += 1
+                details[rid] = {"id": rid, "miss": str(e)[:160]}
+            except Exception as e:  # noqa: BLE001
+                errors += 1
+                details[rid] = {"id": rid, "miss": str(e)[:160]}
+            done += 1
+            # Checkpoint often. A stall on the far side of a long interval
+            # throws away everything since the last write, and this phase has
+            # already hung once on compounding 429 backoff.
+            if done % 100 == 0:
+                with _HYDRATE_LOCK:
+                    _save(det_path, details)
+                log.info("hydrated %s/%s (%s errors)", done, len(todo), errors)
+
+    _save(det_path, details)
+    resolved = sum(1 for d in details.values() if d.get("owner_name"))
+    # The buyer_sweep precedent: a run that resolves zero of a non-empty target
+    # list is an auth failure wearing an empty-market costume.
+    gate(resolved > 0, "hydrate resolved zero owners; check REISIFT_API_KEY")
+    mark_done("hydrate", details=len(details), resolved=resolved, errors=errors)
+    print("hydrate: " + str(len(details)) + " cached, " + str(resolved)
+          + " with an owner, " + str(errors) + " errors")
+
+
+# ------------------------------------------------------------ aggregate ----
+
+def _addr_key(mail: str) -> str:
+    """Normalized mailing address, unit stripped, for clustering."""
+    s = strip_unit(mail or "")
+    s = re.sub(r"[^A-Z0-9 ]", " ", s.upper())
+    s = STREET_WORD_RX.sub("", s)
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def _name_tokens(name: str) -> set:
+    stop = {"LLC", "LLP", "LP", "INC", "CORP", "THE", "COMPANY", "CO"}
+    return {t for t in norm_name(name).split() if t not in stop and len(t) > 2}
+
+
+def _similar(a: str, b: str) -> bool:
+    """Fuzzy entity-name match for merging inside a shared-suite address."""
+    ta, tb = _name_tokens(a), _name_tokens(b)
+    if not ta or not tb:
+        return False
+    if ta <= tb or tb <= ta:
+        return True
+    overlap = len(ta & tb) / max(1, min(len(ta), len(tb)))
+    return overlap >= 0.6
+
+
+def _is_entity(name: str) -> bool:
+    return bool(ENTITY_RX.search(norm_name(name)))
+
+
+def local_tier(name: str, n_buys: int) -> tuple:
+    """`classify_one` with two corrections this list cannot survive without.
+
+    That taxonomy was calibrated for a NATIONWIDE enterprise prospect list,
+    where volume means 6-month purchases across the country and "construction"
+    means D R Horton. Applied unchanged to a county sweep it is wrong twice,
+    and both were measured on the real registry:
+
+    1. **It excludes the best dispo buyers we have.** Below its volume floor of
+       10, any generic keyword match is an outright EXCLUDE. Nearly every local
+       investor is below that floor, so STONEBRIDGE CONSTRUCTION LLC (9 buys),
+       PRUETT CONSTRUCTION LLC (6) and HOLLOWAY BUILDERS LLC were all dropped
+       as "homebuilders". A local construction LLC buying 3 to 9 houses a year
+       is a SELF-PERFORMER, which is precisely the buyer this team's own dispo
+       doctrine says takes a heavy-rehab deal when GC-model flippers cannot.
+       So a generic match becomes REVIEW here: kept, and flagged.
+    2. **It matches keywords as substrings.** "BANK" inside "ASHBANKS" excluded
+       a real buyer with 4 purchases. Any keyword that does not survive a
+       word-boundary re-check is treated as a false positive.
+
+    High-confidence brand exclusions (D R Horton, Fannie Mae, a city) are kept
+    exactly as they are; those are right in both contexts.
+    """
+    tier, reason, conf = classify_one(name, n_buys)
+    if tier != "EXCLUDE":
+        return tier, reason, conf
+    keyword = reason.split(":", 1)[-1].strip()
+    if keyword and not re.search(r"\b" + re.escape(keyword) + r"\b", name):
+        return "REVIEW", "kept: '" + keyword + "' matched only as a substring", "high"
+    if "(generic)" in reason:
+        return "REVIEW", "kept: generic '" + keyword + "' on a local buyer", "med"
+    return tier, reason, conf
+
+
+PHYS_FIELDS = ("bedrooms", "bathrooms", "squareFeet", "lotAcres",
+               "equityPercent", "estimatedValue", "investorScore", "distress")
+
+
+def _phys(row: dict) -> dict:
+    """The physical facts of one property, carried onto its observation.
+
+    Attached here rather than to the registry's `buys` list because that list is
+    capped at 25 for display, and a 184-purchase buyer's box computed from 25
+    sampled rows is a different number than one computed from all of them.
+    """
+    return {k: row.get(k) for k in PHYS_FIELDS}
+
+
+def _priced(price) -> bool:
+    return isinstance(price, (int, float)) and not isinstance(price, bool) and price > 0
+
+
+def _wholesale_obs(mid: dict, county: str, r: dict) -> dict:
+    """The company in the middle of a double closing, as its own observation: what it paid, what
+    it was paid the same week, and who it sold the contract to."""
+    return {
+        "name": mid["name"], "mail": "", "county": county, "txn": "wholesale", "role": "wholesaler",
+        "prop": r.get("address"), "id": r.get("id"), "date": mid["sold"].get("date"),
+        "buy_date": mid["bought"].get("date"), "price": mid["bought"].get("price"),
+        "exit_price": mid["sold"].get("price"), "sold_to": (mid["sold"].get("buyer") or "").strip(),
+        "days_held": mid["days"], "cash": mid["bought"].get("cash"), "portfolio_n": None,
+        "portfolio_value": None, "saved_uuid": None, "secondary": [], **_phys(r),
+    }
+
+
+def _observations(rows: dict, details: dict, rules: dict | None = None, stats: dict | None = None) -> list:
+    """One observation per purchase the deeds show. `rules` is a ruleset (rules_for); with none
+    given the active one is used, which is today's unless --rules or the environment says so.
+    `stats`, when handed in, is filled with what each rule did, so a phase can say it out loud."""
+    rules = rules or rules_for()
+    taught = any(rules.get(k) for k in ("flip_months", "double_close_days", "loan_as_price", "flip_built_by"))
+    stats = stats if stats is not None else {}
+    for k in ("long_holds", "wholesalers", "loan_priced", "new_builds", "year_unknown", "flips_checked"):
+        stats.setdefault(k, 0)
+    obs = []
+    for key, seg_rows in rows.items():
+        county, txn = key.split(":", 1)
+        for r in seg_rows:
+            d = details.get(r["id"]) or {}
+            if d.get("miss") or not d.get("owner_name"):
+                continue
+            sh = d.get("sale_history") or []
+            last = sh[0] if sh else {}
+            loans = d.get("mortgages") or []
+            if txn in HOLD_TYPES:
+                # The investor still holds it: the current owner is the buyer.
+                o = {
+                    "name": d["owner_name"], "mail": d.get("owner_mail") or "",
+                    "county": county, "txn": txn, "role": "holder",
+                    "prop": r.get("address"), "date": last.get("date"),
+                    "price": last.get("price"), "cash": last.get("cash"),
+                    "portfolio_n": d.get("portfolio_n"),
+                    "portfolio_value": d.get("portfolio_value"),
+                    "saved_uuid": r.get("saved_uuid"),
+                    "secondary": d.get("secondary_owners") or [],
+                    **_phys(r),
+                }
+                if taught:
+                    o["id"] = r.get("id")
+                    if rules["loan_as_price"] and not _priced(o["price"]):
+                        loan = _loan_near(loans, o["name"], o["date"])
+                        if loan:
+                            o["price"], o["price_source"] = loan["amount"], "loan"
+                            stats["loan_priced"] += 1
+                    mid = _middleman(sh, 0, rules["double_close_days"])
+                    if mid:
+                        o["via"] = mid["name"]
+                        obs.append(_wholesale_obs(mid, county, r))
+                        stats["wholesalers"] += 1
+                obs.append(o)
+            else:
+                # The flip already exited: the current owner is the RETAIL
+                # buyer. The investor is the SELLER on that last sale, and this
+                # property gives us no mailing address for them.
+                seller = (last.get("seller") or "").strip()
+                if not seller:
+                    continue
+                if rules["flip_built_by"]:
+                    # A house built after the cutoff and sold by a company is new construction:
+                    # the seller is a builder, and their "purchase" was a lot. Read as a flip it
+                    # puts a lot price in a flipper's buy box. An unknown year is kept, and counted.
+                    year = d.get("year_built")
+                    if isinstance(year, (int, float)) and not isinstance(year, bool) and year > rules["flip_built_by"]:
+                        stats["new_builds"] += 1
+                        continue
+                    if not year:
+                        stats["year_unknown"] += 1
+                # What the flipper PAID is the deed before the exit, where they are the buyer.
+                # The exit deed's price is what a homebuyer paid them, and pricing a flipper at it
+                # turned a book of $100K-$200K purchases into a $307,500 "buy box" (found
+                # 2026-10-27 on a real buyer). When the earlier deed is not in the history the
+                # purchase price is unknown, and unknown is what gets recorded.
+                at = next((i for i, s in enumerate(sh) if i and norm_name(s.get("buyer") or "") == norm_name(seller)), None)
+                buy = sh[at] if at is not None else None
+                o = {
+                    "name": seller, "mail": "", "county": county, "txn": txn,
+                    "role": "exited", "prop": r.get("address"),
+                    "date": last.get("date"), "price": buy.get("price") if buy else None,
+                    "buy_date": buy.get("date") if buy else None,
+                    "exit_price": last.get("price"),
+                    "cash": buy.get("cash") if buy else None, "portfolio_n": None,
+                    "portfolio_value": None, "saved_uuid": None, "secondary": [],
+                    **_phys(r),
+                }
+                if taught:
+                    o["id"] = r.get("id")
+                    if rules["loan_as_price"] and not _priced(o["price"]):
+                        loan = (_loan_near(loans, seller, o["buy_date"]) if buy
+                                else _first_loan_before(loans, seller, o["date"]))
+                        if loan:
+                            o["price"], o["price_source"] = loan["amount"], "loan"
+                            o["buy_date"] = o["buy_date"] or loan.get("date")
+                            stats["loan_priced"] += 1
+                    if rules["flip_months"]:
+                        stats["flips_checked"] += 1
+                        o["days_held"] = _days_between(o["buy_date"], o["date"])
+                        if is_flip(o["buy_date"], o["date"], rules["flip_months"]) is False:
+                            # Held longer than a flip, then sold: a landlord or an owner selling.
+                            # It is still a purchase this buyer made, so it stays, under its own name.
+                            o["role"] = "long_hold"
+                            stats["long_holds"] += 1
+                    if buy and o["role"] == "exited":
+                        mid = _middleman(sh, at, rules["double_close_days"])
+                        if mid:
+                            o["via"] = mid["name"]
+                            obs.append(_wholesale_obs(mid, county, r))
+                            stats["wholesalers"] += 1
+                obs.append(o)
+    return obs
+
+
+def _rules_on(rules: dict) -> bool:
+    return any(rules.get(k) for k in RULESETS["taught"])
+
+
+def phase_aggregate(args) -> None:
+    require("hydrate")
+    rows = _load(OUT / "rows.json", {})
+    details = _load(OUT / "details.json", {})
+
+    rules = rules_for()
+    rule_stats: dict = {}
+    obs = _observations(rows, details, rules, rule_stats)
+    gate(len(obs) > 0, "aggregate produced no observations")
+
+    # Pass 1: exact normalized name. Pass 2: mailing-address cluster, guarded
+    # so a shared office suite does not merge unrelated companies.
+    by_name: dict = {}
+    for o in obs:
+        by_name.setdefault(norm_name(o["name"]), []).append(o)
+    groups = [{"names": {n}, "obs": list(v)} for n, v in by_name.items()]
+
+    addr_index: dict = defaultdict(list)
+    for g in groups:
+        mails = [o["mail"] for o in g["obs"] if o["mail"]]
+        g["mail"] = mails[0] if mails else ""
+        if g["mail"]:
+            addr_index[_addr_key(g["mail"])].append(g)
+
+    merges = []
+    refused = []
+    dropped = set()
+    for akey, cluster in addr_index.items():
+        if len(cluster) < 2 or not akey:
+            continue
+        anchor = cluster[0]
+        suite = bool(UNIT_MARK_RX.search(anchor["mail"]))
+        for other in cluster[1:]:
+            a = sorted(anchor["names"])[0]
+            b = sorted(other["names"])[0]
+            if suite and not _similar(a, b):
+                refused.append({"address": anchor["mail"], "kept_apart": [a, b],
+                                "reason": "shared suite, names not similar"})
+                continue
+            anchor["names"] |= other["names"]
+            anchor["obs"].extend(other["obs"])
+            dropped.add(id(other))
+            merges.append({"address": anchor["mail"], "merged": [a, b],
+                           "reason": "same mailing address"
+                                     + (" plus similar names" if suite else "")})
+    groups = [g for g in groups if id(g) not in dropped]
+
+    registry = []
+    by_count = []
+    for g in groups:
+        o_all = g["obs"]
+        raw = Counter(o["name"] for o in o_all).most_common(1)[0][0]
+        prices = sorted(o["price"] for o in o_all
+                        if isinstance(o.get("price"), (int, float)) and o["price"]
+                        and o["role"] != "long_hold")
+        holders = [o for o in o_all if o["role"] == "holder"]
+        tier, reason, _conf = local_tier(norm_name(raw), len(o_all))
+        n_exited = len(o_all) - len(holders)
+        extra: dict = {}
+        if _rules_on(rules):
+            # Only a ruleset that was asked for adds these, so today's registry reads as it always has.
+            n_exited = sum(1 for o in o_all if o["role"] == "exited")
+            n6 = six_month_buys(o_all)
+            extra = {"rules": rules["name"], "buys_6mo": n6,
+                     "n_wholesaled": sum(1 for o in o_all if o["role"] == "wholesaler"),
+                     "n_long_holds": sum(1 for o in o_all if o["role"] == "long_hold"),
+                     "n_via_wholesaler": sum(1 for o in o_all if o.get("via")),
+                     "loan_priced": sum(1 for o in o_all if o.get("price_source") == "loan")}
+            floor = rules["institution_buys_6mo"]
+            if floor and n6 >= floor and tier != "EXCLUDE":
+                # By count, whatever the name says. A local builder with nine purchases is nowhere
+                # near this line, which is the point: the name rules must not be what catches a
+                # fund, because a name rule strict enough to do it also drops the builders.
+                tier, reason = "EXCLUDE", "institution by count: %d purchases in six months" % n6
+                by_count.append(raw)
+        registry.append({
+            "buyer_key": norm_name(raw),
+            "name": raw,
+            "aliases": sorted(n for n in g["names"] if n != norm_name(raw)),
+            "is_entity": _is_entity(raw),
+            "mail": g.get("mail") or "",
+            "counties": sorted({o["county"] for o in o_all}),
+            "txn_types": sorted({o["txn"] for o in o_all}),
+            "n_buys": len(o_all),
+            "n_held": len(holders),
+            "n_exited": n_exited,
+            "cash_n": sum(1 for o in o_all if o.get("cash")),
+            "price_min": prices[0] if prices else None,
+            "price_med": prices[len(prices) // 2] if prices else None,
+            "price_max": prices[-1] if prices else None,
+            "portfolio_n": max((o.get("portfolio_n") or 0) for o in o_all) or None,
+            "portfolio_value": max((o.get("portfolio_value") or 0)
+                                   for o in o_all) or None,
+            "saved_uuid": next((o["saved_uuid"] for o in o_all
+                                if o.get("saved_uuid")), None),
+            "secondary": sorted({s for o in o_all for s in (o.get("secondary") or [])}),
+            "tier": tier,
+            "tier_reason": reason,
+            "buys": [{"address": o["prop"], "date": o["date"], "price": o["price"],
+                      "county": o["county"], "txn": o["txn"], "role": o["role"]}
+                     for o in sorted(o_all, key=lambda x: str(x.get("date") or ""),
+                                     reverse=True)[:25]],
+            **extra,
+        })
+
+    # ---- join the recency layer ------------------------------------------
+    # The unbounded sweep says who has EVER bought here; recent.json says who
+    # is still buying. Stamping it here keeps one source of truth, so the
+    # profile phase does not have to re-derive activity.
+    recent = _load(OUT / "recent.json", {})
+    hot_cut = _since(182)
+    matched = 0
+    for b in registry:
+        r = recent.get(b["buyer_key"])
+        if not r:
+            b["active_365d"] = False
+            b["active_182d"] = False
+            b["n_in_window"] = 0
+            b["last_active_buy"] = ""
+            continue
+        matched += 1
+        b["active_365d"] = True
+        b["last_active_buy"] = r["last_active_buy"]
+        b["n_in_window"] = r["n_in_window"]
+        b["active_182d"] = bool(r["last_active_buy"] >= hot_cut)
+
+    # A buyer who only shows up in the recent sweep is currently active and
+    # would otherwise be invisible. Carry them in with what we know.
+    known = {b["buyer_key"] for b in registry}
+    added = 0
+    for key, r in recent.items():
+        if key in known:
+            continue
+        added += 1
+        registry.append({
+            "buyer_key": key, "name": r["name"], "aliases": [],
+            "is_entity": _is_entity(r["name"]), "mail": "",
+            "counties": r["counties"], "txn_types": r["txns"],
+            "n_buys": r["n_in_window"], "n_held": 0, "n_exited": 0, "cash_n": 0,
+            "price_min": None, "price_med": None, "price_max": None,
+            "portfolio_n": None, "portfolio_value": None, "saved_uuid": None,
+            "secondary": [], "tier": "REVIEW",
+            "tier_reason": "seen only in the recency sweep",
+            "buys": [], "active_365d": True, "active_182d":
+                bool(r["last_active_buy"] >= hot_cut),
+            "n_in_window": r["n_in_window"],
+            "last_active_buy": r["last_active_buy"],
+        })
+
+    # The Knox tax sale's winning bidders (the autopilot's tax_sale_results stage writes them live only):
+    # cash buyers by definition. Folded in by buyer_key; a second fold changes nothing.
+    extra = _load(OUT / "tax_sale_buyers.json", [])
+    if extra:
+        from agents.autopilot.taxsale import merge_buyers
+        registry = merge_buyers(registry, extra)
+
+    registry.sort(key=lambda b: (-b["n_buys"], -(b["portfolio_n"] or 0)))
+
+    # An exited flipper with no mailing address cannot be skip traced by
+    # address. Most active ones also hold something, so they are recovered by
+    # the name merge above; the rest are reported, never silently dropped.
+    no_mail = [b for b in registry if not b["mail"]]
+    excluded = [b for b in registry if b["tier"] == "EXCLUDE"]
+
+    _save(OUT / "registry.json", registry)
+    _save(OUT / "merge_report.json", {"merges": merges, "refused": refused})
+
+    act = sum(1 for b in registry if b.get("active_365d"))
+    hot = sum(1 for b in registry if b.get("active_182d"))
+    on = _rules_on(rules)
+    mark_done("aggregate", buyers=len(registry), observations=len(obs),
+              merges=len(merges), refused=len(refused),
+              no_mailing_address=len(no_mail), excluded=len(excluded),
+              active_365d=act, active_182d=hot, recent_only_added=added,
+              **({"rules": rules["name"], "rule_stats": rule_stats, "institutions_by_count": len(by_count)} if on else {}))
+    print("aggregate: " + str(len(obs)) + " observations -> "
+          + str(len(registry)) + " unique buyers")
+    print("  merged by mailing address : " + str(len(merges)))
+    print("  refused by the suite guard: " + str(len(refused)))
+    print("  no mailing address        : " + str(len(no_mail)) + " (exited flippers)")
+    print("  institutional/EXCLUDE     : " + str(len(excluded)))
+    print("  active in the last 365d   : " + str(act) + " ("
+          + str(hot) + " within 182d)")
+    print("  added from the recency sweep only: " + str(added))
+    if on:
+        for line in rule_lines(rules, rule_stats, by_count, bool(state().get("sweep", {}).get("each_purchase"))):
+            print("  " + line)
+
+
+def rule_lines(rules: dict, stats: dict, by_count: list, each_purchase: bool) -> list:
+    """What the named rules did to this build, one plain line each."""
+    out = ["rules: %s" % rules["name"]]
+    if rules["institution_buys_6mo"]:
+        out.append("dropped as institutions by count (%d or more purchases in six months): %d%s" % (
+            rules["institution_buys_6mo"], len(by_count), (" (" + ", ".join(by_count[:4]) + ")") if by_count else ""))
+        if not each_purchase:
+            out.append("  holders were swept one row per owner, so a holder's count is a floor; "
+                       "sweep with --each-purchase to count every purchase")
+    if rules["flip_months"]:
+        out.append("flips checked against the %d-month rule: %d, of which %d were held longer and read as long holds" % (
+            rules["flip_months"], stats.get("flips_checked", 0), stats.get("long_holds", 0)))
+    if rules["double_close_days"]:
+        out.append("back-to-back company deeds within %d days: %d wholesalers recorded" % (
+            rules["double_close_days"], stats.get("wholesalers", 0)))
+    if rules["loan_as_price"]:
+        out.append("purchases with no deed price, priced at the buyer's loan: %d" % stats.get("loan_priced", 0))
+    if rules["flip_built_by"]:
+        out.append("flip sales of houses built after %d left out as new construction: %d (year built unknown on %d, kept)" % (
+            rules["flip_built_by"], stats.get("new_builds", 0), stats.get("year_unknown", 0)))
+    return out
+
+
+# --------------------------------------------------------------- unmask ----
+# The reverse-address move, and it is FREE. An LLC's mailing address is very often a
+# human's house, so reversing that address through the same map we already pay
+# for names the principal at no cost. Every entity that resolves here is one we
+# do not send to Enformion at $0.10, which is why this phase runs first and on
+# its own.
+
+# Who counts as a principal (AGENT_FRONT_RX, FIRM_RX, OWNER_TITLES, STATUS_TOKENS,
+# PLACEHOLDER_NAMES, _is_human, _officer_in_state, rank_officers, principal_confidence) moved to
+# enformion_business on 2026-11-13, with every measured trap it carries, and is imported at the top
+# of this file. The free reverse-address check below and the team's entity_principals workflow
+# both read the rules from there.
+
+
+def _unmask_one(client, buyer: dict) -> dict:
+    """The free principal for one buyer: who owns the house its mail goes to
+    (buyer_sweep.reverse_address). This used to find the house through SiftMap's
+    autocomplete, which DataSift's Acceptable use names as prohibited in volume;
+    the address search does the same job. `client` is a buyer_sweep.MapClient.
+
+    The unit is dropped from the street first ("Ste D200" confuses the search)
+    and the full line is tried only when that finds no house. A match needs the
+    same house number, street and ZIP, because a bare "123 Main St" exists in
+    every county and the owner of the wrong one is a stranger, not a principal."""
+    from buyer_sweep import MapError, drop_unit, reverse_address
+    out = {"principal": None, "principal_source": None, "miss": None}
+    mail = buyer.get("mail") or ""
+    try:
+        got = reverse_address(drop_unit(mail), client)
+        if got["miss"] == "no property at the mailing address" and drop_unit(mail) != mail:
+            got = reverse_address(mail, client)
+    except MapError as e:
+        if "401" in str(e) or "not set" in str(e):
+            raise
+        out["miss"] = str(e)[:160]
+        return out
+    except Exception as e:  # noqa: BLE001
+        out["miss"] = str(e)[:160]
+        return out
+    if got["principal"]:
+        out["principal"], out["principal_source"] = got["principal"], got["source"]
+    else:
+        out["miss"] = got["miss"]
+    return out
+
+
+def unmask_targets(reg: list, found: dict) -> list:
+    """Entities still waiting for the free check, most valuable first: buyers active in the
+    window, then by purchase count. A bounded run (the agents brain reads a few dozen a night)
+    then spends its reads on the buyers a dispo blast would actually text."""
+    todo = [b for b in reg if b["is_entity"] and b["tier"] not in ("EXCLUDE",) and b["buyer_key"] not in found]
+    return sorted(todo, key=lambda b: (0 if b.get("active_365d") else 1, -int(b.get("n_buys") or 0)))
+
+
+def phase_unmask(args) -> None:
+    require("aggregate")
+    reg = _load(OUT / "registry.json", [])
+    path = OUT / "principals.json"
+    found = _load(path, {})
+
+    floor = int(getattr(args, "unmask_floor", 0) or 0)
+    targets = [b for b in unmask_targets(reg, found) if int(b.get("n_buys") or 0) >= floor]
+    if args.limit:
+        targets = targets[:args.limit]
+    log.info("unmasking %s entities (%s already done)", len(targets), len(found))
+    if not targets:
+        mark_done("unmask", principals=len(found), remaining=0)
+        print("unmask: nothing to do, " + str(len(found)) + " cached")
+        return
+
+    clients: dict = {}
+    shared = getattr(args, "map_client", None)
+
+    def work(b: dict):
+        tid = threading.get_ident()
+        if tid not in clients:
+            from buyer_sweep import MapClient
+            clients[tid] = shared or MapClient(min_interval=args.min_interval)
+        return b["buyer_key"], _unmask_one(clients[tid], b)
+
+    done = 0
+    with ThreadPoolExecutor(max_workers=args.workers) as ex:
+        futs = [ex.submit(work, b) for b in targets]
+        for fut in as_completed(futs):
+            key, res = fut.result()
+            found[key] = res
+            done += 1
+            if done % 100 == 0:
+                _save(path, found)
+                log.info("unmasked %s/%s", done, len(targets))
+
+    _save(path, found)
+    hits = sum(1 for v in found.values() if v.get("principal"))
+    gate(len(found) > 0, "unmask produced nothing")
+    mark_done("unmask", attempted=len(found), resolved=hits,
+              remaining=sum(1 for b in unmask_targets(reg, found) if int(b.get("n_buys") or 0) >= floor))
+    print("unmask: " + str(hits) + " principals from " + str(len(found))
+          + " entities, all free")
+    misses = Counter(v.get("miss") for v in found.values() if not v.get("principal"))
+    for reason, n in misses.most_common(6):
+        print("  miss: %-46s %s" % (str(reason)[:46], n))
+
+
+# ----------------------------------------------------------- principals ----
+# The paid fallback, and the ONLY source that can name an LLC's officers. It
+# runs after unmask so we never buy what the map already gave us, and it needs
+# --commit because every match is billed.
+
+def phase_principals(args) -> None:
+    require("unmask")
+    import enformion_business as eb
+
+    reg = _load(OUT / "registry.json", [])
+    found = _load(OUT / "principals.json", {})
+    by_key = {b["buyer_key"]: b for b in reg}
+
+    # A buy floor, because the spend should follow the value. Measured on the
+    # real registry: of the 1,257 unresolved entities that still carry a
+    # mailing address, only 264 bought more than once in the window. The other
+    # 993 are single-purchase LLCs, which are usually a holding vehicle or a
+    # one-time buyer rather than a repeat dispo customer, so paying $0.10 each
+    # to name them is $99 for the weakest part of the list (Ty, 2026-08-28).
+    # No mailing-address prerequisite. BusinessV2 searches by COMPANY NAME, and
+    # the entities with no mailing address (exited flippers) are exactly the
+    # ones with no other route to a principal, so requiring an address excluded
+    # the cases that needed this most.
+    #
+    # Re-attempt anything previously resolved by BusinessV2 as well: that pass
+    # ran without state verification, so its answers are unverified until they
+    # clear the TN filter.
+    todo = [k for k, v in found.items()
+            if k in by_key
+            and (not v.get("principal")
+                 or v.get("principal_source") == "enformion-businessv2")
+            and by_key[k]["is_entity"] and by_key[k]["tier"] != "EXCLUDE"
+            and by_key[k]["n_buys"] >= args.min_buys
+            and (not args.active_only or by_key[k].get("active_365d"))]
+    # Most valuable first, so an interrupted run has already bought the names
+    # that matter.
+    todo.sort(key=lambda k: -by_key[k]["n_buys"])
+    if args.limit:
+        todo = todo[:args.limit]
+
+    if not eb.is_configured():
+        print("principals: ENFORMION_AP_NAME / _PASSWORD not set, skipping")
+        return
+    cost = len(todo) * 0.10
+    print("principals: " + str(len(todo)) + " entities with " + str(args.min_buys)
+          + "+ buys still unresolved after the free unmask")
+    print("            up to $%.2f at $0.10 per match (misses are free)" % cost)
+    if not args.commit:
+        # What a paid run would buy, kept so a caller (the agents brain's nightly job) can say it
+        # without re-deriving the selection above.
+        mark_done("principals_plan", todo=len(todo), usd=round(cost, 2))
+        print("DRY RUN. Re-run with --commit to spend.")
+        return
+
+    hits = 0
+    billed = 0           # searches that returned a record: those cost $0.10, a miss is free
+    cleared: list = []
+    for i, key in enumerate(todo, 1):
+        b = by_key[key]
+        # Anchor on the mailing city/state so a common company name in another
+        # state does not answer for this one.
+        city_state = ""
+        parts = [p.strip() for p in (b.get("mail") or "").split(",")]
+        if len(parts) >= 3:
+            city_state = parts[-2] + ", " + parts[-1].split()[0]
+        try:
+            officers, paid = eb.search_officers(b["name"], city_state)
+            billed += 1 if paid else 0
+        except Exception as e:  # noqa: BLE001
+            found[key]["miss"] = "businessv2: " + str(e)[:120]
+            continue
+        officers = [o for o in officers if _is_human(o.get("name") or "")]
+        state = (b.get("mail", "").strip()[-8:].split()[0] if b.get("mail") else "") or "TN"
+        if len(state) != 2 or not state.isalpha():
+            state = "TN"
+        ranked = rank_officers(b["name"], officers, state)
+        if ranked:
+            best = ranked[0]
+            found[key]["principal"] = best["name"]
+            found[key]["principal_source"] = "enformion-businessv2"
+            found[key]["principal_title"] = best.get("title") or ""
+            found[key]["principal_address"] = best.get("address") or ""
+            # Keep the whole list. The first pass kept officers[0] and threw the
+            # rest away, which is how a Registered Agent won whenever it
+            # happened to be listed first.
+            found[key]["officers"] = ranked
+            found[key]["principal_confidence"] = principal_confidence(
+                b["name"], best["name"], best.get("title") or "")
+            found[key]["principal_state_verified"] = True
+            found[key]["miss"] = None
+            hits += 1
+        else:
+            # Clear an earlier unverified answer rather than leaving a stranger
+            # from another state standing as this buyer's name.
+            if found[key].get("principal_source") == "enformion-businessv2":
+                cleared.append(found[key].get("principal"))
+                found[key]["principal"] = None
+                found[key]["principal_confidence"] = None
+                found[key]["principal_address"] = ""
+                # Clear the provenance too. Leaving principal_source set on a
+                # row whose principal was withdrawn makes the sheet claim a
+                # source for a name that is no longer there.
+                found[key]["principal_source"] = None
+                found[key]["principal_title"] = ""
+            found[key]["principal_state_verified"] = False
+            found[key]["miss"] = ("businessv2: %d officers, none in %s"
+                                  % (len(officers), state)) if officers                 else "businessv2: no human officer"
+        if i % 25 == 0:
+            _save(OUT / "principals.json", found)
+            log.info("businessv2 %s/%s (%s resolved)", i, len(todo), hits)
+
+    _save(OUT / "principals.json", found)
+    mark_done("principals", attempted=len(todo), resolved=hits,
+              cleared_unverified=len(cleared), billed=billed, usd=round(billed * eb.UNIT_USD, 2))
+    print("principals: %d of %d resolved and state verified" % (hits, len(todo)))
+    print("  billed searches: %d ($%.2f)" % (billed, billed * eb.UNIT_USD))
+    print("  cleared as unverifiable (wrong state): %d" % len(cleared))
+    for n in [c for c in cleared if c][:8]:
+        print("      dropped: %s" % n)
+
+
+# ------------------------------------------------------------ skipinput ----
+# SmartSkip wants First Name, Last Name, Mailing Address, which is exactly the
+# registry's natural key, so this is a straight projection. Nothing here is
+# billed: submit/map/calculate are all free and print the exact quote, so the
+# decision to spend happens after seeing the row count and price.
+
+# split_mail (SiftMap's comma and Enformion's semicolon address formats) moved to
+# enformion_business on 2026-11-13 and is imported at the top of this file.
+
+
+def phase_skipinput(args) -> None:
+    require("aggregate")
+    import csv
+    clean_owner_name = person_first_last
+
+    reg = _load(OUT / "registry.json", [])
+    principals = _load(OUT / "principals.json", {})
+    # Never re-buy a number we already own. SmartSkip bills per hit and does not
+    # know we asked before: on the first pruned run 92 of 130 rows were people
+    # already traced, which would have been a silent double charge.
+    traced = _load(OUT / "phones.json", {})
+
+    rows = []
+    skipped = Counter()
+    for b in reg:
+        # Skip trace is the expensive step ($0.15 a head), so the floor is set
+        # here rather than at the registry. 84% of the traceable set bought
+        # exactly once in the window; a repeat buyer is the one provably still
+        # in the market (Ty, 2026-08-28).
+        if b["n_buys"] < args.trace_min_buys:
+            skipped["under the trace buy floor"] += 1
+            continue
+        # Only trace buyers who are still buying. Paying $0.15 for a phone
+        # number belonging to someone whose last purchase was in 2021 is the
+        # whole problem this pass exists to fix.
+        if args.require_active and not b.get("active_365d"):
+            skipped["no purchase in the activity window"] += 1
+            continue
+        if b["buyer_key"] in traced and not args.retrace:
+            skipped["already has phones (not re-buying)"] += 1
+            continue
+        if b["tier"] == "EXCLUDE":
+            skipped["institutional/excluded"] += 1
+            continue
+        if b["tier"] == "3":
+            # Institutional SFR funds buy through channels, not from a text.
+            skipped["tier 3 SFR fund"] += 1
+            continue
+        mail = b.get("mail") or ""
+        if not mail:
+            skipped["no mailing address"] += 1
+            continue
+        person = b["name"]
+        source = "owner"
+        if b["is_entity"]:
+            rec = principals.get(b["buyer_key"]) or {}
+            p = rec.get("principal")
+            if not p:
+                skipped["entity, no principal resolved"] += 1
+                continue
+            # A LOW-confidence principal is an agent-titled officer whose name
+            # has nothing to do with the company, which usually means the
+            # company's attorney. Skip tracing and then TEXTING a firm's lawyer
+            # about a deal is the litigation bait this program exists to avoid,
+            # so they are held back rather than dropped: --include-low-confidence
+            # puts them in when a human wants to review them.
+            # Agent-titled principals are a FALLBACK, not a disqualifier
+            # (Ty, 2026-08-28): trace them, but the workbook flags the row so a
+            # caller asks for the principal by name instead of assuming they
+            # have the owner.
+            pass
+            # A BUSINESSV2 PRINCIPAL CANNOT BE SKIP TRACED AT THE COMPANY'S
+            # ADDRESS. SmartSkip matches First + Last + Mailing Address, and a
+            # reverse-address principal satisfies that BY CONSTRUCTION (we
+            # found their name living at that address). An officer lifted from
+            # a corporate filing has no established link to it. Measured
+            # 2026-08-28 on two real batches: reverse-address principals hit
+            # 163 of 172 (95%), BusinessV2 principals hit 1 of 26 (4%). They
+            # need a name plus city/state person search instead, so they are
+            # held out of the batch rather than burned on a 4% chance.
+            # The old blanket exclusion of BusinessV2 principals is gone: its
+            # reason was the company-address mismatch, which is now fixed by
+            # tracing the officer's own address. One condition remains, since a
+            # principal with no address of their own still has nothing to match.
+            if (rec.get("principal_source") == "enformion-businessv2"
+                    and not rec.get("principal_address")):
+                skipped["BusinessV2 principal with no address of their own"] += 1
+                continue
+            person, source = p, "principal"
+        first, last = clean_owner_name(person)
+        if not first or not last:
+            skipped["unparseable person name"] += 1
+            continue
+
+        # NAME ORDER. County filings and corporate records write "HARLOW DENNIS
+        # WAYNE", not "Dennis Harlow", so clean_owner_name reads the surname
+        # as the first name. When the person came from an entity we have a free
+        # oracle: whichever of their tokens also appears in the COMPANY name is
+        # the surname. Harlowbilt LLC -> Harlow Dennis means Dennis Harlow.
+        # Measured: 45 of these on the live registry, and each one would have
+        # bought a SmartSkip lookup that could not match.
+        if b["is_entity"]:
+            ent_tokens = {w for w in norm_name(b["name"]).split() if len(w) > 2}
+            if first.upper() in ent_tokens and last.upper() not in ent_tokens:
+                first, last = last, first
+
+        # A legal-status token is not a surname. "Varela Family Trust" resolved
+        # to first=Varela last=Tr, which is a trustee marker, not a person.
+        if first.upper() in STATUS_TOKENS or last.upper() in STATUS_TOKENS:
+            skipped["name is a legal-status token, not a person"] += 1
+            continue
+        # A bare initial is not a first name. SmartSkip matches on first + last
+        # + mailing address, so "E Lafleur" buys a $0.15 lookup that either
+        # misses or returns the wrong household. Same positional rule the SMS
+        # side already learned the hard way with "E A Whitfield".
+        if len(first.strip(".")) < 2:
+            skipped["first name is only an initial"] += 1
+            continue
+        # A BusinessV2 principal has no established link to the COMPANY's
+        # mailing address, which is why those rows skip traced at 4% while
+        # reverse-address principals hit 95%. Use the officer's own address
+        # when we have it; the company address is only correct for a
+        # reverse-address principal, where it IS that person's home.
+        addr_for_trace = mail
+        if source == "principal":
+            own = (principals.get(b["buyer_key"]) or {}).get("principal_address")
+            if own:
+                addr_for_trace = own
+        street, city, st, zip_code = split_mail(addr_for_trace)
+        # A "street" with no house number and no PO Box is a city line that lost
+        # its street, which cannot be matched and would still be billed.
+        if not re.search(r"\d", street) and not re.match(r"^P\.?\s?O", street, re.I):
+            skipped["mailing address has no street"] += 1
+            continue
+        rows.append({
+            "buyer_key": b["buyer_key"],
+            "First Name": first,
+            "Last Name": last,
+            "Mailing Address": street,
+            "Mailing City": city,
+            "Mailing State": st,
+            "Mailing Zip": zip_code,
+            "entity": b["name"] if b["is_entity"] else "",
+            "source": source,
+            "n_buys": b["n_buys"],
+        })
+
+    path = OUT / "smartskip_input.csv"
+    with open(path, "w", newline="", encoding="utf-8") as fh:
+        w = csv.DictWriter(fh, fieldnames=["buyer_key", "First Name", "Last Name",
+                                           "Mailing Address", "Mailing City",
+                                           "Mailing State", "Mailing Zip",
+                                           "entity", "source", "n_buys"])
+        w.writeheader()
+        w.writerows(rows)
+
+    gate(len(rows) > 0, "skipinput produced no traceable people")
+    mark_done("skipinput", people=len(rows), skipped=dict(skipped))
+    print("skipinput: " + str(len(rows)) + " people -> " + str(path))
+    for reason, n in skipped.most_common():
+        print("  skipped %-32s %s" % (reason, n))
+    print("")
+    print("SmartSkip is FREE up to the pay step. Next:")
+    print("  python skills/deep-prospecting-v5/scripts/smartskip_trace.py \\")
+    print("      submit --csv " + str(path))
+    print("  (read the quoted row count and price, THEN pay)")
+
+
+# --------------------------------------------------------------- profiles --
+# What does this buyer actually buy. The registry says who buys here and the
+# skip trace says how to reach them; neither answers the question a dispo
+# caller has in front of them, which is whether THIS deal is THIS person's kind
+# of deal. Ty chose deal blasts over a qualification drip, so the buy box has
+# to be inferred from deed history rather than asked.
+
+def _band(values: list) -> dict:
+    """p10 / median / p90, never min / max.
+
+    Opendoor's raw price_min reads $1,304 because one stray deed sits in its
+    history, and a band anchored on that is worse than no band at all. The
+    trimmed band is what a caller can actually say out loud.
+    """
+    vals = sorted(v for v in values if isinstance(v, (int, float)) and v > 0)
+    if not vals:
+        return {"lo": None, "mid": None, "hi": None, "n": 0}
+    def pct(p):
+        if len(vals) == 1:
+            return vals[0]
+        i = min(len(vals) - 1, max(0, int(round(p * (len(vals) - 1)))))
+        return vals[i]
+    return {"lo": pct(0.10), "mid": pct(0.50), "hi": pct(0.90), "n": len(vals)}
+
+
+# A house does not sell for $3,000. Sales below this, or at a tiny fraction of
+# the property's own value, are quitclaims, deeds in lieu and intra-family
+# paper. They still happened, so they stay in the purchase COUNT, but they must
+# never touch the price band: with a small sample the percentile trim cannot
+# save it, and 13 buyers came back with bands starting at $1,000 to $4,594.
+# Same principle as NON_ARMS_LENGTH_RATIO in post_walkthrough.
+NOMINAL_SALE_FLOOR = 10000
+NOMINAL_VALUE_RATIO = 0.20
+
+SELF_PERFORM_RX = re.compile(
+    r"\bCONSTRUCTION\b|\bBUILDERS?\b|\bRENOVATION|\bREMODEL|\bCONTRACTING\b", re.I)
+
+
+PRICE_RECENT_DAYS = 730          # two years
+PRICE_MIN_FOR_BAND = 3           # below this, widen rather than publish noise
+
+
+def _price_band(obs: list) -> tuple:
+    """(band, basis, nominal_dropped) preferring recent sales.
+
+    A 2019 purchase is not what this buyer would pay today, so the band is
+    built from the last two years first and only widens to full history when
+    that leaves too few priced sales to say anything. The basis is returned so
+    the sheet can state which one produced the number, the same way tight_arv()
+    reports its comp basis rather than hiding the widen.
+    """
+    cut = _since(PRICE_RECENT_DAYS)
+    recent = [o for o in obs if str(o.get("date") or "") >= cut]
+    vals, dropped = _real_prices(recent)
+    if len(vals) >= PRICE_MIN_FOR_BAND:
+        return _band(vals), "recent 24mo", dropped
+    vals_all, dropped_all = _real_prices(obs)
+    if not vals_all:
+        return _band([]), "no priced sales", dropped_all
+    if len(vals) and len(vals_all) == len(vals):
+        return _band(vals), "recent 24mo", dropped
+    return _band(vals_all), "widened to full history", dropped_all
+
+
+def _real_prices(obs: list) -> tuple:
+    """(prices worth banding, how many nominal transfers were dropped)."""
+    keep, dropped = [], 0
+    for o in obs:
+        if o.get("role") == "long_hold":
+            # Only the taught flip rule makes these: a house held for years and then sold. Its
+            # purchase is real and stays in the count, but its price is from another market.
+            continue
+        p = o.get("price")
+        if not isinstance(p, (int, float)) or p <= 0:
+            continue
+        val = o.get("estimatedValue")
+        nominal = p < NOMINAL_SALE_FLOOR or (
+            isinstance(val, (int, float)) and val > 0
+            and p < val * NOMINAL_VALUE_RATIO)
+        if nominal:
+            dropped += 1
+        else:
+            keep.append(p)
+    return keep, dropped
+
+
+def buyer_type(b: dict) -> tuple:
+    """(type, the rule that fired). Ordered, deterministic, auditable."""
+    if b.get("tier") == "EXCLUDE":
+        # Kept in the deliverable as market intelligence, labelled so nobody
+        # calls them. A national homebuilder or the City of Knoxville is not a
+        # dispo customer.
+        return "not a target", b.get("tier_reason") or "excluded by taxonomy"
+    if b.get("tier") in ("2", "3"):
+        return "institutional", "registry tier " + b["tier"]
+    if SELF_PERFORM_RX.search(b["name"] or ""):
+        return "self-performer", "name says construction or building trade"
+    txns = set(b.get("txn_types") or [])
+    held, exited = b.get("n_held", 0), b.get("n_exited", 0)
+    # These two counts exist only on a registry built with the taught rules.
+    wholesaled, long_holds = b.get("n_wholesaled", 0), b.get("n_long_holds", 0)
+    if wholesaled and wholesaled > held and wholesaled >= exited:
+        return "wholesaler", "sold to another company back to back on the deeds"
+    if long_holds and long_holds > max(held, exited, wholesaled):
+        return "long-term holder", "sold houses it had held longer than a flip"
+    if exited > held:
+        return "exited flipper", "more exits than current holdings"
+    # THE RENTAL LABEL LAGS BY OVER A YEAR. Measured 2026-08-28: `rental`
+    # returns 1,930 properties in Knox unbounded but ZERO within 12 months,
+    # because SiftMap cannot classify a purchase as a rental until it observes
+    # the property being rented, so a recent buy-and-hold sits under `pending`.
+    # The old rule required txn_types == {"rental"} exactly, which deleted
+    # every landlord the moment recency entered the picture: 111 became 0.
+    # Any rental history plus a hold-heavy record is the durable signal.
+    if "rental" in txns and held >= exited:
+        return "landlord", "has rental history and holds at least as many as it exits"
+    if "pending" in txns and held:
+        return "active holder", "holds at least one pending investor purchase"
+    # Wholesale describes how they ACQUIRED, not their model, so it only
+    # decides the label when nothing about holding or exiting did.
+    if txns & {"wholesale", "wholetail"}:
+        return "wholesaler", "acquired on a wholesale or wholetail transaction"
+    if "pending" in txns:
+        return "active holder", "holds at least one pending investor purchase"
+    return "other", "no rule matched"
+
+
+def _money(v) -> str:
+    if not v:
+        return ""
+    v = int(v)
+    if v >= 1_000_000:
+        return "$%.1fM" % (v / 1_000_000.0)
+    if v >= 1000:
+        return "$%dK" % round(v / 1000.0)
+    return "$%d" % v
+
+
+def _narrative(p: dict) -> str:
+    """One sentence, every figure of which is a column on the same row.
+
+    Generated, not modelled. 698 rows of pure arithmetic is a poor use of a
+    model, and a model asked to summarise a buyer will eventually invent a
+    detail that a caller then repeats to that buyer on the phone.
+    """
+    who = p["display_name"]
+    where = p["top_cities"][0][0] if p["top_cities"] else (p["counties"][0]
+                                                           if p["counties"] else "the area")
+    kind = {"landlord": "rentals", "exited flipper": "flips",
+            "self-performer": "projects", "wholesaler": "wholesale deals",
+            "institutional": "homes", "active holder": "homes",
+            "not a target": "homes",
+            "other": "homes"}.get(p["buyer_type"], "homes")
+    bits = ["%s buys %s %s" % (who, where, kind)]
+    # NOT "in 12 months". The SiftMap filter selects properties whose LAST SALE
+    # was an investor transaction, with no date bound at all, so the observed
+    # data actually spans 2019 to 2026 and the median buyer last bought 456
+    # days ago. Saying 12 months put a false window on every one of these.
+    span = ""
+    if p["first_buy"] and p["last_buy"]:
+        y0, y1 = p["first_buy"][:4], p["last_buy"][:4]
+        span = (" in %s" % y0) if y0 == y1 else (" from %s to %s" % (y0, y1))
+    bits.append("%d purchase%s%s" % (p["n_buys"],
+                                     "" if p["n_buys"] == 1 else "s", span))
+    price = p["box_price"]
+    if price["lo"] and price["hi"] and price["n"] >= 3:
+        bits.append("typically %s to %s" % (_money(price["lo"]), _money(price["hi"])))
+    elif price["mid"]:
+        # Under three real sales there is no band to speak of, so say the one
+        # number we have rather than dress a single point up as a range.
+        bits.append("only %d priced sale%s on record, around %s"
+                    % (price["n"], "" if price["n"] == 1 else "s",
+                       _money(price["mid"])))
+    beds, baths, sqft = p["box_beds"], p["box_baths"], p["box_sqft"]
+    shape = []
+    if beds["mid"]:
+        shape.append("%g bed" % beds["mid"])
+    if baths["mid"]:
+        shape.append("%g bath" % baths["mid"])
+    if shape:
+        s = " / ".join(shape)
+        if sqft["mid"]:
+            s += " around %s sqft" % format(int(sqft["mid"]), ",")
+        bits.append(s)
+    if p["cash_pct"] is not None:
+        bits.append("%d%% cash" % p["cash_pct"])
+    if p["n_held"] and p["n_exited"]:
+        bits.append("holds %d and has exited %d" % (p["n_held"], p["n_exited"]))
+    elif p["n_exited"] and not p["n_held"]:
+        bits.append("has exited every one")
+    elif p["n_held"] and not p["n_exited"]:
+        bits.append("holds rather than flips")
+    out = bits[0] + ": " + ", ".join(bits[1:]) + "."
+    if p["days_since_last"] is not None:
+        out += " Last bought %d days ago." % p["days_since_last"]
+    return out
+
+
+def phase_profiles(args) -> None:
+    require("aggregate")
+    from datetime import date
+
+    reg = _load(OUT / "registry.json", [])
+    principals = _load(OUT / "principals.json", {})
+    phones = _load(OUT / "phones.json", {})
+    scores = _load(OUT / "phone_scores.json", {})
+    rows = _load(OUT / "rows.json", {})
+    details = _load(OUT / "details.json", {})
+    rules = rules_for()
+    built_on = next((b.get("rules") for b in reg if b.get("rules")), DEFAULT_RULES)
+    if built_on != rules["name"]:
+        # The registry says who is which type; the observations here set each price band. Read on
+        # two different rulesets they describe two different buyers under one name.
+        raise SystemExit("the registry was built on the %s rules and this run asks for %s; run "
+                         "--phase aggregate --rules %s first" % (built_on, rules["name"], rules["name"]))
+    obs = _observations(rows, details, rules)
+
+    by_key: dict = defaultdict(list)
+    for o in obs:
+        by_key[norm_name(o["name"])].append(o)
+
+    GOOD = ("Dial First", "Dial Second")
+    today = date.today()
+    profiles = []
+    skipped_inactive = 0
+    for b in reg:
+        if b["n_buys"] < args.profile_min_buys:
+            continue
+        # Recency decides WHO is on the list; the unbounded history decides
+        # what they buy. Without this the cohort spans 2019 to 2026 and half of
+        # it stopped buying years ago.
+        if args.require_active and not b.get("active_365d"):
+            skipped_inactive += 1
+            continue
+        mine = by_key.get(b["buyer_key"]) or []
+        for alias in b.get("aliases") or []:
+            mine = mine + (by_key.get(alias) or [])
+        if not mine:
+            mine = []
+
+        pr = principals.get(b["buyer_key"]) or {}
+        ph = phones.get(b["buyer_key"]) or {}
+        numbers = []
+        for p in (ph.get("phones") or []):
+            tier = (scores.get(p["number"]) or {}).get("tier")
+            numbers.append({"number": p["number"], "type": p.get("type") or "",
+                            "tier": tier or "Unscored"})
+        srcs = {(q.get("source") or "smartskip") for q in (ph.get("phones") or [])}
+        phone_src = "both" if any("+" in s for s in srcs) or len(srcs) > 1 else             (srcs.pop() if srcs else "")
+        name_known = bool(ph.get("person")) or bool(pr.get("principal")) or not b["is_entity"]
+        numbers.sort(key=lambda n: (GOOD + ("Dial Third", "Dial Fourth",
+                                            "Drop", "Unscored")).index(n["tier"])
+                     if n["tier"] in GOOD + ("Dial Third", "Dial Fourth", "Drop",
+                                             "Unscored") else 9)
+        best = numbers[0]["tier"] if numbers else ""
+
+        cities = Counter()
+        zips = Counter()
+        for o in mine:
+            _st, city, _s, zc = split_mail(o.get("prop") or "")
+            if city:
+                cities[city] += 1
+            if zc:
+                zips[zc] += 1
+        dates = sorted(str(o.get("date") or "") for o in mine if o.get("date"))
+        last = dates[-1] if dates else ""
+        days = None
+        if last:
+            try:
+                days = (today - datetime.fromisoformat(last[:10]).date()).days
+            except ValueError:
+                days = None
+        cash_pct = None
+        if mine:
+            cash_pct = int(round(100.0 * sum(1 for o in mine if o.get("cash")) / len(mine)))
+        distress = Counter(d for o in mine for d in (o.get("distress") or []))
+
+        _pb = _price_band(mine)
+        p = {
+            "buyer_key": b["buyer_key"],
+            "name": b["name"],
+            # ONLY a high-confidence principal earns the headline. A
+            # LOW-confidence one is an agent-titled officer whose name has
+            # nothing to do with the company, i.e. usually their attorney, and
+            # putting "Leonard E Whitcomb buys Knoxville flips" on a call sheet
+            # tells a caller to greet BKR Properties' lawyer as the buyer.
+            "display_name": (pr.get("principal")
+                             if (b["is_entity"]
+                                 and pr.get("principal")
+                                 and pr.get("principal_confidence") == "high")
+                             else b["name"]),
+            "is_entity": b["is_entity"],
+            "entity_name": b["name"] if b["is_entity"] else "",
+            "principal": pr.get("principal") or "",
+            "principal_source": pr.get("principal_source") or "",
+            "principal_confidence": pr.get("principal_confidence") or "",
+            "mail": b["mail"],
+            "counties": b["counties"],
+            "tier": b["tier"],
+            "n_buys": b["n_buys"],
+            "n_held": b["n_held"],
+            "n_exited": b["n_exited"],
+            "cash_pct": cash_pct,
+            "txn_types": b["txn_types"],
+            "first_buy": dates[0] if dates else "",
+            "last_buy": last,
+            "days_since_last": days,
+            "active_180d": bool(days is not None and days <= 180),
+            "active_365d": bool(b.get("active_365d")),
+            "active_182d": bool(b.get("active_182d")),
+            "n_in_window": b.get("n_in_window") or 0,
+            "last_active_buy": b.get("last_active_buy") or "",
+            # Rate over the span actually observed for THIS buyer, not over an
+            # assumed 12-month window that does not exist in this data.
+            "span_days": ((datetime.fromisoformat(dates[-1][:10]).date()
+                           - datetime.fromisoformat(dates[0][:10]).date()).days
+                          if len(dates) > 1 else 0),
+            "buys_per_year": (round(b["n_buys"] / max(
+                0.25, ((datetime.fromisoformat(dates[-1][:10]).date()
+                        - datetime.fromisoformat(dates[0][:10]).date()).days / 365.0)), 1)
+                              if len(dates) > 1 else None),
+            "portfolio_n": b["portfolio_n"],
+            "portfolio_value": b["portfolio_value"],
+            "box_price": _pb[0],
+            "price_basis": _pb[1],
+            "nominal_dropped": _pb[2],
+            "box_value": _band([o.get("estimatedValue") for o in mine]),
+            "box_beds": _band([o.get("bedrooms") for o in mine]),
+            "box_baths": _band([o.get("bathrooms") for o in mine]),
+            "box_sqft": _band([o.get("squareFeet") for o in mine]),
+            "box_lot": _band([o.get("lotAcres") for o in mine]),
+            "box_equity": _band([o.get("equityPercent") for o in mine]),
+            "top_cities": cities.most_common(4),
+            "top_zips": zips.most_common(4),
+            "distress_appetite": distress.most_common(3),
+            "phones": numbers,
+            "best_tier": best,
+            "phone_source": phone_src,
+            "name_known": name_known,
+            "reachable": best in GOOD,
+            "saved_uuid": b["saved_uuid"],
+        }
+        # Ty allowed an agent-titled officer as a FALLBACK principal, so the
+        # sheet has to say so: a caller who thinks they have the owner will
+        # open with the wrong assumption on a lawyer's line.
+        p["principal_is_agent"] = bool(
+            pr.get("principal")
+            and pr.get("principal_confidence") == "low")
+        if _rules_on(rules):
+            for k in ("rules", "buys_6mo", "n_wholesaled", "n_long_holds", "n_via_wholesaler"):
+                p[k] = b.get(k)
+            # A band that leans on loan amounts runs high: a purchase loan often carries the rehab.
+            p["loan_priced"] = sum(1 for o in mine if o.get("price_source") == "loan")
+        p["buyer_type"], p["buyer_type_rule"] = buyer_type(b)
+        p["narrative"] = _narrative(p)
+        profiles.append(p)
+
+    profiles.sort(key=lambda x: (-x["n_buys"], x["name"]))
+    _save(OUT / "buyer_profiles.json", profiles)
+    gate(len(profiles) > 0, "no profiles built")
+    types = Counter(p["buyer_type"] for p in profiles)
+    reach = sum(1 for p in profiles if p["reachable"])
+    mark_done("profiles", buyers=len(profiles), reachable=reach,
+              by_type=dict(types), min_buys=args.profile_min_buys)
+    print("profiles: %d buyers with %d+ purchases%s"
+          % (len(profiles), args.profile_min_buys,
+             (" and active in the last %d days" % args.recent_days)
+             if args.require_active else ""))
+    if skipped_inactive:
+        print("  dropped as no longer active      : %d" % skipped_inactive)
+    basis = Counter(p["price_basis"] for p in profiles)
+    print("  price basis: " + str(dict(basis)))
+    print("  reachable now (Dial First/Second): %d" % reach)
+    for t, n in types.most_common():
+        print("   %-18s %4d" % (t, n))
+    xlsx = OUT / ("Knox_Blount_Buyer_Profiles_%s.xlsx"
+                  % datetime.now().strftime("%Y%m%d"))
+    try:
+        written = write_profiles_xlsx(profiles, xlsx) or xlsx
+        print("  workbook: %s" % written)
+        if written != xlsx:
+            print("  (the original is open in Excel; close it and rename this file)")
+    except ImportError:
+        print("  openpyxl not installed, JSON written but no workbook")
+    print()
+    for p in profiles[:5]:
+        print("  " + p["narrative"][:150])
+
+
+# ------------------------------------------------------- profiles: excel --
+
+NAVY, BLUE, GREEN, GOLD, RED = "0A1130", "316AFF", "1B9E5A", "B8860B", "C00000"
+
+
+def _fmt_band(band: dict, money: bool = False, dec: int = 0) -> str:
+    if not band or not band.get("mid"):
+        return ""
+    if band["n"] < 3:
+        v = band["mid"]
+        return (_money(v) if money else ("%.*f" % (dec, v))) + " (1 sale)" \
+            if band["n"] == 1 else \
+            (_money(v) if money else ("%.*f" % (dec, v))) + " (thin)"
+    lo, hi = band["lo"], band["hi"]
+    if money:
+        return "%s to %s" % (_money(lo), _money(hi))
+    return "%.*f to %.*f" % (dec, lo, dec, hi)
+
+
+def write_profiles_xlsx(profiles: list, path: Path) -> None:
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+    from openpyxl.utils import get_column_letter
+
+    hdr_fill = PatternFill("solid", fgColor=NAVY)
+    hdr_font = Font(color="FFFFFF", bold=True, size=10)
+    title_font = Font(color=NAVY, bold=True, size=14)
+    thin = Side(style="thin", color="D9D9D9")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    wrap = Alignment(vertical="top", wrap_text=True)
+
+    wb = Workbook()
+
+    def sheet(name, headers, rows, widths, freeze="A3", title=""):
+        ws = wb.create_sheet(name)
+        ws["A1"] = title or name
+        ws["A1"].font = title_font
+        for i, h in enumerate(headers, 1):
+            c = ws.cell(row=2, column=i, value=h)
+            c.fill, c.font, c.border = hdr_fill, hdr_font, border
+            c.alignment = Alignment(vertical="center", wrap_text=True)
+        for r, row in enumerate(rows, 3):
+            for i, v in enumerate(row, 1):
+                c = ws.cell(row=r, column=i, value=v)
+                c.border = border
+                c.alignment = wrap
+                if isinstance(v, (int, float)):
+                    c.alignment = Alignment(vertical="top", horizontal="right")
+        for i, w in enumerate(widths, 1):
+            ws.column_dimensions[get_column_letter(i)].width = w
+        ws.freeze_panes = freeze
+        ws.auto_filter.ref = "A2:%s%d" % (get_column_letter(len(headers)),
+                                          max(2, len(rows) + 2))
+        ws.page_setup.orientation = "landscape"
+        ws.page_setup.fitToWidth = 1
+        return ws
+
+    # ---- 1. Overview ----------------------------------------------------
+    ov = wb.active
+    ov.title = "Overview"
+    ov["A1"] = "Knox and Blount cash buyer profiles"
+    ov["A1"].font = title_font
+    types = Counter(p["buyer_type"] for p in profiles)
+    lines = [
+        ("Buyers profiled", len(profiles)),
+        ("Minimum purchases to qualify", 2),
+        ("Cohort", "active in the last 12 months AND 2+ lifetime purchases"),
+        ("Bought within the last year",
+         sum(1 for p in profiles if p.get("active_365d"))),
+        ("Bought within the last 180 days",
+         sum(1 for p in profiles if p["active_180d"])),
+        ("Reachable today (Dial First or Second)",
+         sum(1 for p in profiles if p["reachable"])),
+        ("Traced but no good number",
+         sum(1 for p in profiles if p["phones"] and not p["reachable"])),
+        ("Not yet skip traced", sum(1 for p in profiles if not p["phones"])),
+        ("", ""),
+        ("How the buy box is built", ""),
+        ("", "Inferred from 12 months of deed history. Nobody was asked."),
+        ("", "Price shown as a p10 to p90 band, never raw min to max."),
+        ("", "Sales under $10,000 or under 20% of value are treated as"),
+        ("", "nominal transfers (quitclaims, deeds in lieu) and excluded"),
+        ("", "from the band, though they still count as a purchase."),
+        ("", "A buyer with fewer than 3 priced sales gets a single figure"),
+        ("", "marked thin, not a range."),
+        ("", ""),
+        ("What is NOT here, and why", ""),
+        ("", "Year built: this endpoint does not return it at all."),
+        ("", "Property type: constant, the sweep filters single family."),
+        ("", "Portfolio size is unreliable for large entities."),
+        ("", "Exited flippers have no mailing address, so no contact."),
+        ("", ""),
+        ("Coverage of the target cohort", ""),
+        ("   (excludes institutional and not-a-target)", ""),
+        ("   reachable now", sum(1 for p in profiles if p["reachable"]
+                                 and p["buyer_type"] not in ("institutional", "not a target"))),
+        ("   traced, every number scored low",
+         sum(1 for p in profiles if p["phones"] and not p["reachable"]
+             and p["buyer_type"] not in ("institutional", "not a target"))),
+        ("   no verified principal yet",
+         sum(1 for p in profiles if not p["phones"] and p["is_entity"]
+             and not p["principal"]
+             and p["buyer_type"] not in ("institutional", "not a target"))),
+        ("   principal is an agent, verify before calling",
+         sum(1 for p in profiles if p.get("principal_is_agent"))),
+        ("", ""),
+        ("Buyer types", ""),
+    ]
+    for t, n in types.most_common():
+        lines.append(("   " + t, n))
+    for r, (k, v) in enumerate(lines, 3):
+        ov.cell(row=r, column=1, value=k).font = Font(bold=bool(v == "" and k))
+        ov.cell(row=r, column=2, value=v)
+    ov.column_dimensions["A"].width = 42
+    ov.column_dimensions["B"].width = 66
+    for r in range(3, len(lines) + 3):
+        ov.cell(row=r, column=2).alignment = wrap
+
+    # ---- 2. Buyer Profiles ----------------------------------------------
+    heads = ["Who", "Buyer type", "Buys", "Held", "Exited", "Cash %",
+             "Price band", "Value band", "Beds", "Baths", "Sqft", "Lot acres",
+             "Where they buy", "Counties", "First bought", "Last bought",
+             "Buys per year", "Active 1y", "Hot 6mo", "Bought in window",
+             "Price basis",
+             "Best phone tier", "Phone source", "Name known?", "Phones",
+             "Entity", "Principal",
+             "Principal is an agent",
+             "Principal source", "Mailing address", "Summary"]
+    rows = []
+    for p in profiles:
+        rows.append([
+            p["display_name"], p["buyer_type"], p["n_buys"], p["n_held"],
+            p["n_exited"], p["cash_pct"],
+            _fmt_band(p["box_price"], money=True),
+            _fmt_band(p["box_value"], money=True),
+            _fmt_band(p["box_beds"]), _fmt_band(p["box_baths"], dec=1),
+            _fmt_band(p["box_sqft"]), _fmt_band(p["box_lot"], dec=2),
+            ", ".join("%s (%d)" % (c, n) for c, n in p["top_cities"]),
+            ", ".join(p["counties"]), p["first_buy"], p["last_buy"],
+            p["buys_per_year"], "yes" if p["active_365d"] else "",
+            "yes" if p.get("active_182d") else "", p.get("n_in_window") or 0,
+            p["price_basis"],
+            p["best_tier"], p.get("phone_source", ""),
+            "" if p.get("name_known") else "NO NAME",
+            ", ".join(n["number"] for n in p["phones"][:4]),
+            p["entity_name"], p["principal"],
+            "VERIFY" if p.get("principal_is_agent") else "",
+            p["principal_source"],
+            p["mail"], p["narrative"],
+        ])
+    sheet("Buyer Profiles", heads, rows,
+          [26, 15, 7, 7, 8, 8, 20, 20, 12, 12, 16, 14, 30, 14, 12, 12, 12, 9,
+           8, 10, 20, 14, 18, 12, 30, 28, 18, 22, 22, 34, 78],
+          title="Every buyer with 2 or more purchases in the last 12 months")
+
+    # ---- 3. Call List ---------------------------------------------------
+    order = {"Dial First": 0, "Dial Second": 1}
+    call = sorted([p for p in profiles if p["reachable"]
+                   and p["buyer_type"] != "not a target"],
+                  key=lambda p: (order.get(p["best_tier"], 9), -p["n_buys"]))
+    ch = ["Who", "Agent?", "Name known?", "Buyer type", "Buys", "Price band",
+          "Beds", "Sqft", "Where they buy", "Tier", "Phone 1", "Phone 2",
+          "Phone 3", "Summary"]
+    crows = [[p["display_name"],
+              "VERIFY" if p.get("principal_is_agent") else "",
+              "" if p.get("name_known") else "ASK WHO",
+              p["buyer_type"], p["n_buys"],
+              _fmt_band(p["box_price"], money=True), _fmt_band(p["box_beds"]),
+              _fmt_band(p["box_sqft"]),
+              ", ".join(c for c, _ in p["top_cities"][:3]), p["best_tier"]]
+             + [(p["phones"][i]["number"] if len(p["phones"]) > i else "")
+                for i in range(3)]
+             + [p["narrative"]] for p in call]
+    sheet("Call List", ch, crows,
+          [26, 9, 12, 15, 7, 20, 12, 16, 28, 13, 14, 14, 14, 78],
+          title="Reachable buyers, best dial tier first")
+
+    # ---- 4. By Type -----------------------------------------------------
+    th = ["Buyer type", "Buyers", "Reachable", "Median buys",
+          "Median price (mid)", "Median sqft", "Typical rule that fired"]
+    trows = []
+    for t, n in types.most_common():
+        grp = [p for p in profiles if p["buyer_type"] == t]
+        mids = sorted(p["box_price"]["mid"] for p in grp if p["box_price"]["mid"])
+        sq = sorted(p["box_sqft"]["mid"] for p in grp if p["box_sqft"]["mid"])
+        bys = sorted(p["n_buys"] for p in grp)
+        trows.append([t, n, sum(1 for p in grp if p["reachable"]),
+                      bys[len(bys) // 2] if bys else "",
+                      _money(mids[len(mids) // 2]) if mids else "",
+                      int(sq[len(sq) // 2]) if sq else "",
+                      grp[0]["buyer_type_rule"] if grp else ""])
+    sheet("By Type", th, trows, [18, 10, 12, 13, 20, 14, 46],
+          title="How the cohort splits, and the rule behind each label")
+
+    # ---- 5. Sources and Caveats -----------------------------------------
+    sh = ["Item", "Detail"]
+    srows = [
+        ["Source", "SiftMap /properties/search/ and /properties/detail/, "
+                   "Knox (47093) and Blount (47009), single family only"],
+        ["Window", "NOT a fixed window. The filter selects properties whose "
+                   "LAST SALE was an investor transaction, with no date "
+                   "bound, so observed purchases run from 2019 to 2026. "
+                   "Only 41% of these buyers bought within the last year "
+                   "and the median last purchase is 456 days old. Use the "
+                   "Active and Last bought columns before calling"],
+        ["Transaction types", "pending, wholesale, wholetail, rental (current "
+                              "owner is the buyer) and flip (the buyer is the "
+                              "last-sale SELLER, since the exit already happened)"],
+        ["Dedupe", "Mailing-address clustering with a suite guard: an address "
+                   "carrying STE/UNIT/APT needs a fuzzy name match too, "
+                   "because unrelated firms share office suites"],
+        ["Principals", "Free reverse-address unmask first, then Enformion "
+                       "BusinessV2 for repeat buyers only. An agent-titled "
+                       "officer whose name does not appear in the company name "
+                       "is treated as low confidence and is NOT shown as the "
+                       "buyer, because that is usually their attorney"],
+        ["Phones", "SmartSkip on buyers with 2+ purchases, Trestle scored"],
+        ["Dial tiers", "81-100 Dial First, 61-80 Dial Second, 41-60 Third, "
+                       "21-40 Fourth, 0-20 Drop"],
+        ["Price band", "p10 to p90 of real sales. Nominal transfers under "
+                       "$10,000 or under 20% of value are excluded"],
+        ["Not a target", "Homebuilders, government and nonprofits are kept for "
+                         "market context and labelled so nobody calls them"],
+        ["Caution", "The buy box is inferred, never asked. Treat it as where "
+                    "this buyer has been active, not a commitment"],
+    ]
+    named = next((p.get("rules") for p in profiles if p.get("rules")), "")
+    if named:
+        r = RULESETS.get(named, {})
+        loans = sum(p.get("loan_priced") or 0 for p in profiles)
+        srows.append(["Rules", "Deeds were read on the %s rules: a flip is a purchase resold within %s months "
+                               "(a longer hold is a long-term holder's sale and its price is kept out of the "
+                               "band); two companies back to back within %s days are a wholesaler and then the "
+                               "buyer; %s or more purchases in six months is an institution whatever the name; "
+                               "a flip sale of a house built after %s is new construction and is left out. "
+                               "%d price(s) are loan amounts standing in for a deed with no price, and a loan "
+                               "often includes the rehab"
+                      % (named, r.get("flip_months"), r.get("double_close_days"), r.get("institution_buys_6mo"),
+                         r.get("flip_built_by"), loans)])
+    sheet("Sources and Caveats", sh, srows, [22, 104],
+          title="How to read this, and what not to trust")
+
+    # Excel holds an EXCLUSIVE lock on an open workbook, so saving over one the
+    # reviewer is looking at raises PermissionError and loses the run. Write to
+    # a pending name and swap; if the swap is also blocked, keep the pending
+    # file and say so rather than pretending the save worked.
+    path.parent.mkdir(parents=True, exist_ok=True)
+    pending = path.with_name("_PENDING_" + path.name)
+    wb.save(pending)
+    try:
+        pending.replace(path)
+        return path
+    except PermissionError:
+        log.warning("%s is open in Excel; left the new copy at %s",
+                    path.name, pending.name)
+        return pending
+
+
+# ----------------------------------------------------------------- phones --
+# Join the SmartSkip return back onto the registry. The download is keyed by
+# name and mailing address, not by our buyer_key, so the input CSV is the
+# bridge: it carries both.
+
+def phase_phones(args) -> None:
+    require("skipinput")
+    import csv
+    sys.path.insert(0, os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "skills", "deep-prospecting-v5", "scripts"))
+    import parse_smartskip as ps
+
+    vert = OUT / "smartskip_vertical.csv"
+    if not vert.exists():
+        raise SystemExit("no " + str(vert) + "; download the batch first")
+
+    # Build the bridge from the REGISTRY, not from smartskip_input.csv. That
+    # file is regenerated on every skipinput run, so a download from an earlier
+    # batch loses its join the moment the cohort changes.
+    clean_owner_name = person_first_last
+    reg = _load(OUT / "registry.json", [])
+    principals = _load(OUT / "principals.json", {})
+    bridge = {}
+    name_only: dict = {}
+    for b in reg:
+        person = b["name"]
+        if b["is_entity"]:
+            person = (principals.get(b["buyer_key"]) or {}).get("principal") or ""
+        if not person or not b.get("mail"):
+            continue
+        first, last = clean_owner_name(person)
+        if not first or not last:
+            continue
+        ent_tokens = {w for w in norm_name(b["name"]).split() if len(w) > 2}
+        if b["is_entity"] and first.upper() in ent_tokens and last.upper() not in ent_tokens:
+            first, last = last, first
+        # Index BOTH candidate addresses. skipinput traces a BusinessV2
+        # principal at the officer's OWN address, so a bridge built only from
+        # the company mailing address silently fails to match those rows back.
+        rec = principals.get(b["buyer_key"]) or {}
+        for cand in (b.get("mail"), rec.get("principal_address")):
+            if not cand:
+                continue
+            street, _c, _s, _z = split_mail(cand)
+            if street:
+                bridge[(first.strip().upper(), last.strip().upper(),
+                        street.strip().upper())] = b["buyer_key"]
+        # Name-only fallback, used when neither address lines up. Ambiguous
+        # names are dropped rather than guessed.
+        nk = (first.strip().upper(), last.strip().upper())
+        name_only[nk] = None if nk in name_only else b["buyer_key"]
+
+    # Merge every downloaded batch, not just the newest one.
+    verts = sorted(f for f in OUT.glob("smartskip*.csv")
+                   if f.name != "smartskip_input.csv")
+
+    recs = []
+    for v in verts:
+        recs.extend(ps.parse(str(v)))
+    log.info("parsed %s records across %s downloaded batches", len(recs), len(verts))
+    out: dict = _load(OUT / "phones.json", {})
+    matched = unmatched = 0
+    for rec in recs:
+        k = ((rec.get("first") or "").strip().upper(),
+             (rec.get("last") or "").strip().upper(),
+             (rec.get("mailing_address") or "").strip().upper())
+        key = bridge.get(k) or name_only.get((k[0], k[1]))
+        if not key:
+            unmatched += 1
+            continue
+        matched += 1
+        phones = []
+        for p in (rec.get("subject_phones") or []):
+            num = re.sub(r"\D", "", str(p.get("number") if isinstance(p, dict) else p))
+            if len(num) == 11 and num.startswith("1"):
+                num = num[1:]
+            if len(num) != 10:
+                continue
+            phones.append({"number": num,
+                           "type": (p.get("type") if isinstance(p, dict) else "") or ""})
+        if not phones and not rec.get("relatives"):
+            continue
+        out[key] = {
+            "person": ((rec.get("first") or "") + " " + (rec.get("last") or "")).strip(),
+            "phones": phones,
+            # SmartSkip is WRONG about death often enough that this is a flag to
+            # check, never a fact to act on. It is carried so a human can look.
+            "deceased_flag": bool(rec.get("deceased")),
+            "relatives": len(rec.get("relatives") or []),
+        }
+
+    _save(OUT / "phones.json", out)
+    uniq = {p["number"] for v in out.values() for p in v["phones"]}
+    gate(matched > 0, "no SmartSkip record joined back to a buyer_key")
+    mark_done("phones", joined=matched, unjoined=unmatched,
+              buyers_with_phones=len(out), unique_numbers=len(uniq))
+    print("phones: joined %d of %d records (%d could not be matched back)"
+          % (matched, len(recs), unmatched))
+    print("  buyers now carrying a phone : %d" % len(out))
+    print("  unique numbers              : %d" % len(uniq))
+    print("  flagged deceased (VERIFY)   : %d"
+          % sum(1 for v in out.values() if v["deceased_flag"]))
+    print("  Trestle cost to score them  : $%.2f" % (len(uniq) * 0.015))
+
+
+# ------------------------------------------------------------- crm-phones --
+# THE NUMBERS WERE ALREADY THERE. A comment in dispo_flip_buyers said DataSift's
+# native skip trace "covers humans; the entity principal is the part it cannot
+# do", and that was taken as established rather than measured. It is wrong.
+# Measured 2026-08-28 across the 128 unreachable target buyers holding a CRM
+# record: 107 of them already carry phones, 514 rows and 316 unique mobiles, on
+# records whose owner is the LLC itself. Only 2 had ever been Trestle scored.
+#
+# So this phase buys nothing. It reads what the account already holds, which is
+# the step that should have come before any vendor call. An assertion in a
+# comment is not a measurement.
+
+
+def phase_crm_phones(args) -> None:
+    require("profiles")
+    import time
+    # The agents brain passes a key-only client in args.crm; the workstation keeps its own.
+    crm = getattr(args, "crm", None)
+    if crm is None:
+        from sms_agent import crm
+    from sms_agent.gate_rules import BAD_PHONE as SKIP_PHONE_STATUSES
+
+    profiles = _load(OUT / "buyer_profiles.json", [])
+    reg = {b["buyer_key"]: b for b in _load(OUT / "registry.json", [])}
+    out = _load(OUT / "phones.json", {})
+
+    targets = [p for p in profiles if reg.get(p["buyer_key"], {}).get("saved_uuid")]
+    # A capped run resumes instead of re-reading the same first records: with skip_read_days set,
+    # a buyer whose record was read inside that window is skipped, and each read is remembered.
+    skip_days = int(getattr(args, "skip_read_days", 0) or 0)
+    read_path = OUT / "crm_read.json"
+    read_at = _load(read_path, {}) if skip_days else {}
+    if skip_days:
+        from datetime import timedelta
+        cutoff = (datetime.now() - timedelta(days=skip_days)).isoformat(timespec="seconds")
+        targets = [p for p in targets if str(read_at.get(p["buyer_key"]) or "") < cutoff]
+    left_over = 0
+    if args.limit:
+        left_over = max(0, len(targets) - args.limit)
+        targets = targets[:args.limit]
+    log.info("reading %s CRM records for numbers already on file", len(targets))
+
+    stats = Counter()
+    added_buyers = 0
+    for i, p in enumerate(targets, 1):
+        key = p["buyer_key"]
+        rec = _get_record(crm, reg[key]["saved_uuid"])
+        if skip_days and rec:
+            read_at[key] = datetime.now().isoformat(timespec="seconds")
+        if not rec:
+            stats["record unreadable after retries"] += 1
+            continue
+        owner = rec.get("owner") or {}
+        found = []
+        for q in (owner.get("phones") or rec.get("phones") or []):
+            if not isinstance(q, dict) or not q.get("number"):
+                continue
+            num = re.sub(r"\D", "", str(q["number"]))
+            if len(num) == 11 and num.startswith("1"):
+                num = num[1:]
+            if len(num) != 10:
+                stats["not a 10 digit number"] += 1
+                continue
+            # A disposition somebody set by hand outranks anything this
+            # harvest wants to do. Same set the seeder suppresses on.
+            if (q.get("status") or "").upper() in SKIP_PHONE_STATUSES:
+                stats["suppressed by its existing disposition"] += 1
+                continue
+            found.append({"number": num, "type": (q.get("type") or "").upper(),
+                          "status": (q.get("status") or "UNKNOWN").upper(),
+                          "is_connected": bool(q.get("is_connected")),
+                          "source": "datasift-native"})
+        if not found:
+            stats["record has no usable number"] += 1
+            continue
+
+        entry = out.get(key)
+        if entry is None:
+            entry = {"person": "", "phones": [], "deceased_flag": False,
+                     "relatives": 0}
+            out[key] = entry
+            added_buyers += 1
+        # Merge, never overwrite. A number SmartSkip already returned keeps its
+        # place and simply gains a second source.
+        have = {q["number"]: q for q in entry["phones"]}
+        for q in found:
+            if q["number"] in have:
+                src = have[q["number"]].get("source") or "smartskip"
+                if "datasift-native" not in src:
+                    have[q["number"]]["source"] = src + "+datasift-native"
+                stats["already had this number"] += 1
+            else:
+                entry["phones"].append(q)
+                stats["number added"] += 1
+        # The CRM record's owner is the COMPANY, so a harvested number comes
+        # with no person attached. The caller needs to know that.
+        entry.setdefault("name_known", bool(entry.get("person")))
+        if i % 40 == 0:
+            _save(OUT / "phones.json", out)
+            log.info("read %s/%s records", i, len(targets))
+
+    _save(OUT / "phones.json", out)
+    if skip_days:
+        _save(read_path, read_at)
+    uniq = {q["number"] for v in out.values() for q in v["phones"]}
+    gate(stats["number added"] > 0 or added_buyers == 0,
+         "harvest read records but added no numbers; check crm auth")
+    mark_done("crm_phones", records=len(targets), buyers_added=added_buyers, left_over=left_over,
+              **{k.replace(" ", "_"): v for k, v in stats.items()})
+    print("crm-phones: read %d records" % len(targets))
+    for k, v in stats.most_common():
+        print("  %-42s %d" % (k, v))
+    print("  buyers newly carrying a phone            %d" % added_buyers)
+    print("  buyers with phones overall               %d" % len(out))
+    print("  unique numbers overall                   %d" % len(uniq))
+
+
+# ------------------------------------------------------------------ score --
+# Trestle scoring, and the phase without which the SMS side cannot send a
+# single message. Measured live 2026-08-28: of 165 records in "Dispo - 02 Ready
+# to Text", exactly ONE carried a dial tier, because `dispo_flip_buyers --phase
+# trace` writes phones tagged "dispo" and never scores them. `seed.from_preset`
+# gates on the literal tier names, so an unscored cohort is an empty cohort and
+# it looks exactly like a preset that matched nobody.
+
+def _phone_objects(rec: dict) -> list:
+    owner = rec.get("owner") or {}
+    phones = owner.get("phones") or rec.get("phones") or []
+    return [p for p in phones if isinstance(p, dict) and p.get("number")]
+
+
+def _is_dnc(p: dict) -> bool:
+    return bool(p.get("doNotCall") or p.get("do_not_call"))
+
+
+def _get_record(crm, uuid: str, tries: int = 5):
+    """get_record with backoff.
+
+    /api/internal throttles hard and `crm.get_record` swallows the 429, logs a
+    warning and returns nothing. Left alone that silently drops a record's
+    entire phone list from the scoring set while the run still reports success,
+    which is the exact failure this codebase keeps rediscovering.
+    """
+    import time
+    for attempt in range(tries):
+        rec = crm.get_record(uuid)
+        if rec:
+            return rec
+        time.sleep(1.5 * (attempt + 1))
+    return None
+
+
+def _tag_names(p: dict) -> list:
+    out = []
+    for t in (p.get("tags") or []):
+        if isinstance(t, dict):
+            t = t.get("title") or t.get("name") or t.get("tag")
+        if t:
+            out.append(str(t))
+    return out
+
+
+def _score_numbers(pv, numbers: list, cache: dict, cache_path: Path,
+                   commit: bool, scorer=None, limit: int = 0) -> dict:
+    """Trestle-score whatever is not already cached. Returns the cache.
+
+    `scorer` is the agents brain's (agents.autopilot.sources.Scorer): the same Trestle call with
+    the litigator check, which this loop never asked for, so a known TCPA litigator could reach a
+    buyer list unmarked. `limit` caps how many new numbers one run may buy."""
+    unscored = [n for n in numbers if n not in cache]
+    if limit:
+        unscored = unscored[:limit]
+    print("  unique numbers needing a score      %d" % len(unscored))
+    print("  estimated Trestle cost              $%.2f" % (len(unscored) * 0.015))
+    if not commit:
+        print("\nDRY RUN. Re-run with --commit to score.")
+        return cache
+    if scorer is not None:
+        for num, r in (scorer.score(unscored) or {}).items():
+            if r.get("error"):
+                cache[num] = {"error": str(r["error"])[:120]}
+            else:
+                cache[num] = {"score": r.get("score"), "tier": r.get("tier"),
+                              "litigator": bool(r.get("litigator")), "line_type": r.get("line_type") or ""}
+        _save(cache_path, cache)
+        return cache
+    key = os.getenv("TRESTLE_PAID_API_KEY") or os.getenv("TRESTLE_API_KEY")
+    if not key:
+        raise SystemExit("no TRESTLE_API_KEY / TRESTLE_PAID_API_KEY in the environment")
+    for i, num in enumerate(unscored, 1):
+        try:
+            data = pv.call_trestle(num, key)
+        except Exception as e:  # noqa: BLE001
+            cache[num] = {"error": str(e)[:120]}
+            continue
+        score = data.get("activity_score") if isinstance(data, dict) else None
+        cache[num] = {"score": score, "tier": pv.assign_tier(score, pv.DEFAULT_TIERS)}
+        if i % 50 == 0:
+            _save(cache_path, cache)
+            log.info("scored %s/%s", i, len(unscored))
+    _save(cache_path, cache)
+    return cache
+
+
+def phase_score(args) -> None:
+    """Score every textable dispo phone and write its dial tier back."""
+    import phone_validator as pv
+
+    cache_path = OUT / "phone_scores.json"
+    cache = _load(cache_path, {})
+
+    # The registry source scores numbers that are not in the CRM yet, so the
+    # mirror can write them with their tier already attached instead of
+    # landing records the seeder will refuse to text.
+    if args.source == "registry":
+        phones = _load(OUT / "phones.json", {})
+        gate(bool(phones), "no phones.json; run --phase phones first")
+        nums = sorted({p["number"] for v in phones.values() for p in v["phones"]})
+        print("registry: %d buyers, %d unique numbers" % (len(phones), len(nums)))
+        before = {n for n in nums if (cache.get(n) or {}).get("tier")}
+        cache = _score_numbers(pv, nums, cache, cache_path, args.commit,
+                               scorer=getattr(args, "scorer", None), limit=int(getattr(args, "score_limit", 0) or 0))
+        if not args.commit:
+            return
+        got = [n for n in nums if (cache.get(n) or {}).get("tier")]
+        by_tier = Counter((cache[n] or {}).get("tier") for n in got)
+        newly = len(set(got) - before)
+        mark_done("score_registry", scored=len(got), by_tier=dict(by_tier), newly_scored=newly,
+                  left=sum(1 for n in nums if n not in cache))
+        print("score: %d numbers scored" % len(got))
+        print("  by tier: " + str(dict(by_tier)))
+        reachable = sum(1 for v in phones.values()
+                        if any((cache.get(p["number"]) or {}).get("tier")
+                               in ("Dial First", "Dial Second") for p in v["phones"]))
+        print("  buyers with a Dial First/Second number: %d of %d"
+              % (reachable, len(phones)))
+        return
+
+    from sms_agent import crm
+
+    tiers = pv.DEFAULT_TIERS
+    tier_names = set(tiers)
+
+    must, matched = crm.resolve_preset(args.preset)
+    if not must:
+        raise SystemExit("preset not found: " + args.preset)
+    log.info("cohort preset %r", matched)
+
+    records = list(crm.fetch_cohort(must, limit=args.limit or 0))
+    log.info("%s records in the cohort", len(records))
+    gate(len(records) > 0, "cohort preset matched no records")
+
+    # THE DNC FLAG LIVES ONLY ON THE SEARCH ROW. Verified live 2026-08-28: a
+    # number returned as doNotCall=true by /property/ search comes back from
+    # /property/{uuid}/ with the field ABSENT, not false. So the do-not-call
+    # set has to be built here, from the search rows, or the filter below can
+    # never fire and we pay Trestle to score numbers the seeder will refuse to
+    # text anyway. Coverage is partial by construction: the search returns one
+    # representative phone per record, so DNC status is unknown for the rest.
+    dnc_numbers = set()
+    for rec in records:
+        p = rec.get("phone") if isinstance(rec.get("phone"), dict) else {}
+        if p.get("doNotCall"):
+            n = pv.clean_phone(p.get("number") or "")
+            if n:
+                dnc_numbers.add(n)
+    log.info("%s numbers flagged do-not-call on the search rows", len(dnc_numbers))
+
+    # ---- collect the numbers worth scoring ------------------------------
+    targets: dict = {}
+    stats = Counter()
+    unreadable = 0
+    for rec in records:
+        uuid = rec.get("uuid")
+        full = _get_record(crm, uuid)
+        if not full:
+            unreadable += 1
+            continue
+        for p in _phone_objects(full):
+            num = pv.clean_phone(p.get("number") or "")
+            if not num:
+                continue
+            stats["phones seen"] += 1
+            if (num in dnc_numbers or _is_dnc(p)) and not args.include_dnc:
+                stats["skipped, on the do-not-call list"] += 1
+                continue
+            if (p.get("type") or "").upper() == "LANDLINE":
+                stats["skipped, landline"] += 1
+                continue
+            if set(_tag_names(p)) & tier_names:
+                stats["already tiered"] += 1
+                continue
+            targets.setdefault(num, []).append((uuid, p))
+            stats["to score"] += 1
+
+    unscored = [n for n in targets if n not in cache]
+    print("cohort: %d records" % len(records))
+    if unreadable:
+        # Never let a throttled read look like a record with no phones.
+        print("  UNREADABLE after retries              %d" % unreadable)
+    for k, v in stats.most_common():
+        print("  %-38s %d" % (k, v))
+    print("  unique numbers needing a score      %d" % len(unscored))
+    print("  estimated Trestle cost              $%.2f" % (len(unscored) * 0.015))
+    gate(unreadable < max(5, len(records) // 10),
+         "too many records unreadable (%d of %d); the API is throttling and the "
+         "scoring set would be silently incomplete" % (unreadable, len(records)))
+    if not args.commit:
+        print("\nDRY RUN. Re-run with --commit to score and write tiers.")
+        return
+    if not os.getenv("TRESTLE_API_KEY") and not os.getenv("TRESTLE_PAID_API_KEY"):
+        raise SystemExit("no TRESTLE_API_KEY / TRESTLE_PAID_API_KEY in the environment")
+
+    key = os.getenv("TRESTLE_PAID_API_KEY") or os.getenv("TRESTLE_API_KEY")
+    for i, num in enumerate(unscored, 1):
+        try:
+            data = pv.call_trestle(num, key)
+        except Exception as e:  # noqa: BLE001
+            cache[num] = {"error": str(e)[:120]}
+            continue
+        score = data.get("activity_score") if isinstance(data, dict) else None
+        cache[num] = {"score": score, "tier": pv.assign_tier(score, tiers)}
+        if i % 25 == 0:
+            _save(cache_path, cache)
+            log.info("scored %s/%s", i, len(unscored))
+    _save(cache_path, cache)
+
+    # ---- write the tier back onto each phone ----------------------------
+    # upsert-phones upserts BY NUMBER and replaces the object, so the existing
+    # type, tags, status and flags must be carried through or they are wiped.
+    written = 0
+    failed = 0
+    by_tier = Counter()
+    for num, holders in targets.items():
+        info = cache.get(num) or {}
+        tier = info.get("tier")
+        if not tier or tier == "Unknown":
+            continue
+        by_tier[tier] += 1
+        for uuid, p in holders:
+            owner_uuid, phone_obj = crm.find_phone_object(uuid, num)
+            if not owner_uuid or not phone_obj:
+                failed += 1
+                continue
+            # Strip any OTHER tier before adding this one. A union would leave
+            # a re-scored phone carrying two tiers at once, so it would match
+            # "Dial First" and "Dial Third" presets simultaneously and get
+            # texted from two lanes.
+            tags = sorted((set(_tag_names(phone_obj)) - tier_names) | {tier})
+            payload = {
+                "number": num,
+                "type": phone_obj.get("type") or "UNKNOWN",
+                "tags": tags,
+                "status": (phone_obj.get("status") or "UNKNOWN").upper(),
+                "is_connected": phone_obj.get("is_connected", True),
+                "verified": phone_obj.get("verified", False),
+            }
+            c = crm.client()
+            try:
+                c._request("/api/internal/owner/%s/upsert-phones/" % owner_uuid,
+                           method="POST", body={"phones": [payload]})
+                written += 1
+            except Exception as e:  # noqa: BLE001
+                log.warning("tier write failed for %s: %s", num, str(e)[:110])
+                failed += 1
+
+    mark_done("score", scored=len(cache), written=written, failed=failed,
+              by_tier=dict(by_tier))
+    print("score: %d numbers scored, %d tier tags written, %d failed"
+          % (len(cache), written, failed))
+    print("  by tier: " + str(dict(by_tier)))
+
+
+# -------------------------------------------------------------- writeback --
+# Put the verified numbers into the CRM, which is both what Ty asked for and the
+# gate on everything downstream. A filter preset queries the CRM and
+# seed.from_preset keeps a row only when its phone carries a dial-tier tag.
+# Measured before this existed: 4 of 25 reachable buyers had any tier tag and
+# 154 good numbers were SmartSkip-only and not in the CRM at all, so a preset
+# would have returned almost nobody however well the numbers scored locally.
+
+
+def phase_writeback(args) -> None:
+    require("profiles")
+    import time
+    from sms_agent import crm
+    from sms_agent.gate_rules import BAD_PHONE as SKIP_PHONE_STATUSES
+    import phone_validator as pv
+
+    profiles = _load(OUT / "buyer_profiles.json", [])
+    reg = {b["buyer_key"]: b for b in _load(OUT / "registry.json", [])}
+    ph = _load(OUT / "phones.json", {})
+    scores = _load(OUT / "phone_scores.json", {})
+
+    # NO tag-existence gate. Verified live: a phone tag AUTO-CREATES on write,
+    # so posting "Drop" on a phone that never carried it simply works. Two dead
+    # ends before that: dial_tier_uuids() learns names by joining sampled
+    # records, so it can never report a tier no phone carries yet, and
+    # /api/internal/tag/ is the PROPERTY tag namespace, which does not contain
+    # the phone tiers at all. Gating on either one silently skipped every
+    # Dial Third and Drop number.
+    tier_names = set(pv.DEFAULT_TIERS) | {"Unknown"}
+    targets = [p for p in profiles
+               if p["phones"] and reg.get(p["buyer_key"], {}).get("saved_uuid")]
+    if args.limit:
+        targets = targets[:args.limit]
+
+    stats = Counter()
+    planned = []
+    for p in targets:
+        b = reg[p["buyer_key"]]
+        rec = _get_record(crm, b["saved_uuid"])
+        time.sleep(0.35)
+        if not rec:
+            stats["record unreadable"] += 1
+            continue
+        owner = rec.get("owner") or {}
+        owner_uuid = owner.get("uuid") or owner.get("id")
+        if not owner_uuid:
+            stats["no owner uuid on the record"] += 1
+            continue
+        live = {}
+        for q in (owner.get("phones") or []):
+            if isinstance(q, dict) and q.get("number"):
+                live[re.sub(r"\D", "", str(q["number"]))[-10:]] = q
+
+        payload = []
+        for q in p["phones"]:
+            num = q["number"]
+            tier = (scores.get(num) or {}).get("tier")
+            if not tier or tier == "Unknown":
+                stats["number never scored"] += 1
+                continue
+            cur = live.get(num)
+            if cur and (cur.get("status") or "").upper() in SKIP_PHONE_STATUSES:
+                # A disposition somebody set by hand outranks anything here.
+                stats["left alone, already dispositioned"] += 1
+                continue
+            names = [(x.get("title") or x.get("name")) if isinstance(x, dict) else str(x)
+                     for x in ((cur or {}).get("tags") or [])]
+            names = [n for n in names if n]
+            if tier in names:
+                stats["already tagged correctly"] += 1
+                continue
+            # Strip any OTHER tier so a phone never carries two, then add this one.
+            tags = sorted((set(names) - tier_names) | {tier})
+            payload.append({
+                "number": num,
+                "type": (cur or {}).get("type") or q.get("type") or "UNKNOWN",
+                "tags": tags,
+                "status": ((cur or {}).get("status") or "UNKNOWN").upper(),
+                "is_connected": (cur or {}).get("is_connected",
+                                                q.get("is_connected", True)),
+                "verified": (cur or {}).get("verified", False),
+            })
+            stats["number already on the record, tagging"] += 1 if cur else 0
+            stats["NEW number to write"] += 0 if cur else 1
+        if payload:
+            planned.append((b["name"], owner_uuid, payload[:20]))
+
+    total = sum(len(x[2]) for x in planned)
+    print("writeback: %d records, %d phone rows to write" % (len(planned), total))
+    for k, v in stats.most_common():
+        print("  %-40s %d" % (k, v))
+    if not args.commit:
+        print("")
+        print("DRY RUN. Re-run with --commit to write.")
+        return
+
+    c = crm.client()
+    ok = fail = 0
+    for i, (name, owner_uuid, payload) in enumerate(planned, 1):
+        try:
+            c._request("/api/internal/owner/%s/upsert-phones/" % owner_uuid,
+                       method="POST", body={"phones": payload})
+            ok += len(payload)
+        except Exception as e:  # noqa: BLE001
+            fail += len(payload)
+            log.warning("writeback failed for %s: %s", name[:30], str(e)[:110])
+        if i % 25 == 0:
+            log.info("wrote %s/%s records", i, len(planned))
+        time.sleep(0.3)
+
+    gate(ok > 0, "writeback wrote nothing; check crm auth")
+    mark_done("writeback", records=len(planned), rows_written=ok, rows_failed=fail)
+    print("writeback: %d phone rows written, %d failed" % (ok, fail))
+
+
+# ------------------------------------------------------------------- qa ----
+
+def phase_qa(args) -> None:
+    s = state()
+    reg = _load(OUT / "registry.json", [])
+    rep = _load(OUT / "merge_report.json", {"merges": [], "refused": []})
+    print("phases run:", ", ".join(sorted(s)) or "none")
+    if not reg:
+        print("no registry yet")
+        return
+    ent = sum(1 for b in reg if b["is_entity"])
+    with_mail = sum(1 for b in reg if b["mail"])
+    both = sum(1 for b in reg if len(b["counties"]) > 1)
+    tiers = Counter(b["tier"] for b in reg)
+    print("buyers                 : " + str(len(reg)))
+    print("  entities             : " + str(ent))
+    print("  people               : " + str(len(reg) - ent))
+    print("  with mailing address : " + str(with_mail))
+    print("  buy in both counties : " + str(both))
+    print("  tiers                : " + str(dict(tiers)))
+    print("merges / refused       : " + str(len(rep["merges"])) + " / "
+          + str(len(rep["refused"])))
+    print("")
+    print("top 15 by purchase count:")
+    for b in reg[:15]:
+        kind = "ENT" if b["is_entity"] else "per"
+        print("  %3d  %-44s %s  %s" % (b["n_buys"], b["name"][:44], kind,
+                                       ",".join(b["counties"])))
+
+
+# ----------------------------------------------------------------- main ----
+
+def rules_preview(rows: dict, details: dict, buyer: str = "", today=None) -> dict:
+    """What the taught rules would change, read from the cached sweep. Nothing is written and
+    nothing is fetched: this is the before and after to read before switching the rules on."""
+    now, then = rules_for("today"), rules_for("taught")
+    stats: dict = {}
+    before = _observations(rows, details, now)
+    after = _observations(rows, details, then, stats)
+
+    def groups(obs):
+        out: dict = defaultdict(list)
+        for o in obs:
+            out[norm_name(o["name"])].append(o)
+        return out
+
+    g0, g1 = groups(before), groups(after)
+    by_count = sorted(k for k, v in g1.items() if six_month_buys(v, today) >= then["institution_buys_6mo"])
+    out = {"observations": {"today": len(before), "taught": len(after)},
+           "buyers": {"today": len(g0), "taught": len(g1)},
+           "new_buyers": sorted(set(g1) - set(g0))[:25], "institutions_by_count": by_count, "stats": stats}
+    if buyer:
+        key = norm_name(buyer)
+        out["buyer"] = {"name": buyer,
+                        "today": {"purchases": len(g0.get(key, [])), "band": _price_band(g0.get(key, []))[0]},
+                        "taught": {"purchases": len(g1.get(key, [])), "band": _price_band(g1.get(key, []))[0],
+                                   "long_holds": sum(1 for o in g1.get(key, []) if o["role"] == "long_hold"),
+                                   "loan_priced": sum(1 for o in g1.get(key, []) if o.get("price_source") == "loan")}}
+    return out
+
+
+def phase_rules(args) -> None:
+    rows = _load(OUT / "rows.json", {})
+    details = _load(OUT / "details.json", {})
+    gate(bool(rows) and bool(details), "no cached sweep to read; run sweep and hydrate first")
+    got = rules_preview(rows, details, getattr(args, "buyer", "") or "")
+    then = rules_for("taught")
+    print("rules preview: nothing was written")
+    print("  observations: %d today, %d on the taught rules" % (got["observations"]["today"], got["observations"]["taught"]))
+    print("  buyers      : %d today, %d on the taught rules (%d appear only as wholesalers)" % (
+        got["buyers"]["today"], got["buyers"]["taught"], got["buyers"]["taught"] - got["buyers"]["today"]))
+    for line in rule_lines(then, got["stats"], got["institutions_by_count"],
+                           bool(state().get("sweep", {}).get("each_purchase")))[1:]:
+        print("  " + line)
+    with_loans = sum(1 for d in details.values() if "mortgages" in d)
+    if with_loans < len(details):
+        print("  %d of %d cached properties were read before loans were kept, so the loan rule cannot see them; "
+              "--phase hydrate --reread-unpriced reads again only the ones with no deed price"
+              % (len(details) - with_loans, len(details)))
+    b = got.get("buyer")
+    if b:
+        for name in ("today", "taught"):
+            band = b[name]["band"]
+            print("  %s, %s rules: %d purchases, price band %s to %s on %d priced sale(s)" % (
+                b["name"], name, b[name]["purchases"], _money(band["lo"]) or "none", _money(band["hi"]) or "none", band["n"]))
+
+
+PHASES = {"sweep": phase_sweep, "recent": phase_recent,
+          "hydrate": phase_hydrate,
+          "aggregate": phase_aggregate, "unmask": phase_unmask,
+          "principals": phase_principals, "skipinput": phase_skipinput,
+          "phones": phase_phones, "crm-phones": phase_crm_phones,
+          "profiles": phase_profiles, "writeback": phase_writeback,
+          "score": phase_score, "rules": phase_rules,
+          "qa": phase_qa}
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description="Knox and Blount buyer registry")
+    ap.add_argument("--phase", required=True, choices=sorted(PHASES))
+    ap.add_argument("--commit", action="store_true",
+                    help="allow billed calls / CRM writes (trace, mirror)")
+    ap.add_argument("--limit", type=int, default=0)
+    ap.add_argument("--workers", type=int, default=4)
+    ap.add_argument("--min-interval", type=float, default=0.3)
+    ap.add_argument("--max-pages", type=int, default=200)
+    ap.add_argument("--refresh", action="store_true",
+                    help="re-run a segment already cached in rows.json")
+    ap.add_argument("--preset", default="Dispo - 02 Ready to Text",
+                    help="CRM filter preset naming the cohort to score")
+    ap.add_argument("--active-only", action="store_true", default=True,
+                    help="principals: only entities active in the window")
+    ap.add_argument("--min-buys", type=int, default=2,
+                    help="buy floor for the PAID principals pass")
+    ap.add_argument("--trace-businessv2", action="store_true",
+                    help="include BusinessV2 principals in SmartSkip (4%% hit rate)")
+    ap.add_argument("--retrace", action="store_true",
+                    help="re-buy numbers for buyers already traced")
+    ap.add_argument("--include-low", action="store_true",
+                    help="include low-confidence (agent-titled) principals")
+    ap.add_argument("--trace-min-buys", type=int, default=2,
+                    help="purchase floor for the PAID skip trace (0 = everyone)")
+    ap.add_argument("--profile-min-buys", type=int, default=2,
+                    help="purchase floor for the profiles phase")
+    ap.add_argument("--recent-days", type=int, default=365,
+                    help="the qualifying activity window in days")
+    ap.add_argument("--require-active", dest="require_active",
+                    action="store_true", default=True,
+                    help="profiles: only buyers active in the window")
+    ap.add_argument("--no-require-active", dest="require_active",
+                    action="store_false",
+                    help="profiles: ignore recency (the old behaviour)")
+    ap.add_argument("--source", choices=("preset", "registry"), default="preset",
+                    help="score phase: CRM preset cohort, or the registry's own phones")
+    ap.add_argument("--include-dnc", action="store_true",
+                    help="also score numbers flagged do-not-call")
+    ap.add_argument("--rules", choices=sorted(RULESETS), default=None,
+                    help="how deeds are read (default: today's, or DISPO_BUYER_RULES); "
+                         "--phase rules previews the taught set without writing")
+    ap.add_argument("--each-purchase", action="store_true",
+                    help="sweep/recent: one row per purchase for held houses too, so a "
+                         "buyer's purchases can be counted (more rows to hydrate)")
+    ap.add_argument("--reread-unpriced", action="store_true",
+                    help="hydrate: read again the cached properties whose purchase has no "
+                         "deed price, to pick up the loans recorded with them")
+    ap.add_argument("--buyer", default="",
+                    help="rules: also print this buyer's price band before and after")
+    ap.add_argument("-v", "--verbose", action="store_true")
+    args = ap.parse_args()
+
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose else logging.INFO,
+        format="%(asctime)s %(levelname)s %(message)s", datefmt="%H:%M:%S")
+    _ACTIVE["name"] = args.rules or ""
+    rules_name()                     # an unknown name in the environment stops here, before any phase
+    OUT.mkdir(parents=True, exist_ok=True)
+    PHASES[args.phase](args)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

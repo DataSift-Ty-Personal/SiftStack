@@ -1,0 +1,982 @@
+{
+  "$schema": "https://siftstack.dev/schema/skills-manifest-v1.json",
+  "repo": "DataSift-Ty-Personal/SiftStack",
+  "branch": "main",
+  "raw_base": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main",
+  "install_target": "~/.claude/skills",
+  "counts": {
+    "total": 29,
+    "current": 27,
+    "skills": 26,
+    "plugins": 3
+  },
+  "categories": [
+    "CRM",
+    "Coaching & Performance",
+    "Deal Analysis",
+    "Market Intelligence",
+    "Operations",
+    "Setup"
+  ],
+  "tiers": {
+    "none": "Works the moment it is installed. No key, no login.",
+    "account": "Needs a login for a service you already pay for.",
+    "api": "Needs a third-party API key, usually metered."
+  },
+  "tier_counts": {
+    "none": 14,
+    "account": 8,
+    "api": 5
+  },
+  "skills": [
+    {
+      "name": "account-blueprint",
+      "kind": "skill",
+      "category": "CRM",
+      "version": null,
+      "description": "Build a DataSift account in the same structure as the DataSift reference account, over the API, with a read-back on every object: preset folders and presets, lead statuses, lists, tags, custom fields, task presets, sequences, and SiftMap auto-add presets. Ships the current reference blueprint. Also exports any account you hold an Open API key for into the same portable format. Trigger for: set up my DataSift account like the challenge account, clone the preset system, install the sequential marketing presets, copy the sequences into a new account, or export my account structure.",
+      "status": "current",
+      "source_dir": "skills/account-blueprint",
+      "files": [
+        "SKILL.md",
+        "blueprints/account_2026-09-10.json",
+        "references/blueprint-format.md",
+        "scripts/account_blueprint/__init__.py",
+        "scripts/account_blueprint/apply.py",
+        "scripts/account_blueprint/blueprint.py",
+        "scripts/account_blueprint/cli.py",
+        "scripts/account_blueprint/client.py",
+        "scripts/account_blueprint/export.py",
+        "scripts/account_blueprint/probe.py",
+        "scripts/account_blueprint/report.py",
+        "scripts/account_blueprint/staff_creds.py",
+        "scripts/account_blueprint/translate.py",
+        "scripts/clone_account.py"
+      ],
+      "file_count": 14,
+      "bytes": 405025,
+      "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/account-blueprint.skill",
+      "sha256": "d2adab272451fa6c09e9c8a85bbc6c31104b02a34f9d6a90b9a42879dc57db47",
+      "requires": {
+        "tier": "account",
+        "accounts": [
+          "DataSift"
+        ],
+        "env": [
+          "REISIFT_TARGET_JWT"
+        ],
+        "cost": "Free. Creates structure only; SiftMap auto-add is left OFF so no records are pulled",
+        "fallback": "no-api-playbook#presets-by-hand",
+        "note": "Apply needs your own DataSift JWT (or email + password). Export of your own account needs your Open API key."
+      }
+    },
+    {
+      "name": "sift-operations",
+      "kind": "plugin",
+      "category": "CRM",
+      "version": null,
+      "description": "Comprehensive REI Sift operations encyclopedia covering sequences, sequential presets, SiftLine boards, drip campaigns, events, tasks, filters, tags, skip tracing workflows, and step-by-step operational walkthroughs",
+      "status": "current",
+      "source_dir": "plugins/sift-operations",
+      "files": [
+        ".claude-plugin/plugin.json",
+        "commands/sift-presets.md",
+        "commands/sift-sequence.md",
+        "commands/sift-workflow.md",
+        "skills/sift-operations/SKILL.md",
+        "skills/sift-operations/references/acquisitions-sequences.md",
+        "skills/sift-operations/references/board-workflows.md",
+        "skills/sift-operations/references/bulk-sequential-presets.md",
+        "skills/sift-operations/references/drip-campaigns.md",
+        "skills/sift-operations/references/events-and-tasks.md",
+        "skills/sift-operations/references/filter-configurations.md",
+        "skills/sift-operations/references/general-operations.md",
+        "skills/sift-operations/references/lead-management-sequences.md",
+        "skills/sift-operations/references/niche-sequential-presets.md",
+        "skills/sift-operations/references/sequence-ideation.md",
+        "skills/sift-operations/references/sequences-core.md",
+        "skills/sift-operations/references/troubleshooting.md",
+        "skills/sift-operations/scripts/datasift_core.py"
+      ],
+      "file_count": 18,
+      "bytes": 115090,
+      "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/sift-operations.plugin",
+      "sha256": "c5b427294e6b4c5fdadfc480c38160d754cc37a92e35d573da2012a4cc60ff97",
+      "requires": {
+        "tier": "none",
+        "fallback": null,
+        "env": [],
+        "accounts": [],
+        "cost": "Free"
+      }
+    },
+    {
+      "name": "sift-sequences",
+      "kind": "skill",
+      "category": "CRM",
+      "version": null,
+      "description": "Complete guide for creating, managing, and ideating Sift sequences (automations). Use when user needs help setting up sequences, understanding sequence triggers/conditions/actions, troubleshooting sequences, designing automation workflows, or understanding how Events, Tasks, Sequences, and Drip Campaigns work together in Sift.",
+      "status": "current",
+      "source_dir": "skills/sift-sequences",
+      "files": [
+        "SKILL.md",
+        "references/acquisitions-sequences.md",
+        "references/board-workflows.md",
+        "references/drip-campaigns.md",
+        "references/events-overview.md",
+        "references/lead-management-sequences.md",
+        "references/sequence-ideation.md",
+        "scripts/datasift_core.py",
+        "scripts/manage_sequences.py"
+      ],
+      "file_count": 9,
+      "bytes": 107992,
+      "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/sift-sequences.skill",
+      "sha256": "fa5df619c5a911a4ade196e8fbe5dcbb769d9cf9021210920861dddcbe497a2c",
+      "requires": {
+        "tier": "account",
+        "env": [
+          "DATASIFT_EMAIL",
+          "DATASIFT_PASSWORD"
+        ],
+        "accounts": [
+          "DataSift"
+        ],
+        "cost": "Included with DataSift",
+        "fallback": "no-api-playbook#sequences-by-hand"
+      }
+    },
+    {
+      "name": "closer-coach",
+      "kind": "skill",
+      "category": "Coaching & Performance",
+      "version": "2.0.0",
+      "description": "Pull acquisitions/closing calls from your SmrtPhone account, transcribe with real tonality notes, and grade them against the DataSift closer rubric - discovery deepening, the money conversation, multi-option offer presentation, objection handling, commitment locking. Produces per-call coaching reports, closer scorecards, and an Excel workbook. Use when asked to review closing calls, offer calls, negotiation quality, or acquisitions call coaching.",
+      "status": "current",
+      "source_dir": "skills/closer-coach",
+      "files": [
+        "SKILL.md",
+        "references/rubric.md",
+        "scripts/env.example",
+        "scripts/export_excel.py",
+        "scripts/pull_calls.py",
+        "scripts/roster.example.json",
+        "scripts/smrtphone_login.py",
+        "scripts/transcribe.py"
+      ],
+      "file_count": 8,
+      "bytes": 76898,
+      "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/closer-coach.skill",
+      "sha256": "d795bfa383c10e3cac099cc31bd736046cdd522dda9face1580ecd3742d910b1",
+      "requires": {
+        "tier": "account",
+        "accounts": [
+          "SmrtPhone",
+          "OpenRouter or Anthropic"
+        ],
+        "cost": "About $0.002 per audio minute to transcribe",
+        "fallback": "no-api-playbook#coaching-without-a-dialer-api",
+        "env": []
+      }
+    },
+    {
+      "name": "cold-call-coach",
+      "kind": "skill",
+      "category": "Coaching & Performance",
+      "version": "2.0.0",
+      "description": "Pull real cold-call recordings from your SmrtPhone account, transcribe them with real tonality notes (an audio model hears the calls), and grade every conversation against the DataSift cold-calling rubric - opener, motivation probing (4 pillars), objection handling, tonality, close quality. Produces per-call coaching reports, per-caller scorecards, and one clean Excel workbook. Use when asked to review cold calls, grade callers, run call coaching, or audit call quality.",
+      "status": "current",
+      "source_dir": "skills/cold-call-coach",
+      "files": [
+        "SKILL.md",
+        "references/calibration/README.md",
+        "references/calibration/example_full_needswork.md",
+        "references/calibration/example_full_strong.md",
+        "references/calibration/example_short_call.md",
+        "references/reliability.md",
+        "references/rubric.md",
+        "scripts/env.example",
+        "scripts/export_excel.py",
+        "scripts/pull_calls.py",
+        "scripts/roster.example.json",
+        "scripts/smrtphone_login.py",
+        "scripts/transcribe.py"
+      ],
+      "file_count": 13,
+      "bytes": 104785,
+      "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/cold-call-coach.skill",
+      "sha256": "c9c5cdb26921f5f87e0da7ed852f36f7be79afdae66a6d9b1efab01c677077a7",
+      "requires": {
+        "tier": "account",
+        "accounts": [
+          "SmrtPhone",
+          "OpenRouter or Anthropic"
+        ],
+        "cost": "About $0.002 per audio minute to transcribe",
+        "fallback": "no-api-playbook#coaching-without-a-dialer-api",
+        "env": []
+      }
+    },
+    {
+      "name": "kpi-engine",
+      "kind": "skill",
+      "category": "Coaching & Performance",
+      "version": null,
+      "description": "Pull and grade your cold-calling and lead-generation KPIs straight from your DataSift (REISift) account - dials, answer/conversation/contact rates, correct numbers, dispositions, leads (including new_lead statuses most reports miss), talk time, and full funnel pacing toward appointments and contracts - over any date range, per caller and account-wide, exported as markdown, CSV, Excel, or a Slack digest. Use when asked for KPI reports, weekly caller numbers, lead pacing, \"how many dials/correct numbers/leads this week\", or to set up recurring KPI tracking.",
+      "status": "current",
+      "source_dir": "skills/kpi-engine",
+      "files": [
+        "SKILL.md",
+        "references/kpi-catalog.md",
+        "scripts/pull_kpis.py"
+      ],
+      "file_count": 3,
+      "bytes": 33180,
+      "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/kpi-engine.skill",
+      "sha256": "a33f6806787f25298b95359325b82485467b8eadcdc686fdf357c5448712c8cc",
+      "requires": {
+        "tier": "account",
+        "env": [
+          "REISIFT_TOKEN"
+        ],
+        "accounts": [
+          "DataSift"
+        ],
+        "cost": "Included with DataSift",
+        "fallback": "no-api-playbook#kpis-by-hand",
+        "note": "Mints its own token from your DataSift login. No internal API access needed."
+      }
+    },
+    {
+      "name": "lead-manager-coach",
+      "kind": "skill",
+      "category": "Coaching & Performance",
+      "version": "2.0.0",
+      "description": "Pull lead-management follow-up and qualification calls from your SmrtPhone account, transcribe with real tonality notes, and grade them against the DataSift lead manager rubric - qualifying questions (condition, timeline, motivation, price), 4 pillars, roadblocks, objection handling, next-action discipline. Produces per-call coaching reports, scorecards, and an Excel workbook. Use when asked to review lead manager calls, follow-up call quality, or qualification call coaching.",
+      "status": "current",
+      "source_dir": "skills/lead-manager-coach",
+      "files": [
+        "SKILL.md",
+        "references/rubric.md",
+        "scripts/env.example",
+        "scripts/export_excel.py",
+        "scripts/pull_calls.py",
+        "scripts/roster.example.json",
+        "scripts/smrtphone_login.py",
+        "scripts/transcribe.py"
+      ],
+      "file_count": 8,
+      "bytes": 76593,
+      "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/lead-manager-coach.skill",
+      "sha256": "8e9b3d88e63697e7c81ef5f956fe419f233255100295352a33d5791e4f804494",
+      "requires": {
+        "tier": "account",
+        "accounts": [
+          "SmrtPhone",
+          "OpenRouter or Anthropic"
+        ],
+        "cost": "About $0.002 per audio minute to transcribe",
+        "fallback": "no-api-playbook#coaching-without-a-dialer-api",
+        "env": []
+      }
+    },
+    {
+      "name": "comp-package",
+      "kind": "skill",
+      "category": "Deal Analysis",
+      "version": null,
+      "description": "Build a boundary-filtered comparable sales package for one subject property and deliver it as an Excel workbook. Pulls sold and active comps live from the Zillow data API with price-band partitioning, clips them to a real boundary (bounding box plus street regex), buckets each comp by condition from its sold-price to Zestimate ratio, and produces a dual-track ARV that prices the same-bedroom base case separately from a labeled reconfiguration upside. Adds 4-tier rehab scenarios, wholesale MAO math, and matched cash buyers. Trigger for: run comps, comp package, what is the ARV, pull comparable sales, comps on this property, value this house, or a drawn map boundary plus an address.",
+      "status": "current",
+      "source_dir": "skills/comp-package",
+      "files": [
+        "SKILL.md",
+        "references/api_contract.md",
+        "references/dual_track_arv.md",
+        "references/workbook_format.md",
+        "scripts/zillow_market_pull.py"
+      ],
+      "file_count": 5,
+      "bytes": 17802,
+      "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/comp-package.skill",
+      "sha256": "cd16be6365a594c1dcf6ab3223c2f71de3f0d6eef5e4bd3d29054ab9b51a8c68",
+      "requires": {
+        "tier": "api",
+        "env": [
+          "OPENWEBNINJA_API_KEY"
+        ],
+        "cost": "100 free lookups per month, then metered",
+        "fallback": "real-estate-comping",
+        "note": "Without the key, real-estate-comping does the same job by browser.",
+        "accounts": []
+      }
+    },
+    {
+      "name": "deal-analyzer",
+      "kind": "plugin",
+      "category": "Deal Analysis",
+      "version": null,
+      "description": "End-to-end investment property deal analysis: photos \u2192 comps \u2192 rehab estimate \u2192 offer strategy. Combines comping and rehab estimation into one streamlined workflow.",
+      "status": "current",
+      "source_dir": "plugins/deal-analyzer",
+      "files": [
+        ".claude-plugin/plugin.json",
+        "README.md",
+        "commands/analyze-deal.md",
+        "skills/deal-analyzer/SKILL.md",
+        "skills/real-estate-comping/SKILL.md",
+        "skills/real-estate-comping/references/adjustment-cheatsheet.md",
+        "skills/real-estate-comping/references/disclosure-prompt.md",
+        "skills/real-estate-comping/references/non-disclosure-prompt.md",
+        "skills/real-estate-comping/references/state-list.md",
+        "skills/real-estate-comping/scripts/generate_excel_report.py",
+        "skills/rehab-estimator/SKILL.md",
+        "skills/rehab-estimator/data/master_material_list_37914.csv",
+        "skills/rehab-estimator/references/finish-tiers.md",
+        "skills/rehab-estimator/references/local-pricing-guide.md",
+        "skills/rehab-estimator/references/real-deal-calibration.md",
+        "skills/rehab-estimator/references/rehab-categories.md",
+        "skills/rehab-estimator/references/wholetail-vs-rehab.md",
+        "skills/rehab-estimator/scripts/generate_rehab_excel.py"
+      ],
+      "file_count": 18,
+      "bytes": 313717,
+      "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/deal-analyzer.plugin",
+      "sha256": "1d84fef8b9537c7f094f0bb343a3a8a320d8e40d341e7b9e4dfe3f61607dd768",
+      "requires": {
+        "tier": "api",
+        "env": [
+          "OPENWEBNINJA_API_KEY"
+        ],
+        "cost": "100 free lookups per month, then metered",
+        "fallback": "real-estate-comping",
+        "note": "Comping stage only. Rehab and offer math need no key.",
+        "accounts": []
+      }
+    },
+    {
+      "name": "deep-prospecting",
+      "kind": "skill",
+      "category": "Deal Analysis",
+      "version": null,
+      "description": "Deep prospect real estate leads to identify the heirs/decision-makers and exactly who must sign to sell when an owner is deceased or skip tracing fails. Use when the user provides a property address, filing, probate docket, foreclosure notice, or any distress record and needs the correct owner/heir/executor plus their contact info. PREFERRED path is API-based heir resolution (Enformion/Endato Person Search -> required-signer gating -> phone dedupe -> Trestle scoring), which is deterministic and far more reliable than manual research; the TruePeopleSearch/FastPeopleSearch/CyberBackgroundChecks browser waterfall is the fallback when no API access. Delivers a family tree, a who-must-sign table, scored phone numbers, and emails.",
+      "status": "superseded",
+      "source_dir": "skills/deep-prospecting",
+      "files": [
+        "SKILL.md"
+      ],
+      "file_count": 1,
+      "bytes": 40436,
+      "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/deep-prospecting.skill",
+      "sha256": "9d92fb3b1f6bc776083e5fd9d0bb624b48febafcb384892f56d572f1429174b1",
+      "superseded_by": "deep-prospecting-v5",
+      "requires": {
+        "tier": "none",
+        "fallback": null,
+        "note": "Superseded. Manual research method.",
+        "env": [],
+        "accounts": [],
+        "cost": "Free"
+      }
+    },
+    {
+      "name": "deep-prospecting-v4",
+      "kind": "skill",
+      "category": "Deal Analysis",
+      "version": null,
+      "description": "Deep prospect real estate leads to identify the heirs/decision-makers and exactly who must sign to sell when an owner is deceased or skip tracing fails. Use when the user provides a property address, filing, probate docket, foreclosure notice, or any distress record and needs the correct owner/heir/executor plus their contact info. PREFERRED path is API-based heir resolution (Enformion/Endato Person Search -> required-signer gating -> phone dedupe -> Trestle scoring), which is deterministic and far more reliable than manual research; the TruePeopleSearch/FastPeopleSearch/CyberBackgroundChecks browser waterfall is the fallback when no API access. Delivers a family tree, a who-must-sign table, scored phone numbers, and emails.",
+      "status": "superseded",
+      "source_dir": "skills/deep-prospecting-v4",
+      "files": [
+        "SKILL.md",
+        "references/deed-analysis.md",
+        "references/enformion-person-search.md",
+        "references/google-dorking.md",
+        "scripts/enformion_person_search.py",
+        "scripts/scrapfly_fetch.py",
+        "templates/research-pack-template.md"
+      ],
+      "file_count": 7,
+      "bytes": 85321,
+      "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/deep-prospecting-v4.skill",
+      "sha256": "feb0df465fd7f025abad7a0bea95b9f5ce086879f7c1fa20adfcd4481c048506",
+      "superseded_by": "deep-prospecting-v5",
+      "requires": {
+        "tier": "api",
+        "env": [
+          "ENFORMION_AP_NAME",
+          "ENFORMION_AP_PASSWORD",
+          "TRESTLE_API_KEY"
+        ],
+        "cost": "About $1.18 per record",
+        "fallback": "deep-prospecting-v5",
+        "note": "Superseded. v5 is roughly 5x cheaper and finds more.",
+        "accounts": []
+      }
+    },
+    {
+      "name": "deep-prospecting-v5",
+      "kind": "skill",
+      "category": "Deal Analysis",
+      "version": null,
+      "description": "Deep prospect real estate leads to identify the heirs/decision-makers and exactly who must sign to sell when an owner is deceased or skip tracing fails. Use when the user provides a property address, filing, probate docket, foreclosure notice, or any distress record and needs the correct owner/heir/executor plus their contact info. PRIMARY path is SmartSkip bulk skip trace (grounded relatives WITH their phone numbers in one batch call) plus a mandatory obituary/web research layer for date of death and true relationships, then Tracerfy gap-fill and TrestleIQ dial scoring. Delivers a family tree, a who-must-sign table, scored phone numbers, and emails.",
+      "status": "current",
+      "source_dir": "skills/deep-prospecting-v5",
+      "files": [
+        "SKILL.md",
+        "references/deed-analysis.md",
+        "references/entity-owners-enformion-business.md",
+        "references/google-dorking.md",
+        "references/obituary-web-research.md",
+        "references/smartskip-api.md",
+        "references/tracerfy-gap-fill.md",
+        "scripts/enformion_person_search.py",
+        "scripts/parse_smartskip.py",
+        "scripts/smartskip_trace.py",
+        "templates/example-research-pack-ANONYMIZED.md",
+        "templates/research-pack-template.md"
+      ],
+      "file_count": 12,
+      "bytes": 79232,
+      "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/deep-prospecting-v5.skill",
+      "sha256": "cdcfbe6f639eb88a7e2faaa5739d2df266944c38a91839c6687f75b6ca9d4b4c",
+      "requires": {
+        "tier": "api",
+        "env": [
+          "SMARTSKIP_EMAIL",
+          "SMARTSKIP_PASSWORD",
+          "TRESTLE_API_KEY"
+        ],
+        "cost": "About $0.24 per record end to end",
+        "fallback": "no-api-playbook#heir-research-by-hand",
+        "note": "Enformion is optional and only needed for LLC and trust owners.",
+        "accounts": []
+      }
+    },
+    {
+      "name": "probate-property-finder",
+      "kind": "skill",
+      "category": "Deal Analysis",
+      "version": null,
+      "description": "Find real property owned by probate decedents when you only have the case filing (PR number, decedent name, executor details) but no property address. Browses county assessor/CAD sites, deed records, and aggregators to discover every parcel the decedent owned, then outputs a Sift-ready CSV with formatted addresses and property data. Works on single records or bulk CSV. Use whenever someone says \"find the property for this probate\", \"what did the decedent own\", \"complete this probate list\", \"enrich probate records\", \"fill in missing property addresses\", \"probate property lookup\", \"property discovery\", or uploads a CSV of probate filings missing property addresses. Also use when someone has a decedent name and county but no property address. Even if the user just says \"I have probates but no addresses\" or \"find the properties for these\" \u2014 use this skill.",
+      "status": "current",
+      "source_dir": "skills/probate-property-finder",
+      "files": [
+        "SKILL.md"
+      ],
+      "file_count": 1,
+      "bytes": 32699,
+      "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/probate-property-finder.skill",
+      "sha256": "a2113d5078bda3e1c8d4c0a9a249a9b194ccff04476b10bd202d4db4b814df88",
+      "requires": {
+        "tier": "none",
+        "fallback": null,
+        "note": "Uses free county tax portals and people-search sites.",
+        "env": [],
+        "accounts": [],
+        "cost": "Free"
+      }
+    },
+    {
+      "name": "real-estate-comping",
+      "kind": "skill",
+      "category": "Deal Analysis",
+      "version": null,
+      "description": "Perform AI-powered property valuation and comparable sales analysis for real estate wholesaling. Use when the user needs to comp a property, determine ARV, analyze comparable sales, or perform property valuation. Automatically detects disclosure vs non-disclosure states and applies the appropriate methodology (standard comping for disclosure states, triangulation method for non-disclosure states like Texas). This skill focuses purely on comping \u2014 determining market value through comparable sales analysis. It does NOT estimate rehab costs or renovation budgets; those are handled separately.",
+      "status": "current",
+      "source_dir": "skills/real-estate-comping",
+      "files": [
+        "SKILL.md",
+        "references/adjustment-cheatsheet.md",
+        "references/disclosure-prompt.md",
+        "references/non-disclosure-prompt.md",
+        "references/state-list.md",
+        "scripts/generate_excel_report.py"
+      ],
+      "file_count": 6,
+      "bytes": 83142,
+      "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/real-estate-comping.skill",
+      "sha256": "ef6c29d3e84fb88e996fb1c59582b7018f63cfe0d3ed9be21697a25feb1a735b",
+      "requires": {
+        "tier": "none",
+        "fallback": null,
+        "note": "This IS the no-key comping route: manual Zillow, Redfin and Realtor pulls.",
+        "env": [],
+        "accounts": [],
+        "cost": "Free"
+      }
+    },
+    {
+      "name": "rehab-estimator",
+      "kind": "skill",
+      "category": "Deal Analysis",
+      "version": null,
+      "description": "Estimate rehab costs for investment properties. Produces itemized cost breakdowns for full rehab (flip) and wholetail exit strategies, calibrated to local labor rates. Includes the locked Knox County (zip 37914) Home Depot master material list for exact material pricing. Generates Excel workbook. Trigger for: rehab estimate, rehab cost, renovation budget, scope of work, SOW, flip budget, wholetail cost, \"how much to fix\", repair estimate, or any request to estimate renovation costs for a property.",
+      "status": "current",
+      "source_dir": "skills/rehab-estimator",
+      "files": [
+        "SKILL.md",
+        "data/master_material_list_37914.csv",
+        "references/finish-tiers.md",
+        "references/local-pricing-guide.md",
+        "references/real-deal-calibration.md",
+        "references/rehab-categories.md",
+        "references/wholetail-vs-rehab.md",
+        "scripts/generate_rehab_excel.py"
+      ],
+      "file_count": 8,
+      "bytes": 223448,
+      "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/rehab-estimator.skill",
+      "sha256": "905a33609794b3e86efa140db81e4762ef1280c34f2505110fe00a641061f964",
+      "requires": {
+        "tier": "none",
+        "fallback": null,
+        "note": "Ships the locked Knox material list. Other markets use the cheat sheet.",
+        "env": [],
+        "accounts": [],
+        "cost": "Free"
+      }
+    },
+    {
+      "name": "buyer-prospector",
+      "kind": "skill",
+      "category": "Market Intelligence",
+      "version": null,
+      "description": "Build a real estate buyers list for any US county by pulling from a nationwide database of active buyers, categorizing entities (LLCs, Trusts, Corporations), and researching decision-makers for skip tracing. Use this skill whenever someone wants to find buyers in a specific county, build a buyers list, identify who's buying in a market, research active investors in an area, prospect cash buyers, or needs to know who the top buyers are in a county. Trigger for \"buyers list\", \"find buyers\", \"who's buying in\", \"cash buyers\", \"active buyers\", \"buyer prospecting\", \"build a buyers list for [county]\", \"investors buying in [market]\", \"buyer research\", or any request to identify and research real estate buyers in a specific geographic area. Even if the user just says \"pull buyers for Knox County\" or \"who's buying in Harris County TX\" \u2014 use this skill.",
+      "status": "current",
+      "source_dir": "skills/buyer-prospector",
+      "files": [
+        "SKILL.md",
+        "data/nationwide_buyers.csv",
+        "references/research_guide.md",
+        "scripts/analyze_buyers.py"
+      ],
+      "file_count": 4,
+      "bytes": 6735428,
+      "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/buyer-prospector.skill",
+      "sha256": "6e4ee3be3be595f6b2a78cd947413936c0f6906efbfe2bbb1f8459598ebf4108",
+      "requires": {
+        "tier": "none",
+        "fallback": null,
+        "note": "Ships its own nationwide buyer data. Entity research is browser-driven.",
+        "env": [],
+        "accounts": [],
+        "cost": "Free"
+      }
+    },
+    {
+      "name": "first-market-county-data",
+      "kind": "skill",
+      "category": "Market Intelligence",
+      "version": null,
+      "description": "Find WHERE to pull county distress lists (probate, foreclosure, tax sale, tax delinquent, eviction, code violation, divorce) for any U.S. county, and HOW to extract, filter, normalize, and import them to a CRM. Use when a user asks where to get courthouse or county data, how to identify the right clerk, recorder, trustee, or assessor office, when a county portal is down and needs a workaround, when filing a public records or FOIA request for county data, or when you have a raw pulled list to OCR, dedupe, standardize addresses, map to the 7 canonical notice types, run NCOA and DNC hygiene, and format the CSV for CRM import. Distinct from probate-property-finder (which locates a parcel for a named decedent), sift-market-research (ZIP scoring and Market Finder reports), and deep-prospecting (which researches the living heir or decision-maker once you have a record). This skill stops at pulling and normalizing the raw county list.",
+      "status": "current",
+      "source_dir": "skills/first-market-county-data",
+      "files": [
+        "SKILL.md",
+        "references/common-offices.md",
+        "references/extraction-normalization-import.md",
+        "references/research-prompts.md",
+        "references/state-law-matrix.md",
+        "references/worked-example.md"
+      ],
+      "file_count": 6,
+      "bytes": 142444,
+      "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/first-market-county-data.skill",
+      "sha256": "52ae142590db03e8d7add95efd8cc86445b724a4b7e0d7153c026cee80528df0",
+      "requires": {
+        "tier": "none",
+        "fallback": null,
+        "note": "Tells you where to pull county data. The pulling is manual by design.",
+        "env": [],
+        "accounts": [],
+        "cost": "Free"
+      }
+    },
+    {
+      "name": "sift-market-research",
+      "kind": "skill",
+      "category": "Market Intelligence",
+      "version": null,
+      "description": "Sift Market Finder research for real estate wholesaling with comprehensive market analysis. Use when the user requests market analysis, finding best zip codes for marketing, identifying investor activity hotspots, analyzing wholesaling markets, or creating detailed county-level investment reports. Combines Sift proprietary data with public sources (BLS, Census, Zillow, Redfin, FBI Crime Data) for quantitative data blending.",
+      "status": "current",
+      "source_dir": "skills/sift-market-research",
+      "files": [
+        "SKILL.md",
+        "references/ComprehensiveAnalysisFramework.md",
+        "references/MarketAnalysisPrompt.pdf",
+        "references/MarketFinderNavigationAndAnalysisSOP.pdf",
+        "scripts/datasift_core.py",
+        "scripts/extract_market_finder.py",
+        "scripts/generate_market_excel.py"
+      ],
+      "file_count": 7,
+      "bytes": 12095045,
+      "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/sift-market-research.skill",
+      "sha256": "fa33ec18ebc641fecd3dbafe2c0823ca063e989de3168f6836c5ad89cff6722a",
+      "requires": {
+        "tier": "account",
+        "env": [
+          "DATASIFT_EMAIL",
+          "DATASIFT_PASSWORD"
+        ],
+        "accounts": [
+          "DataSift"
+        ],
+        "cost": "Included with DataSift",
+        "fallback": "no-api-playbook#market-research",
+        "note": "Browser automation of Market Finder. Your login, not an API key."
+      }
+    },
+    {
+      "name": "caller-reputation-monitor",
+      "kind": "skill",
+      "category": "Operations",
+      "version": null,
+      "description": "Keep outbound cold-calling numbers out of carrier \"Spam Likely / Scam Likely\" labels. Monitors every SmrtPhone caller ID daily using your own call outcomes (answer rate, call length, short calls), runs a warm-up / active / watch / rest / retire lifecycle with dial caps, writes an HTML health dashboard and a recommended dial pool, and walks you through free carrier registration and flag remediation. Use when a user asks about spam-flagged numbers, \"Spam Likely\", caller ID reputation, number health, number rotation or warm-up, answer rates dropping, or checking whether their dialing numbers are burned.",
+      "status": "current",
+      "source_dir": "skills/caller-reputation-monitor",
+      "files": [
+        "SKILL.md",
+        "references/methodology.md",
+        "references/quick-start.md",
+        "references/registration-and-remediation.md",
+        "references/reputation-workflow.md",
+        "references/telnyx-api-contract.md",
+        "scripts/config/enterprise.example.json",
+        "scripts/config/numbers.example.json",
+        "scripts/config/thresholds.json",
+        "scripts/dashboard.py",
+        "scripts/monitor.py",
+        "scripts/monitor_run.cmd",
+        "scripts/pull_smrtphone_numbers.py",
+        "scripts/smrtphone_cdr.py",
+        "scripts/smrtphone_login.py",
+        "scripts/telnyx_cdr.py",
+        "scripts/telnyx_reputation.py",
+        "scripts/telnyx_setup.py"
+      ],
+      "file_count": 18,
+      "bytes": 215945,
+      "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/caller-reputation-monitor.skill",
+      "sha256": "e3f48820ff5995d81681ed2e80a9d69cbd14f705c2b0c9f5744df8f28aa6f027",
+      "requires": {
+        "tier": "api",
+        "env": [
+          "TELNYX_API_KEY",
+          "TELNYX_ENTERPRISE_ID"
+        ],
+        "accounts": [
+          "Telnyx"
+        ],
+        "cost": "Included with a Telnyx account",
+        "fallback": "no-api-playbook#spam-flag-checks-by-hand"
+      }
+    },
+    {
+      "name": "candidate-intake",
+      "kind": "skill",
+      "category": "Operations",
+      "version": null,
+      "description": "Aggregate job applicants from many channels (Indeed, Gmail, Facebook group posts, Facebook Messenger, or pasted text) into one running, scored master Google Sheet, then review the ranked list and send screening outreach to the best ones. Use this whenever the user is hiring or recruiting and needs to collect, digest, score, dedupe, or track applicants who arrive through different places, or wants a single spreadsheet of everyone who applied. Trigger for \"process these applicants\", \"who applied\", \"add candidates to my sheet\", \"score these resumes\", \"screen applicants\", \"review my Indeed / Facebook / email applications\", \"build my hiring pipeline\", \"set up candidate intake\", or any request to turn incoming applications into a scored tracker and reach out to top candidates. Even if the user just says \"I got a bunch of people who applied\" or \"here are some resumes\", use this skill.",
+      "status": "current",
+      "source_dir": "skills/candidate-intake",
+      "files": [
+        "SKILL.md",
+        "assets/config.template.json",
+        "references/intake-facebook.md",
+        "references/intake-gmail.md",
+        "references/intake-indeed.md",
+        "references/intake-manual.md",
+        "references/outreach.md",
+        "references/scoring-rubric.md",
+        "references/setup-and-config.md",
+        "references/sheet-schema.md",
+        "scripts/prepare_rows.py",
+        "scripts/score_candidates.py"
+      ],
+      "file_count": 12,
+      "bytes": 43664,
+      "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/candidate-intake.skill",
+      "sha256": "e01a9400c10e372c6fadc04a939cb67359c0e41b86892100342b3475a15e9165",
+      "requires": {
+        "tier": "none",
+        "accounts": [
+          "Google",
+          "Claude in Chrome"
+        ],
+        "fallback": null,
+        "note": "Runs entirely through the Chrome extension. No API keys.",
+        "env": [],
+        "cost": "Free"
+      }
+    },
+    {
+      "name": "contractor-call-sheet",
+      "kind": "skill",
+      "category": "Operations",
+      "version": null,
+      "description": "Turn a finished contractor/vendor directory (the Excel from vendor-directory-builder, or any list of vetted providers with phones) into an action layer: a one-page printable CALL SHEET of the top picks by trade, plus personalized first-contact messages (text / voicemail) for each and a vetting-call question script. Use whenever someone has a provider/contractor list and wants to actually start reaching out: \"make a call sheet from this directory,\" \"who do I call first,\" \"draft outreach to these contractors,\" \"turn my top picks into a one-pager,\" \"give me a script for calling these subs,\" or \"write intro texts to these vendors.\" Works off the directory this team's research workflow produces, but also off any spreadsheet or pasted list that has company names and phone numbers. Trigger even if they don't say \"call sheet\": if the need is \"I have the list, now help me contact them,\" use this skill. Pairs with vendor-directory-builder (which builds the list); this skill works the list.",
+      "status": "current",
+      "source_dir": "skills/contractor-call-sheet",
+      "files": [
+        "SKILL.md",
+        "references/outreach-templates.md",
+        "scripts/build_call_sheet.py"
+      ],
+      "file_count": 3,
+      "bytes": 16664,
+      "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/contractor-call-sheet.skill",
+      "sha256": "268137694e22005b2eb95fddc5f13da4dec10e7f0b8759eb89b56d8aaa367ab7",
+      "requires": {
+        "tier": "none",
+        "fallback": null,
+        "note": "Drafts outreach for a human to send. Never sends anything itself.",
+        "env": [],
+        "accounts": [],
+        "cost": "Free"
+      }
+    },
+    {
+      "name": "dispo-deal-blast",
+      "kind": "skill",
+      "category": "Operations",
+      "version": null,
+      "description": "Text one named wholesale deal to the cash buyers whose own deed history says they buy at that price, and hand every reply to a human. Builds a buyer registry from investor transactions, gates it on recency, matches an asymmetric price band, renders copy that cannot leak the contract price or the address, stages the batch as HELD behind a deliberate release, and turns the responses into a permanent buyer phonebook. Trigger for: blast a deal to my buyers, dispo this property, text my cash buyer list, who should I send this deal to, build a cash buyer list, or set up dispo SMS.",
+      "status": "current",
+      "source_dir": "skills/dispo-deal-blast",
+      "files": [
+        "SKILL.md",
+        "references/buyer-registry.md",
+        "references/copy-rules.md",
+        "references/sms-guards.md",
+        "scripts/cohort.py"
+      ],
+      "file_count": 5,
+      "bytes": 21821,
+      "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/dispo-deal-blast.skill",
+      "sha256": "cc789dda3a9d0deca2ceade999f85c9e8a5fecc66223f30e5001ca3df23ba879",
+      "requires": {
+        "tier": "none",
+        "fallback": null,
+        "note": "The method, the guards and the copy rules. The bundled cohort calculator is stdlib only. Wiring it to your own CRM and SMS provider is your call, and every send stays behind a human release.",
+        "env": [],
+        "accounts": [],
+        "cost": "Free"
+      }
+    },
+    {
+      "name": "phone-validator",
+      "kind": "skill",
+      "category": "Operations",
+      "version": null,
+      "description": "Score and validate phone numbers via Trestle's phone_intel API, then generate DataSift/REISift-ready CSVs with phone tags for upload. Use whenever someone wants to: validate phones, score activity, check if connected, generate phone tags for DataSift, prepare dial lists, prioritize a call list, identify dead numbers, check line types, or create tiered dial lists. Trigger for \"phone validation\", \"validate phones\", \"activity score\", \"phone tags\", \"tag phones\", \"dial first\", \"Trestle\", \"phone_intel\", \"dead phones\", \"line type\", \"prioritize phones\", \"DataSift phone upload\", \"REISift phone tags\", \"score these phones\", or \"which numbers should I call first\" \u2014 use this skill.",
+      "status": "current",
+      "source_dir": "skills/phone-validator",
+      "files": [
+        "SKILL.md",
+        "references/datasift-phone-tags.md",
+        "references/trestle-api-reference.md",
+        "scripts/datasift_core.py",
+        "scripts/upload_phone_tags.py",
+        "scripts/validate_phones.py"
+      ],
+      "file_count": 6,
+      "bytes": 76925,
+      "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/phone-validator.skill",
+      "sha256": "c02cef785313d48a9d90e411e6f7a52afd2143f60bef597c0c8f38cd8ed131c8",
+      "requires": {
+        "tier": "api",
+        "env": [
+          "TRESTLE_API_KEY"
+        ],
+        "cost": "About $0.015 per number",
+        "fallback": "no-api-playbook#phone-scoring-without-trestle",
+        "accounts": []
+      }
+    },
+    {
+      "name": "playbook-creator",
+      "kind": "skill",
+      "category": "Operations",
+      "version": null,
+      "description": "Create professional playbooks, SOPs, and Scribe-style step guides with process maps and agent-executable SOP files. Accepts raw transcripts, meeting recordings, screen-share walkthroughs, or written descriptions and turns them into polished documentation with Mermaid flowcharts, decision trees, and screenshot capture specs. SOPs ship as a pair: a human Word doc plus a machine-readable .sop.md twin (Agent SOPs standard, RFC 2119 constraints) an AI agent can execute directly. Use when someone asks for a playbook, SOP, standard operating procedure, process documentation, training manual, workflow guide, click-path guide, process map or flowchart, or says \"turn this into a playbook\", \"create an SOP from this call\", \"document this process\", \"make a guide like Scribe\", or \"make this runnable by an agent\". Also use when a transcript describes a repeatable process and the ask is just to make it useful.",
+      "status": "current",
+      "source_dir": "skills/playbook-creator",
+      "files": [
+        "SKILL.md",
+        "evals/evals.json",
+        "references/agent-sop-format.md",
+        "references/foreclosure-example.md",
+        "references/playbook-template.md",
+        "references/process-mapping-guide.md",
+        "references/screenshot-guide.md",
+        "references/sop-template.md",
+        "references/step-guide-template.md",
+        "references/voice-guide.md",
+        "scripts/build_docx.js",
+        "scripts/build_pdf.py",
+        "scripts/transcribe_video.py",
+        "scripts/validate_sop.py"
+      ],
+      "file_count": 14,
+      "bytes": 148653,
+      "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/playbook-creator.skill",
+      "sha256": "a8576e191e8dfaf4484b4acc1b6f9b335605adf9405273ed565cf2de60597cac",
+      "requires": {
+        "tier": "none",
+        "fallback": null,
+        "env": [
+          "OPENROUTER_API_KEY"
+        ],
+        "cost": "Free. Video transcription about $0.002 per audio minute (optional)",
+        "note": "The key is OPTIONAL and only powers scripts/transcribe_video.py (narrated screen recording in, transcript + action frames out). Without it, paste your recorder's own free transcript instead.",
+        "accounts": []
+      }
+    },
+    {
+      "name": "sequential-presets",
+      "kind": "skill",
+      "category": "Operations",
+      "version": null,
+      "description": "Design, build, and manage sequential marketing filter presets in DataSift (REI Sift). Use when the user needs help setting up filter presets for first-to-market (Niche) or bulk data, organizing their marketing funnel from skip tracing through SMS, calling, mail, and deep prospecting, or customizing workflows based on their specific niche, marketing channels, and team structure. This skill provides both consultative guidance and hands-on implementation support.",
+      "status": "current",
+      "source_dir": "skills/sequential-presets",
+      "files": [
+        "SKILL.md",
+        "references/bulk-sequential-map.md",
+        "references/filter-configurations.md",
+        "references/niche-sequential-map.md",
+        "scripts/datasift_core.py",
+        "scripts/manage_presets.py"
+      ],
+      "file_count": 6,
+      "bytes": 65292,
+      "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/sequential-presets.skill",
+      "sha256": "7907c114b3bff2d4db9b663130f9e9e3805c42ba46b8017165255c2e55fc135d",
+      "requires": {
+        "tier": "account",
+        "env": [
+          "DATASIFT_EMAIL",
+          "DATASIFT_PASSWORD"
+        ],
+        "accounts": [
+          "DataSift"
+        ],
+        "cost": "Included with DataSift",
+        "fallback": "no-api-playbook#presets-by-hand"
+      }
+    },
+    {
+      "name": "team-hiring",
+      "kind": "skill",
+      "category": "Operations",
+      "version": null,
+      "description": "Plan, post for, interview, and onboard a remote REI team: data manager, prospector, lead manager, acquisitions manager, dispo. Defines each role's daily, weekly and monthly tasks and its one North Star KPI, picks the hiring geography by cost arbitrage, sets pay bands and commission, writes the job description and the Indeed or Facebook post, runs the interview around the KPI expectation, and builds the first-week onboarding. Use when the user is scaling, building a team, writing a job post, deciding what to pay a VA or cold caller, wondering which country to hire from, preparing to interview, or asking \"who should I hire next\". Pairs with candidate-intake, which handles applicants once they start arriving.",
+      "status": "current",
+      "source_dir": "skills/team-hiring",
+      "files": [
+        "SKILL.md",
+        "references/interview-and-onboarding.md",
+        "references/job-descriptions.md",
+        "references/pay-and-geography.md",
+        "references/roles-and-kpis.md"
+      ],
+      "file_count": 5,
+      "bytes": 28005,
+      "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/team-hiring.skill",
+      "sha256": "ef1fc8b7c3461ecddfb7abde09b08e2b4f4593132810cb39c5c3feea0747ad21",
+      "requires": {
+        "tier": "none",
+        "fallback": null,
+        "env": [],
+        "accounts": [],
+        "cost": "Free"
+      }
+    },
+    {
+      "name": "text-touch-builder",
+      "kind": "skill",
+      "category": "Operations",
+      "version": null,
+      "description": "Generate a four-text-touch SMS sequence for your hottest DataSift records, personalized per record and varied like cold email so messages never look mass-blasted. Writes the four texts into DataSift custom fields (Text Touch 1-4) via CSV export and re-import, so callers can copy the next touch into their dialer right before calling. Use when the user wants SMS templates for ready-to-call records, a pre-call text strategy, drip texting for cold calling queues, or asks about \"text touches\".",
+      "status": "current",
+      "source_dir": "skills/text-touch-builder",
+      "files": [
+        "SKILL.md",
+        "references/message-recipe.md",
+        "scripts/build_text_touches.py"
+      ],
+      "file_count": 3,
+      "bytes": 30803,
+      "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/text-touch-builder.skill",
+      "sha256": "1d88a3ff3d7b9ac9cd1ffa01100bd6bbbd6adec77bfb2beb6523531c0fa1b38a",
+      "requires": {
+        "tier": "none",
+        "fallback": null,
+        "env": [],
+        "accounts": [],
+        "cost": "Free"
+      }
+    },
+    {
+      "name": "vendor-directory-builder",
+      "kind": "skill",
+      "category": "Operations",
+      "version": null,
+      "description": "Build a vetted, filterable directory of local service providers (general contractors, subcontractors, trade crews, or any vendors) for a target market by mining a community source (a Facebook group, forum, subreddit, or referral list) and cross-checking every name against public records. Use whenever someone wants to find, vet, rank, or organize providers in a place: \"build me a contractor/sub list for X county,\" \"find a reliable flip crew in Y,\" \"who can do Z here,\" \"vet these vendors,\" \"build a service-provider or referral directory,\" or wants to geography-check or expand an existing list. Works for any trade or vendor type and any market: defaults to real-estate contractor crews but generalizes. ALSO use when the user hands you a raw or AI-generated provider list to verify and clean up. Trigger even if they never say \"directory\": if the need is \"find good local people who can do a thing and tell me which to actually call,\" use this skill.",
+      "status": "current",
+      "source_dir": "skills/vendor-directory-builder",
+      "files": [
+        "SKILL.md",
+        "assets/config_schema.md",
+        "assets/example_config.json",
+        "evals/evals.json",
+        "references/sourcing-playbook.md",
+        "references/use-case-taxonomies.md",
+        "references/vetting-checklist.md",
+        "scripts/build_directory.py"
+      ],
+      "file_count": 8,
+      "bytes": 52827,
+      "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/vendor-directory-builder.skill",
+      "sha256": "2eaa53631debabd1ef6f6decd669874d71d4c47873a0d747fc42caf8b0a3be2f",
+      "requires": {
+        "tier": "none",
+        "fallback": null,
+        "note": "Community mining needs your logged-in browser for private groups. The Excel engine is pure openpyxl.",
+        "env": [],
+        "accounts": [],
+        "cost": "Free"
+      }
+    },
+    {
+      "name": "siftstack-core",
+      "kind": "plugin",
+      "category": "Setup",
+      "version": null,
+      "description": "SiftStack doctor and setup: what works right now, what needs a key, what it costs, and what to do instead. Every SiftStack bundle depends on this.",
+      "status": "current",
+      "source_dir": "plugins/siftstack-core",
+      "files": [
+        ".claude-plugin/plugin.json",
+        "data/env.skills.example",
+        "data/requires.json",
+        "scripts/doctor.py",
+        "skills/doctor/SKILL.md",
+        "skills/setup/SKILL.md"
+      ],
+      "file_count": 6,
+      "bytes": 27212,
+      "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/siftstack-core.plugin",
+      "sha256": "e17eb16ba1018d672b4e74ae22faa0be8260244a5979cdd9dd96ec5d2f27c514",
+      "requires": {
+        "tier": "none",
+        "fallback": null,
+        "note": "The doctor and the setup walkthrough. Every bundle depends on it, so whatever someone installs, they can ask what works right now and what needs a key.",
+        "env": [],
+        "accounts": [],
+        "cost": "Free"
+      }
+    }
+  ]
+}

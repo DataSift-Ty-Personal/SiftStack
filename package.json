@@ -1,0 +1,6 @@
+{
+  "dependencies": {
+    "@mermaid-js/mermaid-cli": "^11.16.0",
+    "docx": "^9.7.1"
+  }
+}

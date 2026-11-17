@@ -1,0 +1,8 @@
+{
+  "name": "deal-analyzer",
+  "description": "End-to-end investment property deal analysis: photos → comps → rehab estimate → offer strategy. Combines comping and rehab estimation into one streamlined workflow.",
+  "author": {
+    "name": "DataSift"
+  },
+  "keywords": ["real-estate", "comping", "rehab", "deal-analysis", "wholesaling", "ARV", "investment-property"]
+}

@@ -1,0 +1,1025 @@
+"""Command line for the SMS agent.
+
+    python src/sms_agent/cli.py doctor                 # is anything actually wired up
+    python src/sms_agent/cli.py serve                  # run the webhook receiver
+    python src/sms_agent/cli.py work --loop            # run the worker
+    python src/sms_agent/cli.py map --csv output/mms_send_queue.csv
+    python src/sms_agent/cli.py simulate 8655550142 "how much are you offering"
+    python src/sms_agent/cli.py thread 8655550142
+    python src/sms_agent/cli.py approve 8655550142
+    python src/sms_agent/cli.py status
+"""
+from __future__ import annotations
+
+import argparse
+import csv
+import json
+import logging
+import sys
+from pathlib import Path
+
+if __package__ in (None, ""):  # allow `python src/sms_agent/cli.py`
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    __package__ = "sms_agent"
+
+from . import (backfill, campaign, classify, config, crm, engine, escalate, respond,
+               seed, sender_pool, smrtphone, store, transport, worker)
+
+
+def cmd_doctor(args) -> int:
+    print(f"phase          {config.PHASE}   (1 classify, 2 +escalate, 3 +draft, 4 +auto-send)")
+    print(f"dry run        {config.DRY_RUN}")
+    print(f"database       {store.init()}")
+    print(f"model          {config.MODEL}")
+
+    gaps = config.missing()
+    if gaps:
+        print("\nconfig gaps:")
+        for g in gaps:
+            print(f"  - {g}")
+    else:
+        print("\nconfig: complete for this phase")
+
+    t = transport.available()
+    print(f"\ntransport      {t['configured']}")
+    print(f"  API          {'ok' if t['api']['ok'] else 'FAIL: ' + t['api']['detail']}")
+    print(f"  session      {'ok' if t['session']['ok'] else 'FAIL: ' + t['session']['detail']}")
+    if not transport.supports_number_pool():
+        print("  NOTE: the session transport sends from the account default caller ID only,")
+        print("        so the sticky sender and per-number caps do not apply.")
+
+    pool = sender_pool.pool()
+    print(f"\nsending pool   {len(pool)} number(s)")
+    for n in pool[:25]:
+        print(f"  {n}  {store.sends_today(n)} sent today")
+
+    reason = crm.unavailable_reason()
+    print(f"\nreisift CRM    {'ok (' + config.SIFT_ACCOUNT + ')' if not reason else 'FAIL: ' + reason}")
+
+    senders = config.senders()
+    print(f"sender names   {len(senders)} mapped in {config.SENDERS_FILE.name}")
+    for uuid, name in list(senders.items())[:10]:
+        print(f"  {uuid[:12]}...  {name}")
+    if not senders and not config.SENDER_NAME:
+        print("  WARNING: no sender names. Threads will go out unsigned rather than")
+        print("           risk the model inventing a name.")
+
+    print(f"slack          {'configured' if config.SLACK_WEBHOOK_URL else 'NOT configured'}")
+    print(f"playbook       {len(__import__('sms_agent.knowledge', fromlist=['x']).playbook())} chars")
+
+    if config.WEBHOOK_SECRET:
+        print("\npoint these at your public host:")
+        print(f"  smrtPhone -> https://YOUR_HOST/hooks/{config.WEBHOOK_SECRET}/smrtphone")
+        print(f"  DataSift  -> https://YOUR_HOST/hooks/{config.WEBHOOK_SECRET}/datasift")
+        print("\nsmrtPhone Admin > Webhooks, subscribe to:")
+        print("  smsIncoming, smsOutgoing, smsDeliveryCallback, addNumberToDNT, addNumberToDNC")
+    return 0 if not gaps else 1
+
+
+def cmd_serve(args) -> int:
+    try:
+        import uvicorn
+    except ImportError:
+        print("uvicorn is not installed. pip install -r requirements.txt")
+        return 1
+    uvicorn.run(
+        "sms_agent.receiver:app",
+        host=args.host or config.RECEIVER_HOST,
+        port=args.port or config.RECEIVER_PORT,
+        log_level="info",
+    )
+    return 0
+
+
+def cmd_work(args) -> int:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
+    store.init()
+    if args.loop:
+        worker.run_forever(interval=args.interval)
+        return 0
+    print(json.dumps(worker.run_once(), indent=2))
+    return 0
+
+
+def cmd_map(args) -> int:
+    """Load phone -> record mappings.
+
+    This is what lets an inbound reply find its record: the smsIncoming payload
+    carries only a phone number. Sends register the mapping automatically; this
+    backfills from an existing queue CSV so replies to the current campaign
+    resolve from day one.
+    """
+    path = Path(args.csv)
+    if not path.exists():
+        print(f"no such file: {path}")
+        return 1
+    phone_cols = ("to_number", "phone", "best_dial_phone", "number")
+    n = extra = 0
+    with path.open(encoding="utf-8-sig", newline="") as fh:
+        for row in csv.DictReader(fh):
+            phone = next((row[c] for c in phone_cols if row.get(c)), "")
+            uuid = row.get("record_uuid") or row.get("uuid") or ""
+            if not phone or not uuid:
+                continue
+            store.map_phone(
+                phone,
+                record_uuid=uuid,
+                first_name=row.get("first_name") or row.get("owner_name") or "",
+                address=row.get("address") or "",
+            )
+            n += 1
+            if args.all_phones:
+                # Real replies frequently arrive from another line on the same
+                # record, so map every phone the record carries.
+                extra += crm.map_all_phones(uuid)
+    print(f"mapped {n} phone(s) from {path.name}")
+    if args.all_phones:
+        print(f"plus {extra} phone(s) pulled from the records themselves")
+    return 0
+
+
+def cmd_simulate(args) -> int:
+    """Push a fake smsIncoming through the real pipeline. No webhook needed."""
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+    store.init()
+    payload = {
+        "event": "smsIncoming",
+        "smsId": f"sim-{store.now()}",
+        "from": args.phone,
+        "to": args.to or (sender_pool.pool()[0] if sender_pool.pool() else "+10000000000"),
+        "message": args.message,
+        "source": "simulation",
+    }
+    print(json.dumps(engine.process("smrtphone", payload), indent=2, default=str))
+    return 0
+
+
+def cmd_classify(args) -> int:
+    """Classify text without touching anything. Use it to sanity-check the rules."""
+    result = classify.classify(args.message)
+    print(json.dumps(result.to_dict(), indent=2))
+    return 0
+
+
+def cmd_draft(args) -> int:
+    """Draft a reply for an existing thread without queueing it."""
+    store.init()
+    phone = store.clean_phone(args.phone)
+    thread = store.thread(phone)
+    if not thread:
+        print(f"no thread for {phone}")
+        return 1
+    mapped = store.lookup_phone(phone) or {}
+    ctx = mapped.get("context") or crm.deal_context(mapped.get("record_uuid", ""))
+    last = next((m["body"] for m in reversed(thread) if m["direction"] == "in"), "")
+    intent = classify.classify(last, thread[:-1])
+    reply = respond.draft(thread, ctx, intent.intent, intent.rationale)
+    print(json.dumps({"intent": intent.to_dict(), "reply": reply.to_dict()}, indent=2))
+    return 0
+
+
+def cmd_thread(args) -> int:
+    store.init()
+    phone = store.clean_phone(args.phone)
+    conv = store.get_conversation(phone)
+    if not conv:
+        print(f"no conversation for {phone}")
+        return 1
+    print(f"{phone}  state={conv['state']}  turns={conv['ai_turns']}  from={conv['from_number']}")
+    if conv.get("paused_reason"):
+        print(f"  paused: {conv['paused_reason']}")
+    print()
+    for m in store.thread(phone, limit=100):
+        who = "them" if m["direction"] == "in" else f"us ({m.get('author') or '?'})"
+        print(f"  [{m['created_at'][:16]}] {who:>12}: {m['body']}")
+    return 0
+
+
+def cmd_approve(args) -> int:
+    """Release the held draft for a conversation into the send queue."""
+    store.init()
+    phone = store.clean_phone(args.phone)
+    rows = [
+        r
+        for r in store._conn().execute(
+            "SELECT * FROM outbox WHERE phone=? AND status='held' ORDER BY id DESC", (phone,)
+        )
+    ]
+    if not rows:
+        print(f"nothing held for {phone}")
+        return 1
+    row = dict(rows[0])
+    print(f"releasing: {row['body']}")
+    with store.tx() as c:
+        c.execute("UPDATE outbox SET status='queued' WHERE id=?", (row["id"],))
+        # Anything older than the newest held draft is stale by definition.
+        c.execute(
+            "UPDATE outbox SET status='cancelled', error='superseded'"
+            " WHERE phone=? AND status='held' AND id<>?",
+            (phone, row["id"]),
+        )
+    store.bump_ai_turns(phone)
+    print("queued. run `work` to send.")
+    return 0
+
+
+def cmd_pause(args) -> int:
+    store.init()
+    phone = store.clean_phone(args.phone)
+    store.ensure_conversation(phone)
+    store.pause_conversation(phone, args.reason or "manual")
+    n = store.cancel_queued(phone, "paused manually")
+    print(f"{phone} paused; cancelled {n} queued message(s)")
+    return 0
+
+
+def cmd_phone_types(args) -> int:
+    """Suppress litigators and write real line types, in one Trestle pass."""
+    from . import phone_types
+
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+    store.init()
+    out = phone_types.run(args.preset, limit=args.limit, commit=args.commit,
+                          voip_as=args.voip_as)
+    print(json.dumps(out, indent=2))
+    if not args.commit:
+        print("\ndry run: no Trestle calls made, nothing written. Add --commit.")
+    return 0
+
+
+def cmd_resume(args) -> int:
+    """Hand a paused thread back to the agent.
+
+    Needed because takeover detection now fails closed: where the ledger cannot
+    prove we sent a message into a live thread, the thread pauses. That is the
+    right default, and it is only shippable with a one command way back.
+    """
+    store.init()
+    phone = store.clean_phone(args.phone)
+    conv = store.get_conversation(phone)
+    if not conv:
+        print(f"no conversation for {phone}")
+        return 1
+
+    state = conv.get("state") or ""
+    why = conv.get("paused_reason") or ""
+    if state in ("opted_out", "closed") and not args.force:
+        print(f"{phone} is {state} ({why or 'no reason recorded'}).")
+        print("An opt-out is a legal state, not a pause. Re-read the thread before --force.")
+        return 1
+
+    reason = store.is_suppressed(phone)
+    if reason and not args.force:
+        print(f"{phone} is suppressed ({reason}); resuming alone would change nothing")
+        print("because the worker cancels anything queued while suppression stands.")
+        return 1
+
+    targets = [phone]
+    if args.siblings:
+        record_uuid = conv.get("record_uuid") or (store.lookup_phone(phone) or {}).get("record_uuid")
+        targets += [p for p in store.phones_for_record(record_uuid or "") if p != phone]
+
+    for p in targets:
+        store.update_conversation(p, state="active", paused_reason="")
+        print(f"{p} active again (was {state or 'unknown'}: {why or 'no reason'})")
+
+    if reason:
+        print(f"NOTE: {phone} is still suppressed as {reason}; nothing will send until that clears.")
+    # Cancelled rows stay cancelled on purpose: they carry copy written before
+    # the human's message, so re-queueing them reproduces the exact bug this
+    # command exists to recover from.
+    print("Queued messages stay cancelled. Re-stage with: cli.py campaign --queue")
+    print(f"NOTE: the {config.TAG_AI_PAUSED} tag is still on the record; clear it in DataSift by hand.")
+    return 0
+
+
+def cmd_call_takeover(args) -> int:
+    """Sweep the call log; a real conversation on the phone silences the thread."""
+    from . import call_takeover
+
+    store.init()
+    out = call_takeover.run(pages=args.pages, hours=args.hours, apply=not args.dry_run)
+    if out.get("error"):
+        print(f"could not read the call log: {out['error']}")
+        return 2
+    verb = "would pause" if args.dry_run else "paused"
+    print(f"scanned {out['rows_scanned']} call(s) in the last {args.hours}h: "
+          f"{out['too_short']} too short, {out['not_our_thread']} not our thread, "
+          f"{out['already_inactive']} already inactive, {out['paused']} {verb}")
+    for r in out["results"]:
+        print(f"  {r['phone']}  {r['reason']}")
+    return 0
+
+
+def cmd_events(args) -> int:
+    """Show what a webhook actually sends us.
+
+    Authorship logic was wrong for months because it was written against a
+    payload shape nobody had looked at. This makes looking one command.
+    """
+    import collections
+    import json as _json
+
+    store.init()
+    rows = list(store._conn().execute(
+        "SELECT payload, outcome FROM events WHERE event_type=? ORDER BY id DESC LIMIT ?",
+        (args.type, args.limit),
+    ))
+    print(f"{len(rows)} {args.type} event(s)")
+    if not rows:
+        return 0
+
+    keys: collections.Counter = collections.Counter()
+    combos: collections.Counter = collections.Counter()
+    outcomes: collections.Counter = collections.Counter()
+    for r in rows:
+        try:
+            d = _json.loads(r["payload"])
+        except ValueError:
+            continue
+        if not isinstance(d, dict):
+            continue
+        keys.update(d.keys())
+        combos[(str(d.get("source")), str(d.get("userName")))] += 1
+        outcomes[str(r["outcome"])[:60]] += 1
+
+    print("\nfields present:")
+    for k, n in keys.most_common():
+        print(f"  {k:<16} {n}")
+    print("\nsource / userName:")
+    for (src, usr), n in combos.most_common(20):
+        print(f"  {n:>6}  source={src!r} userName={usr!r}")
+    print("\nrecorded outcomes:")
+    for o, n in outcomes.most_common(15):
+        print(f"  {n:>6}  {o}")
+    return 0
+
+
+def cmd_numbers(args) -> int:
+    """Show the sending pool, or re-sync it from smrtPhone."""
+    from . import numbers_sync
+
+    if args.refresh:
+        try:
+            doc = numbers_sync.refresh(write=not args.dry_run)
+        except Exception as exc:  # noqa: BLE001 - session expiry is the common case
+            print(f"refresh failed: {exc}")
+            return 1
+        print(f"synced from smrtPhone{' (dry run, file not written)' if args.dry_run else ''}:")
+        print(numbers_sync.report(doc))
+        if not args.dry_run:
+            print()
+            print("Push to the live box with:")
+            print("  python src/sms_agent/cli.py numbers --push")
+        return 0
+
+    if args.sync:
+        # refresh + push in one step, since those always happen together after
+        # a flow change in smrtPhone.
+        try:
+            doc = numbers_sync.refresh(write=True)
+        except Exception as exc:  # noqa: BLE001
+            print(f"refresh failed: {exc}")
+            return 1
+        print(numbers_sync.report(doc))
+        import json as _json, subprocess, os, tempfile
+        line = "SMRTPHONE_NUMBERS=" + _json.dumps(doc["pools"], separators=(",", ":"))
+        fd, path = tempfile.mkstemp(suffix=".env")
+        # LF only, no trailing CR: a stray carriage return in a secret is what
+        # made the Anthropic key an illegal HTTP header on the live box.
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(line.encode() + b"\n")
+        print()
+        print("push it live with:")
+        print(f"  flyctl secrets import -a siftstack < {path}")
+        return 0
+
+    if args.push:
+        import json as _json
+        pools = config.number_pools()
+        print("SMRTPHONE_NUMBERS=" + _json.dumps(pools, separators=(",", ":")))
+        print()
+        print("Pipe that into: fly secrets import -a siftstack")
+        return 0
+
+    pools = config.number_pools()
+    total = sum(len(v) for v in pools.values())
+    for owner, nums in sorted(pools.items()):
+        print(f"  {owner or '(unbound)':16} {len(nums):3} numbers")
+    print(f"  {'TOTAL':16} {total:3} numbers x {config.DAILY_CAP_PER_NUMBER}/day"
+          f" = {total * config.DAILY_CAP_PER_NUMBER}/day")
+    return 0
+
+
+def cmd_presets(args) -> int:
+    """List the filter presets the agent can seed from."""
+    titles = crm.list_presets()
+    if not titles:
+        print("no presets readable:", crm.unavailable_reason() or "empty list")
+        return 1
+    needle = (args.filter or "").lower()
+    for t in titles:
+        if not needle or needle in t.lower():
+            print(" ", t)
+    return 0
+
+
+def cmd_backfill(args) -> int:
+    """Replay real replies from the CRM activity log through the classifier."""
+    logging.basicConfig(level=logging.WARNING, format="%(levelname)s: %(message)s")
+    store.init()
+    path = Path(args.queue)
+    if not path.exists():
+        print(f"no such file: {path}")
+        return 1
+
+    targets = backfill.load_targets(path)
+    print(f"{len(targets)} record(s) from {path.name}; reading the CRM activity log...")
+    result = backfill.classify_all(backfill.collect(targets, limit=args.limit))
+    print()
+    print(backfill.report(result))
+
+    if args.json:
+        out = Path(args.json)
+        backfill.save(result, out)
+        print()
+        print(f"structured -> {out}")
+
+    if args.apply:
+        print()
+        label = "COMMIT" if args.commit else "DRY preview"
+        print(f"applying terminal intents ({label}):")
+        for line in backfill.apply_terminal(result, commit=args.commit) or ["  nothing to apply"]:
+            print(f"  {line}")
+    return 0
+
+
+def cmd_campaign(args) -> int:
+    """Touch-aware run across the whole Hottest cadence."""
+    logging.basicConfig(level=logging.WARNING, format="%(levelname)s: %(message)s")
+    store.init()
+    # Default to the real daily cap so a preview costs what a real build costs
+    # and shows the same answer. Unbounded would vet every record in every
+    # source, which is thousands of CRM reads to then discard most of them.
+    limit = args.limit or config.CAMPAIGN_DAILY_CAP or sender_pool.capacity_today()["remaining"]
+    plan = campaign.build(sender_fallback=args.sender or "", log_pages=args.log_pages,
+                          limit=limit)
+    print(campaign.summary(plan))
+    if args.show:
+        print()
+        print("samples:")
+        for c in plan.candidates[: args.show]:
+            print(f"  t{getattr(c, 'touch', '?')}  {c.phone}  {c.message[:96]}")
+    if not args.queue:
+        print()
+        print("preview only. Pass --queue to stage these as HELD.")
+        return 0
+    by_touch = {}
+    for c in plan.candidates:
+        by_touch.setdefault(getattr(c, "touch", 1), []).append(c)
+    total = 0
+    for touch, cands in sorted(by_touch.items()):
+        total += seed.queue(cands, touch=touch)["queued"]
+    print()
+    print(f"staged {total} as HELD. Release per touch with:")
+    for touch in sorted(by_touch):
+        print(f"  python src/sms_agent/cli.py release --touch {touch}")
+    return 0
+
+
+def cmd_reschedule(args) -> int:
+    """Re-time the whole staged batch as one properly spaced sequence."""
+    store.init()
+    print(json.dumps(seed.reschedule_held(), indent=2))
+    return 0
+
+
+def cmd_cancel_held(args) -> int:
+    """Drop every staged-but-unsent message. Used when a batch is superseded."""
+    store.init()
+    n = store.cancel_queued_all(args.reason or "superseded")
+    print(f"cancelled {n} staged message(s)")
+    return 0
+
+
+def cmd_reconcile(args) -> int:
+    """Poll the smrtPhone SMS log for replies the webhook never delivered."""
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+    store.init()
+    from . import reconcile
+
+    result = reconcile.run(pages=args.pages, apply=not args.dry_run)
+    print(json.dumps({k: v for k, v in result.items() if k != "results"}, indent=2))
+    for r in result.get("results", [])[:20]:
+        print(f"  {r['phone']}  -> {r['action']}")
+    return 0
+
+
+def cmd_digest(args) -> int:
+    """The daily readout: funnel on top, work queue underneath."""
+    from . import digest
+
+    store.init()
+    print(digest.run(days=args.days, post=args.post))
+    if args.post:
+        print()
+        print("posted to the escalation channel")
+    return 0
+
+
+def cmd_deliverability(args) -> int:
+    """Connectivity readout: verdicts, refusal reasons, reply-rate trend."""
+    from . import deliverability
+
+    print(deliverability.run(days=args.days, full=args.full, db_path=args.db))
+    return 0
+
+
+def cmd_selftest(args) -> int:
+    """Exercise every phase offline. Sends nothing, writes nothing."""
+    from . import selftest
+
+    return selftest.run(live_model=args.live_model)
+
+
+def cmd_seed(args) -> int:
+    """Build (and optionally queue) outreach touches from a CSV export."""
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+    store.init()
+    if args.preset:
+        rows, matched = seed.from_preset(args.preset, limit=args.limit or 0)
+        if not matched:
+            print(f"no preset matching {args.preset!r}. Try: cli.py presets")
+            return 1
+        print(f"preset: {matched} -> {len(rows)} mobile record(s)")
+    else:
+        path = Path(args.csv or "")
+        if not path.exists():
+            print(f"no such file: {path}")
+            return 1
+        rows = seed.from_csv(path)
+    cands = seed.build(rows, touch=args.touch, sender_fallback=args.sender or "")
+    info = seed.summary(cands)
+
+    print(f"touch {args.touch}: {info['ready']} ready, {info['held']} held, of {info['total']}")
+    for reason, n in info["held_reasons"].items():
+        print(f"  held: {n:4}  {reason}")
+    if info.get("gate", {}).get("mode") == "report":
+        for reason, n in info["gate"]["reasons"].items():
+            print(f"  gate would hold: {n:4}  {reason}   (report mode: not held)")
+    cap = info["capacity"]
+    print(f"pool capacity today: {cap['remaining']} of {cap['capacity']}"
+          f" across {cap['numbers']} number(s)")
+    if info["ready"] > cap["remaining"]:
+        print(f"  NOTE: {info['ready'] - cap['remaining']} would wait for tomorrow's capacity.")
+
+    print()
+    print("samples:")
+    for cand in [c for c in cands if c.status == "ready"][: args.show]:
+        print(f"  {cand.phone}  {cand.message}")
+
+    if not args.queue:
+        print()
+        print("preview only. Pass --queue to stage these as HELD outbox rows.")
+        return 0
+    result = seed.queue(cands, touch=args.touch)
+    print()
+    print(f"staged {result['queued']} as HELD. Nothing sends until you run:")
+    print(f"  python src/sms_agent/cli.py release --touch {args.touch}")
+    return 0
+
+
+def cmd_release(args) -> int:
+    """Move held seed touches into the send queue. The go/no-go."""
+    store.init()
+    n = seed.release(args.touch, limit=args.limit or 0)
+    print(f"released {n} touch-{args.touch} message(s) into the send queue")
+    last = seed.LAST_RELEASE
+    if last.get("gate", "off") != "off":
+        # The gate asks about each staged text once more at release (build plan 0.1).
+        held = ", ".join(f"{k} {v}" for k, v in last.get("held_by_gate", {}).items()) or "nothing"
+        if last["gate"] == "enforce":
+            print(f"the gate cancelled {last.get('cancelled', 0)} and left {last.get('left_staged', 0)}"
+                  f" staged that it could not re-read ({held})")
+        else:
+            print(f"the gate would have held: {held} (report mode: they were released)")
+    if config.DRY_RUN:
+        print("SMS_AGENT_DRY_RUN is on, so the worker will log instead of send.")
+    return 0
+
+
+def cmd_switches(args) -> int:
+    """Every build-plan switch, what it is set to, and what turning it on changes."""
+    import os
+
+    for name, default, off_means, on_means in config.SWITCHES:
+        value = (os.getenv(name) or "").strip() or default
+        mark = " " if value.lower() == default.lower() else "*"
+        print(f"{mark} {name} = {value or '(empty)'}")
+        print(f"      default {default or '(empty)'}: {off_means}")
+        print(f"      on: {on_means}")
+    print("\n* = not at its default. Fly secrets override fly.toml; ask the running app, not the file.")
+    return 0
+
+
+def cmd_dispositions(args) -> int:
+    """The one table for every no, as it would write on this install."""
+    from . import dispositions
+
+    print("table in use: " + ("yes" if config.DISPOSITION_TABLE else
+                              "no (SMS_AGENT_DISPOSITION_TABLE is off: each path keeps its own handling)"))
+    for line in dispositions.describe():
+        print(line)
+    if args.text:
+        intent = classify.classify(args.text).intent
+        print(f"\n{args.text!r} reads {intent}; the table calls it:"
+              f" {dispositions.decide(intent, args.text, args.program) or '(not a disposition)'}")
+    return 0
+
+
+def cmd_gate(args) -> int:
+    """Ask the suppression gate about one record. Reads DataSift; writes nothing."""
+    from . import gatekeeper
+
+    rec, custom = gatekeeper.read(args.record, fresh=True)
+    if not rec:
+        print("the record could not be read:", crm.unavailable_reason() or "no such record")
+        return 1
+    found = gatekeeper.reasons(rec, phone=args.phone or "", program=args.program, custom=custom,
+                               allow=[a for a in (args.allow or "").split(",") if a])
+    print(f"gate mode: {config.GATE_MODE}")
+    if not found:
+        print("may be texted" + (f" on {args.phone}" if args.phone else ""))
+        return 0
+    print("held:")
+    for why in found:
+        print("  " + why)
+    return 2
+
+
+def cmd_touches(args) -> int:
+    """The texts this app sent on one day (build plan 0.23). No network."""
+    from . import touchlog
+
+    store.init()
+    data = touchlog.feed(args.day or "")
+    if args.json:
+        print(json.dumps(data, indent=2))
+        return 0
+    print(f"{data['day']}: {data['count']} text(s)")
+    for key, n in sorted(data["by_system"].items()):
+        print(f"  {key}: {n}")
+    for row in data["texts"][: args.show]:
+        print(f"  {row['at'][11:16]} UTC  ...{row['last4']}  {row['system']:14} {row['author']:6} "
+              f"{row['kind']:16} record {row['record_uuid'][:8] or '(none)'}")
+    print("not in this list: " + data["not_seen"])
+    return 0
+
+
+def cmd_budget(args) -> int:
+    """This app's use of the DataSift request budget (build plan 0.14)."""
+    from . import ratebudget
+
+    store.init()
+    use = ratebudget.usage()
+    print("counting: " + ("yes" if use["on"] else "no (SMS_AGENT_RATE_BUDGET is off: nothing is counted or delayed)"))
+    if use["on"]:
+        print("limiting: " + ("yes" if use["enforcing"] else
+                              "no (SMS_AGENT_RATE_BUDGET=count: requests are counted, never delayed)"))
+    print(ratebudget.line())
+    print(f"scans may use {use['minute_cap_scans']} of the {use['minute_cap']} a minute"
+          + (" (quiet window)" if use["quiet"] else ""))
+    return 0
+
+
+def cmd_number_health(args) -> int:
+    """Rest list, canary and readout for the sending numbers (build plan 4.7)."""
+    from . import numberhealth
+
+    store.init()
+    if args.rest:
+        out = numberhealth.rest(args.rest, args.reason or "flagged", days=args.for_days or None)
+        print(f"{out['number']} rests until {out['until'][:10]} ({out['reason']})")
+        if not config.REST_FLAGGED:
+            print("NOTE: SMS_AGENT_REST_FLAGGED is off, so this is a note only. Nothing is held yet.")
+        return 0
+    if args.unrest:
+        print("back in the pool" if numberhealth.unrest(args.unrest) else "that number was not resting")
+        return 0
+    if args.canary:
+        out = numberhealth.canary_stage(to=args.to or "", pool=args.pool or "")
+        if out.get("refused"):
+            print("not staged:", out["refused"])
+            return 1
+        print(f"staged {out['staged']} line-check text(s) to our handset ending {out['to_last4']}, HELD.")
+        print("nothing has been sent. Release with: cli.py number-health --release-canary")
+        return 0
+    if args.release_canary:
+        n = numberhealth.canary_release()
+        print(f"released {n} line-check text(s) into the send queue")
+        if config.DRY_RUN:
+            print("SMS_AGENT_DRY_RUN is on, so the worker will log instead of send.")
+        return 0
+    text = numberhealth.report(days=args.days, db_path=args.db)
+    print(text)
+    if args.post:
+        escalate._post(text, [{"type": "section", "text": {"type": "mrkdwn", "text": text}}])
+        print("\nposted to the escalation channel")
+    return 0
+
+
+def cmd_lead_text(args) -> int:
+    """Stage, or release, the call-is-coming text for one lead (build plan 2.2)."""
+    from . import speedtolead
+
+    store.init()
+    if args.release:
+        late = speedtolead.expired(args.release)
+        n = speedtolead.release(args.release)
+        if late:
+            print(f"not released for {store.clean_phone(args.release)}: {speedtolead.TOO_LATE}. It was cancelled.")
+            return 1
+        print(f"released {n} call-is-coming text(s) for {store.clean_phone(args.release)}")
+        return 0 if n else 1
+    if not args.record:
+        print("give --record <uuid> to stage one, or --release <phone> to release one")
+        return 1
+    out = speedtolead.stage(args.record, phone=args.phone or "", source="by hand", require_lead=not args.phone)
+    if not out.get("staged"):
+        print("not staged:", out.get("skipped"))
+        return 1
+    print(f"{out['status']} for {out['at']} via {out['system']}: {out['message']}")
+    if out["status"] == "held":
+        print(f"release with: cli.py lead-text --release {out['phone']}")
+    return 0
+
+
+def cmd_labels_check(args) -> int:
+    """Do the Smarter Contact labels the table uses exist? Reads Smarter Contact; writes nothing."""
+    from . import dispositions, sc_client
+    from .knowledge import sc_replies
+
+    wanted = sorted(set(sc_replies.LABELS.values()) | {
+        config.SC_LABEL_CORRECT, config.SC_LABEL_WRONG_DNC, config.SC_LABEL_RELATIVE, config.SC_LABEL_NURTURE})
+    missing = []
+    for title in wanted:
+        try:
+            sc_client._label_ids([title])
+            print(f"  ok       {title}")
+        except sc_client.SCError as exc:
+            if "not found" not in str(exc):
+                print(f"could not read Smarter Contact labels: {exc}")
+                return 2
+            missing.append(title)
+            print(f"  MISSING  {title}")
+    in_use = sorted({dispositions.sc_label(k) for k in dispositions.TABLE} - {""})
+    print(f"\nextra labels switched {'on' if config.SC_EXTRA_LABELS else 'off'}; the table would set: {', '.join(in_use)}")
+    if missing:
+        print("Create the missing labels in Smarter Contact before SMARTERCONTACT_EXTRA_LABELS goes on.")
+    return 1 if missing else 0
+
+
+def cmd_senders(args) -> int:
+    """Show which assignees resolve to a name, and which need mapping.
+
+    The thread is signed by the person assigned to the record, so an unmapped
+    uuid means that record's texts go out unsigned. Better unsigned than signed
+    with a guess.
+    """
+    store.init()
+    directory = crm._user_directory()
+    print(f"{len(directory)} sender name(s) known ({config.SENDERS_FILE})")
+    for uuid, name in directory.items():
+        print(f"  {uuid}  ->  {name}")
+
+    if args.record:
+        rec = crm.get_record(args.record) or {}
+        assigned = rec.get("assigned_to")
+        if isinstance(assigned, dict):
+            assigned = assigned.get("uuid") or assigned.get("id") or ""
+        resolved = crm.sender_name_for(assigned or "")
+        print(f"\nrecord {args.record}")
+        print(f"  assigned_to  {assigned or '(unassigned)'}")
+        print(f"  signs as     {resolved or '(unsigned - add this uuid to the senders file)'}")
+    if not directory:
+        print("\nAdd entries to the senders file as: {\"<assigned_to uuid>\": \"Emerson\"}")
+        print("Get a uuid with: python src/sms_agent/cli.py senders --record <record_uuid>")
+    return 0
+
+
+def cmd_status(args) -> int:
+    store.init()
+    print(json.dumps({"stats": store.stats(), "capacity": sender_pool.capacity_today()}, indent=2))
+    return 0
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(prog="sms-agent", description=__doc__)
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    sub.add_parser("doctor", help="check wiring and print webhook URLs").set_defaults(fn=cmd_doctor)
+
+    p = sub.add_parser("serve", help="run the webhook receiver")
+    p.add_argument("--host")
+    p.add_argument("--port", type=int)
+    p.set_defaults(fn=cmd_serve)
+
+    p = sub.add_parser("work", help="drain events and the outbox")
+    p.add_argument("--loop", action="store_true")
+    p.add_argument("--interval", type=int, default=20)
+    p.set_defaults(fn=cmd_work)
+
+    p = sub.add_parser("map", help="backfill phone -> record mappings from a CSV")
+    p.add_argument("--csv", required=True)
+    p.add_argument("--all-phones", action="store_true",
+                   help="also map every OTHER phone on each record (replies often "
+                        "come from a different line)")
+    p.set_defaults(fn=cmd_map)
+
+    p = sub.add_parser("simulate", help="push a fake inbound through the real pipeline")
+    p.add_argument("phone")
+    p.add_argument("message")
+    p.add_argument("--to", help="which of our numbers it came in on")
+    p.set_defaults(fn=cmd_simulate)
+
+    p = sub.add_parser("classify", help="classify a message, touch nothing")
+    p.add_argument("message")
+    p.set_defaults(fn=cmd_classify)
+
+    p = sub.add_parser("draft", help="draft a reply for an existing thread")
+    p.add_argument("phone")
+    p.set_defaults(fn=cmd_draft)
+
+    p = sub.add_parser("thread", help="print a conversation")
+    p.add_argument("phone")
+    p.set_defaults(fn=cmd_thread)
+
+    p = sub.add_parser("approve", help="release a held draft into the send queue")
+    p.add_argument("phone")
+    p.set_defaults(fn=cmd_approve)
+
+    p = sub.add_parser("pause", help="stop the agent on one conversation")
+    p.add_argument("phone")
+    p.add_argument("--reason")
+    p.set_defaults(fn=cmd_pause)
+
+    p = sub.add_parser("phone-types",
+                       help="Trestle pass: suppress litigators and write real line types")
+    p.add_argument("--preset", default="FTM - 02 Ready to Call")
+    p.add_argument("--limit", type=int, default=0)
+    p.add_argument("--commit", action="store_true", help="call Trestle and write")
+    p.add_argument("--voip-as", choices=("mobile", "unknown"), default="unknown")
+    p.set_defaults(fn=cmd_phone_types)
+
+    p = sub.add_parser("resume", help="hand a paused conversation back to the agent")
+    p.add_argument("phone")
+    p.add_argument("--siblings", action="store_true",
+                   help="also resume every other line on the same record")
+    p.add_argument("--force", action="store_true",
+                   help="resume even when opted out, closed or suppressed")
+    p.set_defaults(fn=cmd_resume)
+
+    p = sub.add_parser("call-takeover", help="a connected call silences that thread")
+    p.add_argument("--hours", type=int, default=24, help="how far back to sweep (default 24)")
+    p.add_argument("--pages", type=int, default=2, help="call-log pages of 200 (default 2)")
+    p.add_argument("--dry-run", action="store_true", help="report only, pause nothing")
+    p.set_defaults(fn=cmd_call_takeover)
+
+    p = sub.add_parser("events", help="show what a webhook actually sends us")
+    p.add_argument("--type", default="smsOutgoing", help="event_type to inspect")
+    p.add_argument("--limit", type=int, default=1000)
+    p.set_defaults(fn=cmd_events)
+
+    p = sub.add_parser("numbers", help="show or re-sync the sending pool from smrtPhone")
+    p.add_argument("--refresh", action="store_true", help="re-pull from smrtPhone and rewrite the file")
+    p.add_argument("--push", action="store_true", help="print the secret line for the live box")
+    p.add_argument("--sync", action="store_true", help="refresh from smrtPhone and stage the live push")
+    p.add_argument("--dry-run", action="store_true", help="with --refresh, do not write the file")
+    p.set_defaults(fn=cmd_numbers)
+
+    p = sub.add_parser("presets", help="list DataSift filter presets")
+    p.add_argument("--filter", help="substring to narrow the list")
+    p.set_defaults(fn=cmd_presets)
+
+    p = sub.add_parser("backfill", help="classify real replies already in the CRM; sends nothing")
+    p.add_argument("--queue", default="output/mms_send_queue.csv",
+                   help="CSV of records we texted (record_uuid + phone)")
+    p.add_argument("--limit", type=int, default=0)
+    p.add_argument("--json", help="write the structured result here")
+    p.add_argument("--apply", action="store_true",
+                   help="write opt-out / wrong-number consequences (dry unless --commit)")
+    p.add_argument("--commit", action="store_true")
+    p.set_defaults(fn=cmd_backfill)
+
+    p = sub.add_parser("campaign", help="touch-aware run across every source cadence")
+    p.add_argument("--sender", help="fallback caller first name")
+    p.add_argument("--limit", type=int, default=0,
+                   help="stop after this many candidates (default: the daily cap, "
+                        "so the preview matches what the scheduler would build)")
+    p.add_argument("--show", type=int, default=6)
+    p.add_argument("--log-pages", type=int, default=6, help="pages of SMS history to read")
+    p.add_argument("--queue", action="store_true", help="stage as HELD outbox rows")
+    p.set_defaults(fn=cmd_campaign)
+
+    sub.add_parser("reschedule", help="re-time the staged batch as one sequence").set_defaults(fn=cmd_reschedule)
+
+    p = sub.add_parser("cancel-held", help="drop every staged-but-unsent message")
+    p.add_argument("--reason")
+    p.set_defaults(fn=cmd_cancel_held)
+
+    p = sub.add_parser("reconcile", help="catch inbound replies the webhook missed")
+    p.add_argument("--pages", type=int, default=2, help="pages of SMS log to scan (200 each)")
+    p.add_argument("--dry-run", action="store_true", help="find them but do not process")
+    p.set_defaults(fn=cmd_reconcile)
+
+    p = sub.add_parser("digest", help="daily readout of the funnel and the work queue")
+    p.add_argument("--days", type=int, default=1)
+    p.add_argument("--post", action="store_true", help="also post it to Slack")
+    p.set_defaults(fn=cmd_digest)
+
+    p = sub.add_parser("deliverability",
+                       help="connectivity readout: carrier verdicts, refusal reasons, reply rates")
+    p.add_argument("--days", type=int, default=60)
+    p.add_argument("--full", action="store_true", help="per-week and per-number tables")
+    p.add_argument("--db", default=None,
+                   help="read a specific sqlite file (e.g. a copy pulled from Fly)")
+    p.set_defaults(fn=cmd_deliverability)
+
+    p = sub.add_parser("selftest", help="exercise every phase offline; sends nothing")
+    p.add_argument("--live-model", action="store_true",
+                   help="also exercise the real Claude calls (costs a few cents)")
+    p.set_defaults(fn=cmd_selftest)
+
+    p = sub.add_parser("seed", help="build outreach touches from a preset or a CSV")
+    p.add_argument("--preset", help="DataSift filter preset title, e.g. 'Hottest - 02 Ready to Call'")
+    p.add_argument("--csv", help="CSV export (alternative to --preset)")
+    p.add_argument("--limit", type=int, default=0, help="cap how many records to pull")
+    p.add_argument("--touch", type=int, default=1, choices=[1, 2, 3, 4])
+    p.add_argument("--sender", help="fallback caller first name")
+    p.add_argument("--show", type=int, default=5)
+    p.add_argument("--queue", action="store_true", help="stage as HELD outbox rows")
+    p.set_defaults(fn=cmd_seed)
+
+    p = sub.add_parser("release", help="release held seed touches into the send queue")
+    p.add_argument("--touch", type=int, required=True, choices=[1, 2, 3, 4])
+    p.add_argument("--limit", type=int, default=0)
+    p.set_defaults(fn=cmd_release)
+
+    p = sub.add_parser("senders", help="show assignee -> caller first name mapping")
+    p.add_argument("--record", help="also show which name this record would sign as")
+    p.set_defaults(fn=cmd_senders)
+
+    sub.add_parser("status", help="counters and pool capacity").set_defaults(fn=cmd_status)
+
+    # ---- the build plan's texting packages (2026-11-13) ----
+    sub.add_parser("switches", help="every build-plan switch and what it is set to").set_defaults(fn=cmd_switches)
+
+    p = sub.add_parser("dispositions", help="the one table for every no")
+    p.add_argument("--text", help="a reply to read through the table")
+    p.add_argument("--program", choices=("seller", "buyer"), default="seller")
+    p.set_defaults(fn=cmd_dispositions)
+
+    p = sub.add_parser("gate", help="ask the suppression gate about one record (reads DataSift)")
+    p.add_argument("--record", required=True)
+    p.add_argument("--phone", help="the number you mean to text")
+    p.add_argument("--program", choices=("seller", "buyer"), default="seller")
+    p.add_argument("--allow", help="comma-separated rules this caller may lift, e.g. heir")
+    p.set_defaults(fn=cmd_gate)
+
+    p = sub.add_parser("touches", help="the texts this app sent on one day, for the touch audit")
+    p.add_argument("--day", help="YYYY-MM-DD, business-local (default yesterday)")
+    p.add_argument("--json", action="store_true")
+    p.add_argument("--show", type=int, default=20)
+    p.set_defaults(fn=cmd_touches)
+
+    sub.add_parser("budget", help="this app's use of the DataSift request budget").set_defaults(fn=cmd_budget)
+
+    p = sub.add_parser("number-health", help="rest list, canary and readout for the sending numbers")
+    p.add_argument("--days", type=int, default=14)
+    p.add_argument("--db", default=None, help="read a specific sqlite file (e.g. a copy pulled from Fly)")
+    p.add_argument("--rest", help="put this sending number on the rest list")
+    p.add_argument("--reason", help="why it is resting")
+    p.add_argument("--for-days", type=int, default=0, help="how long (default SMS_AGENT_REST_DAYS)")
+    p.add_argument("--unrest", help="take this number off the rest list")
+    p.add_argument("--canary", action="store_true", help="stage one line-check text per number, HELD")
+    p.add_argument("--to", help="our own handset for the canary (default SMS_AGENT_CANARY_TO)")
+    p.add_argument("--pool", help="only this pool's numbers")
+    p.add_argument("--release-canary", action="store_true", help="release the staged line-check texts")
+    p.add_argument("--post", action="store_true", help="also post the readout to Slack")
+    p.set_defaults(fn=cmd_number_health)
+
+    p = sub.add_parser("lead-text", help="stage or release the call-is-coming text for one lead")
+    p.add_argument("--record", help="the lead's record uuid")
+    p.add_argument("--phone", help="the number the owner texted from")
+    p.add_argument("--release", metavar="PHONE", help="release the staged text for this number")
+    p.set_defaults(fn=cmd_lead_text)
+
+    sub.add_parser("labels-check",
+                   help="do the Smarter Contact labels exist? (reads Smarter Contact)").set_defaults(fn=cmd_labels_check)
+
+    args = ap.parse_args()
+    return args.fn(args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,0 +1,62 @@
+{
+  "_comment": "Scoring + lifecycle rules for the Caller ID Reputation Monitor. L1 = our OWN outbound call outcomes (the behavioral, ground-truth spam signal: a number whose answer rate craters is a labeled number). Default L1 source is SmrtPhone's own call log (smrtphone_cdr.py) - works for any SmrtPhone user with zero telecom setup. L2 = Telnyx Number Reputation (carrier-grade) is OPTIONAL and OFF unless a Telnyx key + enterprise_id are configured (requires porting the numbers into a Telnyx account + account verification - heavy, opt-in only). IPQS (the old proxy) is RETIRED. See REPUTATION-WORKFLOW.md.",
+
+  "l1_source": "smrtphone",
+  "_l1_source_note": "'smrtphone' (default) reads per-number ASR/ALOC/short% from the SmrtPhone call log over a trailing window - no port, no Telnyx, no fee. 'telnyx' reads Telnyx CDR (only works once the DIDs are ported into your own Telnyx account + TELNYX_API_KEY is set).",
+  "smrtphone_cdr_window_days": 7,
+  "_window_note": "Trailing days of SmrtPhone calls to aggregate per number. 7 gives each DID a stable ~200+ dial sample instead of a noisy single day. Raise for smoother signal, lower for faster reaction.",
+
+  "l1_cdr": {
+    "_note": "SmrtPhone's own published healthy targets. A breach makes a DID at least Watch (early warning). min_dials gates the metric: below it the sample is too small to judge, so L1 abstains (avoids flagging a warm-up number on a few calls). NOTE: short_call_max_pct is a weak signal on the SmrtPhone source - its `duration` does not capture sub-6s connects, so short% reads ~0 and never false-flags; ASR and ALOC carry the detection. Telnyx CDR captures short calls properly.",
+    "asr_min_pct": 30,
+    "aloc_min_sec": 30,
+    "short_call_max_pct": 15,
+    "min_dials_for_scoring": 15,
+    "dead_day_is_watch": false
+  },
+
+  "l2_reputation": {
+    "_note": "Telnyx Number Reputation aggregate (no per-carrier breakdown exists). spam_category non-null (a real label) -> Flagged; spam_risk high -> Flagged; medium -> Watch; low -> Clean. Fresh (billable) rechecks fire ONLY on DIDs a cheaper layer already degraded, capped per run.",
+    "spam_risk_watch": "medium",
+    "spam_risk_flag": "high",
+    "spam_category_nonnull_flags": true,
+    "fresh_recheck_max_per_run": 5
+  },
+
+  "fusion": {
+    "_note": "status(DID) = worst of {L1, L2}. Carrier-grade L2 can flag even when L1 is clean; L1 breach forces at least Watch. Neither layer can veto the other DOWN (worst-of never lowers).",
+    "order": ["Clean", "Watch", "Flagged"]
+  },
+
+  "lifecycle": {
+    "_note": "State machine per DID (distinct from the fused status). See REPUTATION-WORKFLOW.md section 5.",
+    "warmup_ramp": [
+      { "days": 7,  "max_dials_per_day": 30 },
+      { "days": 7,  "max_dials_per_day": 75 },
+      { "days": 7,  "max_dials_per_day": 125 }
+    ],
+    "active_daily_cap": 75,
+    "watch_daily_cap": 37,
+    "_watch_cap_note": "A WATCH DID stays dialable at this reduced cap (default ~half of active) so its own call traffic keeps producing L1 CDR data and it can clear itself back to ACTIVE. Benching it entirely would strand it off-pool with no traffic to re-score it. RESTING/RETIRED are fully benched.",
+    "rest_days": 30,
+    "retire_after_consecutive_flags": 3,
+    "trend_escalation_consecutive": 3,
+    "_trend_note": "If a DID reads non-Clean (Watch or worse) this many checks in a row, escalate to Flagged even when no single reading is critical. Catches a slow degrade.",
+    "recovered_requires_fresh_l2_clean": true,
+    "_recovered_note": "RESTING -> ACTIVE only after rest_days elapsed AND a fresh (billable) L2 check reads clean AND the root cause was addressed. Resting alone does not clear a carrier flag."
+  },
+
+  "remediation": {
+    "_note": "Auto-files a Telnyx remediation request on any NEW Flagged. 14-day per-number cooldown is enforced by Telnyx (a number in cooldown lands in the 'ineligible' bucket, not an error). call_purpose is sent verbatim to the analytics network.",
+    "auto_submit": true,
+    "call_purpose": "Outbound real estate offers to property owners who requested or may benefit from a cash offer.",
+    "cooldown_days": 14
+  },
+
+  "registration_recheck_days": 90,
+  "recheck_alert_days": 14,
+  "_recheck_note": "Free Caller Registry has NO real renewal cadence (register once). This is a quarterly calendar reminder to re-verify status and re-submit only on the real triggers: a re-labeled number, new/recycled numbers, or a business-name/branding/category change. recheck_by auto-fills to submitted + registration_recheck_days.",
+
+  "daily_quota": 0,
+  "_quota_note": "Legacy IPQS batch control - unused in the Telnyx-only build (L1 CDR reads the WHOLE pool for free every run, no per-number quota needed). Kept at 0 for back-compat with older monitor code paths."
+}

@@ -1,0 +1,1974 @@
+{
+ "locked": true,
+ "zip": "37914",
+ "market": "knox",
+ "pulled": "2026-08-10",
+ "locked_on": "2026-08-10",
+ "source": "SerpApi home_depot delivery_zip pricing",
+ "rows": [
+  {
+   "key": "shingles",
+   "category": "Roofing",
+   "item": "Shingles",
+   "unit": "bundle",
+   "qty_driver": "roof sqft (living x 1.1) / 100 x 3, +1 sq waste",
+   "kind": "classes",
+   "note": "Budget 3-tab only for rentals; retail exits standardize on architectural",
+   "grades": {
+    "budget": {
+     "unit_price": 43.97,
+     "title": "Royal Sovereign Charcoal Algae Resistant 3-Tab Roofing Shingles (33.33 sq. ft. per. Bundle) (26-Pieces)",
+     "link": "https://apionline.homedepot.com/p/GAF-Royal-Sovereign-Charcoal-Algae-Resistant-3-Tab-Roofing-Shingles-33-33-sq-ft-per-Bundle-26-Pieces-0201180/100040028"
+    },
+    "standard": {
+     "unit_price": 47.97,
+     "title": "Timberline HDZ Charcoal Algae Resistant Laminated High Definition Shingles (33.33 sq. ft. per Bundle)",
+     "link": "https://apionline.homedepot.com/p/GAF-Timberline-HDZ-Charcoal-Algae-Resistant-Laminated-High-Definition-Shingles-33-33-sq-ft-per-Bundle-0489180/309755006"
+    },
+    "upgrade": null
+   }
+  },
+  {
+   "key": "underlayment",
+   "category": "Roofing",
+   "item": "Synthetic underlayment",
+   "unit": "roll",
+   "qty_driver": "1 per 10 squares",
+   "kind": "fixed",
+   "note": "",
+   "grades": {
+    "budget": null,
+    "standard": {
+     "unit_price": 119.0,
+     "title": "FeltBuster 1000 sq. ft. Synthetic Roofing Underlayment Roll",
+     "link": "https://apionline.homedepot.com/p/GAF-FeltBuster-1000-sq-ft-Synthetic-Roofing-Underlayment-Roll-0973/205035868"
+    },
+    "upgrade": null
+   }
+  },
+  {
+   "key": "drip_edge",
+   "category": "Roofing",
+   "item": "Drip edge 10 ft",
+   "unit": "each",
+   "qty_driver": "perimeter lf / 10",
+   "kind": "fixed",
+   "note": "",
+   "grades": {
+    "budget": null,
+    "standard": {
+     "unit_price": 8.48,
+     "title": "4-1/2 in. x 10 ft. Drip Edge Galv Green",
+     "link": "https://apionline.homedepot.com/p/Union-Corrugating-4-1-2-in-x-10-ft-Drip-Edge-Galv-Green-ST-TS-1000-820/327203372"
+    },
+    "upgrade": null
+   }
+  },
+  {
+   "key": "ridge_cap",
+   "category": "Roofing",
+   "item": "Ridge cap",
+   "unit": "bundle",
+   "qty_driver": "ridge lf / 25",
+   "kind": "fixed",
+   "note": "",
+   "grades": {
+    "budget": null,
+    "standard": {
+     "unit_price": 59.97,
+     "title": "Seal-A-Ridge Charcoal Hip and Ridge Cap Roofing Shingles (25 lin. ft. per Bundle)",
+     "link": "https://apionline.homedepot.com/p/GAF-Seal-A-Ridge-Charcoal-Hip-and-Ridge-Cap-Roofing-Shingles-25-lin-ft-per-Bundle-0850180/206593176"
+    },
+    "upgrade": null
+   }
+  },
+  {
+   "key": "osb",
+   "category": "Roofing",
+   "item": "OSB 7/16 sheathing",
+   "unit": "sheet",
+   "qty_driver": "rot allowance, 8-10 per reroof",
+   "kind": "fixed",
+   "note": "",
+   "grades": {
+    "budget": null,
+    "standard": {
+     "unit_price": 28.0,
+     "title": "15/32 in. x 4 ft. x 8 ft Sheathing Plywood ( Actual: 0.438 in. x 48 in. x 96 in.)",
+     "link": "https://apionline.homedepot.com/p/15-32-in-x-4-ft-x-8-ft-Sheathing-Plywood-Actual-0-438-in-x-48-in-x-96-in-20159/206827282"
+    },
+    "upgrade": null
+   }
+  },
+  {
+   "key": "roof_nails",
+   "category": "Roofing",
+   "item": "Roofing nails (coil)",
+   "unit": "box",
+   "qty_driver": "1 per 15 squares",
+   "kind": "fixed",
+   "note": "",
+   "grades": {
+    "budget": null,
+    "standard": {
+     "unit_price": 49.98,
+     "title": "1-1/4 in. x 0.120-Gauge 15\u00b0 Smooth Shank Electrogalvanized Wire Collated Coil Roofing Nails 7,200 per Box",
+     "link": "https://apionline.homedepot.com/p/Grip-Rite-1-1-4-in-x-0-120-Gauge-15-Smooth-Shank-Electrogalvanized-Wire-Collated-Coil-Roofing-Nails-7-200-per-Box-GRCR3DGAL/100394342"
+    },
+    "upgrade": null
+   }
+  },
+  {
+   "key": "pipe_boot",
+   "category": "Roofing",
+   "item": "Pipe boots",
+   "unit": "each",
+   "qty_driver": "1 per plumbing stack",
+   "kind": "fixed",
+   "note": "",
+   "grades": {
+    "budget": null,
+    "standard": {
+     "unit_price": 20.98,
+     "title": "2 in. Lead Roof Boot No Caulk Vent Pipe Flashing",
+     "link": "https://apionline.homedepot.com/p/Master-Flow-2-in-Lead-Roof-Boot-No-Caulk-Vent-Pipe-Flashing-LRF2/100324454"
+    },
+    "upgrade": null
+   }
+  },
+  {
+   "key": "pt_2x8",
+   "category": "Structure and site",
+   "item": "PT 2x8x12",
+   "unit": "each",
+   "qty_driver": "sill/deck framing repair",
+   "kind": "fixed",
+   "note": "",
+   "grades": {
+    "budget": null,
+    "standard": {
+     "unit_price": 27.18,
+     "title": "2 in. x 8 in. x 16 ft. #2 Prime Ground Contact Pressure-Treated Southern Yellow Pine Lumber",
+     "link": "https://apionline.homedepot.com/p/2-in-x-8-in-x-16-ft-2-Prime-Ground-Contact-Pressure-Treated-Southern-Yellow-Pine-Lumber-107523/206937454"
+    },
+    "upgrade": null
+   }
+  },
+  {
+   "key": "pt_4x4",
+   "category": "Structure and site",
+   "item": "PT 4x4x8 post",
+   "unit": "each",
+   "qty_driver": "deck/porch posts",
+   "kind": "fixed",
+   "note": "",
+   "grades": {
+    "budget": null,
+    "standard": {
+     "unit_price": 19.38,
+     "title": "4 in. x 4 in. x 10 ft. #2 Pressure-Treated Ground Contact Southern Pine Wood Post",
+     "link": "https://apionline.homedepot.com/p/4-in-x-4-in-x-10-ft-2-Pressure-Treated-Ground-Contact-Southern-Pine-Wood-Post-4220254/100025396"
+    },
+    "upgrade": null
+   }
+  },
+  {
+   "key": "deck_board",
+   "category": "Structure and site",
+   "item": "PT 5/4 deck board 12 ft",
+   "unit": "each",
+   "qty_driver": "deck sqft / 5.5",
+   "kind": "fixed",
+   "note": "",
+   "grades": {
+    "budget": null,
+    "standard": {
+     "unit_price": 17.98,
+     "title": "ArmorGuard 1 in. x 6 in. x 8 ft. Coastal Gray Square Edge Capped Composite Deck Board",
+     "link": "https://apionline.homedepot.com/p/Fiberon-ArmorGuard-1-in-x-6-in-x-8-ft-Coastal-Gray-Square-Edge-Capped-Composite-Deck-Board-BRDAG-CSTG-8/324794510"
+    },
+    "upgrade": null
+   }
+  },
+  {
+   "key": "mortar",
+   "category": "Structure and site",
+   "item": "Type S mortar 80 lb",
+   "unit": "bag",
+   "qty_driver": "parging/masonry repair",
+   "kind": "fixed",
+   "note": "",
+   "grades": {
+    "budget": null,
+    "standard": {
+     "unit_price": 9.86,
+     "title": "80 lb. Type S Mason Mix",
+     "link": "https://apionline.homedepot.com/p/Quikrete-80-lb-Type-S-Mason-Mix-113680/100318510"
+    },
+    "upgrade": null
+   }
+  },
+  {
+   "key": "concrete",
+   "category": "Structure and site",
+   "item": "Concrete mix 80 lb",
+   "unit": "bag",
+   "qty_driver": "steps and pad repair",
+   "kind": "fixed",
+   "note": "",
+   "grades": {
+    "budget": null,
+    "standard": {
+     "unit_price": 5.61,
+     "title": "50 lbs. 5000 PSI Concrete Mix",
+     "link": "https://apionline.homedepot.com/p/Quikrete-50-lbs-5000-PSI-Concrete-Mix-100750/311757092"
+    },
+    "upgrade": null
+   }
+  },
+  {
+   "key": "vapor_barrier",
+   "category": "Structure and site",
+   "item": "20 mil vapor barrier (~300 sqft roll)",
+   "unit": "roll",
+   "qty_driver": "crawl sqft / 300",
+   "kind": "fixed",
+   "note": "",
+   "grades": {
+    "budget": null,
+    "standard": {
+     "unit_price": 189.9,
+     "title": "10 Mil Plastic Sheeting, Heavy Duty 20 x 100 ft. Black Roll, Polyethylene Tarp for Crawl Space Vapor Barrier and Multi",
+     "link": "https://apionline.homedepot.com/p/SVOPES-10-Mil-Plastic-Sheeting-Heavy-Duty-20-x-100-ft-Black-Roll-Polyethylene-Tarp-for-Crawl-Space-Vapor-Barrier-and-Multi-SLM20FT100FT86LRDV0-250206/334875621"
+    },
+    "upgrade": null
+   }
+  },
+  {
+   "key": "sump_pump",
+   "category": "Structure and site",
+   "item": "Sump pump 1/3 hp",
+   "unit": "each",
+   "qty_driver": "per wet crawl",
+   "kind": "fixed",
+   "note": "",
+   "grades": {
+    "budget": null,
+    "standard": {
+     "unit_price": 309.0,
+     "title": "1/2 HP Stainless Steel Dual Suction Submersible Sump Pump",
+     "link": "https://apionline.homedepot.com/p/RIDGID-1-2-HP-Stainless-Steel-Dual-Suction-Submersible-Sump-Pump-500RSDS/308759150"
+    },
+    "upgrade": null
+   }
+  },
+  {
+   "key": "sump_basin",
+   "category": "Structure and site",
+   "item": "Sump basin",
+   "unit": "each",
+   "qty_driver": "per wet crawl",
+   "kind": "fixed",
+   "note": "",
+   "grades": {
+    "budget": null,
+    "standard": {
+     "unit_price": 129.0,
+     "title": "1/3 HP Plastic Pedestal Sump Pump",
+     "link": "https://apionline.homedepot.com/p/Everbilt-1-3-HP-Plastic-Pedestal-Sump-Pump-SPL03303/308370050"
+    },
+    "upgrade": null
+   }
+  },
+  {
+   "key": "seam_tape",
+   "category": "Structure and site",
+   "item": "Vapor barrier seam tape",
+   "unit": "roll",
+   "qty_driver": "2 per crawl",
+   "kind": "fixed",
+   "note": "",
+   "grades": {
+    "budget": null,
+    "standard": {
+     "unit_price": 39.48,
+     "title": "ScotchBlue 1.88 in. x 60 yds. Original Multi-Surface Painter's Tape (6-Pack)",
+     "link": "https://apionline.homedepot.com/p/3M-ScotchBlue-1-88-in-x-60-yds-Original-Multi-Surface-Painter-s-Tape-6-Pack-2090-48TP6/100120991"
+    },
+    "upgrade": null
+   }
+  },
+  {
+   "key": "window",
+   "category": "Windows and exterior doors",
+   "item": "Vinyl single hung 36x60",
+   "unit": "each",
+   "qty_driver": "~1 per 100 sqft living",
+   "kind": "graded",
+   "note": "",
+   "grades": {
+    "budget": {
+     "unit_price": 154.0,
+     "title": "30.75 in. x 14.25 in. 70 Series Universal Hand White Vinyl Low-E Argon Sliding Basement Replacement Window, Screen Incl",
+     "link": "https://apionline.homedepot.com/p/American-Craftsman-30-75-in-x-14-25-in-70-Series-Universal-Hand-White-Vinyl-Low-E-Argon-Sliding-Basement-Replacement-Window-Screen-Incl-70-SLIDER-BUCK/203157486"
+    },
+    "standard": {
+     "unit_price": 259.0,
+     "title": "35.75 in. x 37.25 in. 70 Pro Series White Double Hung Low-E Argon Glass Vinyl Replacement Window, Screen Incl",
+     "link": "https://apionline.homedepot.com/p/American-Craftsman-35-75-in-x-37-25-in-70-Pro-Series-White-Double-Hung-Low-E-Argon-Glass-Vinyl-Replacement-Window-Screen-Incl-3638786/204814579"
+    },
+    "upgrade": {
+     "unit_price": 329.0,
+     "title": "37.75 in. x 56.75 in. 70 Series White Double Hung Low-E Argon Glass Vinyl Fin with J Window, Screen Incl",
+     "link": "https://apionline.homedepot.com/p/American-Craftsman-37-75-in-x-56-75-in-70-Series-White-Double-Hung-Low-E-Argon-Glass-Vinyl-Fin-with-J-Window-Screen-Incl-3046730/203157331"
+    }
+   }
+  },
+  {
+   "key": "entry_door",
+   "category": "Windows and exterior doors",
+   "item": "Entry door, fiberglass prehung 36 in",
+   "unit": "each",
+   "qty_driver": "1-2 per house",
+   "kind": "graded",
+   "note": "",
+   "grades": {
+    "budget": {
+     "unit_price": 429.0,
+     "title": "32 in. x 80 in. 9 Lite Primed Fiberglass Prehung Entry Door with Brickmould",
+     "link": "https://apionline.homedepot.com/p/JELD-WEN-32-in-x-80-in-9-Lite-Primed-Fiberglass-Prehung-Entry-Door-with-Brickmould-THDQC231100088/202036913"
+    },
+    "standard": {
+     "unit_price": 498.0,
+     "title": "Reliant Fiberglass Customizable Front Door Collection",
+     "link": "https://apionline.homedepot.com/p/Steves-Sons-Reliant-Fiberglass-Customizable-Front-Door-Collection-559236/313658926"
+    },
+    "upgrade": {
+     "unit_price": 654.0,
+     "title": "Clarkston 36 in. x 80 in. Left Hand Inswing Zinc 1/4 Lite Painted Black Fiberglass Prehung Front Door",
+     "link": "https://apionline.homedepot.com/p/Feather-River-Doors-Clarkston-36-in-x-80-in-Left-Hand-Inswing-Zinc-1-4-Lite-Painted-Black-Fiberglass-Prehung-Front-Door-FHGBCN2K0T0/317223339"
+    }
+   }
+  },
+  {
+   "key": "lockset",
+   "category": "Windows and exterior doors",
+   "item": "Entry lockset + deadbolt",
+   "unit": "each",
+   "qty_driver": "per exterior door",
+   "kind": "fixed",
+   "note": "",
+   "grades": {
+    "budget": null,
+    "standard": {
+     "unit_price": 87.97,
+     "title": "Halifax Matte Black Entry Door Handle with Single Cylinder Deadbolt Combo Pack featuring SmartKey Security",
+     "link": "https://apionline.homedepot.com/p/Kwikset-Halifax-Matte-Black-Entry-Door-Handle-with-Single-Cylinder-Deadbolt-Combo-Pack-featuring-SmartKey-Security-991HFLSQT514SMT/321253517"
+    },
+    "upgrade": null
+   }
+  },
+  {
+   "key": "patio_slider",
+   "category": "Windows and exterior doors",
+   "item": "Sliding patio door 72 in",
+   "unit": "each",
+   "qty_driver": "as-found",
+   "kind": "fixed",
+   "note": "",
+   "grades": {
+    "budget": null,
+    "standard": {
+     "unit_price": 798.0,
+     "title": "Composite Gliding Patio Door with Woodgrain Interior",
+     "link": "https://apionline.homedepot.com/p/MasterPiece-72-in-x-80-in-Smooth-White-Left-Hand-Composite-Sliding-Patio-Door-G6068L00201/202339612"
+    },
+    "upgrade": null
+   }
+  },
+  {
+   "key": "garage_door",
+   "category": "Windows and exterior doors",
+   "item": "Garage door 16x7",
+   "unit": "each",
+   "qty_driver": "as-found",
+   "kind": "fixed",
+   "note": "",
+   "grades": {
+    "budget": null,
+    "standard": {
+     "unit_price": 579.0,
+     "title": "Wall Mount Drive Ultra-Quiet Smart Garage Door Opener with Battery Backup and WiFi Connection",
+     "link": "https://apionline.homedepot.com/p/Chamberlain-Wall-Mount-Drive-Ultra-Quiet-Smart-Garage-Door-Opener-with-Battery-Backup-and-WiFi-Connection-RJO101/325675581"
+    },
+    "upgrade": null
+   }
+  },
+  {
+   "key": "siding_panel",
+   "category": "Siding and exterior",
+   "item": "Vinyl siding panel",
+   "unit": "each",
+   "qty_driver": "~24 panels per square",
+   "kind": "fixed",
+   "note": "",
+   "grades": {
+    "budget": null,
+    "standard": {
+     "unit_price": 31.78,
+     "title": "Plywood Siding Plybead Panel (Nominal: 11/32 in. x 4 ft. x 8 ft. ; Actual: 0.313 in. x 48 in. x 96 in. )",
+     "link": "https://apionline.homedepot.com/p/Ply-Bead-Plywood-Siding-Plybead-Panel-Nominal-11-32-in-x-4-ft-x-8-ft-Actual-0-313-in-x-48-in-x-96-in-538281/100080170"
+    },
+    "upgrade": null
+   }
+  },
+  {
+   "key": "soffit",
+   "category": "Siding and exterior",
+   "item": "Vinyl soffit panel",
+   "unit": "each",
+   "qty_driver": "eave lf / panel coverage",
+   "kind": "fixed",
+   "note": "",
+   "grades": {
+    "budget": null,
+    "standard": {
+     "unit_price": 19.98,
+     "title": "12.75 in x 0.5 in Rectangular Triple 4 in. Economy Solid Vinyl Soffit - Non-Ventilated",
+     "link": "https://apionline.homedepot.com/p/Ply-Gem-12-75-in-x-0-5-in-Rectangular-Triple-4-in-Economy-Solid-Vinyl-Soffit-Non-Ventilated-EVS12N04H/202666272"
+    },
+    "upgrade": null
+   }
+  },
+  {
+   "key": "fascia",
+   "category": "Siding and exterior",
+   "item": "Fascia 1x6x12 primed",
+   "unit": "each",
+   "qty_driver": "eave lf / 12",
+   "kind": "fixed",
+   "note": "",
+   "grades": {
+    "budget": null,
+    "standard": {
+     "unit_price": 17.42,
+     "title": "1 in. x 6 in. x 10 ft. Premium Kiln-Dried Square Edge Whitewood Common Softwood Boards",
+     "link": "https://apionline.homedepot.com/p/1-in-x-6-in-x-10-ft-Premium-Kiln-Dried-Square-Edge-Whitewood-Common-Softwood-Boards-914789/100085189"
+    },
+    "upgrade": null
+   }
+  },
+  {
+   "key": "gutter",
+   "category": "Siding and exterior",
+   "item": "Aluminum gutter 10 ft",
+   "unit": "each",
+   "qty_driver": "eave lf / 10",
+   "kind": "fixed",
+   "note": "Sectional; seamless sub-out runs ~$8-10/lf installed, see Allowances",
+   "grades": {
+    "budget": null,
+    "standard": {
+     "unit_price": 32.98,
+     "title": "5 in. x 16 ft. White Aluminum K-Style Gutter",
+     "link": "https://apionline.homedepot.com/p/Amerimax-Home-Products-5-in-x-16-ft-White-Aluminum-K-Style-Gutter-2600200192/100013979"
+    },
+    "upgrade": null
+   }
+  },
+  {
+   "key": "downspout",
+   "category": "Siding and exterior",
+   "item": "Aluminum downspout 10 ft",
+   "unit": "each",
+   "qty_driver": "1 per corner",
+   "kind": "fixed",
+   "note": "",
+   "grades": {
+    "budget": null,
+    "standard": {
+     "unit_price": 13.62,
+     "title": "Stealth Flow 43 in. Black Vinyl Low Profile Downspout Extension Kit",
+     "link": "https://apionline.homedepot.com/p/Amerimax-Home-Products-Stealth-Flow-43-in-Black-Vinyl-Low-Profile-Downspout-Extension-Kit-4601/303522071"
+    },
+    "upgrade": null
+   }
+  },
+  {
+   "key": "paint_ext_5gal",
+   "category": "Siding and exterior",
+   "item": "Exterior paint 5 gal",
+   "unit": "bucket",
+   "qty_driver": "1 per ~1,000 sqft wall",
+   "kind": "graded",
+   "note": "",
+   "grades": {
+    "budget": {
+     "unit_price": 189.0,
+     "title": "5 gal. Natural Cedar Exterior Wood Stain and Sealer",
+     "link": "https://apionline.homedepot.com/p/Ready-Seal-5-gal-Natural-Cedar-Exterior-Wood-Stain-and-Sealer-370045/204372098"
+    },
+    "standard": {
+     "unit_price": 189.0,
+     "title": "5 gal. Natural Cedar Exterior Wood Stain and Sealer",
+     "link": "https://apionline.homedepot.com/p/Ready-Seal-5-gal-Natural-Cedar-Exterior-Wood-Stain-and-Sealer-370045/204372098"
+    },
+    "upgrade": {
+     "unit_price": 189.0,
+     "title": "5 gal. Natural Cedar Exterior Wood Stain and Sealer",
+     "link": "https://apionline.homedepot.com/p/Ready-Seal-5-gal-Natural-Cedar-Exterior-Wood-Stain-and-Sealer-370045/204372098"
+    }
+   }
+  },
+  {
+   "key": "ext_light",
+   "category": "Siding and exterior",
+   "item": "Exterior wall lantern",
+   "unit": "each",
+   "qty_driver": "per exterior door",
+   "kind": "graded",
+   "note": "",
+   "grades": {
+    "budget": {
+     "unit_price": 48.97,
+     "title": "Modern Frosted Black Porch Outdoor Wall Sconce 1-Light Classic Exterior Lantern with Mushroom Clear Seeded Glass Shade",
+     "link": "https://apionline.homedepot.com/p/LNC-Modern-Frosted-Black-Porch-Outdoor-Wall-Sconce-1-Light-Classic-Exterior-Lantern-with-Mushroom-Clear-Seeded-Glass-Shade-VAFNYAHD13356V6/318082135"
+    },
+    "standard": {
+     "unit_price": 64.97,
+     "title": "Smart Black 12-Light 24 ft. Indoor/Outdoor Plug-in Integrated LED RGBW String Light with Party Mode Powered by Hubspace",
+     "link": "https://apionline.homedepot.com/p/Hampton-Bay-Smart-Black-12-Light-24-ft-Indoor-Outdoor-Plug-in-Integrated-LED-RGBW-String-Light-with-Party-Mode-Powered-by-Hubspace-HB-1024SC-BK/327262856"
+    },
+    "upgrade": {
+     "unit_price": 89.97,
+     "title": "Rockwood 14.93 in. Black Modern Integrated LED Color Changing Outdoor Wall Light Sconce (1-Pack) Powered by Hubspace",
+     "link": "https://apionline.homedepot.com/p/Home-Decorators-Collection-Rockwood-14-93-in-Black-Modern-Integrated-LED-Color-Changing-Outdoor-Wall-Light-Sconce-1-Pack-Powered-by-Hubspace-G19226/319390894"
+    }
+   }
+  },
+  {
+   "key": "base_cabinets_24_in",
+   "category": "Kitchen",
+   "item": "Base cabinets 24 in",
+   "unit": "each",
+   "qty_driver": "5-6 per 10x10 kitchen",
+   "kind": "classes",
+   "note": "Budget unfinished, standard shaker, upgrade soft close",
+   "grades": {
+    "budget": {
+     "unit_price": 239.0,
+     "title": "Shaker 24 in. W x 24 in. D x 34.5 in. H Assembled Base Kitchen Cabinet in Satin White",
+     "link": "https://apionline.homedepot.com/p/Hampton-Bay-Shaker-24-in-W-x-24-in-D-x-34-5-in-H-Assembled-Base-Kitchen-Cabinet-in-Satin-White-KB24-SSW/204610522"
+    },
+    "standard": {
+     "unit_price": 239.0,
+     "title": "Shaker 24 in. W x 24 in. D x 34.5 in. H Assembled Base Kitchen Cabinet in Satin White",
+     "link": "https://apionline.homedepot.com/p/Hampton-Bay-Shaker-24-in-W-x-24-in-D-x-34-5-in-H-Assembled-Base-Kitchen-Cabinet-in-Satin-White-KB24-SSW/204610522"
+    },
+    "upgrade": {
+     "unit_price": 258.0,
+     "title": "Hampton 30 in. W x 24 in. D x 34.5 in. H Assembled Base Kitchen Cabinet in Satin White",
+     "link": "https://apionline.homedepot.com/p/Hampton-Bay-Hampton-30-in-W-x-24-in-D-x-34-5-in-H-Assembled-Base-Kitchen-Cabinet-in-Satin-White-KB30-SW/100545475"
+    }
+   }
+  },
+  {
+   "key": "wall_cabinets_30_in",
+   "category": "Kitchen",
+   "item": "Wall cabinets 30 in",
+   "unit": "each",
+   "qty_driver": "4-6 per 10x10 kitchen",
+   "kind": "classes",
+   "note": "",
+   "grades": {
+    "budget": {
+     "unit_price": 164.0,
+     "title": "Recessed Panel 36 in. W x 12 in. D x 36 in. H Assembled Wall Kitchen Cabinet in Unfinished",
+     "link": "https://apionline.homedepot.com/p/Hampton-Bay-Recessed-Panel-36-in-W-x-12-in-D-x-36-in-H-Assembled-Wall-Kitchen-Cabinet-in-Unfinished-KW3636-UF/325134566"
+    },
+    "standard": {
+     "unit_price": 204.0,
+     "title": "Hampton 24 in. W x 12 in. D x 30 in. H Assembled Wall Kitchen Cabinet in Satin White",
+     "link": "https://apionline.homedepot.com/p/Hampton-Bay-Hampton-24-in-W-x-12-in-D-x-30-in-H-Assembled-Wall-Kitchen-Cabinet-in-Satin-White-KW2430-SW/202266746"
+    },
+    "upgrade": {
+     "unit_price": 229.0,
+     "title": "Shaker 30 in. W x 12 in. D x 30 in. H Assembled Wall Kitchen Cabinet in Satin White",
+     "link": "https://apionline.homedepot.com/p/Hampton-Bay-Shaker-30-in-W-x-12-in-D-x-30-in-H-Assembled-Wall-Kitchen-Cabinet-in-Satin-White-KW3030-SSW/325127973"
+    }
+   }
+  },
+  {
+   "key": "countertops",
+   "category": "Kitchen",
+   "item": "Countertops",
+   "unit": "section",
+   "qty_driver": "~2-3 sections (25-30 sqft) per kitchen",
+   "kind": "classes",
+   "note": "Budget laminate postform, standard what HD stocks (butcher block/prefab)",
+   "grades": {
+    "budget": {
+     "unit_price": 229.0,
+     "title": "6 ft. L x 25 in. D Unfinished Birch Solid Wood Butcher Block Countertop with Eased Edge",
+     "link": "https://apionline.homedepot.com/p/HARDWOOD-REFLECTIONS-6-ft-L-x-25-in-D-Unfinished-Birch-Solid-Wood-Butcher-Block-Countertop-with-Eased-Edge-BBCT152574C/301812823"
+    },
+    "standard": {
+     "unit_price": 339.0,
+     "title": "6 ft. L x 39 in. D Unfinished Birch Solid Wood Butcher Block Countertop Island with Eased Edge",
+     "link": "https://apionline.homedepot.com/p/HARDWOOD-REFLECTIONS-6-ft-L-x-39-in-D-Unfinished-Birch-Solid-Wood-Butcher-Block-Countertop-Island-with-Eased-Edge-BBCT1502574/300688695"
+    },
+    "upgrade": {
+     "quote": true,
+     "text": "Fabricated quartz, special-order quote ~$70/sf"
+    }
+   }
+  },
+  {
+   "key": "cab_pulls",
+   "category": "Kitchen",
+   "item": "Cabinet pulls (25 pack)",
+   "unit": "pack",
+   "qty_driver": "1 per kitchen",
+   "kind": "fixed",
+   "note": "",
+   "grades": {
+    "budget": null,
+    "standard": {
+     "unit_price": 26.97,
+     "title": "10-Pack Half Round Spoon Foot 3 in. (76 mm) Traditional Satin Nickel Cabinet Drawer Pulls",
+     "link": "https://apionline.homedepot.com/p/Liberty-10-Pack-Half-Round-Spoon-Foot-3-in-76-mm-Traditional-Satin-Nickel-Cabinet-Drawer-Pulls-P39955L-SN-U1/203537038"
+    },
+    "upgrade": null
+   }
+  },
+  {
+   "key": "kitchen_sink",
+   "category": "Kitchen",
+   "item": "Kitchen sink 33 in SS drop-in",
+   "unit": "each",
+   "qty_driver": "1 per kitchen",
+   "kind": "fixed",
+   "note": "",
+   "grades": {
+    "budget": null,
+    "standard": {
+     "unit_price": 366.64,
+     "title": "Standart PRO 30 in. Undermount Single Bowl 16 Gauge Stainless Steel Kitchen Sink with Accessories",
+     "link": "https://apionline.homedepot.com/p/KRAUS-Standart-PRO-30-in-Undermount-Single-Bowl-16-Gauge-Stainless-Steel-Kitchen-Sink-with-Accessories-KHU100-30/203058416"
+    },
+    "upgrade": null
+   }
+  },
+  {
+   "key": "kitchen_faucet",
+   "category": "Kitchen",
+   "item": "Kitchen faucet, pull down",
+   "unit": "each",
+   "qty_driver": "1 per kitchen",
+   "kind": "graded",
+   "note": "",
+   "grades": {
+    "budget": {
+     "unit_price": 169.0,
+     "title": "Adler Single-Handle Pull-Down Sprayer Kitchen Faucet with Power Clean and Reflex in Spot Resist Stainless",
+     "link": "https://apionline.homedepot.com/p/MOEN-Adler-Single-Handle-Pull-Down-Sprayer-Kitchen-Faucet-with-Power-Clean-and-Reflex-in-Spot-Resist-Stainless-87233SRS/311445581"
+    },
+    "standard": {
+     "unit_price": 230.35,
+     "title": "Lenta Gold Single-Handle Pull-Down Sprayer Kitchen Faucet with ShieldSpray Technology in Champagne Bronze",
+     "link": "https://apionline.homedepot.com/p/Delta-Lenta-Gold-Single-Handle-Pull-Down-Sprayer-Kitchen-Faucet-with-ShieldSpray-Technology-in-Champagne-Bronze-19802Z-CZ-DST/312604744"
+    },
+    "upgrade": {
+     "unit_price": 269.0,
+     "title": "Nicoli Gold Champagne Bronze 17.06 in. H Pull Down Sprayer Kitchen Faucet with 360\u00b0 Spout Swivel",
+     "link": "https://apionline.homedepot.com/p/Delta-Nicoli-Gold-Champagne-Bronze-17-06-in-H-Pull-Down-Sprayer-Kitchen-Faucet-with-360-Spout-Swivel-19867LF-CZ/332897449"
+    }
+   }
+  },
+  {
+   "key": "range",
+   "category": "Kitchen",
+   "item": "Electric range",
+   "unit": "each",
+   "qty_driver": "1 per kitchen",
+   "kind": "graded",
+   "note": "Verify gas vs electric before ordering",
+   "grades": {
+    "budget": {
+     "unit_price": 679.0,
+     "title": "30 in. 4 Burner Element Free-Standing Electric Range in Stainless Steel w/Stainless Knobs",
+     "link": "https://apionline.homedepot.com/p/GE-30-in-4-Burner-Element-Free-Standing-Electric-Range-in-Stainless-Steel-w-Stainless-Knobs-GRF40HSVSS/329011820"
+    },
+    "standard": {
+     "unit_price": 699.0,
+     "title": "30 in. 6.3 cu. ft. Electric Single Smart Oven Range with Air Fry Fan Convection and EasyClean in Stainless Steel",
+     "link": "https://apionline.homedepot.com/p/LG-30-in-6-3-cu-ft-Electric-Single-Smart-Oven-Range-with-Air-Fry-Fan-Convection-and-EasyClean-in-Stainless-Steel-LREN6321YE/340300391"
+    },
+    "upgrade": {
+     "unit_price": 899.0,
+     "title": "30 in. 6.3 cu. ft. Smart Wi-Fi Enabled Fan Convection Electric Range Oven with AirFry and EasyClean in Stainless Steel",
+     "link": "https://apionline.homedepot.com/p/LG-30-in-6-3-cu-ft-Smart-Wi-Fi-Enabled-Fan-Convection-Electric-Range-Oven-with-AirFry-and-EasyClean-in-Stainless-Steel-LREN6323YE/334408444"
+    }
+   }
+  },
+  {
+   "key": "otr_micro",
+   "category": "Kitchen",
+   "item": "Over-the-range microwave",
+   "unit": "each",
+   "qty_driver": "1 per kitchen",
+   "kind": "graded",
+   "note": "",
+   "grades": {
+    "budget": {
+     "unit_price": 249.0,
+     "title": "30 in. 1.7 cu. ft. 1000 W Fingerprint Resistant Stainless Steel Over-the-Range Microwave",
+     "link": "https://apionline.homedepot.com/p/Samsung-30-in-1-7-cu-ft-1000-W-Fingerprint-Resistant-Stainless-Steel-Over-the-Range-Microwave-ME17R7021ES/312751901"
+    },
+    "standard": {
+     "unit_price": 287.0,
+     "title": "1.9 cu. ft. Over-the-Range Microwave in Stainless Steel with Sensor Cooking",
+     "link": "https://apionline.homedepot.com/p/GE-1-9-cu-ft-Over-the-Range-Microwave-in-Stainless-Steel-with-Sensor-Cooking-JVM7195SKSS/207025745"
+    },
+    "upgrade": {
+     "unit_price": 399.0,
+     "title": "Gallery 1.9 cu. ft. Over the Range Microwave in Smudge-Proof Stainless Steel with Sensor Cooking Technology",
+     "link": "https://apionline.homedepot.com/p/Frigidaire-Gallery-1-9-cu-ft-Over-the-Range-Microwave-in-Smudge-Proof-Stainless-Steel-with-Sensor-Cooking-Technology-GMOS1962AF/322477687"
+    }
+   }
+  },
+  {
+   "key": "range_hood",
+   "category": "Kitchen",
+   "item": "Range hood 30 in",
+   "unit": "each",
+   "qty_driver": "where no OTR micro fits",
+   "kind": "graded",
+   "note": "",
+   "grades": {
+    "budget": {
+     "unit_price": 149.99,
+     "title": "30 in. 217 CFM Convertible Kitchen Wall Mount Range Hood in Stainless Steel with Push Control, LEDs and Carbon Filters",
+     "link": "https://apionline.homedepot.com/p/Golden-Vantage-30-in-217-CFM-Convertible-Kitchen-Wall-Mount-Range-Hood-in-Stainless-Steel-with-Push-Control-LEDs-and-Carbon-Filters-RH0472/307566025"
+    },
+    "standard": {
+     "unit_price": 199.0,
+     "title": "36 in. 560 CFM Ductless Convertible Wall Mount Range Hood in Stainless Steel with LED Lighting, Filter and Touch Control",
+     "link": "https://apionline.homedepot.com/p/VIKIO-36-in-560-CFM-Ductless-Convertible-Wall-Mount-Range-Hood-in-Stainless-Steel-with-LED-Lighting-Filter-and-Touch-Control-RHWM01-36/329658571"
+    },
+    "upgrade": {
+     "unit_price": 251.99,
+     "title": "30 in. Vista Collection 380 CFM Ducted Wall Mount Range Hood, Touch Controls, LED Lights, Stainless Steel",
+     "link": "https://apionline.homedepot.com/p/Cosmo-30-in-Vista-Collection-380-CFM-Ducted-Wall-Mount-Range-Hood-Touch-Controls-LED-Lights-Stainless-Steel-COS-63175S/207084058"
+    }
+   }
+  },
+  {
+   "key": "dishwasher",
+   "category": "Kitchen",
+   "item": "Dishwasher",
+   "unit": "each",
+   "qty_driver": "1 per kitchen (verify hookup)",
+   "kind": "graded",
+   "note": "",
+   "grades": {
+    "budget": {
+     "unit_price": 429.0,
+     "title": "24 in. Front Built-In Tall Tub 57 dBA Dishwasher in Stainless Steel with 4 -Cycles",
+     "link": "https://apionline.homedepot.com/p/Whirlpool-24-in-Front-Built-In-Tall-Tub-57-dBA-Dishwasher-in-Stainless-Steel-with-4-Cycles-WDF341PAPM/326522572"
+    },
+    "standard": {
+     "unit_price": 579.0,
+     "title": "24 in. Built-In Tall Tub Smart 46 dBA Dishwasher in Stainless Steel with StormWash and AutoRelease Door",
+     "link": "https://apionline.homedepot.com/p/Samsung-24-in-Built-In-Tall-Tub-Smart-46-dBA-Dishwasher-in-Stainless-Steel-with-StormWash-and-AutoRelease-Door-DW80CG5450SR/325532102"
+    },
+    "upgrade": {
+     "unit_price": 699.0,
+     "title": "24 in. Top Control Standard 46 dBA Dishwasher with QuadWash, 3rd Rack, Blastzone Bottle Wash in Stainless Steel",
+     "link": "https://apionline.homedepot.com/p/LG-24-in-Top-Control-Standard-46-dBA-Dishwasher-with-QuadWash-3rd-Rack-Blastzone-Bottle-Wash-in-Stainless-Steel-LDNPQ44HS/336977312"
+    }
+   }
+  },
+  {
+   "key": "fridge",
+   "category": "Kitchen",
+   "item": "Refrigerator",
+   "unit": "each",
+   "qty_driver": "1 per kitchen",
+   "kind": "graded",
+   "note": "",
+   "grades": {
+    "budget": {
+     "unit_price": 799.0,
+     "title": "30 in. 18.4 cu. ft. Standard-Depth French Door Bottom Freezer Refrigerator in Fingerprint Resistant Stainless Steel Look",
+     "link": "https://apionline.homedepot.com/p/Vissani-30-in-18-4-cu-ft-Standard-Depth-French-Door-Bottom-Freezer-Refrigerator-in-Fingerprint-Resistant-Stainless-Steel-Look-MDFDBM18SS6/340543540"
+    },
+    "standard": {
+     "unit_price": 1399.0,
+     "title": "30 in. W 22 cu. ft. 3-Door French Door Refrigerator with Ice Maker in Stainless Steel",
+     "link": "https://apionline.homedepot.com/p/LG-30-in-W-22-cu-ft-3-Door-French-Door-Refrigerator-with-Ice-Maker-in-Stainless-Steel-LFCS22520S/206452443"
+    },
+    "upgrade": {
+     "unit_price": 1899.0,
+     "title": "36 in. 28 cu. ft. 3-Door French Door Refrigerator w/ Ice and Water Dispenser and Craft Ice in PrintProof Stainless Steel",
+     "link": "https://apionline.homedepot.com/p/LG-36-in-28-cu-ft-3-Door-French-Door-Refrigerator-w-Ice-and-Water-Dispenser-and-Craft-Ice-in-PrintProof-Stainless-Steel-LHFS28XBS/325158253"
+    }
+   }
+  },
+  {
+   "key": "backsplash",
+   "category": "Kitchen",
+   "item": "Backsplash, subway tile",
+   "unit": "sqft",
+   "qty_driver": "~30-40 sqft per kitchen",
+   "kind": "graded",
+   "note": "",
+   "grades": {
+    "budget": {
+     "unit_price": 2.29,
+     "title": "Carrara White 12 in. x 24 in. Matte Porcelain Floor and Wall Tile (16 sq. ft. / case)",
+     "link": "https://apionline.homedepot.com/p/MSI-Carrara-White-12-in-x-24-in-Matte-Porcelain-Floor-and-Wall-Tile-16-sq-ft-case-NHDCARWHI1224/310005584"
+    },
+    "standard": {
+     "unit_price": 2.66,
+     "title": "Restore 3 in. x 12 in. Ceramic Bright White Subway Tile (12 sq. ft. /Case)",
+     "link": "https://apionline.homedepot.com/p/Daltile-Restore-3-in-x-12-in-Ceramic-Bright-White-Subway-Tile-12-sq-ft-Case-RE15312HD1P2/302872669"
+    },
+    "upgrade": {
+     "unit_price": 3.58,
+     "title": "Marin Glossy Aloe Green (Light Green) 2.5 in. x 10 in. Ceramic Subway Wall Tile (5.09 sq. ft./Case)",
+     "link": "https://apionline.homedepot.com/p/Bedrosians-Marin-Glossy-Aloe-Green-Light-Green-2-5-in-x-10-in-Ceramic-Subway-Wall-Tile-5-09-sq-ft-Case-100003174/326361153"
+    }
+   },
+   "per_case_sqft": 12.5
+  },
+  {
+   "key": "bathtub",
+   "category": "Bathrooms",
+   "item": "Alcove tub 60 in",
+   "unit": "each",
+   "qty_driver": "per tub bath",
+   "kind": "graded",
+   "note": "",
+   "grades": {
+    "budget": {
+     "unit_price": 339.0,
+     "title": "Classic 500 60 in. x 32 in. Alcove Deep Soaking Bathtub with Left Drain in High Gloss White",
+     "link": "https://apionline.homedepot.com/p/Delta-Classic-500-60-in-x-32-in-Alcove-Deep-Soaking-Bathtub-with-Left-Drain-in-High-Gloss-White-B23605-6032L-WH/321016477"
+    },
+    "standard": {
+     "unit_price": 369.0,
+     "title": "Maui 60 in. x 30 in. Alcove Soaking Bathtub with Right Drain in White",
+     "link": "https://apionline.homedepot.com/p/Bootz-Industries-Maui-60-in-x-30-in-Alcove-Soaking-Bathtub-with-Right-Drain-in-White-011-3340-00/303687456"
+    },
+    "upgrade": {
+     "unit_price": 619.0,
+     "title": "NexTile 60 in. W x 30 in. D x 60 in. H Four-Piece Direct-to-Stud Composite Alcove Tub Surround in White",
+     "link": "https://apionline.homedepot.com/p/Bootz-Industries-NexTile-60-in-W-x-30-in-D-x-60-in-H-Four-Piece-Direct-to-Stud-Composite-Alcove-Tub-Surround-in-White-Z041-5000/308105327"
+    }
+   }
+  },
+  {
+   "key": "tub_surround",
+   "category": "Bathrooms",
+   "item": "Tub wall surround",
+   "unit": "kit",
+   "qty_driver": "per tub bath (standard)",
+   "kind": "graded",
+   "note": "Upgrade path is tiled walls, priced off the tile line",
+   "grades": {
+    "budget": {
+     "unit_price": 549.0,
+     "title": "Classic 500 60 in. W x 73.25 in. H x 32 in. D 3-Piece Direct-to-Stud Alcove Shower Surrounds in High Gloss White",
+     "link": "https://apionline.homedepot.com/p/Delta-Classic-500-60-in-W-x-73-25-in-H-x-32-in-D-3-Piece-Direct-to-Stud-Alcove-Shower-Surrounds-in-High-Gloss-White-B12205-6032-WH/321017407"
+    },
+    "standard": {
+     "unit_price": 619.0,
+     "title": "NexTile 60 in. W x 30 in. D x 60 in. H Four-Piece Direct-to-Stud Composite Alcove Tub Surround in White",
+     "link": "https://apionline.homedepot.com/p/Bootz-Industries-NexTile-60-in-W-x-30-in-D-x-60-in-H-Four-Piece-Direct-to-Stud-Composite-Alcove-Tub-Surround-in-White-Z041-5000/308105327"
+    },
+    "upgrade": {
+     "unit_price": 1187.99,
+     "title": "Aloha 60 in. x 30 in. Bathtub, NexTile 60 in. x 30 in. x 60 in. Surround and 56-60 in. Shower Door Combo",
+     "link": "https://apionline.homedepot.com/p/sets/Bootz-Industries-Aloha-60-in-x-30-in-Bathtub-NexTile-60-in-x-30-in-x-60-in-Surround-and-56-60-in-Shower-Door-Combo/340209318"
+    }
+   }
+  },
+  {
+   "key": "shower_kit",
+   "category": "Bathrooms",
+   "item": "Shower kit 48 in",
+   "unit": "kit",
+   "qty_driver": "per shower bath",
+   "kind": "graded",
+   "note": "",
+   "grades": {
+    "budget": {
+     "unit_price": 918.32,
+     "title": "Aloha ShowerCast 60 in. L x 32 in. W Left Shower Pan Base and NexTile 60 in. W x 32 in. L x 74 in. H Shower Wall Kit",
+     "link": "https://apionline.homedepot.com/p/sets/Bootz-Industries-Aloha-ShowerCast-60-in-L-x-32-in-W-Left-Shower-Pan-Base-and-NexTile-60-in-W-x-32-in-L-x-74-in-H-Shower-Wall-Kit/338679772"
+    },
+    "standard": {
+     "unit_price": 1272.32,
+     "title": "Aloha ShowerCast 60 in. x 32 in. Left Shower Pan, NexTile 60 in. x 32 in. Shower Wall and Chrome Shower Door Kit",
+     "link": "https://apionline.homedepot.com/p/sets/Bootz-Industries-Aloha-ShowerCast-60-in-x-32-in-Left-Shower-Pan-NexTile-60-in-x-32-in-Shower-Wall-and-Chrome-Shower-Door-Kit/339931954"
+    },
+    "upgrade": {
+     "unit_price": 1318.31,
+     "title": "Aloha ShowerCast 60 in. x 32 in. Left Shower Pan, NexTile 60 in. x 32 in. Shower Wall and Matte Black Shower Door Kit",
+     "link": "https://apionline.homedepot.com/p/sets/Bootz-Industries-Aloha-ShowerCast-60-in-x-32-in-Left-Shower-Pan-NexTile-60-in-x-32-in-Shower-Wall-and-Matte-Black-Shower-Door-Kit/339286123"
+    }
+   }
+  },
+  {
+   "key": "shower_door",
+   "category": "Bathrooms",
+   "item": "Sliding tub shower door",
+   "unit": "each",
+   "qty_driver": "retail exits only",
+   "kind": "graded",
+   "note": "",
+   "grades": {
+    "budget": {
+     "unit_price": 338.0,
+     "title": "56 in. - 60 in. W x 72 in. H Sliding Framed Shower Door in Matte Black with Clear Glass",
+     "link": "https://apionline.homedepot.com/p/TOOLKISS-56-in-60-in-W-x-72-in-H-Sliding-Framed-Shower-Door-in-Matte-Black-with-Clear-Glass-TK19118MB/318474663"
+    },
+    "standard": {
+     "unit_price": 392.0,
+     "title": "56 in. - 60 in. W x 74 in. H Double Sliding Frameless Shower Door in Matte Black with Nano-Coated Clear Tempered Glass",
+     "link": "https://apionline.homedepot.com/p/Yuaris-56-in-60-in-W-x-74-in-H-Double-Sliding-Frameless-Shower-Door-in-Matte-Black-with-Nano-Coated-Clear-Tempered-Glass-HDSD02BL6074/336028269"
+    },
+    "upgrade": {
+     "unit_price": 545.0,
+     "title": "Essence 56 in. to 60 in. W x 76 in. H Sliding Frameless Shower Door in Matte Black with Clear Glass",
+     "link": "https://apionline.homedepot.com/p/DreamLine-Essence-56-in-to-60-in-W-x-76-in-H-Sliding-Frameless-Shower-Door-in-Matte-Black-with-Clear-Glass-SHDR-6360760-09/316239133"
+    }
+   }
+  },
+  {
+   "key": "vanity24",
+   "category": "Bathrooms",
+   "item": "Vanity 24 in with top",
+   "unit": "each",
+   "qty_driver": "small/secondary bath",
+   "kind": "graded",
+   "note": "",
+   "grades": {
+    "budget": {
+     "unit_price": 259.0,
+     "title": "37 in. Single Sink White Bath Vanity with Cultured Marble Top (Assembled)",
+     "link": "https://apionline.homedepot.com/p/Glacier-Bay-37-in-Single-Sink-White-Bath-Vanity-with-Cultured-Marble-Top-Assembled-GB36P2-WH/204065976"
+    },
+    "standard": {
+     "unit_price": 439.0,
+     "title": "Doveton 30 in. Single Sink Freestanding White Bath Vanity with White Engineered Marble Top (Assembled)",
+     "link": "https://apionline.homedepot.com/p/Home-Decorators-Collection-Doveton-30-in-Single-Sink-Freestanding-White-Bath-Vanity-with-White-Engineered-Marble-Top-Assembled-Doveton-30W/320686810"
+    },
+    "upgrade": {
+     "unit_price": 699.0,
+     "title": "Doveton 48 in. Single Sink Freestanding White Bath Vanity with White Engineered Marble Top (Assembled)",
+     "link": "https://apionline.homedepot.com/p/Home-Decorators-Collection-Doveton-48-in-Single-Sink-Freestanding-White-Bath-Vanity-with-White-Engineered-Marble-Top-Assembled-Doveton-48W/324252772"
+    }
+   }
+  },
+  {
+   "key": "vanity36",
+   "category": "Bathrooms",
+   "item": "Vanity 36 in with top",
+   "unit": "each",
+   "qty_driver": "primary bath",
+   "kind": "graded",
+   "note": "",
+   "grades": {
+    "budget": {
+     "unit_price": 439.0,
+     "title": "Doveton 30 in. Single Sink Freestanding White Bath Vanity with White Engineered Marble Top (Assembled)",
+     "link": "https://apionline.homedepot.com/p/Home-Decorators-Collection-Doveton-30-in-Single-Sink-Freestanding-White-Bath-Vanity-with-White-Engineered-Marble-Top-Assembled-Doveton-30W/320686810"
+    },
+    "standard": {
+     "unit_price": 779.0,
+     "title": "Collette 30 in. Single Sink Freestanding Bathroom Vanity in Cinnamon Oak with White Carrara Marble Top (Assembled)",
+     "link": "https://apionline.homedepot.com/p/Home-Decorators-Collection-Collette-30-in-Single-Sink-Freestanding-Bathroom-Vanity-in-Cinnamon-Oak-with-White-Carrara-Marble-Top-Assembled-23016-VS30-CO/327191833"
+    },
+    "upgrade": {
+     "unit_price": 899.0,
+     "title": "Doveton 60 in. Double Sink Freestanding White Bath Vanity with White Engineered Marble Top (Assembled)",
+     "link": "https://apionline.homedepot.com/p/Home-Decorators-Collection-Doveton-60-in-Double-Sink-Freestanding-White-Bath-Vanity-with-White-Engineered-Marble-Top-Assembled-Doveton-60W/321491137"
+    }
+   }
+  },
+  {
+   "key": "vanity48",
+   "category": "Bathrooms",
+   "item": "Vanity 48 in with top",
+   "unit": "each",
+   "qty_driver": "large primary bath",
+   "kind": "graded",
+   "note": "",
+   "grades": {
+    "budget": {
+     "unit_price": 679.0,
+     "title": "Tobana 42 in. Single Sink Freestanding Weathered Tan Bath Vanity with White Engineered Marble Top (Assembled)",
+     "link": "https://apionline.homedepot.com/p/Glacier-Bay-Tobana-42-in-Single-Sink-Freestanding-Weathered-Tan-Bath-Vanity-with-White-Engineered-Marble-Top-Assembled-Tobana-42WT/319837774"
+    },
+    "standard": {
+     "unit_price": 899.0,
+     "title": "Doveton 60 in. Double Sink Freestanding White Bath Vanity with White Engineered Marble Top (Assembled)",
+     "link": "https://apionline.homedepot.com/p/Home-Decorators-Collection-Doveton-60-in-Double-Sink-Freestanding-White-Bath-Vanity-with-White-Engineered-Marble-Top-Assembled-Doveton-60W/321491137"
+    },
+    "upgrade": {
+     "unit_price": 899.0,
+     "title": "Doveton 60 in. Double Sink Freestanding White Bath Vanity with White Engineered Marble Top (Assembled)",
+     "link": "https://apionline.homedepot.com/p/Home-Decorators-Collection-Doveton-60-in-Double-Sink-Freestanding-White-Bath-Vanity-with-White-Engineered-Marble-Top-Assembled-Doveton-60W/321491137"
+    }
+   }
+  },
+  {
+   "key": "toilet",
+   "category": "Bathrooms",
+   "item": "Toilet, elongated 2 pc",
+   "unit": "each",
+   "qty_driver": "per bath",
+   "kind": "graded",
+   "note": "",
+   "grades": {
+    "budget": {
+     "unit_price": 189.0,
+     "title": "Highline Arc 12 in. Rough In 2-Piece 1.28 GFP Single Flush Round Chair Height Toilet in White with Soft Close Seat",
+     "link": "https://apionline.homedepot.com/p/KOHLER-Highline-Arc-12-in-Rough-In-2-Piece-1-28-GFP-Single-Flush-Round-Chair-Height-Toilet-in-White-with-Soft-Close-Seat-K-78253-0/307908573"
+    },
+    "standard": {
+     "unit_price": 199.0,
+     "title": "Highline Arc 12 in. Rough In 2-Piece 1.28 GFP Single Flush Elongated Chair Height Toilet in White with Soft Close Seat",
+     "link": "https://apionline.homedepot.com/p/KOHLER-Highline-Arc-12-in-Rough-In-2-Piece-1-28-GFP-Single-Flush-Elongated-Chair-Height-Toilet-in-White-with-Soft-Close-Seat-K-78279-0/307908571"
+    },
+    "upgrade": {
+     "unit_price": 279.0,
+     "title": "Gleam 12 in. Rough In 2-Piece 1.28 GFP Single Flush Elongated Chair Height Toilet in White with Soft Close Seat",
+     "link": "https://apionline.homedepot.com/p/KOHLER-Gleam-12-in-Rough-In-2-Piece-1-28-GFP-Single-Flush-Elongated-Chair-Height-Toilet-in-White-with-Soft-Close-Seat-K-31674-0/312838678"
+    }
+   }
+  },
+  {
+   "key": "bath_faucet",
+   "category": "Bathrooms",
+   "item": "Bath sink faucet",
+   "unit": "each",
+   "qty_driver": "per bath",
+   "kind": "graded",
+   "note": "",
+   "grades": {
+    "budget": {
+     "unit_price": 99.0,
+     "title": "Rumson 4 in. Centerset 2-Handle Bathroom Faucet in Matte Black",
+     "link": "https://apionline.homedepot.com/p/American-Standard-Rumson-4-in-Centerset-2-Handle-Bathroom-Faucet-in-Matte-Black-7417201-243/313360175"
+    },
+    "standard": {
+     "unit_price": 139.0,
+     "title": "Portwood 8 in. Widespread 2-Handle Bathroom Faucet in SpotShield Brushed Nickel",
+     "link": "https://apionline.homedepot.com/p/Delta-Portwood-8-in-Widespread-2-Handle-Bathroom-Faucet-in-SpotShield-Brushed-Nickel-35770LF-SP/305436077"
+    },
+    "upgrade": {
+     "unit_price": 199.0,
+     "title": "Genta 8 in. Widespread Double Handle Bathroom Faucet with Drain Kit Included in Matte Black (Valve Included)",
+     "link": "https://apionline.homedepot.com/p/MOEN-Genta-8-in-Widespread-Double-Handle-Bathroom-Faucet-with-Drain-Kit-Included-in-Matte-Black-Valve-Included-84763BL/304923138"
+    }
+   }
+  },
+  {
+   "key": "shower_valve",
+   "category": "Bathrooms",
+   "item": "Tub/shower valve and trim",
+   "unit": "each",
+   "qty_driver": "per bath",
+   "kind": "graded",
+   "note": "",
+   "grades": {
+    "budget": {
+     "unit_price": 159.0,
+     "title": "Banbury Single Handle 1-Spray Tub and Shower Faucet 1.75 GPM in Spot Resist Brushed Nickel (Valve Included)",
+     "link": "https://apionline.homedepot.com/p/MOEN-Banbury-Single-Handle-1-Spray-Tub-and-Shower-Faucet-1-75-GPM-in-Spot-Resist-Brushed-Nickel-Valve-Included-82910SRN/305476153"
+    },
+    "standard": {
+     "unit_price": 202.08,
+     "title": "Arvo In2ition 2-in-1 Rough Included Single-Handle 4-Spray Tub and Shower Faucet 1.75 GPM in Matte Black Valve Included",
+     "link": "https://apionline.homedepot.com/p/Delta-Arvo-In2ition-2-in-1-Rough-Included-Single-Handle-4-Spray-Tub-and-Shower-Faucet-1-75-GPM-in-Matte-Black-Valve-Included-144840-BL-I/316417362"
+    },
+    "upgrade": {
+     "unit_price": 287.65,
+     "title": "Genta Brushed Nickel Bathroom & Tub/Shower Faucet Combo (Valve Included)",
+     "link": "https://apionline.homedepot.com/p/sets/MOEN-Genta-Brushed-Nickel-Bathroom-Tub-Shower-Faucet-Combo-Valve-Included/340327281"
+    }
+   }
+  },
+  {
+   "key": "tile",
+   "category": "Bathrooms",
+   "item": "Porcelain tile 12x24",
+   "unit": "sqft",
+   "qty_driver": "~45 sqft per bath floor; +50-60 for tiled walls",
+   "kind": "graded",
+   "note": "",
+   "grades": {
+    "budget": {
+     "unit_price": 1.84,
+     "title": "Baker Wood 6 in. x 24 in. Walnut Glazed Porcelain Floor and Wall Tile (14.55 sq. ft./Case)",
+     "link": "https://apionline.homedepot.com/p/Daltile-Baker-Wood-6-in-x-24-in-Walnut-Glazed-Porcelain-Floor-and-Wall-Tile-14-55-sq-ft-Case-BK10624HD1PR/313050938"
+    },
+    "standard": {
+     "unit_price": 2.04,
+     "title": "Wind River Beige 6 in. x 24 in. Porcelain Floor and Wall Tile (14 sq. ft./case)",
+     "link": "https://apionline.homedepot.com/p/Florida-Tile-Home-Collection-Wind-River-Beige-6-in-x-24-in-Porcelain-Floor-and-Wall-Tile-14-sq-ft-case-CHDEWND016X24/304629803"
+    },
+    "upgrade": {
+     "unit_price": 2.77,
+     "title": "VitaElegante Ardesia 12 in. x 24 in. Porcelain Floor and Wall Tile (15.6 sq. ft. / case)",
+     "link": "https://apionline.homedepot.com/p/Marazzi-VitaElegante-Ardesia-12-in-x-24-in-Porcelain-Floor-and-Wall-Tile-15-6-sq-ft-case-ULRV1224HD1PR/205473912"
+    }
+   },
+   "per_case_sqft": 15.6
+  },
+  {
+   "key": "medicine_cab",
+   "category": "Bathrooms",
+   "item": "Medicine cabinet / mirror",
+   "unit": "each",
+   "qty_driver": "per bath",
+   "kind": "graded",
+   "note": "",
+   "grades": {
+    "budget": {
+     "unit_price": 99.97,
+     "title": "24-3/16 in. W x 24 in. H Framed Surface-Mount Tri-View Bathroom Medicine Cabinet with Mirror, White",
+     "link": "https://apionline.homedepot.com/p/Glacier-Bay-24-3-16-in-W-x-24-in-H-Framed-Surface-Mount-Tri-View-Bathroom-Medicine-Cabinet-with-Mirror-White-33157/327338543"
+    },
+    "standard": {
+     "unit_price": 149.02,
+     "title": "16 in. W x 20 in. H Single Door Recessed Medicine Cabinet with Mirror Interior",
+     "link": "https://apionline.homedepot.com/p/KOHLER-16-in-W-x-20-in-H-Single-Door-Recessed-Medicine-Cabinet-with-Mirror-Interior-K-CB-CLR1620FS/100675408"
+    },
+    "upgrade": {
+     "unit_price": 239.0,
+     "title": "Embark 30 in. W x 26 in. H Rectangular Recessed/Surface Mount Medicine Cabinet with Mirror",
+     "link": "https://apionline.homedepot.com/p/KOHLER-Embark-30-in-W-x-26-in-H-Rectangular-Recessed-Surface-Mount-Medicine-Cabinet-with-Mirror-R33289-NA/327679758"
+    }
+   }
+  },
+  {
+   "key": "towel_set",
+   "category": "Bathrooms",
+   "item": "Bath hardware set",
+   "unit": "set",
+   "qty_driver": "per bath",
+   "kind": "fixed",
+   "note": "",
+   "grades": {
+    "budget": null,
+    "standard": {
+     "unit_price": 58.6,
+     "title": "Builders 3-Piece Bath Hardware Set with Towel Bar TP Holder Towel Ring in Brushed Nickel",
+     "link": "https://apionline.homedepot.com/p/Glacier-Bay-Builders-3-Piece-Bath-Hardware-Set-with-Towel-Bar-TP-Holder-Towel-Ring-in-Brushed-Nickel-BTH-033-305/320172576"
+    },
+    "upgrade": null
+   }
+  },
+  {
+   "key": "bath_fan",
+   "category": "Bathrooms",
+   "item": "Exhaust fan",
+   "unit": "each",
+   "qty_driver": "per bath",
+   "kind": "graded",
+   "note": "",
+   "grades": {
+    "budget": {
+     "unit_price": 119.0,
+     "title": "Whisper Mighty LED Pick-A-Flow 70-90CFM Ceiling/Wall ENERGY STAR Bathroom Exhaust Fan 9.5 in. x 9.5 in. Grille Footprint",
+     "link": "https://apionline.homedepot.com/p/Panasonic-Whisper-Mighty-LED-Pick-A-Flow-70-90CFM-Ceiling-Wall-ENERGY-STAR-Bathroom-Exhaust-Fan-9-5-in-x-9-5-in-Grille-Footprint-RG-M79LA/328748267"
+    },
+    "standard": {
+     "unit_price": 139.0,
+     "title": "80 CFM Ceiling Bathroom Exhaust Fan with Light and 1300-Watt Heater",
+     "link": "https://apionline.homedepot.com/p/Broan-NuTone-80-CFM-Ceiling-Bathroom-Exhaust-Fan-with-Light-and-1300-Watt-Heater-765H80L/307638062"
+    },
+    "upgrade": {
+     "unit_price": 175.95,
+     "title": "XactSense Humidity Sensor Switch (MS-HS3-WH) and Whisper Choice DC 80/110 CFM Bathroom Fan Combo",
+     "link": "https://apionline.homedepot.com/p/sets/XactSense-Humidity-Sensor-Switch-MS-HS3-WH-and-Whisper-Choice-DC-80-110-CFM-Bathroom-Fan-Combo/338273462"
+    }
+   }
+  },
+  {
+   "key": "lvp",
+   "category": "Flooring",
+   "item": "LVP flooring",
+   "unit": "sqft",
+   "qty_driver": "living sqft x 1.1",
+   "kind": "graded",
+   "note": "House standard is LVP throughout; carpet only by exception (see Allowances)",
+   "grades": {
+    "budget": {
+     "unit_price": 2.35,
+     "title": "Lake Annette Oak 12 MIL x 7 in. W x 48 in. L Click Lock Waterproof Luxury Vinyl Plank Flooring (23.8 sq. ft. / case)",
+     "link": "https://apionline.homedepot.com/p/Home-Decorators-Collection-Lake-Annette-Oak-12-MIL-x-7-in-W-x-48-in-L-Click-Lock-Waterproof-Luxury-Vinyl-Plank-Flooring-23-8-sq-ft-case-VTRHDLAKANN7X48/307423382"
+    },
+    "standard": {
+     "unit_price": 2.98,
+     "title": "Dusk Cherry 22 MIL x 8.7 in. W x 48 in. L Click Lock Waterproof Luxury Vinyl Plank Flooring (20.1 sqft/case)",
+     "link": "https://apionline.homedepot.com/p/Lifeproof-Dusk-Cherry-22-MIL-x-8-7-in-W-x-48-in-L-Click-Lock-Waterproof-Luxury-Vinyl-Plank-Flooring-20-1-sqft-case-I06204LP/311573441"
+    },
+    "upgrade": {
+     "unit_price": 3.28,
+     "title": "Fresh Oak 22 MIL x 8.7 in. W x 48 in. L Click Lock Waterproof Luxury Vinyl Plank Flooring (20.1 sqft/case)",
+     "link": "https://apionline.homedepot.com/p/Lifeproof-Fresh-Oak-22-MIL-x-8-7-in-W-x-48-in-L-Click-Lock-Waterproof-Luxury-Vinyl-Plank-Flooring-20-1-sqft-case-I96711LP/309083453"
+    }
+   },
+   "per_case_sqft": 20.1
+  },
+  {
+   "key": "drywall",
+   "category": "Walls and paint",
+   "item": "Drywall 1/2 in 4x8",
+   "unit": "sheet",
+   "qty_driver": "sqft x 3.4 / 32 for a full re-rock",
+   "kind": "fixed",
+   "note": "",
+   "grades": {
+    "budget": null,
+    "standard": {
+     "unit_price": 21.98,
+     "title": "1/2 in. x 4 ft. x 8 ft. Mold and Moisture-Resistant Gypsum Board",
+     "link": "https://apionline.homedepot.com/p/ToughRock-1-2-in-x-4-ft-x-8-ft-Mold-and-Moisture-Resistant-Gypsum-Board-011932/100322690"
+    },
+    "upgrade": null
+   }
+  },
+  {
+   "key": "joint_compound",
+   "category": "Walls and paint",
+   "item": "Joint compound 4.5 gal",
+   "unit": "box",
+   "qty_driver": "1 per 10 sheets",
+   "kind": "fixed",
+   "note": "",
+   "grades": {
+    "budget": null,
+    "standard": {
+     "unit_price": 17.95,
+     "title": "25 lb. Durabond 90 Setting-Type Joint Compound",
+     "link": "https://apionline.homedepot.com/p/USG-Sheetrock-Brand-25-lb-Durabond-90-Setting-Type-Joint-Compound-381630120/202329670"
+    },
+    "upgrade": null
+   }
+  },
+  {
+   "key": "drywall_tape",
+   "category": "Walls and paint",
+   "item": "Drywall tape",
+   "unit": "roll",
+   "qty_driver": "1 per 17 sheets",
+   "kind": "fixed",
+   "note": "",
+   "grades": {
+    "budget": null,
+    "standard": {
+     "unit_price": 11.75,
+     "title": "FibaTape Standard White 1-7/8 in. x 300 ft. Self-Adhesive Mesh Drywall Joint Tape",
+     "link": "https://apionline.homedepot.com/p/Saint-Gobain-ADFORS-FibaTape-Standard-White-1-7-8-in-x-300-ft-Self-Adhesive-Mesh-Drywall-Joint-Tape-FDW8665-U/100429159"
+    },
+    "upgrade": null
+   }
+  },
+  {
+   "key": "r13_batt",
+   "category": "Walls and paint",
+   "item": "R-13 wall batt insulation",
+   "unit": "bag",
+   "qty_driver": "open walls only",
+   "kind": "fixed",
+   "note": "",
+   "grades": {
+    "budget": null,
+    "standard": {
+     "unit_price": 62.27,
+     "title": "R-15 Faced Fiberglass Insulation Batt 15 in. x 93 in. (1 Bags)",
+     "link": "https://apionline.homedepot.com/p/Owens-Corning-R-15-Faced-Fiberglass-Insulation-Batt-15-in-x-93-in-1-Bags-ME21/100320346"
+    },
+    "upgrade": null
+   }
+  },
+  {
+   "key": "blown_insul",
+   "category": "Walls and paint",
+   "item": "Blown-in attic insulation",
+   "unit": "bag",
+   "qty_driver": "attic sqft / 60 (R-30 top-up)",
+   "kind": "fixed",
+   "note": "",
+   "grades": {
+    "budget": null,
+    "standard": {
+     "unit_price": 27.97,
+     "title": "R- 13 Faced Fiberglass Insulation Roll 15 in. x 32 ft. (1 Roll)",
+     "link": "https://apionline.homedepot.com/p/Owens-Corning-R-13-Faced-Fiberglass-Insulation-Roll-15-in-x-32-ft-1-Roll-RF10/202585857"
+    },
+    "upgrade": null
+   }
+  },
+  {
+   "key": "primer_5gal",
+   "category": "Walls and paint",
+   "item": "Primer 5 gal",
+   "unit": "bucket",
+   "qty_driver": "1 per ~1,400 sqft new rock",
+   "kind": "fixed",
+   "note": "",
+   "grades": {
+    "budget": null,
+    "standard": {
+     "unit_price": 125.52,
+     "title": "KILZ 2 All Purpose 5 gal. Primer and 4.5 gal. All Purpose Ready-Mixed Joint Compound Combo (2-Piece)",
+     "link": "https://apionline.homedepot.com/p/sets/KILZ-2-All-Purpose-5-gal-Primer-and-4-5-gal-All-Purpose-Ready-Mixed-Joint-Compound-Combo-2-Piece/344211179"
+    },
+    "upgrade": null
+   }
+  },
+  {
+   "key": "paint_int_5gal",
+   "category": "Walls and paint",
+   "item": "Interior paint 5 gal",
+   "unit": "bucket",
+   "qty_driver": "1 per ~350 sqft floor, 2 coats",
+   "kind": "graded",
+   "note": "",
+   "grades": {
+    "budget": {
+     "unit_price": 130.0,
+     "title": "5 gal. Ultra Pure White Ceiling Flat Interior Paint & Primer",
+     "link": "https://apionline.homedepot.com/p/BEHR-PREMIUM-PLUS-5-gal-Ultra-Pure-White-Ceiling-Flat-Interior-Paint-Primer-55805/100192072"
+    },
+    "standard": {
+     "unit_price": 165.0,
+     "title": "PREMIUM 5 Gal. White Interior/Exterior Primer, Heavy-Duty High Hide Sealer, and Stain Blocker",
+     "link": "https://apionline.homedepot.com/p/KILZ-PREMIUM-5-Gal-White-Interior-Exterior-Primer-Heavy-Duty-High-Hide-Sealer-and-Stain-Blocker-13000/100371314"
+    },
+    "upgrade": {
+     "unit_price": 218.0,
+     "title": "KILZ RESTORATION 5 gal. White Interior Primer, Sealer, and Stain Blocker",
+     "link": "https://apionline.homedepot.com/p/KILZ-KILZ-RESTORATION-5-gal-White-Interior-Primer-Sealer-and-Stain-Blocker-L200205/203165640"
+    }
+   }
+  },
+  {
+   "key": "int_door",
+   "category": "Doors and trim",
+   "item": "Prehung interior door, 6 panel",
+   "unit": "each",
+   "qty_driver": "per opening",
+   "kind": "graded",
+   "note": "",
+   "grades": {
+    "budget": {
+     "unit_price": 128.0,
+     "title": "24 in. x 80 in. Solid Core White Wood Interior Closet Bi-fold Door",
+     "link": "https://apionline.homedepot.com/p/Veranda-24-in-x-80-in-Solid-Core-White-Wood-Interior-Closet-Bi-fold-Door-3114996/205080369"
+    },
+    "standard": {
+     "unit_price": 176.0,
+     "title": "30 in. x 80 in 6 Panel Colonist Primed Right-Hand Textured Solid Core Molded Composite MDF Single Prehung Interior Door",
+     "link": "https://apionline.homedepot.com/p/JELD-WEN-30-in-x-80-in-6-Panel-Colonist-Primed-Right-Hand-Textured-Solid-Core-Molded-Composite-MDF-Single-Prehung-Interior-Door-THDQC225400566/203497117"
+    },
+    "upgrade": {
+     "unit_price": 228.65,
+     "title": "30 in. x 80 in. x 1-3/8 in. Shaker White Primed 2-Panel Solid Core Wood Interior Slab Door",
+     "link": "https://apionline.homedepot.com/p/eightdoors-30-in-x-80-in-x-1-3-8-in-Shaker-White-Primed-2-Panel-Solid-Core-Wood-Interior-Slab-Door-70288014803035SH/310969636"
+    }
+   }
+  },
+  {
+   "key": "bifold",
+   "category": "Doors and trim",
+   "item": "Bifold closet door 30 in",
+   "unit": "each",
+   "qty_driver": "per closet",
+   "kind": "fixed",
+   "note": "",
+   "grades": {
+    "budget": null,
+    "standard": {
+     "unit_price": 139.0,
+     "title": "30 in. x 80 in. Louver/Louver Solid Core White Painted Pine Wood Bifold Door with Hardware",
+     "link": "https://apionline.homedepot.com/p/Veranda-30-in-x-80-in-Louver-Louver-Solid-Core-White-Painted-Pine-Wood-Bifold-Door-with-Hardware-3115003/205080545"
+    },
+    "upgrade": null
+   }
+  },
+  {
+   "key": "door_knob",
+   "category": "Doors and trim",
+   "item": "Interior knob/lever",
+   "unit": "each",
+   "qty_driver": "per door +2 spares",
+   "kind": "graded",
+   "note": "",
+   "grades": {
+    "budget": {
+     "unit_price": 19.47,
+     "title": "Cove Satin Nickel Keyed Entry Door Knob featuring SmartKey Security and Microban Technology",
+     "link": "https://apionline.homedepot.com/p/Kwikset-Cove-Satin-Nickel-Keyed-Entry-Door-Knob-featuring-SmartKey-Security-and-Microban-Technology-T400CV15SMTCPK6/317193530"
+    },
+    "standard": {
+     "unit_price": 49.97,
+     "title": "Brandywine Stainless Steel Bed/Bath Door Knob (6-Pack)",
+     "link": "https://apionline.homedepot.com/p/Defiant-Brandywine-Stainless-Steel-Bed-Bath-Door-Knob-6-Pack-32T8610BD6/302473173"
+    },
+    "upgrade": {
+     "unit_price": 60.47,
+     "title": "Juno Satin Nickel Exterior Entry Door Knob and Single Cylinder Deadbolt Combo Pack Featuring SmartKey Security",
+     "link": "https://apionline.homedepot.com/p/Kwikset-Juno-Satin-Nickel-Exterior-Entry-Door-Knob-and-Single-Cylinder-Deadbolt-Combo-Pack-Featuring-SmartKey-Security-99910-034/100597328"
+    }
+   }
+  },
+  {
+   "key": "baseboard",
+   "category": "Doors and trim",
+   "item": "Baseboard, primed MDF 12 ft",
+   "unit": "each",
+   "qty_driver": "perimeter lf / 12",
+   "kind": "fixed",
+   "note": "",
+   "grades": {
+    "budget": null,
+    "standard": {
+     "unit_price": 21.0,
+     "title": "1 in. x 4 in. x 16 ft. Radiata Pine Finger Primed Softwood Boards",
+     "link": "https://apionline.homedepot.com/p/CMPC-1-in-x-4-in-x-16-ft-Radiata-Pine-Finger-Primed-Softwood-Boards-253266/311548328"
+    },
+    "upgrade": null
+   }
+  },
+  {
+   "key": "casing",
+   "category": "Doors and trim",
+   "item": "Door casing kit",
+   "unit": "opening",
+   "qty_driver": "per door/window opening",
+   "kind": "fixed",
+   "note": "",
+   "grades": {
+    "budget": null,
+    "standard": {
+     "unit_price": 19.48,
+     "title": "7827 5/8 in. x 3 1/2 in. x 96 in. Painted PVC Casing (1-Piece \u2212 8 Total Linear Feet)",
+     "link": "https://apionline.homedepot.com/p/Royal-Mouldings-7827-5-8-in-x-3-1-2-in-x-96-in-Painted-PVC-Casing-1-Piece-8-Total-Linear-Feet-6064558/204342947"
+    },
+    "upgrade": null
+   }
+  },
+  {
+   "key": "quarter_round",
+   "category": "Doors and trim",
+   "item": "Quarter round 12 ft",
+   "unit": "each",
+   "qty_driver": "perimeter lf / 12",
+   "kind": "fixed",
+   "note": "",
+   "grades": {
+    "budget": null,
+    "standard": {
+     "unit_price": 14.98,
+     "title": "White 0.62 in. T x 0.75 in. W x 94.5 in. L Quarter Round Molding",
+     "link": "https://apionline.homedepot.com/p/PERFORMANCE-ACCESSORIES-White-0-62-in-T-x-0-75-in-W-x-94-5-in-L-Quarter-Round-Molding-MQND-WHITE/316732234"
+    },
+    "upgrade": null
+   }
+  },
+  {
+   "key": "closet_kit",
+   "category": "Doors and trim",
+   "item": "Closet organizer kit",
+   "unit": "closet",
+   "qty_driver": "per closet",
+   "kind": "fixed",
+   "note": "",
+   "grades": {
+    "budget": null,
+    "standard": {
+     "unit_price": 129.0,
+     "title": "Selectives Wood Laminate Closet Systems",
+     "link": "https://apionline.homedepot.com/p/ClosetMaid-Selectives-Wood-Laminate-Closet-Systems/314849269"
+    },
+    "upgrade": null
+   }
+  },
+  {
+   "key": "heat_pump",
+   "category": "HVAC",
+   "item": "Heat pump split system",
+   "unit": "system",
+   "qty_driver": "1 per house (size to sqft)",
+   "kind": "graded",
+   "note": "Boxed price excludes heat strips, line set, thermostat: add the scope kit allowance",
+   "grades": {
+    "budget": {
+     "unit_price": 3329.0,
+     "title": "DIY 5th Gen 24000 BTU 22.7 Seer2 2-Ton Mini-Split Heat Pump Complete System-25 ft. Pre-Charged Line Set-230-Volt-R454B",
+     "link": "https://apionline.homedepot.com/p/MRCOOL-DIY-5th-Gen-24000-BTU-22-7-Seer2-2-Ton-Mini-Split-Heat-Pump-Complete-System-25-ft-Pre-Charged-Line-Set-230-Volt-R454B-DIY-24-HP-WM-230D25-O-CMB/335524456"
+    },
+    "standard": {
+     "unit_price": 3329.0,
+     "title": "DIY 5th Gen 24000 BTU 22.7 Seer2 2-Ton Mini-Split Heat Pump Complete System-25 ft. Pre-Charged Line Set-230-Volt-R454B",
+     "link": "https://apionline.homedepot.com/p/MRCOOL-DIY-5th-Gen-24000-BTU-22-7-Seer2-2-Ton-Mini-Split-Heat-Pump-Complete-System-25-ft-Pre-Charged-Line-Set-230-Volt-R454B-DIY-24-HP-WM-230D25-O-CMB/335524456"
+    },
+    "upgrade": {
+     "unit_price": 3329.0,
+     "title": "DIY 5th Gen 24000 BTU 22.7 Seer2 2-Ton Mini-Split Heat Pump Complete System-25 ft. Pre-Charged Line Set-230-Volt-R454B",
+     "link": "https://apionline.homedepot.com/p/MRCOOL-DIY-5th-Gen-24000-BTU-22-7-Seer2-2-Ton-Mini-Split-Heat-Pump-Complete-System-25-ft-Pre-Charged-Line-Set-230-Volt-R454B-DIY-24-HP-WM-230D25-O-CMB/335524456"
+    }
+   }
+  },
+  {
+   "key": "mini_split",
+   "category": "HVAC",
+   "item": "Mini split 12k BTU",
+   "unit": "each",
+   "qty_driver": "additions/bonus rooms",
+   "kind": "fixed",
+   "note": "",
+   "grades": {
+    "budget": null,
+    "standard": {
+     "unit_price": 1438.0,
+     "title": "Diamante Pro Low-Ambient 1-Zone 24,000 BTU 21 SEER2 Ductless Mini Split Inverter Heat Pump with 16 ft. Lines 208V/230V",
+     "link": "https://apionline.homedepot.com/p/Pioneer-Diamante-Pro-Low-Ambient-1-Zone-24-000-BTU-21-SEER2-Ductless-Mini-Split-Inverter-Heat-Pump-with-16-ft-Lines-208V-230V-WYT024GLSI20RL/336913531"
+    },
+    "upgrade": null
+   }
+  },
+  {
+   "key": "thermostat",
+   "category": "HVAC",
+   "item": "Programmable thermostat",
+   "unit": "each",
+   "qty_driver": "1 per system",
+   "kind": "fixed",
+   "note": "",
+   "grades": {
+    "budget": null,
+    "standard": {
+     "unit_price": 109.99,
+     "title": "T5 7-Day Smart Wi-Fi Thermostat with Geofence Technology and Auto Changeover, Energy Star Certified",
+     "link": "https://apionline.homedepot.com/p/T5-7-Day-Smart-Wi-Fi-Thermostat-with-Geofence-Technology-and-Auto-Changeover-Energy-Star-Certified-RTH8800WF2022/322082212"
+    },
+    "upgrade": null
+   }
+  },
+  {
+   "key": "water_heater",
+   "category": "Plumbing",
+   "item": "Water heater 50 gal electric",
+   "unit": "each",
+   "qty_driver": "1 per house",
+   "kind": "graded",
+   "note": "",
+   "grades": {
+    "budget": {
+     "unit_price": 529.0,
+     "title": "Performance 38 Gal. Short 4500-Watt Double Element Electric Water Heater with 6-Year Warranty",
+     "link": "https://apionline.homedepot.com/p/Rheem-Performance-38-Gal-Short-4500-Watt-Double-Element-Electric-Water-Heater-with-6-Year-Warranty-XE38S06ST45U1/326590457"
+    },
+    "standard": {
+     "unit_price": 649.0,
+     "title": "Performance 50 Gal. Tall 4500-Watt Double Element Electric Water Heater with  6-Year Warranty",
+     "link": "https://apionline.homedepot.com/p/Rheem-Performance-50-Gal-Tall-4500-Watt-Double-Element-Electric-Water-Heater-with-6-Year-Warranty-XE50T06ST45U1/326590448"
+    },
+    "upgrade": {
+     "unit_price": 729.0,
+     "title": "Performance 50 Gal. Tall 38,000 BTU Natural Gas Water Heater with 6-Year Warranty",
+     "link": "https://apionline.homedepot.com/p/Rheem-Performance-50-Gal-Tall-38-000-BTU-Natural-Gas-Water-Heater-with-6-Year-Warranty-XG50T06EC38U1/326590285"
+    }
+   }
+  },
+  {
+   "key": "wh_gas40",
+   "category": "Plumbing",
+   "item": "Water heater 40 gal gas",
+   "unit": "each",
+   "qty_driver": "where gas is the service",
+   "kind": "fixed",
+   "note": "",
+   "grades": {
+    "budget": null,
+    "standard": {
+     "unit_price": 649.0,
+     "title": "Performance 50 Gal. Tall 4500-Watt Double Element Electric Water Heater with  6-Year Warranty",
+     "link": "https://apionline.homedepot.com/p/Rheem-Performance-50-Gal-Tall-4500-Watt-Double-Element-Electric-Water-Heater-with-6-Year-Warranty-XE50T06ST45U1/326590448"
+    },
+    "upgrade": null
+   }
+  },
+  {
+   "key": "pex_half",
+   "category": "Plumbing",
+   "item": "PEX 1/2 in x 100 ft",
+   "unit": "roll",
+   "qty_driver": "3-5 rolls per repipe",
+   "kind": "fixed",
+   "note": "",
+   "grades": {
+    "budget": null,
+    "standard": {
+     "unit_price": 33.3,
+     "title": "1/2 in. x 100 ft. Blue PEX-B Pipe",
+     "link": "https://apionline.homedepot.com/p/Apollo-1-2-in-x-100-ft-Blue-PEX-B-Pipe-APPB10012/301541189"
+    },
+    "upgrade": null
+   }
+  },
+  {
+   "key": "pex_34",
+   "category": "Plumbing",
+   "item": "PEX 3/4 in x 100 ft",
+   "unit": "roll",
+   "qty_driver": "1-2 rolls per repipe",
+   "kind": "fixed",
+   "note": "",
+   "grades": {
+    "budget": null,
+    "standard": {
+     "unit_price": 57.65,
+     "title": "1/2 in. Stainless Steel PEX-B Barb Pinch Clamp Jar (100-Pack)",
+     "link": "https://apionline.homedepot.com/p/Apollo-1-2-in-Stainless-Steel-PEX-B-Barb-Pinch-Clamp-Jar-100-Pack-PXPC12100JR/301921339"
+    },
+    "upgrade": null
+   }
+  },
+  {
+   "key": "panel_200",
+   "category": "Electrical",
+   "item": "200A main breaker load center",
+   "unit": "each",
+   "qty_driver": "per panel swap",
+   "kind": "fixed",
+   "note": "",
+   "grades": {
+    "budget": null,
+    "standard": {
+     "unit_price": 240.21,
+     "title": "200 Amp Enclosed 2-Pole Outdoor Circuit Breaker",
+     "link": "https://apionline.homedepot.com/p/Eaton-200-Amp-Enclosed-2-Pole-Outdoor-Circuit-Breaker-ECCVH200R/205936221"
+    },
+    "upgrade": null
+   }
+  },
+  {
+   "key": "romex_12_2",
+   "category": "Electrical",
+   "item": "Romex 12/2 x 250 ft",
+   "unit": "roll",
+   "qty_driver": "2-3 per rewire",
+   "kind": "fixed",
+   "note": "",
+   "grades": {
+    "budget": null,
+    "standard": {
+     "unit_price": 185.78,
+     "title": "250 ft. 12/2 Solid Romex SIMpull CU NM-B W/G Wire and 1/2 in. Romex Metal Staples Combo (500-Pack)",
+     "link": "https://apionline.homedepot.com/p/sets/Southwire-250-ft-12-2-Solid-Romex-SIMpull-CU-NM-B-W-G-Wire-and-1-2-in-Romex-Metal-Staples-Combo-500-Pack/344238455"
+    },
+    "upgrade": null
+   }
+  },
+  {
+   "key": "romex_14_2",
+   "category": "Electrical",
+   "item": "Romex 14/2 x 250 ft",
+   "unit": "roll",
+   "qty_driver": "2-4 per rewire",
+   "kind": "fixed",
+   "note": "",
+   "grades": {
+    "budget": null,
+    "standard": {
+     "unit_price": 165.0,
+     "title": "250 ft. 14/3 Light Blue Solid CerroMax SLiPWire Copper NM -B Wire",
+     "link": "https://apionline.homedepot.com/p/Cerrowire-250-ft-14-3-Light-Blue-Solid-CerroMax-SLiPWire-Copper-NM-B-Wire-147-14043G/325078833"
+    },
+    "upgrade": null
+   }
+  },
+  {
+   "key": "gfci",
+   "category": "Electrical",
+   "item": "GFCI outlet 20A",
+   "unit": "each",
+   "qty_driver": "kitchen/bath/exterior locations",
+   "kind": "fixed",
+   "note": "",
+   "grades": {
+    "budget": null,
+    "standard": {
+     "unit_price": 26.48,
+     "title": "20 Amp 125-Volt Duplex SmarTest Self-Test SmartlockPro Tamper Resistant GFCI Outlet, White GFTR2-KW",
+     "link": "https://apionline.homedepot.com/p/Leviton-20-Amp-125-Volt-Duplex-SmarTest-Self-Test-SmartlockPro-Tamper-Resistant-GFCI-Outlet-White-GFTR2-KW-R92-GFTR2-0KW/205999867"
+    },
+    "upgrade": null
+   }
+  },
+  {
+   "key": "outlets",
+   "category": "Electrical",
+   "item": "Duplex outlets (10 pack)",
+   "unit": "pack",
+   "qty_driver": "1-2 per house",
+   "kind": "fixed",
+   "note": "",
+   "grades": {
+    "budget": null,
+    "standard": {
+     "unit_price": 23.48,
+     "title": "20 Amp Self-Test SmartlockPro Slim Duplex GFCI Outlet, White",
+     "link": "https://apionline.homedepot.com/p/Leviton-20-Amp-Self-Test-SmartlockPro-Slim-Duplex-GFCI-Outlet-White-R12-GFNT2-0RW/205996739"
+    },
+    "upgrade": null
+   }
+  },
+  {
+   "key": "switches",
+   "category": "Electrical",
+   "item": "Switches (10 pack)",
+   "unit": "pack",
+   "qty_driver": "1 per house",
+   "kind": "fixed",
+   "note": "",
+   "grades": {
+    "budget": null,
+    "standard": {
+     "unit_price": 14.7,
+     "title": "Claro On/Off Switch with Wallplate, 15-Amp/Single-Pole, White (CA-1PSW-WH)",
+     "link": "https://apionline.homedepot.com/p/sets/Lutron-Claro-On-Off-Switch-with-Wallplate-15-Amp-Single-Pole-White-CA-1PSW-WH-CA-1PSW-WH/339311370"
+    },
+    "upgrade": null
+   }
+  },
+  {
+   "key": "smoke",
+   "category": "Electrical",
+   "item": "Smoke detector (10 yr)",
+   "unit": "each",
+   "qty_driver": "per bedroom + 1 per floor",
+   "kind": "fixed",
+   "note": "",
+   "grades": {
+    "budget": null,
+    "standard": {
+     "unit_price": 64.97,
+     "title": "Hardwired Smoke and Carbon Monoxide Detector with AA Backup Battery and Interconnect Capability, 30CUAR",
+     "link": "https://apionline.homedepot.com/p/Kidde-Hardwired-Smoke-and-Carbon-Monoxide-Detector-with-AA-Backup-Battery-and-Interconnect-Capability-30CUAR-21031529/328175571"
+    },
+    "upgrade": null
+   }
+  },
+  {
+   "key": "co_det",
+   "category": "Electrical",
+   "item": "CO detector",
+   "unit": "each",
+   "qty_driver": "1 per floor (fuel appliances)",
+   "kind": "fixed",
+   "note": "",
+   "grades": {
+    "budget": null,
+    "standard": {
+     "unit_price": 69.97,
+     "title": "Hardwired Smoke and Carbon Monoxide Detector with 10-Year Battery Backup and Interconnect Capability, 30CUA10",
+     "link": "https://apionline.homedepot.com/p/Kidde-Hardwired-Smoke-and-Carbon-Monoxide-Detector-with-10-Year-Battery-Backup-and-Interconnect-Capability-30CUA10-21031544/328175573"
+    },
+    "upgrade": null
+   }
+  },
+  {
+   "key": "flush_mount",
+   "category": "Electrical",
+   "item": "LED flush mount light",
+   "unit": "each",
+   "qty_driver": "per room without fan",
+   "kind": "graded",
+   "note": "",
+   "grades": {
+    "budget": {
+     "unit_price": 49.97,
+     "title": "Clarkston II 44 in. LED Indoor Oil Rubbed Bronze Ceiling Fan with Light Kit",
+     "link": "https://apionline.homedepot.com/p/Hampton-Bay-Clarkston-II-44-in-LED-Indoor-Oil-Rubbed-Bronze-Ceiling-Fan-with-Light-Kit-SW18030-ORB/307738183"
+    },
+    "standard": {
+     "unit_price": 79.97,
+     "title": "1-Pack 1 ft. x 4 ft. 4000 Lumens Dimmable Integrated LED Flat Panel Ceiling Flush Mount Fixture with Selectable 5CCT",
+     "link": "https://apionline.homedepot.com/p/Commercial-Electric-1-Pack-1-ft-x-4-ft-4000-Lumens-Dimmable-Integrated-LED-Flat-Panel-Ceiling-Flush-Mount-Fixture-with-Selectable-5CCT-FP1X4-6WY-WH-HDT/320358738"
+    },
+    "upgrade": {
+     "unit_price": 99.0,
+     "title": "Benning 52 in. Indoor Matte Black Downrod Mount Ceiling Fan with Adjustable White Light LED and Remote Control Included",
+     "link": "https://apionline.homedepot.com/p/Hampton-Bay-Benning-52-in-Indoor-Matte-Black-Downrod-Mount-Ceiling-Fan-with-Adjustable-White-Light-LED-and-Remote-Control-Included-85251/334894519"
+    }
+   }
+  },
+  {
+   "key": "ceiling_fan",
+   "category": "Electrical",
+   "item": "Ceiling fan 52 in",
+   "unit": "each",
+   "qty_driver": "bedrooms + living",
+   "kind": "graded",
+   "note": "",
+   "grades": {
+    "budget": {
+     "unit_price": 99.0,
+     "title": "Benning 52 in. Indoor Matte Black Downrod Mount Ceiling Fan with Adjustable White Light LED and Remote Control Included",
+     "link": "https://apionline.homedepot.com/p/Hampton-Bay-Benning-52-in-Indoor-Matte-Black-Downrod-Mount-Ceiling-Fan-with-Adjustable-White-Light-LED-and-Remote-Control-Included-85251/334894519"
+    },
+    "standard": {
+     "unit_price": 139.0,
+     "title": "52 in. Corwin Indoor/Outdoor Matte Black LED Ceiling Fan with Light Kit",
+     "link": "https://apionline.homedepot.com/p/Hampton-Bay-52-in-Corwin-Indoor-Outdoor-Matte-Black-LED-Ceiling-Fan-with-Light-Kit-56051/319830773"
+    },
+    "upgrade": {
+     "unit_price": 169.0,
+     "title": "Merwry 52 in. Integrated LED Indoor Matte Black Ceiling Fan with Light Kit and Remote Control",
+     "link": "https://apionline.homedepot.com/p/Home-Decorators-Collection-Merwry-52-in-Integrated-LED-Indoor-Matte-Black-Ceiling-Fan-with-Light-Kit-and-Remote-Control-SW1422MBK/301231214"
+    }
+   }
+  },
+  {
+   "key": "vanity_light",
+   "category": "Electrical",
+   "item": "Vanity light",
+   "unit": "each",
+   "qty_driver": "per bath",
+   "kind": "graded",
+   "note": "",
+   "grades": {
+    "budget": {
+     "unit_price": 56.97,
+     "title": "Ashhurst 3-Light Brushed Nickel Classic Traditional Bathroom Vanity Light with Frosted Glass Shades",
+     "link": "https://apionline.homedepot.com/p/Hampton-Bay-Ashhurst-3-Light-Brushed-Nickel-Classic-Traditional-Bathroom-Vanity-Light-with-Frosted-Glass-Shades-EGM1393A-5-BN/203789012"
+    },
+    "standard": {
+     "unit_price": 79.97,
+     "title": "Woodbury 24 in. 1-Light Brushed Nickel LED Vanity Light with Extra Matte Black Trim 2700K-5000K",
+     "link": "https://apionline.homedepot.com/p/Hampton-Bay-Woodbury-24-in-1-Light-Brushed-Nickel-LED-Vanity-Light-with-Extra-Matte-Black-Trim-2700K-5000K-C06023301A/334246488"
+    },
+    "upgrade": {
+     "unit_price": 115.35,
+     "title": "Merrin 23.1 in. 3-Light Black Golden Bathroom Vanity Light with Crystal Shades",
+     "link": "https://apionline.homedepot.com/p/ExBrite-Merrin-23-1-in-3-Light-Black-Golden-Bathroom-Vanity-Light-with-Crystal-Shades-THD11VL1301ACGXE26/322270411"
+    }
+   }
+  },
+  {
+   "key": "mulch",
+   "category": "Landscape",
+   "item": "Mulch 2 cu ft",
+   "unit": "bag",
+   "qty_driver": "~15-25 bags per front bed refresh",
+   "kind": "fixed",
+   "note": "",
+   "grades": {
+    "budget": null,
+    "standard": {
+     "unit_price": 3.97,
+     "title": "Earthgro 1.5 cu. ft. Black Wood Shredded Bagged Mulch",
+     "link": "https://apionline.homedepot.com/p/Earthgro-Earthgro-1-5-cu-ft-Black-Wood-Shredded-Bagged-Mulch-88559180/311613376"
+    },
+    "upgrade": null
+   }
+  }
+ ],
+ "allowances": [
+  {
+   "key": "dumpster_pull_30_yd",
+   "category": "Demo and site",
+   "item": "Dumpster pull, 30 yd",
+   "amount": 475,
+   "basis": "Per pull; 1 per ~1,500 sqft of demo/clutter"
+  },
+  {
+   "key": "wdo_termite_inspection",
+   "category": "Structure",
+   "item": "WDO/termite inspection",
+   "amount": 150,
+   "basis": "Every project inside the inspection period"
+  },
+  {
+   "key": "termite_treatment",
+   "category": "Structure",
+   "item": "Termite treatment",
+   "amount": 1200,
+   "basis": "When the WDO comes back active"
+  },
+  {
+   "key": "framing_repair_allowance",
+   "category": "Structure",
+   "item": "Framing repair allowance",
+   "amount": 1500,
+   "basis": "Sill/joist discovery; scoped per walk"
+  },
+  {
+   "key": "fabricated_quartz_countertop",
+   "category": "Kitchen",
+   "item": "Fabricated quartz countertop",
+   "amount": 70,
+   "basis": "Per sqft, special-order quote; HD lists only samples online"
+  },
+  {
+   "key": "seamless_gutter_sub_out",
+   "category": "Siding and exterior",
+   "item": "Seamless gutter sub-out",
+   "amount": 9,
+   "basis": "Per lf installed; alternative to sectional"
+  },
+  {
+   "key": "heat_pump_scope_kit",
+   "category": "HVAC",
+   "item": "Heat pump scope kit",
+   "amount": 600,
+   "basis": "Heat strips, line set, thermostat per system"
+  },
+  {
+   "key": "pex_fittings_valves_manifold",
+   "category": "Plumbing",
+   "item": "PEX fittings, valves, manifold",
+   "amount": 400,
+   "basis": "Per repipe"
+  },
+  {
+   "key": "breaker_set",
+   "category": "Electrical",
+   "item": "Breaker set",
+   "amount": 300,
+   "basis": "Per panel swap"
+  },
+  {
+   "key": "misc_devices_plates_low_volt",
+   "category": "Electrical",
+   "item": "Misc devices, plates, low-volt",
+   "amount": 150,
+   "basis": "Per house"
+  },
+  {
+   "key": "carpet_exception_only",
+   "category": "Flooring",
+   "item": "Carpet (exception only)",
+   "amount": 2.5,
+   "basis": "Per sqft installed, quoted; house standard is LVP"
+  },
+  {
+   "key": "landscaping_and_curb",
+   "category": "Landscape",
+   "item": "Landscaping and curb",
+   "amount": 1000,
+   "basis": "Baseline; scoped per walk"
+  }
+ ]
+}

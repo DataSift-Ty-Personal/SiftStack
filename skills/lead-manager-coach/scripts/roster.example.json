@@ -1,0 +1,10 @@
+{
+  "_comment": "Copy to roster.json in your project folder (next to the scripts folder). 'roles' pins callers who only work one pipeline so their calls always route to the right rubric: cold_call | lead_management | closing. 'excluded' hides departed callers from coaching review.",
+  "roles": {
+    "Jane Smith": "cold_call",
+    "John Doe": "lead_management"
+  },
+  "excluded": [
+    "Former Caller Name"
+  ]
+}

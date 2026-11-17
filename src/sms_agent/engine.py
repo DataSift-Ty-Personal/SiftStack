@@ -1,0 +1,1123 @@
+"""The brain: turn a webhook into CRM writes, an escalation, and maybe a reply.
+
+Autonomy ladder (SMS_AGENT_PHASE):
+  1  classify inbound and write phone status / opt-outs. No replies, no Slack.
+  2  + escalate positive replies to the prospector channel and flip the CRM.
+  3  + draft replies, held for approval in Slack. Still nothing auto-sent.
+  4  + auto-send the highest-confidence intents only; everything else drafts.
+
+The ladder exists because the phone number is the asset. Phase 2 already gives
+a working handoff with zero AI-authored text going out.
+"""
+from __future__ import annotations
+
+import logging
+import re
+from typing import Optional
+
+from . import (classify, config, crm, dispositions, escalate, ratebudget, respond, revocation,
+               sender_pool, smrtphone, store)
+from .knowledge import touches
+
+log = logging.getLogger(__name__)
+
+# Only these may ever be auto-sent, and only above the confidence floor.
+# Everything else drafts for a human regardless of how sure the model is.
+AUTO_SEND_INTENTS = {"ASKING_WHO", "NOT_INTERESTED"}
+
+# Intents that end the thread. No reply, no further outbound, ever.
+TERMINAL_INTENTS = {"OPT_OUT", "WRONG_NUMBER"}
+
+# A real person asked something and is waiting. Not a hot lead, but it cannot
+# be left in silence while the agent is below the phase that can answer.
+NEEDS_HUMAN_REPLY_INTENTS = {"ASKING_WHO"}
+
+
+def _all_records_for(phone: str, record_uuid: str, matches: Optional[list]) -> list[str]:
+    """Every record uuid carrying this phone. Falls back to a CRM lookup."""
+    uuids = [m["record_uuid"] for m in (matches or []) if m.get("record_uuid")]
+    if not uuids:
+        uuids = [m["record_uuid"] for m in crm.find_records_by_phone(phone)]
+    if record_uuid and record_uuid not in uuids:
+        uuids.insert(0, record_uuid)
+    return uuids
+
+
+def _suppress_unknown(phone: str, intent: str) -> list[str]:
+    """Honour a terminal intent from a number we cannot attach to any record.
+
+    We cannot write a phone status without a record, but we can guarantee we
+    never text them again, and get them onto smrtPhone's do-not-text list so no
+    other tool does either.
+    """
+    reason = "opt_out" if intent == "OPT_OUT" else "wrong_number"
+    store.suppress(phone, reason)
+    store.update_conversation(
+        phone, state="opted_out" if intent == "OPT_OUT" else "closed", paused_reason=reason
+    )
+    cancelled = store.cancel_queued(phone, reason)
+    acts = [f"suppressed as {reason} (no record found; cancelled {cancelled} queued)"]
+    if intent == "OPT_OUT":
+        ok, detail = smrtphone.add_to_dnt(phone)
+        acts.append(f"smrtPhone DNT: {'added' if ok else 'FAILED - ' + detail}")
+        if not ok:
+            escalate.alert(
+                "Opt-out could not be written to smrtPhone DNT",
+                f"{phone} is suppressed on our side but ADD IT TO THE DNT LIST MANUALLY. {detail}",
+            )
+    return acts
+
+
+def _report(result: dict) -> str:
+    """Describe a CRM write honestly.
+
+    A dry run must never read as 'ok'. Half the failure modes in this codebase
+    have been a call that returned success while changing nothing.
+    """
+    if not isinstance(result, dict):
+        return "ok"
+    if result.get("error"):
+        return f"FAILED - {result['error']}"
+    if result.get("_dry_run"):
+        return "dry run (nothing written)"
+    if result.get("skipped"):
+        return f"skipped: {result['skipped']}"
+    return "ok"
+
+
+# ---------------------------------------------------------------- inbound
+
+def handle_inbound(payload: dict) -> dict:
+    """smsIncoming. The main path."""
+    phone = store.clean_phone(payload.get("from"))
+    to_number = payload.get("to") or ""
+    body = (payload.get("message") or "").strip()
+    sms_id = str(payload.get("smsId") or "")
+
+    if not phone:
+        return {"action": "ignored", "reason": "no from number"}
+
+    # WHICH PROGRAM IS THIS THREAD? The dispo blast and the seller campaign
+    # share one agent, one database and one inbox, and nothing distinguished
+    # them: a buyer's reply was answered with the seller playbook, validated
+    # under the seller profile (which blocks every dollar figure, so the
+    # approved asking price could never be quoted back), and a hot BUYER lead
+    # paged the seller channel. The number it arrived ON is the signal: the
+    # pools are disjoint by construction.
+    program = sender_pool.program_for(to_number)
+    conv = store.ensure_conversation(phone, from_number=to_number)
+    store.add_message(phone, "in", body, from_number=to_number, sms_id=sms_id, author="owner")
+
+    mapped = store.lookup_phone(phone) or {}
+    record_uuid = mapped.get("record_uuid") or conv.get("record_uuid") or ""
+    if record_uuid and not conv.get("record_uuid"):
+        store.update_conversation(phone, record_uuid=record_uuid)
+
+    thread = store.thread(phone)
+    result = classify.classify(body, thread[:-1])
+    log.info("inbound %s [%s %.2f via %s] %s", phone, result.intent, result.confidence,
+             result.source, body[:80])
+    store.stamp_intent(phone, sms_id, result.intent, result.confidence)
+
+    outcome = {
+        "phone": phone,
+        "record_uuid": record_uuid,
+        "classification": result.to_dict(),
+        "actions": [],
+    }
+
+    # Not in the local map: ask the CRM. A reply routinely arrives from a line
+    # we never texted, and giving up here meant real wrong-numbers and opt-outs
+    # went undispositioned while filling Slack with noise.
+    matches: list[dict] = []
+    if not record_uuid:
+        matches = crm.find_records_by_phone(phone)
+        if matches:
+            record_uuid = matches[0]["record_uuid"]
+            store.update_conversation(phone, record_uuid=record_uuid)
+            store.map_phone(phone, record_uuid=record_uuid)
+            outcome["record_uuid"] = record_uuid
+            outcome["actions"].append(
+                f"resolved from the CRM by phone ({len(matches)} record(s) carry this number)"
+            )
+
+    if not record_uuid:
+        # Genuinely unknown. Terminal intents still get honoured, because a
+        # person who says "leave me alone" must never be texted again whether
+        # or not we can name them.
+        if result.intent in TERMINAL_INTENTS:
+            outcome["actions"] += _suppress_unknown(phone, result.intent)
+            outcome["action"] = result.intent.lower()
+            return outcome
+        # Everything else is logged, not escalated. Slack is for handing a
+        # conversation to a person, not a feed of every stray inbound.
+        log.info("unmapped inbound from %s: %s", phone, body[:120])
+        outcome["action"] = "unmapped"
+        return outcome
+
+    context = mapped.get("context") or {}
+    if not context:
+        context = crm.deal_context(record_uuid)
+        if context:
+            store.map_phone(phone, record_uuid=record_uuid, context=context)
+
+    # ---- one table for every no (build plan 0.4) ----
+    # Off by default. On, this reply is dispositioned by the same table the Smarter Contact path
+    # uses, so "not interested" writes the same thing whichever number it was sent to. A hand
+    # raise that is worth the call falls through to the handoff below, as it always has.
+    if config.DISPOSITION_TABLE:
+        done = _table_disposition(phone, record_uuid, body, result, context, matches, program)
+        if done is not None:
+            outcome["actions"] += done.actions
+            outcome["action"] = done.action
+            outcome["disposition"] = done.kind
+            if conv.get("state") == "opted_out":
+                # A later "not for sale" from someone who already said stop must not reopen it.
+                store.update_conversation(phone, state="opted_out")
+            return outcome
+
+    # ---- terminal intents: write, suppress, stop talking ----
+    if result.intent == "OPT_OUT":
+        outcome["actions"] += _do_opt_out(phone, record_uuid, matches, body)
+        outcome["action"] = "opted_out"
+        return outcome
+
+    if result.intent == "WRONG_NUMBER":
+        outcome["actions"] += _do_wrong_number(phone, record_uuid, body, context, matches)
+        outcome["action"] = "wrong_number"
+        return outcome
+
+    if result.intent == "ESCALATE":
+        outcome["actions"] += _do_sensitive(phone, record_uuid, body, result, matches)
+        outcome["action"] = "escalated"
+        return outcome
+
+    # ---- live conversation ----
+    # A positive reply always reaches the prospector (Ty, 2026-08-11): flag it,
+    # never try to hold the conversation with a well-worded auto-reply.
+    #
+    # This used to fire only while the thread was still ours, to avoid re-paging
+    # someone who had already taken it over. But that dropped exactly the wrong
+    # message: a seller warms up ACROSS turns, so the clearest buying signal
+    # usually lands after a human has already answered once. queue_escalation
+    # posts once per conversation, so the original spam concern is handled there
+    # rather than by staying silent.
+    if result.intent == "INTERESTED":
+        outcome["actions"] += _do_hot_lead(
+            phone, record_uuid, body, result, context, thread, program)
+
+    # Turn cap: a thread that has gone six rounds without a handoff is not
+    # going to be rescued by a seventh.
+    if int(conv.get("ai_turns") or 0) >= config.MAX_AI_TURNS:
+        store.pause_conversation(phone, "turn cap reached")
+        if config.PHASE >= 2:
+            escalate.alert(
+                f"SMS thread hit the {config.MAX_AI_TURNS}-turn cap",
+                f"> {body[:300]}\n_Handing to a human._",
+                record_uuid,
+            )
+            crm.add_tags(record_uuid, [config.TAG_AI_PAUSED])
+        outcome["actions"].append("paused:turn_cap")
+        outcome["action"] = "turn_cap"
+        return outcome
+
+    if conv.get("state") != "active":
+        outcome["action"] = "conversation_" + str(conv.get("state"))
+        outcome["actions"].append(f"no reply: conversation is {conv.get('state')}")
+        return outcome
+
+    if result.intent == "INTERESTED":
+        # Handed to a person. The agent does not keep talking to a live lead,
+        # at any phase: a hold-text from a bot is worse than a fast human call.
+        store.pause_conversation(phone, f"handed to {config.HANDOFF_NAME}")
+        outcome["actions"].append(f"paused: handed to {config.HANDOFF_NAME}, no reply drafted")
+        outcome["action"] = "handoff"
+        return outcome
+
+    if config.PHASE < 3:
+        # Below phase 3 the agent writes nothing back, so a live person who
+        # asked us a direct question gets silence unless someone is told.
+        # "How can I help you" sat active and unanswered for half an hour
+        # (7035550165, 2026-08-11): the worst outcome available, since they
+        # replied and we simply did not answer.
+        #
+        # This is deliberately NOT the hot-lead path. It makes no claim about
+        # selling, writes no escalation tags, and says plainly what it is, so
+        # the channel keeps its meaning: a handoff post means a live seller.
+        if result.intent == "ASKING_WHO" and config.ANSWER_WHO:
+            outcome["actions"] += _do_answer_who(phone, record_uuid, context)
+            outcome["action"] = "answered_who"
+            return outcome
+        if result.intent in NEEDS_HUMAN_REPLY_INTENTS:
+            outcome["actions"] += _do_needs_answer(phone, record_uuid, body, result)
+            outcome["action"] = "needs_human_reply"
+            return outcome
+        outcome["action"] = "classified"
+        return outcome
+
+    outcome["actions"] += _do_reply(phone, record_uuid, body, result,
+                                    context, program)
+    outcome["action"] = "replied"
+    return outcome
+
+
+def _table_disposition(phone: str, record_uuid: str, body: str, result, context: dict,
+                       matches: Optional[list], program: str):
+    """Run one smrtPhone reply through the shared table (dispositions.py).
+
+    Returns None when the table leaves the reply to the flow that follows: a question, small
+    talk, or a hand raise that is worth the call. Only reached with SMS_AGENT_DISPOSITION_TABLE on.
+    """
+    kind = dispositions.decide(result.intent, body, program)
+    if not kind:
+        return None
+    env = dispositions.Env(phone=phone, record_uuid=record_uuid, body=body, result=result,
+                           context=context or {}, matches=matches, program=program, inbox="smrtPhone",
+                           allow_status=config.PHASE >= 2)
+    if kind != "hand_raise":
+        return dispositions.apply(kind, env)
+    if program in ("buyer", "dispo"):
+        return None
+    # The same test the Smarter Contact path applies: a listed house, or an ask far over value,
+    # is not worth the call today.
+    quality, why = dispositions.lead_quality(record_uuid, body)
+    if not quality:
+        return None
+    env.reason = f"not pushed: {why}"
+    out = dispositions.apply(quality, env)
+    out.actions = ([f"not pushed: {why}"]
+                   + dispositions.skip_notice(phone, record_uuid, body, context or {}, why, out.action)
+                   + out.actions)
+    return out
+
+
+def _do_opt_out(phone: str, record_uuid: str, matches: Optional[list] = None,
+                body: str = "") -> list[str]:
+    """Honor an opt-out completely: local, remote, CRM, and anything queued.
+
+    An angry reply is often BOTH. "I don't own it ... leave me alone" is a
+    wrong number and a do-not-contact in one sentence. Opt-out wins for
+    suppression, and the phone is ALSO marked WRONG so the data is clean and no
+    caller dials it either.
+    """
+    acts = []
+    store.suppress(phone, "opt_out")
+    store.update_conversation(phone, state="opted_out", paused_reason="opt-out")
+    cancelled = store.cancel_queued(phone, "opt-out")
+    acts.append(f"suppressed locally (cancelled {cancelled} queued)")
+
+    ok, detail = smrtphone.add_to_dnt(phone)
+    acts.append(f"smrtPhone DNT: {'added' if ok else 'FAILED - ' + detail}")
+
+    # Tag every record carrying this number, not just the one we texted. Skip
+    # trace attaches one line to several owners; leaving the others untagged
+    # means the number gets dialled again tomorrow by someone else.
+    targets = _all_records_for(phone, record_uuid, matches)
+    for uuid in targets:
+        acts.append(
+            f"CRM tag {config.TAG_OPT_OUT} on {uuid[:8]}: "
+            f"{_report(crm.add_tags(uuid, [config.TAG_OPT_OUT]))}"
+        )
+        acts.append(f"list {config.LIST_DNC} on {uuid[:8]}: {_report(crm.add_list(uuid, config.LIST_DNC))}")
+        crm.post_note(uuid, f"SMS opt-out received from {phone}. Suppressed from all texting.")
+    # A death inside an opt-out is still a probate lead on the record, just
+    # never by text to this number (Ty, 2026-08-26: dispositioned, not posted).
+    if body and classify._hit(body.lower(), classify.BEREAVEMENT_NOW):
+        for uuid in ([record_uuid] if record_uuid else targets[:1]):
+            crm.post_note(uuid, f'SMS reply from {phone} reports a death: "{body[:220]}". '
+                                "That number asked us to stop texting; work the estate another way.",
+                          pinned=True)
+        acts.append("reported a death: pinned note on the record (number still suppressed)")
+    if len(targets) > 1:
+        acts.append(f"applied across {len(targets)} records sharing this number")
+
+    # The opt-out goes onto the PHONE in Sift, which is the durable fix (Ty,
+    # 2026-08-11). smrtPhone's DNT list has no documented write route and every
+    # attempt 404s, so suppressing only in our database left the number textable
+    # from any other tool. Sift is where every campaign is built, so a phone
+    # dispositioned DNC there is excluded at the source, for us and for callers,
+    # forever, without depending on a vendor endpoint we cannot reach.
+    wrong = bool(body and classify.classify_rules_wrong_number(body))
+    for uuid in targets:
+        status = crm.dnc_status(uuid, phone, wrong_number=wrong)
+        acts.append(
+            f"phone -> {status} on {uuid[:8]}: {_report(crm.set_phone_status(uuid, phone, status))}"
+        )
+
+    if not ok and config.PHASE >= 2:
+        # Sift now carries the suppression, so this is a note rather than the
+        # emergency it used to be. It still gets said out loud, because a number
+        # left off smrtPhone's DNT can still be texted by hand from its inbox.
+        escalate.alert(
+            "Opt-out recorded in Sift, not on smrtPhone's DNT",
+            f"{phone} is suppressed here and dispositioned DNC in Sift, so no campaign "
+            f"will text it again. smrtPhone's own DNT list could not be written "
+            f"(no API route), so add it there by hand if you want its inbox blocked too.\n{detail}",
+            record_uuid,
+        )
+    # Build plan 0.17: the stop reaches the owner's OTHER numbers too. Five of nine measured
+    # replies came from a different number than the one texted, so a stop that only clears this
+    # number's queue leaves tomorrow's touch on its way to the next one. Nothing happens here
+    # unless SMS_AGENT_OWNER_REVOKE is on.
+    acts += revocation.on_event("stop", phone, record_uuid, matches=[{"record_uuid": u} for u in targets])
+    return acts
+
+
+def _do_wrong_number(phone: str, record_uuid: str, body: str, context: dict,
+                     matches: Optional[list] = None) -> list[str]:
+    acts = []
+    # A wrong number is wrong on every record it appears on.
+    for uuid in _all_records_for(phone, record_uuid, matches):
+        res = crm.set_phone_status(uuid, phone, "WRONG")
+        acts.append(f"phone status WRONG on {uuid[:8]}: {_report(res)}")
+        crm.post_note(uuid, f"{phone} replied wrong number: \"{body[:180]}\". Phone set to WRONG.")
+    store.suppress(phone, "wrong_number")
+    store.update_conversation(phone, state="closed", paused_reason="wrong number")
+    store.cancel_queued(phone, "wrong number")
+    acts.append("suppressed + queued cancelled")
+    return acts
+
+
+def _do_hot_lead(
+    phone: str, record_uuid: str, body: str, result, context: dict, thread: list[dict],
+    program: str = "",
+) -> list[str]:
+    """A positive reply is a handoff, not a conversation to continue.
+
+    The CRM write happens immediately so the lead exists in her queue whether or
+    not Slack is watched. The NOTIFICATION is debounced: a seller routinely
+    sends one thought across two or three texts, and posting each separately
+    buries the lead under repeats of its own transcript.
+    """
+    acts = []
+    if config.PHASE < 2:
+        return ["hot lead detected (phase 1: no escalation)"]
+
+    # We post to Slack directly rather than relying on a CRM sequence to notice,
+    # because the agent deliberately does NOT move the lead's status (below).
+    if "INTERESTED" in config.ESCALATE_INTENTS:
+        if store.escalation_expired(phone, config.ESCALATION_QUIET_DAYS):
+            store.clear_escalation(phone)
+        state = store.queue_escalation(
+            phone, record_uuid, result.intent, config.ESCALATION_DEBOUNCE_SECONDS
+        )
+        acts.append({
+            "new": f"handoff queued, posting in ~{config.ESCALATION_DEBOUNCE_SECONDS}s",
+            "extended": "burst still arriving; notification held open",
+            "already_posted": "already handed off; no repeat post",
+        }[state])
+    else:
+        acts.append("escalation disabled by SMS_AGENT_ESCALATE_INTENTS")
+
+    # The agent does NOT touch lead status (Ty, 2026-08-11). A text saying "I'll
+    # sell, or keep" is interest, not a qualified lead, and only the person who
+    # makes the call can decide that. Moving it also had a mechanical cost: the
+    # status change fired a DataSift sequence that reassigned the record away
+    # from the prospector we had just paged, and it dropped the record out of
+    # every Hottest preset (all of which exclude new_lead), so the hottest leads
+    # were the ones that silently vanished from the cadence. The tag and the
+    # assignment carry the handoff instead; Emerson advances the status herself.
+    crm.add_tags(record_uuid, [config.TAG_ESCALATED, config.TAG_AI_HANDLED])
+    if config.HANDOFF_ASSIGNEE_UUID:
+        acts.append(
+            f"assigned to {config.HANDOFF_NAME}: "
+            f"{_report(crm.assign(record_uuid, config.HANDOFF_ASSIGNEE_UUID))}"
+        )
+    crm.post_note(record_uuid, f"Positive SMS reply from {phone}: \"{body[:250]}\"", pinned=True)
+
+    # Set CORRECT: they engaged about the property, so the number is good.
+    acts.append(f"phone status -> CORRECT: {_report(crm.set_phone_status(record_uuid, phone, 'CORRECT'))}")
+    # Build plan 2.3 and 0.17. Both lines are empty lists until their switch is on: the first
+    # sets New Lead (never over a status that already means lead), the second pauses the owner's
+    # other numbers, so touch 2 does not land on their second line while a person is dialing.
+    acts += dispositions.hand_raise(phone, record_uuid, body, program, context)
+    acts += revocation.on_event("handoff", phone, record_uuid)
+    return acts
+
+
+def _do_answer_who(phone: str, record_uuid: str, context: dict) -> list[str]:
+    """Answer "who is this?" from the fixed pool.
+
+    Deliberately a TEMPLATE, not a model draft. Identity is the one thing the
+    model has already been caught inventing (it called itself "Alex" once), and
+    it is also the thing with legal weight, so it is not left to a generator.
+    Fixed copy means the answer is reviewable, identical every time, and cannot
+    name a company by accident.
+
+    It still goes through the outbox, so quiet hours, the sticky sender, the
+    per-number cap and suppression all apply exactly as they do to outreach.
+    """
+    acts = []
+
+    # ANSWER ONCE. Every "who is this" used to get the same canned line, so a
+    # person who asked twice got the identical text twice and a person who
+    # asked three times got it three times, ten minutes apart (8655550194,
+    # 2026-08-26: "How did you get my information?" -> answer, "Why are you
+    # asking?" -> same answer, "you have now sent me four texts" -> same answer
+    # again). The third message was a COMPLAINT about being spammed and we
+    # replied to it with the line they were complaining about. Asking a second
+    # time means the canned answer did not satisfy them, which is a human's job.
+    if store.already_answered_who(phone):
+        log.info("already answered who-is-this on %s; handing to a person", phone)
+        store.pause_conversation(phone, "asked who we are more than once")
+        return (["asked again after the who-reply; paused and handed to a person"]
+                + _do_needs_answer(phone, record_uuid,
+                                   "(asked who we are again after our answer)", None))
+
+    # Use the name we ACTUALLY ADDRESSED in this thread, not the record's owner.
+    # On the heir campaign the recipient is a relative, so the record owner is
+    # somebody else entirely: one thread opened "Hi Norma" and then answered
+    # "Hey Glen", on a phone whose contact name was Harold. Three names, one
+    # conversation. phone_map.first_name is who we greeted; owner_first is only
+    # the fallback for owner-campaign threads where they are the same person.
+    addressed = store.addressed_first_name(phone)
+    first = touches.clean_first(addressed or context.get("owner_first") or "")
+    if touches.is_entity(context.get("owner_full") or ""):
+        first = ""
+    place = context.get("county") or ""
+    place = f"{place} County" if place and "county" not in place.lower() else (
+        place or context.get("city") or ""
+    )
+    sender = context.get("assigned_name") or config.HANDOFF_NAME
+    conv = store.get_conversation(phone) or {}
+
+    message = touches.render_who(
+        seed=f"{record_uuid}|{phone}",
+        first=first,
+        addr=context.get("street") or "your place",
+        place=place,
+        sender=sender,
+    )
+    # A 5-digit house number is not a zip: exempt exactly the street we texted.
+    ok, problems = respond.validate(message, max_questions=1, allowed_address=context.get("street") or "")
+    if not ok:
+        # Never send unvalidated copy. Fall back to telling a human.
+        log.warning("who-reply failed validation (%s); handing to a person", problems)
+        return _do_needs_answer(phone, record_uuid, "(asked who we are)", None)
+
+    row_id = store.queue_message(
+        phone, message, from_number=conv.get("from_number") or "",
+        intent="ASKING_WHO", confidence=1.0,
+    )
+    store.bump_ai_turns(phone)
+    acts.append(f"queued who-reply #{row_id}")
+    if record_uuid:
+        acts.append(
+            f"phone status -> CORRECT: {_report(crm.set_phone_status(record_uuid, phone, 'CORRECT'))}"
+        )
+    return acts
+
+
+def _do_needs_answer(phone: str, record_uuid: str, body: str, result,
+                     inbox: str = "smrtPhone", context: Optional[dict] = None,
+                     unsure: bool = False) -> list[str]:
+    """Tell a human that someone is waiting on an answer.
+
+    Posted once per conversation, because a person asking twice is still one
+    question. A question marks the phone CORRECT: whoever replied is reachable,
+    which is true whatever they went on to say. An `unsure` read does not,
+    because a bare "No" can just as well mean the number is not theirs.
+    """
+    acts = []
+    if config.PHASE < 2:
+        return ["question detected (phase 1: no notification)"]
+
+    ctx = context or {}
+    who = " ".join(x for x in (ctx.get("owner_first"), ctx.get("owner_last")) if x)
+    where = ", ".join(x for x in (ctx.get("street"), ctx.get("city")) if x)
+    lines = [f"{escalate._fmt_phone(phone)}" + (f"  {where}" if where else "")
+             + (f"  (texted as {who})" if who else ""),
+             f"> {body[:300]}"]
+    if ctx.get("reply_link"):
+        lines.append(f"<{ctx['reply_link']}|Open the conversation in {inbox}> to answer from the "
+                     "number that texted them.")
+    else:
+        lines.append(f"_Answer from the {inbox} inbox._")
+    lines.append("_The agent has not answered this one._")
+    if store.mark_notified(phone, "needs_reply"):
+        ok = escalate.alert(
+            f"{config.HANDOFF_NAME}: "
+            + ("a reply the agent could not read" if unsure else "someone replied with a question"),
+            "\n".join(lines), record_uuid, kind="needs_reply")
+        acts.append("posted: awaiting a human answer" if ok else "notify FAILED")
+    else:
+        acts.append("already flagged as awaiting an answer")
+
+    if record_uuid and not unsure:
+        acts.append(
+            f"phone status -> CORRECT: {_report(crm.set_phone_status(record_uuid, phone, 'CORRECT'))}"
+        )
+    return acts
+
+
+def _do_sensitive(phone: str, record_uuid: str, body: str, result,
+                  matches: Optional[list] = None) -> list[str]:
+    """A sensitive reply, then its reach to the owner's other numbers (build plan 0.17).
+
+    The handling itself is `_sensitive` below, unchanged. What is added reads the result rather
+    than repeating the logic: if the handler suppressed this number, the owner told us to stop,
+    and that holds for every number of theirs; if it only paused the thread, a person is looking,
+    so the owner's other numbers wait too. Nothing is added unless SMS_AGENT_OWNER_REVOKE is on.
+    """
+    acts = _sensitive(phone, record_uuid, body, result, matches)
+    if config.OWNER_REVOKE:
+        reason = store.is_suppressed(phone) or ""
+        stopped = reason.startswith(("sensitive", "asked to be left alone", "opt_out"))
+        acts += revocation.on_event("stop" if stopped else "pause", phone, record_uuid,
+                                    matches=matches if stopped else None, why="a sensitive reply")
+    return acts
+
+
+def _sensitive(phone: str, record_uuid: str, body: str, result,
+               matches: Optional[list] = None) -> list[str]:
+    """A sensitive reply, handled by WHICH KIND of sensitive it is.
+
+    These were all treated the same for the first week: pause the thread, tag
+    the record, say nothing. That was wrong in both directions at once.
+
+    Hostile is a hard stop, and pausing is not enough. A paused conversation
+    keeps OUR next campaign away but leaves the number live for a dialler and
+    unmarked in Sift, so a harassment claim, a threat to report us, or a child
+    on the line stayed dialable. Those now suppress and disposition exactly like
+    an opt-out, because that is what they are.
+
+    Bereavement is the opposite mistake. A death is the most common reason a
+    house sells, so "Judy died in 2022" is a probate lead, not a number to burn.
+    It stops the agent, since condolences are not something to automate, but the
+    number stays workable and a person hears about it.
+
+    Both post to the channel regardless of the interested-parties-only rule. A
+    harassment claim and a minor are legal exposure, not bookkeeping.
+    """
+    from . import classify as _cls
+
+    text = (body or "").lower()
+    hostile = bool(_cls._hit(text, _cls.HOSTILE_NOW))
+    bereaved = bool(_cls._hit(text, _cls.BEREAVEMENT_NOW))
+    acts = []
+
+    store.cancel_queued(phone, "sensitive content")
+
+    if hostile:
+        store.suppress(phone, f"sensitive: {result.rationale}"[:120])
+        store.update_conversation(phone, state="opted_out", paused_reason="hostile reply")
+        acts.append("suppressed: hard stop")
+    else:
+        store.pause_conversation(phone, f"sensitive: {result.rationale}")
+        acts.append("paused for a person")
+
+    if config.PHASE < 2:
+        return acts
+
+    targets = (
+        _all_records_for(phone, record_uuid, matches) if hostile
+        else ([record_uuid] if record_uuid else [])
+    )
+    for uuid in targets:
+        crm.add_tags(uuid, [config.TAG_AI_PAUSED, config.TAG_ESCALATED])
+        if hostile:
+            status = crm.dnc_status(uuid, phone)
+            acts.append(
+                f"phone -> {status} on {uuid[:8]}: "
+                f"{_report(crm.set_phone_status(uuid, phone, status))}"
+            )
+            crm.add_tags(uuid, [config.TAG_OPT_OUT])
+            crm.add_list(uuid, config.LIST_DNC)
+        crm.post_note(uuid, f'SMS sensitive reply from {phone}: "{body[:220]}"', pinned=bereaved)
+
+    if hostile:
+        title = "Hard stop: hostile SMS reply, number suppressed"
+    elif bereaved:
+        title = "Owner reported deceased - possible probate lead"
+    else:
+        title = "Sensitive SMS reply, needs a person"
+
+    # Ty, 2026-08-26: do NOT put these in Slack, just disposition them. Two live
+    # examples drove it, both from grieving families:
+    #   "next level bullshit scamming my family over their dead mother and
+    #    grandmother's house - enjoy hell"
+    #   "Leave this family alone. Take this house off your contract list. They
+    #    are mourning the loss of a father, son and brother."
+    # Neither needs a person to read it in the channel. Both need the record
+    # marked so nobody ever contacts them again, which is a disposition, not a
+    # notification. Posting them buries the messages that DO need a human: a
+    # prospector who scrolls past four of these stops reading the fifth, and the
+    # fifth is a seller.
+    #
+    # The one exception is legal exposure. HOSTILE_NOW is exactly that set
+    # (lawyer, attorney, sue, cease and desist, harassment, FCC, attorney
+    # general, a minor), and a harassment claim or a child on the line is not
+    # bookkeeping, so those still post.
+    # A CRISIS MESSAGE ALWAYS REACHES A PERSON. This overrides the silent
+    # disposition completely, and it is not negotiable by config.
+    #
+    # Live, 2026-08-26, from a real reply to this campaign: "Im blowing my
+    # brains out this Wednesday morning so if you can be there by noon". Under
+    # the quiet-disposition rule that message carried no legal marker and no
+    # "leave me alone" wording, so it would have been tagged Mail Only and
+    # nobody would ever have read it. Marketing preferences are a disposition;
+    # somebody saying they intend to kill themselves is not.
+    if _is_crisis(text):
+        detail = ("> " + body[:400] +
+                  "\n_CRISIS LANGUAGE. Do not treat this as a marketing reply."
+                  " A person needs to read this now._")
+        escalate.alert("URGENT: possible self-harm in an SMS reply",
+                       detail, record_uuid, kind="sensitive")
+        store.pause_conversation(phone, "crisis language, human handling")
+        acts.append("CRISIS: posted to the channel and paused, no disposition applied")
+        return acts
+
+    # Ty, 2026-08-28: legal is SILENCED TOO, and always suppressed do-not-contact.
+    # A lawyer letter or a harassment claim does not need a prospector to read it
+    # in Slack at 3pm; it needs the number dead and the record marked so nobody
+    # ever touches it again, which the hostile branch above already does
+    # (suppress + DNC phone status + Do Not Market). Posting it as well only
+    # buries the live sellers the channel exists for.
+    #
+    # CRISIS is the single exception and is handled above, before this point.
+    # Everything here is a marketing preference. That one is a person's life.
+    if not config.SENSITIVE_SLACK_LEGAL_ONLY:
+        detail = "> " + body[:400] + "\n_" + (result.rationale or "") + "_"
+        escalate.alert(title, detail, record_uuid, kind="sensitive")
+        acts.append("posted to the channel")
+    else:
+        # Silent disposition. A demand to be left alone is a full stop; a plain
+        # bereavement is still a probate lead worth mailing, so it keeps the
+        # softer marking rather than burning the record.
+        # Legal exposure is ALWAYS a full stop, never mail-only. Without the
+        # `hostile` term here, "my attorney will call about this harassment"
+        # carries no leave-me-alone wording and would be marked Mail Only, so
+        # we would answer a cease-and-desist by posting them a letter.
+        stop = hostile or _wants_no_contact(text)
+        tag = config.TAG_OPT_OUT if stop else config.TAG_MAIL_ONLY
+        for uuid in ([record_uuid] if record_uuid else []):
+            crm.add_tags(uuid, [tag])
+        if stop:
+            store.suppress(phone, "asked to be left alone")
+            store.update_conversation(phone, state="opted_out",
+                                      paused_reason="asked to be left alone")
+        acts.append("dispositioned %s, not posted to the channel" % tag)
+    return acts
+
+
+# Phrases that mean "stop contacting this family", separate from the anger.
+# "It will not be sold" is a refusal; "leave this family alone" is a request to
+# never hear from us again, and the second one has to stop the mail too.
+_NO_CONTACT_RX = re.compile(
+    r"\b(leave (this|my|us|the) (family|us|me) alone|leave us alone|"
+    r"take (this|the|us|my) (house|name|number|family)?\s*off|"
+    r"do ?n[o']?t (contact|text|call|message)|stop (contacting|texting|calling)|"
+    r"will not be sold|not for sale|never (contact|text|call)|lose my number)\b",
+    re.I,
+)
+
+
+
+# Anger without a legal threat. This does not reach the channel, but it MUST
+# stop the mail as well as the texts: "next level bullshit scamming my family
+# over their dead mother and grandmother's house - enjoy hell" carries no
+# explicit "stop contacting me", so on wording alone it would have been marked
+# Mail Only and posted a letter to a family that just called us vultures.
+_HOSTILE_TONE_RX = re.compile(
+    r"\b(scam|scamming|scammer|fraud|crook|vulture|predator|disgusting|"
+    r"shame on you|enjoy hell|go to hell|piss off|f\*+ck|fuck|bullshit|"
+    r"heartless|shameful|disgrace)\b",
+    re.I,
+)
+
+
+# Self-harm and crisis language. Deliberately broad and deliberately checked
+# BEFORE any marketing disposition: a false positive costs one Slack post, a
+# false negative means nobody reads a person saying they intend to die.
+_CRISIS_RX = re.compile(
+    r"(blow(ing)?\s+my\s+brains?\s+out|kill\s+my ?self|killing\s+my ?self|"
+    r"end\s+(my\s+life|it\s+all)|take\s+my\s+own\s+life|shoot\s+my ?self|"
+    r"hang\s+my ?self|overdose|suicid\w*|not\s+be\s+here\s+(tomorrow|much\s+longer)|"
+    r"won'?t\s+be\s+alive|hurt\s+my ?self|better\s+off\s+dead)",
+    re.I,
+)
+
+
+def _is_crisis(text: str) -> bool:
+    """Self-harm language. Always reaches a human, never auto-dispositioned."""
+    return bool(_CRISIS_RX.search(text or ""))
+
+
+def _wants_no_contact(text: str) -> bool:
+    """Should this record stop receiving EVERYTHING, mail included?"""
+    t = text or ""
+    return bool(_NO_CONTACT_RX.search(t) or _HOSTILE_TONE_RX.search(t))
+
+
+def _do_reply(phone: str, record_uuid: str, body: str, result, context: dict,
+              program: str = "") -> list[str]:
+    acts = []
+    thread = store.thread(phone)
+    reply = respond.draft(thread, context, result.intent, result.rationale,
+                          program=program)
+
+    if not reply.message:
+        acts.append(f"no reply drafted: {reply.reason}")
+        return acts
+
+    if not reply.ok:
+        # Validator blocked it. That is a signal about the conversation, not
+        # just about the draft, so a human sees it either way.
+        escalate.draft_for_approval(
+            phone, body, reply.message, reply.confidence, reply.reason, record_uuid, reply.blocked
+        )
+        acts.append(f"blocked by validator ({', '.join(reply.blocked)}); sent to Slack")
+        return acts
+
+    auto = (
+        config.PHASE >= 4
+        and not reply.handoff
+        and result.intent in AUTO_SEND_INTENTS
+        and reply.confidence >= config.CONFIDENCE_FLOOR
+        and result.confidence >= 0.6
+    )
+
+    from_number = sender_pool.assign(phone, (context or {}).get('assigned_name', ''))
+    if not from_number:
+        escalate.draft_for_approval(
+            phone, body, reply.message, reply.confidence, "no sending number available", record_uuid
+        )
+        return ["no sending number in the pool; drafted to Slack instead"]
+
+    not_before = ""
+    if not sender_pool.within_quiet_hours(phone):
+        not_before = sender_pool.next_send_window(phone).isoformat(timespec="seconds")
+        acts.append(f"outside recipient quiet hours; queued for {not_before}")
+
+    status = "queued" if auto else "held"
+    row_id = store.queue_message(
+        phone,
+        reply.message,
+        from_number=from_number,
+        not_before=not_before,
+        status=status,
+        intent=result.intent,
+        confidence=reply.confidence,
+    )
+    store.update_conversation(phone, from_number=from_number)
+
+    if auto:
+        store.bump_ai_turns(phone)
+        acts.append(f"queued outbox #{row_id} from {from_number} (conf {reply.confidence:.2f})")
+    else:
+        escalate.draft_for_approval(
+            phone, body, reply.message, reply.confidence, reply.reason, record_uuid
+        )
+        acts.append(f"held outbox #{row_id} for approval (conf {reply.confidence:.2f})")
+
+    if reply.handoff:
+        store.pause_conversation(phone, "model requested handoff")
+        crm.add_tags(record_uuid, [config.TAG_AI_PAUSED])
+        acts.append("paused: model requested handoff")
+    elif result.intent == "NOT_INTERESTED":
+        acts.append(_close_not_interested(phone, record_uuid, reply.reason))
+    return acts
+
+
+def _close_not_interested(phone: str, record_uuid: str, reason: str, verified: bool = True) -> str:
+    """Close the thread out, recording whether it was a soft or a hard no.
+
+    The distinction is the whole point. A hard no is done. A soft no is a lead
+    with a later date on it, and the proven playbook works those again rather
+    than discarding them, so the digest surfaces soft nos once they age.
+
+    Either way the conversation closes after the single permitted follow-up:
+    never rebut twice. This list is worth more than any one conversation.
+    """
+    hard = any(
+        marker in (reason or "").lower()
+        for marker in ("hard no", "firm no", "final", "adamant", "hostile", "annoyed")
+    )
+    label = "hard no" if hard else "soft no"
+    store.update_conversation(phone, state="closed", paused_reason=label)
+    crm.add_tags(record_uuid, [config.TAG_AI_HANDLED])
+    crm.post_note(record_uuid, f"SMS: {label} from {phone}. {reason}"[:400])
+
+    # A no is still a verified number. Someone who answers about their own house
+    # has proved the line reaches the owner, which is worth more than the single
+    # conversation it just ended: this is the number the next campaign dials.
+    # Not for a bare "No" we could not read: that can mean the number is not theirs.
+    # Build plan 0.17: a no on one number closes the owner's other numbers as well. The extra
+    # words are empty unless SMS_AGENT_OWNER_REVOKE is on, so the sentence reads as it always did.
+    reach = "".join("; " + a for a in revocation.on_event("no", phone, record_uuid))
+    if not verified:
+        return f"closed as a {label}, phone left unverified (may be a wrong number)" + reach
+    crm.set_phone_status(record_uuid, phone, "CORRECT")
+    return f"closed as a {label}, phone marked CORRECT" + reach
+
+
+# --------------------------------------------------------------- outbound
+
+def handle_outbound(payload: dict) -> dict:
+    """smsOutgoing. Its real job is detecting that a human took over.
+
+    The moment a person replies from the smrtPhone inbox, the agent has to go
+    silent. Two of us texting the same seller is the worst failure this system
+    can produce, and it is entirely preventable: an outgoing message we did not
+    author means a human typed it.
+    """
+    phone = store.clean_phone(payload.get("to"))
+    body = (payload.get("message") or "").strip()
+    if not phone or not body:
+        return {"action": "ignored"}
+
+    conv = store.get_conversation(phone) or {}
+    # Idempotence. A rep sends three texts in a burst and the backstop replays
+    # the same rows; without this the CRM collects three identical tags and the
+    # log reads as three separate takeovers.
+    if str(conv.get("paused_reason") or "").startswith("human took over"):
+        return {"action": "already_paused", "phone": phone}
+
+    ours, why = _provably_ours(payload, phone, body)
+    if ours:
+        return {"action": "ours", "why": why}
+
+    who = (payload.get("userName") or "").strip()
+    source = (payload.get("source") or "").strip()
+    # Say what we actually know. Most takeovers name the rep, but the rule also
+    # fires on a send we cannot account for, and calling that "unknown user"
+    # reads as a person when it is really an unattributed message. The prefix
+    # stays fixed because the idempotence check and the digest match on it.
+    label = who or f"unidentified sender, {why}"
+    store.add_message(
+        phone, "out", body, from_number=payload.get("from") or "",
+        sms_id=str(payload.get("smsId") or ""), author="human",
+    )
+    store.ensure_conversation(phone)
+    store.pause_conversation(phone, f"human took over ({label})")
+    cancelled = store.cancel_queued(phone, "human took over")
+
+    conv = store.get_conversation(phone) or {}
+    record_uuid = conv.get("record_uuid") or (store.lookup_phone(phone) or {}).get("record_uuid") or ""
+    siblings = _pause_siblings(phone, record_uuid, "human took over")
+    if record_uuid and config.PHASE >= 2:
+        # Once per RECORD, not once per phone: the fan out below must not turn
+        # one takeover into five identical CRM writes.
+        crm.add_tags(record_uuid, [config.TAG_AI_PAUSED])
+    log.info("human takeover on %s by %r (source=%s, %s); cancelled %s, paused %s sibling line(s)",
+             phone, label, source or "?", why, cancelled, len(siblings))
+    return {"action": "human_takeover", "cancelled": cancelled,
+            "siblings": siblings, "user": who, "source": source, "why": why}
+
+
+def _provably_ours(payload: dict, phone: str, body: str) -> tuple[bool, str]:
+    """Can we prove WE sent this, from what we recorded at send time?
+
+    The old test asked the opposite question and got it wrong twice: it called a
+    message ours if the wording matched anything we had said on the thread, with
+    no time bound, and it trusted `source == "api"` outright. The team hand
+    sends the same four touch templates from the inbox, so a rep's text read as
+    ours and the agent kept going.
+
+    Calibrated against 2,198 real outbound events on 2026-08-28 rather than
+    guessed. What that data actually shows:
+
+      * Human sends from the smrtPhone inbox arrive as source='browser' with a
+        userName. All 102 of them were already detected correctly.
+      * Our own sends arrive as source='api' with an empty userName, and 583 of
+        them had no local ledger row at all because a second worker was sending
+        from another machine. Treating unknown-api as human would have turned
+        every one of those into a false takeover.
+
+    So `source` is used as a POSITIVE signal for a human (browser plus a named
+    user), never as a blanket excuse for a machine. Where the ledger cannot
+    decide, the tie breaker is whether the thread was already alive: a message
+    into a conversation that has replies is a human stepping in, while a first
+    touch to someone who has never written back is outreach. That fails closed
+    exactly where it matters and stays quiet where a false pause would be noise.
+    """
+    sms_id = str(payload.get("smsId") or "")
+    from_number = payload.get("from") or ""
+    source = (payload.get("source") or "").strip().lower()
+    who = (payload.get("userName") or "").strip()
+
+    if store.sms_id_is_ours(sms_id):
+        return True, "sms_id ledger"
+
+    # A named human on a non-API surface is the signal we trust most, and it is
+    # the one the inbox actually produces.
+    if who or (source and source not in ("api", "reconcile")):
+        return False, f"named human on {source or 'unknown'} surface"
+
+    # Compare digits to digits: config.numbers() stores E.164 ("+18655550170")
+    # and the payload carries whatever smrtPhone felt like. Comparing the two
+    # raw formats never matches, which would mark every send we make as a
+    # human and pause the entire campaign.
+    pool = {store.clean_phone(n) for n in config.numbers()}
+    pool.discard("")
+    if pool and from_number and store.clean_phone(from_number) not in pool:
+        return False, "sent from a number outside our pool"
+
+    if store.we_sent_recently(phone, body, config.AUTHORSHIP_WINDOW_MINUTES, from_number):
+        return True, "recent send, body match"
+
+    # No ledger row. The thread itself decides.
+    if store.has_inbound_before(phone, store.now()):
+        return False, "unattributed send into a live thread"
+
+    log.info("outbound on %s has no ledger row; cold thread, treating as ours", phone)
+    return True, "no ledger row, cold thread"
+
+
+def _pause_siblings(phone: str, record_uuid: str, reason: str) -> list[str]:
+    """Silence every other line on the same record.
+
+    A record routinely carries several numbers: `seed.queue` maps them all
+    before the first send, because 5 of 9 replies on a real campaign came from
+    a different number than the one we texted. Pausing only the line the rep
+    happened to answer leaves a queued touch to the owner's second number to
+    fire minutes later, which is the exact complaint this fixes.
+
+    One hop only, phone -> its record -> that record's phones. Deliberately NOT
+    `_all_records_for`: that goes phone -> many records, which is right for an
+    opt out (a bad number is bad everywhere) and actively wrong here, where it
+    would pause unrelated owners who share a skip traced number.
+    """
+    if not record_uuid:
+        return []
+    touched: list[str] = []
+    for sib in store.phones_for_record(record_uuid):
+        if sib == phone:
+            continue
+        # No messages row on a sibling: nothing was sent to them, and a
+        # fabricated row would corrupt the ledger this module reads.
+        store.ensure_conversation(sib)
+        store.pause_conversation(sib, f"{reason} (same record as {phone})")
+        store.cancel_queued(sib, "human took over a sibling line")
+        touched.append(sib)
+    return touched
+
+
+# --------------------------------------------------------------- delivery
+
+def handle_delivery(payload: dict) -> dict:
+    """smsDeliveryCallback.
+
+    New capability versus the batch classifier: a dead number never replies, so
+    reply-only classification can never find one. The carrier tells us here.
+    """
+    status = (payload.get("status") or "").lower()
+    reason = payload.get("failure_reason") or ""
+    sms_id = str(payload.get("smsId") or "")
+    if status in ("delivered", "sent", "queued", "accepted"):
+        return {"action": "ok", "status": status}
+
+    phone = store.clean_phone(payload.get("to"))
+    if not phone:
+        # The callback often carries only the smsId. Resolve through our log.
+        phone = store.phone_for_sms_id(sms_id)
+    if not phone:
+        return {"action": "unresolved", "sms_id": sms_id}
+
+    dead_signals = ("unknown", "no longer exist", "invalid", "not in service", "unallocated")
+    if any(s in reason.lower() for s in dead_signals):
+        store.suppress(phone, "dead")
+        store.cancel_queued(phone, "dead number")
+        conv = store.get_conversation(phone) or {}
+        # A number can be dead without ever having had a conversation (the very
+        # first seed bounced), so fall back to the phone map.
+        record_uuid = conv.get("record_uuid") or (store.lookup_phone(phone) or {}).get("record_uuid")
+        acts = ["suppressed as dead"]
+        if record_uuid:
+            acts.append(f"phone status DEAD: {_report(crm.set_phone_status(record_uuid, phone, 'DEAD'))}")
+        else:
+            acts.append("no record mapped; CRM not updated")
+        return {"action": "dead", "phone": phone, "reason": reason, "actions": acts}
+
+    return {"action": "failed", "phone": phone, "status": status, "reason": reason}
+
+
+def handle_dnt(payload: dict) -> dict:
+    """addNumberToDNT - somebody was added to do-not-text anywhere in smrtPhone."""
+    phone = store.clean_phone(payload.get("phone"))
+    if not phone:
+        return {"action": "ignored"}
+    store.suppress(phone, "opt_out")
+    store.update_conversation(phone, state="opted_out", paused_reason="added to DNT")
+    cancelled = store.cancel_queued(phone, "DNT")
+    out = {"action": "suppressed", "phone": phone, "cancelled": cancelled}
+    reach = revocation.on_event("stop", phone)      # empty unless SMS_AGENT_OWNER_REVOKE is on
+    if reach:
+        out["actions"] = reach
+    return out
+
+
+# --------------------------------------------------------------- DataSift
+
+def handle_datasift(payload: dict) -> dict:
+    """DataSift sequence webhook.
+
+    The payload shape is not documented and is confirmed by Phase 0 logging.
+    Until then this resolves defensively: pull whatever looks like a record
+    uuid and a phone, and record the event. Nothing here writes.
+    """
+    record_uuid = ""
+    phone = ""
+    for key in ("uuid", "property_uuid", "record_uuid", "id"):
+        val = payload.get(key)
+        if isinstance(val, str) and len(val) >= 32:
+            record_uuid = val
+            break
+    prop = payload.get("property") if isinstance(payload.get("property"), dict) else {}
+    record_uuid = record_uuid or prop.get("uuid") or ""
+
+    owner = payload.get("owner") if isinstance(payload.get("owner"), dict) else {}
+    phones = owner.get("phones") or payload.get("phones") or []
+    if isinstance(phones, list) and phones:
+        first = phones[0]
+        phone = store.clean_phone(first.get("number") if isinstance(first, dict) else first)
+
+    # Build plan 2.2: a lead that came in by phone or web form is one this app would not hear
+    # about. When the New Lead sequence carries a webhook to this app, that delivery is the
+    # signal. Read only with SMS_AGENT_SPEED_TO_LEAD on; otherwise this handler is as it was.
+    lead_text = None
+    if config.SPEED_TO_LEAD != "off" and record_uuid:
+        from . import speedtolead
+
+        lead_text = speedtolead.from_webhook(payload, record_uuid)
+
+    if record_uuid and phone:
+        store.map_phone(phone, record_uuid=record_uuid)
+        out = {"action": "mapped", "record_uuid": record_uuid, "phone": phone}
+    else:
+        out = {"action": "logged", "record_uuid": record_uuid, "phone": phone,
+               "note": "payload shape not recognized; see events table"}
+    if lead_text is not None:
+        out["speed_to_lead"] = lead_text
+    return out
+
+
+# ---------------------------------------------------------------- dispatch
+
+HANDLERS = {
+    "smsIncoming": handle_inbound,
+    "smsOutgoing": handle_outbound,
+    "smsDeliveryCallback": handle_delivery,
+    "addNumberToDNT": handle_dnt,
+    "addNumberToDNC": handle_dnt,
+}
+
+
+def process(source: str, payload: dict) -> dict:
+    # Everything a webhook sets off is reply disposition or speed-to-lead work, which goes first
+    # in this app's DataSift share (build plan 0.14). The marker costs nothing when the budget
+    # is off: nothing reads it.
+    with ratebudget.priority():
+        return _process(source, payload)
+
+
+def _process(source: str, payload: dict) -> dict:
+    if source == "datasift":
+        return handle_datasift(payload)
+    if source == "smartercontact":
+        from . import sc_inbound  # the thread lives in Smarter Contact: never sends
+        return sc_inbound.handle(payload)
+    handler = HANDLERS.get(payload.get("event") or "")
+    if not handler:
+        return {"action": "ignored", "reason": f"no handler for event {payload.get('event')!r}"}
+    return handler(payload)

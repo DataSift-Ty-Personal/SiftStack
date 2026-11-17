@@ -1,0 +1,34 @@
+# Line endings, and why this file has to exist.
+#
+# core.autocrlf=true on Windows checks text files out as CRLF. The skill
+# archives under dist/ are built by zipping the working tree, so a Windows
+# build embeds CRLF while a Linux CI checkout has LF, and `--verify` then
+# reports all 36 text files in the plugins as drifted when nothing changed.
+# The build is only reproducible if the working tree is byte-identical on
+# every platform.
+#
+# text=auto rather than text: it lets git's own binary detection skip the
+# 11MB PDF and the material-list CSVs. Forcing eol on a PDF corrupts it.
+skills/**    text=auto eol=lf
+plugins/**   text=auto eol=lf
+tools/**     text=auto eol=lf
+install.py   text=auto eol=lf
+
+# Built archives. Never diffed, never line-ending converted.
+dist/**      binary
+*.skill      binary
+*.plugin     binary
+
+# The rules above normalise on checkout and on add. They do NOT rewrite a file
+# already sitting in the working tree with CRLF, and the archives are zipped
+# from the working tree, so a stale file drifts even with this in place. After
+# changing these rules, or after any file arrives from a Windows editor, run:
+#
+#     git add --renormalize .
+#
+# That is what actually made the working tree match, in 2026-09.
+
+
+# The plugin marketplace is generated and byte-compared in CI, same as skills/.
+.claude-plugin/** text=auto eol=lf
+marketplace/**    text=auto eol=lf

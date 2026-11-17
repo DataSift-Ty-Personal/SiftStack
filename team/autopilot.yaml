@@ -1,0 +1,2102 @@
+# The autopilot playbook: the prospecting half of the business, run stage by stage.
+#
+# The account already describes the lifecycle as saved presets (folders 05 FTM - CALL, 06 FTM -
+# MAIL, 11 DEEP PROSPECTING, 12 REACTIVATION, 13 HOT AUCTION SALE). Each stage below names the
+# presets that hold its records, by exact title, and does the one move a person used to make by
+# hand. The presets are read live every run, so editing one in DataSift changes what the stage does.
+#
+# mode:
+#   off   never runs
+#   plan  runs on its schedule, works out exactly what it would do and cost, posts that, writes nothing
+#   live  acts inside its caps, and only on a box running AGENTS_MODE=live
+# Every stage ships in plan. Flip one at a time once its plan reads right.
+#
+# Check this file:  python src/agents/cli.py autopilot check
+# See every plan:   python src/agents/cli.py autopilot plan
+
+business:
+  tz: America/New_York
+  hours: "09:00-18:00"      # outreach never goes out outside these hours
+  days: [Mon, Tue, Wed, Thu, Fri]
+
+caps:
+  daily_usd: 25             # data spend in one day (skip traces, phone scoring), all stages together
+  outreach_daily_usd: 60    # mail spend in one day, its own budget: at $1.89 a handwritten letter, about 31 a day
+  record_usd: 1.00          # lifetime trace and scoring spend on one record before it stops being traced
+
+people:
+  # Who new records go to, by DataSift first name. Inactive users are skipped and said so.
+  # prod-account on 2026-11-11: Emerson is active (lead manager); Sloane is inactive.
+  callers: []                     # first names of the active callers in your account
+
+# The suppression gate (src/agents/autopilot/gate.py): the one check before any assignment, call,
+# text, mail piece, trace or research handoff, run when a record is picked up and again when a
+# staged batch is released. These are the tags, lists and fields it reads in THIS account; the
+# defaults are shown, so delete a line to keep the default. Nothing lifts Do Not Market, a
+# litigator, an opt-out or a sold house.
+gate:
+  do_not_market_tags: [Do Not Market]     # the texting agent's opt-out tag
+  litigator_tags: [Litigator]             # written by the scoring stage on the record AND the owner's other records
+  suppress_lists: [DNC]                   # Smarter Contact's "stop" lands on this list
+  deceased_tags: [deceased, Verify Deceased]
+  deceased_lists: [Obituary]              # an obituary on a record: hold for research (it is often a spouse's)
+  deceased_fields: [Owner Deceased]
+  probate_marks: [Probate]                # a probate record's owner is the court's representative, so the list does not hold it
+  heir_tags: [Heir Identified]
+  sold_tags: [recently sold, Sold]
+  mail_only_tags: [Mail Only]
+  not_sfr_tags: [Not Single Family]
+  read_fields: true                       # also read the Owner Deceased custom field (one more read per record acted on, cached a week)
+  # The national do-not-call registry flag DataSift puts on skip-traced numbers. OFF for this account
+  # (Ty, 2026-11-17: "we don't need it for our case"): a flagged number is texted and called like any
+  # other, and the agency file keeps it. true turns the whole rule back on (decision D32: never texted,
+  # held from calls; switch the two *_registry_scrub stages on with it for the daily count). Opt-outs
+  # are not this switch and always hold: the DNC list, Do Not Market, a phone a person marked DNC.
+  registry_flag: false
+
+# Lanes (src/agents/autopilot/lanes.py). An owner sits in ONE lane across all of their records:
+# lead > heirs > hot_auction > ftm > obituary > top1000 > agency. The highest wins and the owner's
+# other records are held. Each lane with a timeline is worked on that timeline only, so no two
+# stages can disagree about what happens after the call round (decisions D1, D3, D6).
+#
+# TWO TRACKS (the owner's decision, 2026-11-13). Priority: every first-to-market record (FTM) plus
+# the Top 1,000 owners (tag Top 1000, kept by top1000_refresh), worked in-house through the whole
+# sequence, first to market on top. Agency: everything else in the buy box, sent once a month to
+# the calling agency (agency_export). The Priority 1 and Priority 2 tags no longer decide a lane.
+lanes:
+  heirs:       {tags: [Heir Identified]}
+  hot_auction:
+    tags: [Auction Soon]
+    timeline: true            # the FTM round, then a call task every 2 days to the sale, a door knock inside 7 days (1.8, 4.8)
+  ftm:
+    tags: [FTM]
+    timeline:
+      round_ends_at: 5            # five full call attempts end the round (D1)
+      opening_texts: [0, 1, 2]    # business days for texts 1, 2 and 3 (D3)
+      call_days: [1, 2, 3, 4, 5]
+      mail_first_day: 8           # mail starts when the round ends (D6)
+      mail_every_days: 30
+      mail_pieces: 12             # twelve monthly pieces on first-to-market records (D7)
+      mail_at_once: [no_number, foreclosure]   # no usable number, or a sale a median 34 days out
+      followup_texts: {first_day: 8, last_day: 18, count: 4}
+  obituary:    {tags: [Obituary], lists: [Obituary]}
+  top1000:
+    tags: [Top 1000]
+    timeline: true            # texts days 0-2, calls days 1-5, mail when the round ends, 6 pieces, research at exhaustion (D3, D7); no foreclosure rules
+  agency:
+    timeline: true            # worked by the calling agency: nothing is texted, called or mailed from here
+
+stages:
+
+  # ------------------------------------------------------------------ Phase 0: safe before anything goes live
+  # Every stage below reads, checks or corrects. None of them contacts a homeowner.
+  ftm_pipeline:
+    kind: ftmpipeline
+    owner: ops
+    mode: "plan"
+    schedule: ["02:50 Mon-Fri", "08:35 Mon-Fri", "17:00 Mon-Fri"]   # the night and the morning judge the days that are over; 5pm says who is short today
+    summary: Every county record on the First to Market board, Research, Day 1 to Day 5, Exhausted, one column a business day and only after that day's call and text.
+    # Three pipelines (2026-11-14): county records on this board, the Top 1,000 on its own presets,
+    # the agency outside. A probate or obituary record waits in Research for a decision maker with a
+    # number; a record whose owner is known starts at Day 1. A day without its full attempt holds the
+    # card. Any lead status takes the card off the board. The board and its columns were made in prod-account
+    # on 2026-11-14 by the account tool (python src/agents/autopilot/pipelines.py apply); a new board
+    # has no card to learn its columns from, so their ids are named here.
+    board: First to Market
+    column_ids:
+      Research: 00000000-0000-0000-0000-000000000000
+      Day 1: 00000000-0000-0000-0000-000000000000
+      Day 2: 00000000-0000-0000-0000-000000000000
+      Day 3: 00000000-0000-0000-0000-000000000000
+      Day 4: 00000000-0000-0000-0000-000000000000
+      Day 5: 00000000-0000-0000-0000-000000000000
+      Exhausted: 00000000-0000-0000-0000-000000000000
+    presets:
+      - FTM - 00 Needs Skipped
+      - FTM - 01 Skipped No Numbers
+      - FTM - 02 Ready to Call
+      - FTM - 03 Call Attempt 1
+      - FTM - 04 Call Attempt 2
+      - FTM - 05 Call Attempt 3
+      - FTM - 06 Call Attempt 4
+    obituary_presets: [Obituary - All]       # a preset cannot say "tag FTM or list Obituary": this is the board's second door
+    research_first: [Probate, Obituary]
+    researched_tags: [Deep Prospected, Heir Identified, Heirs Resolved]
+    dm_fields: [Decision Maker]
+    off_board_tags: [Wrong House]
+    text_days: [1, 2, 3]            # the opening texts; add 4 and 5 once the afternoon text is live (full_attempt)
+    require_text: auto              # the text half counts only while ftm_texts is live on a live box
+    text_stage: ftm_texts
+    call_alone_lanes: [hot_auction] # a sale inside the window moves on its call alone, as that lane always counted it
+    lead_column: ""                 # a lead's card leaves the board; the lead board owns it
+    backlog: counter                # a record called before the board went live starts where its counter says
+    max_reads: 200
+    night_reads: 400
+    max_creates: 200
+    max_moves: 300
+
+  ftm_death_screen:
+    kind: screen
+    owner: research
+    mode: "plan"
+    schedule: "every 30 min 07:00-19:00 daily"    # ahead of assign and the first text
+    summary: New first-to-market records checked for a death before any text or assignment, and held for research when one may have happened.
+    lane: ftm
+    presets:
+      - FTM - 00 Needs Skipped
+      - FTM - 01 Skipped No Numbers
+      - FTM - 02 Ready to Call
+    tag: Verify Deceased
+    index_counties: [knox]
+    years: 3
+    on_hit: tag
+    max_records: 60
+
+  top1000_death_screen:
+    kind: screen
+    owner: research
+    mode: "plan"
+    schedule: "every 30 min 07:15-19:15 daily"
+    summary: New Top 1,000 records checked for a death before any text or assignment, and held for research when one may have happened.
+    lane: top1000
+    presets:
+      - Priority - 00 Needs Skipped
+      - Priority - 01 Skipped No Numbers
+      - Priority - 01 Ready to Text
+      - Priority - 02 Texted, Not Yet Called
+      - Priority - 02 Ready to Call
+    tag: Verify Deceased
+    index_counties: [knox]
+    years: 3
+    on_hit: tag
+    max_records: 60
+
+  ftm_attempts:
+    kind: attempts
+    owner: ops
+    mode: "plan"
+    schedule: "every 60 min 09:00-19:00 Mon-Fri"
+    summary: The call counter of every first-to-market record written from the call log, and on the live board from the board's full attempts.
+    # On the live First to Market board a day counts once it is a full attempt, so the counter is the
+    # board's count and every preset keyed on it shows what the board shows (ftmpipeline).
+    lane: ftm
+    pipeline: ftm_pipeline
+    presets:
+      - FTM - 02 Ready to Call
+      - FTM - 03 Call Attempt 1
+      - FTM - 04 Call Attempt 2
+      - FTM - 05 Call Attempt 3
+      - FTM - 06 Call Attempt 4
+    counters:
+      "FTM - 02 Ready to Call": 0
+      "FTM - 03 Call Attempt 1": 1
+      "FTM - 04 Call Attempt 2": 2
+      "FTM - 05 Call Attempt 3": 3
+      "FTM - 06 Call Attempt 4": 4
+    floor_days: 45
+    first_run: staged
+
+  top1000_attempts:
+    kind: attempts
+    owner: ops
+    mode: "plan"
+    schedule: "every 60 min 09:30-19:30 Mon-Fri"
+    summary: The call counter of every Top 1,000 record written from the account's own call log, whichever dialer made the call.
+    lane: top1000
+    presets:
+      - Priority - 01 Ready to Text
+      - Priority - 02 Texted, Not Yet Called
+      - Priority - 02 Ready to Call
+      - Priority - 03 Call Attempt 1
+      - Priority - 04 Call Attempt 2
+      - Priority - 05 Call Attempt 3
+      - Priority - 06 Call Attempt 4
+    counters:
+      "Priority - 01 Ready to Text": 0
+      "Priority - 02 Texted, Not Yet Called": 0
+      "Priority - 02 Ready to Call": 0
+      "Priority - 03 Call Attempt 1": 1
+      "Priority - 04 Call Attempt 2": 2
+      "Priority - 05 Call Attempt 3": 3
+      "Priority - 06 Call Attempt 4": 4
+    floor_days: 45
+    first_run: staged
+
+  owner_lanes:
+    kind: lanes
+    owner: ops
+    mode: "plan"
+    schedule: "02:30 daily"     # the night list: a long scan, off the daytime request budget
+    summary: Each owner placed in one lane across all of their records; an owner sitting in two lanes is listed.
+
+  revocation:
+    kind: revoke
+    owner: sales
+    mode: "plan"
+    schedule: "every 60 min 08:00-19:00 daily"
+    summary: An opt-out, a death, a sale or a new lead pulls the owner out of mail that is staged and campaigns that are still sending.
+    smarter_contact: true       # needs Smarter Contact's login on this box; without it the stage says so
+    first_window_hours: 336     # the first run looks back two weeks, so going live catches up on what plan runs only listed
+    floor_days: 14
+
+  sequence_watchdog:
+    kind: watchdog
+    owner: ops
+    mode: "plan"
+    schedule: "07:20 daily"
+    summary: Yesterday's sequence triggers checked against what each sequence should have produced; only failures are posted.
+    # A sequence that does not fire leaves no error anywhere. The sold sequence missed about half of
+    # the newest tags before anyone noticed (2026-11-12).
+    window_hours: 24
+    settle_minutes: 30
+    expect:
+      - name: Recently Sold to Sold Status
+        when: {event: property.tags.added, tag: recently sold}
+        then: {status: sold}
+      - name: Lead Flow
+        when: {event: property.tags.added, tag: leadflowrei}
+        then: {status: new_lead}
+      - name: Call New Lead
+        when: {event: property.status.updated, to: new_lead}
+        then: {assigned: true, task: true, card: true}
+      - name: "[NEW] Hot Lead"
+        when: {event: card.moved, column: "HOT Leads (Qualified)"}
+        then: {task: true}
+      - name: "[NEW] Warm Lead"
+        when: {event: card.moved, column: "WARM Leads (Qualified)"}
+        then: {task: true}
+      - name: "[NEW] Cold Lead"
+        when: {event: card.moved, column: "COLD Leads (Qualified)"}
+        then: {task: true}
+      - name: "[NEW] No Contact New Lead"
+        when: {event: card.moved, column: "No Contact New Lead (Unqualified)"}
+        then: {task: true}
+
+  touch_audit:
+    kind: audit
+    owner: ops
+    mode: "plan"
+    schedule: "07:30 daily"
+    summary: Every dial and mail piece from yesterday checked against the gate; anything that should not have gone out is named.
+    call_hours: "09:00-19:00"   # people call until 7pm Eastern (plan 4.6)
+    repeat_dials: 3
+    line_cap: 25                # dials one caller ID line may carry in a day (plan 4.6); past it the line gets flagged as spam
+    max_owners: 150
+
+  daily_capture:
+    kind: capture
+    owner: ops
+    mode: "plan"
+    schedule: "19:15 Mon-Fri"   # after calling hours end at 7pm
+    summary: Each caller's day written down from the call log, dials, answers, conversations and talk time, whichever dialer was used.
+    # Plan 6.2 and 6.3. A conversation is an answered call of a minute or more. The floors are the
+    # newest teaching (decision D30 is yours: 150 dials a day); an alarm names what to check.
+    conversation_seconds: 60
+    floors: {dials: 150}
+    floor_slack: 0.7            # only a day under 70% of the floor is called out
+    dials_without_a_lead: 500
+
+  full_attempt:
+    kind: fullattempt
+    owner: sales
+    mode: "plan"
+    schedule: "16:30 Mon-Fri"
+    summary: The owners dialed today who still have a top-tier number nobody tried, listed while there is time to finish them.
+    short_by: 2
+    lane: ftm                       # the afternoon text's days; on the live board, the card's column
+    pipeline: ftm_pipeline
+    afternoon_text: false
+    sender: Emerson
+    text_by: "17:30"
+    reached_seconds: 60
+
+  lead_check:
+    kind: leadcheck
+    owner: ops
+    mode: "plan"
+    schedule: "08:10 Mon-Fri"
+    summary: Every lead checked for an open task, an assignee and a confirmed number; what is missing goes to the lead manager.
+    # Plan 2.7 and 2.12. The missing task itself is created by lead_tasks five minutes earlier; this
+    # check names what could not be fixed. A record that gained a list (a new lien, notice or
+    # obituary) gets a same-day task for the lead manager; a new obituary marks the Correct numbers
+    # Verify Number and queues the record for research, without changing its lead status.
+    new_lead_hours: 24
+    gate_allow: [lead]
+    research_per_day: 2
+    stale_tag: Verify Number
+    lead_manager_id: ""         # decision D13. A user id here gets the tasks; empty gives them to the record's assignee
+
+  # ------------------------------------------------------------------ Atlas, Analysis
+  ftm_assign:
+    kind: assign
+    owner: analysis
+    lane: ftm
+    mode: "plan"
+    schedule: "every 30 min 08:00-18:00 Mon-Fri"
+    summary: New first-to-market records handed to a caller within 30 minutes of landing, balanced by open workload.
+    presets:
+      - FTM - 00 Needs Skipped
+      - FTM - 01 Skipped No Numbers
+      - FTM - 02 Ready to Call
+      - FTM - 03 Call Attempt 1
+      - FTM - 04 Call Attempt 2
+      - FTM - 05 Call Attempt 3
+      - FTM - 06 Call Attempt 4
+    strategy: balanced
+    caller_cap: 2000
+    backlog: false
+    max_per_run: 200
+    routes: {}
+
+  top1000_assign:
+    kind: assign
+    owner: analysis
+    lane: top1000
+    mode: "plan"
+    schedule: "every 30 min 08:15-18:15 Mon-Fri"   # after first to market, so a new notice is never behind the monthly refresh
+    summary: New Top 1,000 records handed to a caller, balanced by open workload, after first to market.
+    presets:
+      - Priority - 00 Needs Skipped
+      - Priority - 01 Skipped No Numbers
+      - Priority - 01 Ready to Text
+      - Priority - 02 Texted, Not Yet Called
+      - Priority - 02 Ready to Call
+      - Priority - 03 Call Attempt 1
+      - Priority - 04 Call Attempt 2
+      - Priority - 05 Call Attempt 3
+      - Priority - 06 Call Attempt 4
+    strategy: balanced
+    caller_cap: 2000
+    backlog: false
+    max_per_run: 200
+    routes: {}
+
+  ftm_auction:
+    kind: auction
+    owner: analysis
+    mode: "plan"
+    schedule: "07:45 daily"
+    summary: Auction Soon kept true on every courthouse foreclosure, so the Hot Auction preset is the real hot list.
+    presets: []
+    scope_tags: [FTM, Courthouse Data]
+    tag: Auction Soon
+    soon_days: 45               # hot inside 45 days (D9): a notice lands a median 34 days before its sale
+    critical_tag: Auction Critical
+    critical_days: 14           # critical inside 14: the tier a priority package and a door knock key on
+    # The day after the sale every channel stops (decision D39, yours). Uncomment to have the stage
+    # set the status; until then it only removes the tags.
+    # after_sale_status: Auction Date Passed
+    # The courthouse sale date lives in the custom field. The built-in foreclosure_date on bulk
+    # records is a stale public-record artifact (2022 batch defaults), so it is not trusted.
+    custom_date_fields: [Foreclosure Date]
+    date_fields: [auction_date, tax_auction_date]
+    trust_builtin_foreclosure_date: false
+    refresh_days: 3
+
+  ftm_reactivate:
+    kind: reactivate
+    owner: analysis
+    lane: ftm
+    mode: "plan"
+    schedule: "Mon 08:15"
+    summary: Not-interested first-to-market records whose wait is over handed back to a caller.
+    presets:
+      - Not Interested - FTM Foreclosure (30d)
+      - Not Interested - FTM Probate (30d)
+      - Not Interested - FTM rest (90d)
+    every_days: 30
+    max_per_run: 100
+
+  # ------------------------------------------------------------------ Diggs, Research
+  ftm_native_trace:
+    kind: native_trace
+    owner: research
+    lane: ftm
+    mode: "plan"
+    schedule: "every 30 min 07:00-19:00 daily"
+    summary: First-to-market records that land with no trace get DataSift's own skip trace, scoped to exactly them, estimate first.
+    presets: [FTM - 00 Needs Skipped]
+    min_age_hours: 1
+    scoped: true
+    every_hours: 12
+
+  top1000_native_trace:
+    kind: native_trace
+    owner: research
+    lane: top1000
+    mode: "plan"
+    schedule: "every 30 min 07:15-19:15 daily"
+    summary: Top 1,000 records with no trace get DataSift's own skip trace, scoped to exactly them, estimate first.
+    presets: [Priority - 00 Needs Skipped]
+    min_age_hours: 1
+    scoped: true
+    every_hours: 12
+
+  ftm_retrace:
+    kind: retrace
+    owner: research
+    lane: ftm
+    covers: [tracerfy]
+    mode: "plan"
+    schedule: "11:00 Mon-Fri"
+    summary: First-to-market records DataSift traced with no number found, traced again with the next source nobody has tried.
+    presets: [FTM - 01 Skipped No Numbers]
+    sources: [smartskip, tracerfy]
+    callable_tiers: [Dial First, Dial Second]
+    deceased: deep_prospect
+    entity: principals
+    principals_per_day: 10
+    after_sources: mail_only
+    mail_only_tag: Mail Only
+    deep_prospect_per_day: 3
+    max_records: 50
+    daily_usd: 10
+    agreement_tag: Two Sources
+    write_tiers: [Dial First, Dial Second]
+    reserve_tiers: [Dial Third]
+    keep_numbers: 3
+    drop_status: DEAD
+    write_line_type: true
+    fixup_queue: 100
+    fixup_tag: Needs Fix-Up
+    lookback_days: 14
+
+  top1000_retrace:
+    kind: retrace
+    owner: research
+    lane: top1000
+    covers: [tracerfy]
+    mode: "plan"
+    schedule: "11:20 Mon-Fri"
+    summary: Top 1,000 records DataSift traced with no number found, traced again with the next source nobody has tried.
+    presets: [Priority - 01 Skipped No Numbers]
+    sources: [smartskip, tracerfy]
+    callable_tiers: [Dial First, Dial Second]
+    deceased: deep_prospect
+    entity: principals
+    principals_per_day: 10
+    after_sources: mail_only
+    mail_only_tag: Mail Only
+    deep_prospect_per_day: 3
+    max_records: 50
+    daily_usd: 10
+    agreement_tag: Two Sources
+    write_tiers: [Dial First, Dial Second]
+    reserve_tiers: [Dial Third]
+    keep_numbers: 3
+    drop_status: DEAD
+    write_line_type: true
+    fixup_queue: 100
+    fixup_tag: Needs Fix-Up
+    lookback_days: 14
+
+  ftm_exhausted:
+    kind: retrace
+    owner: research
+    lane: ftm
+    covers: [tracerfy]   # the org-chart agent whose job this stage does
+    mode: "plan"
+    schedule: "11:30 Mon-Fri"
+    summary: Called through with nothing left to dial, traced with a source not yet tried, then Diggs.
+    # Challenge C11.2: every number called through with no contact, or the 6-attempt maximum, means exhausted: deep prospect.
+    # Since 2026-11-13 the exhausted preset starts at 5 call days, and "03b" holds the records whose
+    # every number is marked wrong or dead before the round is over. Both mean nothing is left to dial.
+    presets: ["03 Exhausted Call -> DP", "03b No Live Number -> DP"]
+    require_tags: [FTM]
+    sources: [smartskip, tracerfy]   # a source this record has already had is skipped, so the three-pass rule holds
+    callable_tiers: [Dial First, Dial Second]
+    deceased: deep_prospect
+    entity: deep_prospect
+    after_sources: deep_prospect
+    new_numbers_tag: New Numbers     # a dialed-out record that gains numbers is flagged for the callers
+    deep_prospect_per_day: 3
+    max_records: 25
+    daily_usd: 5
+    write_tiers: [Dial First, Dial Second]
+    reserve_tiers: [Dial Third]
+    keep_numbers: 3
+    drop_status: DEAD
+    write_line_type: true
+    fixup_queue: 100
+    fixup_tag: Needs Fix-Up
+
+  ftm_score:
+    kind: score
+    owner: research
+    lane: ftm
+    covers: [phone]
+    mode: "plan"
+    schedule: "08:30 Mon-Fri"
+    summary: Every unscored number on a first-to-market record in the call round tiered before the texts and the callers start.
+    presets:
+      - FTM - 02 Ready to Call
+      - FTM - 03 Call Attempt 1
+      - FTM - 04 Call Attempt 2
+      - FTM - 05 Call Attempt 3
+      - FTM - 06 Call Attempt 4
+    max_records: 200
+    recheck_days: 7
+    daily_usd: 5
+    drop_status: DEAD
+    write_line_type: true
+
+  top1000_score:
+    kind: score
+    owner: research
+    lane: top1000
+    covers: [phone]
+    mode: "plan"
+    schedule: "08:40 Mon-Fri"
+    summary: Every unscored number in the Top 1,000 text and call lane tiered before the texts and the callers start.
+    presets:
+      - Priority - 01 Ready to Text
+      - Priority - 02 Texted, Not Yet Called
+      - Priority - 02 Ready to Call
+      - Priority - 03 Call Attempt 1
+      - Priority - 04 Call Attempt 2
+      - Priority - 05 Call Attempt 3
+      - Priority - 06 Call Attempt 4
+    max_records: 200
+    recheck_days: 7
+    daily_usd: 5
+    drop_status: DEAD
+    write_line_type: true
+
+  ftm_deep_prospect:
+    kind: handoff
+    owner: research
+    lane: ftm
+    mode: "plan"
+    schedule: "13:00 Mon-Fri"
+    summary: First-to-market records whose owner has died go to Diggs for the full heir and signer research, two a day.
+    # Challenge C12.1, C11.9: no marketing before month 3; deep prospect once the last obituary date is 3+ months old.
+    # The preset's own window (last_obituary_date 24 months back to 3 months back) already holds that rule.
+    presets: ["02 Obituary / Deceased"]
+    require_tags: [FTM]
+    workflow: deep_prospect
+    agent: research
+    per_day: 2
+
+  # Lesson 4-05 @ 26:09 and 5-01: deep prospect a record when its mail comes back, and when it has
+  # no number after every trace (it has already moved to mail only, so it is still being mailed).
+  ftm_return_mail:
+    kind: handoff
+    owner: research
+    lane: ftm
+    mode: "plan"
+    schedule: "13:15 Mon-Fri"
+    summary: First-to-market records whose mail came back go to Diggs, one a day.
+    presets: ["04 Return Mail -> DP"]
+    require_tags: [FTM]
+    workflow: deep_prospect
+    agent: research
+    per_day: 1
+    # Plan 1.7: a return is read three ways (the status, a return tag, the do-not-mail flag), and a
+    # return is told apart from an opt-out by a tag written the day it is first seen.
+    return_signals: {statuses: [Return Mail], tags: [Return Mail, Returned Mail], flag: true}
+    return_tag: Return Mail
+    opt_out_tags: [Mail Opt Out, Do Not Mail]
+    returns_scan: {weekday: mon}     # D37: add assignee: <first name> for the weekly returned-letters task
+
+  ftm_no_numbers:
+    kind: handoff
+    owner: research
+    lane: ftm
+    mode: "plan"
+    schedule: "13:30 Mon-Fri"
+    summary: First-to-market records still without a number after every trace go to Diggs, one a day.
+    presets: ["01 No / Bad Phone"]
+    require_tags: [FTM, Mail Only]
+    workflow: deep_prospect
+    agent: research
+    per_day: 1
+
+  # ------------------------------------------------------------------ Quinn, Operations
+  ftm_mail:
+    kind: mail
+    owner: ops
+    lane: ftm
+    pipeline: ftm_pipeline             # on the live board the mail waits for Exhausted, unless the timeline mails at once (a foreclosure)
+    mode: "plan"
+    schedule: "10:00 Mon-Fri"
+    summary: The first-to-market mail lane dropped a month apart through DataSift's own mail, staged for a person to release.
+    vendor: siftmail
+    internal_routes: true
+    min_batch: 1                  # Ty, 2026-11-16: SiftMail takes any count
+    send: staged
+    daily_pieces: 50
+    daily_usd: 60
+    wait_days: 30
+    offer_pct: 0
+    # The evergreen sequence (Ty, 2026-11-16: everything mailed outside the auction and estate pipelines runs one
+    # sequence; top1000_mail carries the same six). The preset titles still name the old three-piece mix: a preset
+    # only counts mail attempts, so the piece is set here. Designs approved by Ty 2026-11-17 after the proofs and
+    # the merge check (output/siftmail/playbook_mapping.json). A piece with design_noname goes out named only where
+    # SiftMail would print a clean first name (mail.is_named); everyone else gets the "Hi there," / "Hello," twin.
+    prices: {family_postcard: 0.74, postcard: 0.74, check_letter: 1.10, letter: 1.22}
+    pieces:
+      - {preset: FTM - Mail 01 Handwritten Letter, piece: handwritten_letter, product_id: 16, envelope: 16, design: "00000000-0000-0000-0000-000000000000", external_identifier: "", design_noname: "00000000-0000-0000-0000-000000000000", external_identifier_noname: ""}   # EVG T1, lavender envelope
+      - {preset: FTM - Mail 02 Family Postcard, piece: family_postcard, product_id: 14, design: "00000000-0000-0000-0000-000000000000", external_identifier: "", street_view: true}   # EVG T2 Doodle Streetview
+      - {preset: FTM - Mail 03 Soft-Offer Check, piece: check_letter, product_id: 1, envelope: 1, design: "00000000-0000-0000-0000-000000000000", external_identifier: "", design_noname: "00000000-0000-0000-0000-000000000000", external_identifier_noname: ""}   # CHK check letter, no amount, double-window envelope
+      - {preset: FTM - Mail 04 Handwritten Letter, piece: postcard, product_id: 14, design: "00000000-0000-0000-0000-000000000000", external_identifier: "", street_view: true}   # EVG T4 stick-figure card
+      - {preset: FTM - Mail 05 Family Postcard, piece: handwritten_letter, product_id: 16, envelope: 17, design: "00000000-0000-0000-0000-000000000000", external_identifier: "", design_noname: "00000000-0000-0000-0000-000000000000", external_identifier_noname: ""}   # EVG T5 follow-up note, navy envelope
+      - {preset: FTM - Mail 06 Soft-Offer Check, piece: letter, product_id: 3, envelope: 3, design: "00000000-0000-0000-0000-000000000000", external_identifier: ""}   # EVG T6 comparison letter, grey envelope
+    sender: {}
+
+  top1000_mail:
+    kind: mail
+    owner: ops
+    lane: top1000
+    mode: "plan"
+    schedule: "10:30 Mon-Fri"
+    summary: The Top 1,000 mail lane, six pieces a month apart through DataSift's own mail, staged for a person to release.
+    vendor: siftmail
+    internal_routes: true
+    min_batch: 1                  # Ty, 2026-11-16: SiftMail takes any count
+    send: staged
+    daily_pieces: 50
+    daily_usd: 60
+    wait_days: 30
+    offer_pct: 0
+    # the same six evergreen pieces as ftm_mail (one sequence, Ty 2026-11-16; designs approved 2026-11-17)
+    prices: {family_postcard: 0.74, postcard: 0.74, check_letter: 1.10, letter: 1.22}
+    pieces:
+      - {preset: Priority - Mail 01 Handwritten Letter, piece: handwritten_letter, product_id: 16, envelope: 16, design: "00000000-0000-0000-0000-000000000000", external_identifier: "", design_noname: "00000000-0000-0000-0000-000000000000", external_identifier_noname: ""}   # EVG T1
+      - {preset: Priority - Mail 02 Family Postcard, piece: family_postcard, product_id: 14, design: "00000000-0000-0000-0000-000000000000", external_identifier: "", street_view: true}   # EVG T2
+      - {preset: Priority - Mail 03 Soft-Offer Check, piece: check_letter, product_id: 1, envelope: 1, design: "00000000-0000-0000-0000-000000000000", external_identifier: "", design_noname: "00000000-0000-0000-0000-000000000000", external_identifier_noname: ""}   # CHK
+      - {preset: Priority - Mail 04 Handwritten Letter, piece: postcard, product_id: 14, design: "00000000-0000-0000-0000-000000000000", external_identifier: "", street_view: true}   # EVG T4
+      - {preset: Priority - Mail 05 Family Postcard, piece: handwritten_letter, product_id: 16, envelope: 17, design: "00000000-0000-0000-0000-000000000000", external_identifier: "", design_noname: "00000000-0000-0000-0000-000000000000", external_identifier_noname: ""}   # EVG T5
+      - {preset: Priority - Mail 06 Soft-Offer Check, piece: letter, product_id: 3, envelope: 3, design: "00000000-0000-0000-0000-000000000000", external_identifier: ""}   # EVG T6
+    sender: {}
+
+  # ------------------------------------------------------------------ retired lanes: Priority 1 (Hottest), Strong, Bulk
+  # Off since 2026-11-13: the marketing became two tracks. Priority 1, Priority 2 and Bulk records
+  # are the agency track now (or the Top 1,000 when they score into it), and the calling agency
+  # works them from the monthly file, so nothing in-house dials them. The code stays.
+  hottest_retrace:
+    kind: retrace
+    owner: research
+    covers: [tracerfy]   # the org-chart agent whose job this stage does
+    mode: "off"          # retired 2026-11-13: these records are the agency track now
+    schedule: "11:15 Mon-Fri"
+    presets: [Hottest - 01 Skipped No Numbers]
+    sources: [smartskip]             # lesson 5-01: one extra pass on high-volume Priority 1 leftovers
+    callable_tiers: [Dial First, Dial Second]
+    deceased: deep_prospect
+    entity: after
+    after_sources: mail_only
+    deep_prospect_per_day: 2
+    max_records: 50
+    daily_usd: 5
+    lane: agency
+    write_tiers: [Dial First, Dial Second]
+    reserve_tiers: [Dial Third]
+    keep_numbers: 3
+    drop_status: DEAD
+
+  hottest_score:
+    kind: score
+    owner: research
+    covers: [phone]   # the org-chart agent whose job this stage does
+    mode: "off"       # retired 2026-11-13: these records are the agency track now
+    schedule: "08:45 Mon-Fri"
+    presets: [Hottest - 02 Ready to Call, Hottest - 03 Call Attempt 1, Hottest - 04 Call Attempt 2, Hottest - 05 Call Attempt 3, Hottest - 06 Call Attempt 4]
+    max_records: 200
+    daily_usd: 5
+    lane: agency
+    drop_status: DEAD
+    write_line_type: true
+
+  autopilot_digest:
+    kind: digest
+    owner: ops
+    mode: "plan"
+    schedule: "08:00 Mon-Fri"
+    summary: The morning readout of the three pipelines, what the autopilot did, what it cost, what waits on a person.
+    presets:
+      - FTM - 01 Skipped No Numbers
+      - FTM - 02 Ready to Call
+      - FTM - 06 Call Attempt 4
+      - FTM - Mail 01 Handwritten Letter
+      - Priority - 01 Ready to Text
+      - Priority - 02 Ready to Call
+      - Priority - Mail 01 Handwritten Letter
+      - Hot Auction + Buy Box
+      - "03 Exhausted Call -> DP"
+      - Agency - 01 Queue
+
+  # ------------------------------------------------------------------ Phase 5: data, lists and hygiene
+  # Both stages read and report. Neither changes a record, a list, a preset or a feeder.
+  ladder_check:
+    kind: laddercheck
+    owner: analysis
+    mode: "plan"
+    schedule: "1st 03:10"       # the night list, once a month
+    summary: The lists checked against real investor sales once a month, and the Priority 1 feeders against the ladder.
+    counties:
+      - {fips: "47093", name: Knox, state: TN}
+      - {fips: "47009", name: Blount, state: TN}
+    months: 6
+    lag_months: 1               # deeds reach the data four to eight weeks after a closing
+    max_searches: 60            # SiftMap searches a run (its own request counter; about 7 a county)
+    max_rows: 5000
+    max_lists: 10
+    min_deals: 5                # fewer sales than this on a list and no rate is read from it
+    skip_lists: ["Dispo - "]    # buyer lists hold every investor purchase by construction
+    reached_preset: ""          # a saved preset that holds reached records; empty leaves reach unmeasured
+    feeders: true               # compare the Priority 1 rungs with the SiftMap feeders
+    layers: []                  # optional standing counts
+
+  conventions_check:
+    kind: conventions
+    owner: analysis
+    mode: "plan"
+    schedule: "Sun 03:40"
+    summary: The account's naming rules checked once a week; what breaks one is listed and nothing is changed.
+    caller_folders: ["05. FTM - CALL", "02. TOP 1000 - CALL", "20. CALLER QUEUES"]
+    starred_field: quick_filter
+    inbound_field: Inbound Source
+    mail_tag: "Mailed {yyyy}-{mm}"
+    mail_days: 35
+    zombie: {names: [Zombie], vacant: Vacant, foreclosure: Foreclosure}
+    known_lists: [DNC, Dream 100]
+    known_prefixes: ["Dispo - "]
+    settings: {auto_update: true}
+
+  # ------------------------------------------------------------------ Phase 2: lead management on the clock
+  # A lead is its own lane, and these are the only stages that may touch one (gate_allow: [lead]).
+  # The board's columns are learned from one card's timeline and remembered for a week. If a stage
+  # says it cannot learn them, give it the id of one column that holds a card under seed_columns,
+  # or every column under column_ids.
+  speed_to_lead:
+    kind: leadclock
+    job: speed
+    owner: sales
+    mode: "plan"
+    schedule: "every 5 min 09:00-18:00 Mon-Fri"
+    summary: Each new lead timed from the status change to the first outbound call; the assignee is told at 5 minutes and the owner at 15.
+    # Plan 2.2, the clock half. It reads the shared log copy and writes nothing to DataSift, so
+    # switching it to live changes one thing only, that every ping posts (a plan run posts once a
+    # day). A lead that arrives at night is timed from the next opening. The text to the seller
+    # belongs to the texting stage.
+    assignee_minutes: 5
+    owner_minutes: 15
+    lead_manager: ""            # decision D13. Name the lead manager and the 5-minute line goes to that name; empty tells the record's assignee
+    owner_label: Owner          # how the 15-minute line addresses the owner (a name, or a Slack mention)
+    people: {}                  # user id to first name, for an assignee the call log has never named
+    window_hours: 24
+    max_reads: 20
+
+  lead_clock:
+    kind: leadclock
+    owner: ops
+    mode: "plan"
+    schedule: "07:40 Mon-Fri"
+    summary: Lead cards moved between phases on time, measured from the last real conversation, never from time in a column.
+    # Plan 2.5, decision D15. A real conversation is an answered call of a minute or more, an inbound
+    # text or a note a person wrote. A card holding a future task a person dated is never moved.
+    gate_allow: [lead]
+    board: Lead Management
+    offers_board: Acquisitions
+    first_run: staged           # the first live run stages its moves for a person to release
+    sequences_fire: unknown     # true, false or unknown. Unknown moves the card and checks on the next run that the column's sequence did its work
+    clear_old_tasks: true       # when the stage does a sequence's work itself, the old column's sequence-made tasks go, as the sequence would have done
+    settle_minutes: 30
+    trust_column_time: false    # true lets a card's time in its column stand in for what the 200-day log copy cannot prove
+    future_task_filter: true    # also ask the board which cards hold a task due in the future
+    rejected_offers: true       # a card a week in Offer Rejected goes back to the lead manager
+    conversation_seconds: 60
+    marginal_tags: [Marginal Lead]
+    limits:
+      new_lead_hours: 24
+      new_lead_needs_dial: true # a new lead nobody dialed is named, not filed as No Contact
+      no_contact_tries: 5
+      nurture_strong_days: 180
+      nurture_marginal_days: 60
+      nurture_touches: 31
+      hot_quiet_days: 14
+      warm_quiet_days: 60
+      cold_quiet_days: 365
+      offer_rejected_days: 7
+    column_ids: {}              # {"<board title>": {"<column title>": "<column id>"}}
+    seed_columns: {}            # {"<board title>": "<the id of any one column that holds a card>"}
+    max_moves: 25
+    max_reads: 120
+
+  lead_drips:
+    kind: drips
+    owner: ops
+    mode: "plan"
+    schedule: "every 60 min 09:00-18:00 Mon-Fri"
+    summary: Ghosting, cold and said-no leads kept on a slow drip of staged texts, emails and review tasks; a reply or a status change ends it.
+    # Plan 2.6. Runs on the brain's clock. A text or an email is staged for a person and nothing is
+    # sent from here. The three default drips are in drips.py; a `drips:` block here changes one
+    # or switches it off (cold: false). An email step adds a tag, and a sequence built in DataSift
+    # on that tag sends the email. Until that sequence exists the email step is passed over.
+    gate_allow: [lead, not_interested]
+    never: [Hot Lead]
+    sender_name: ""             # signs the texts. Empty uses the assignee's first name, else the text goes unsigned
+    lead_manager_id: ""         # decision D13. A user id here gets the review tasks; empty gives them to the record's assignee
+    conversation_seconds: 60
+    max_chars: 160
+    daily_items: 25
+    max_reads: 60
+
+  lead_tasks:
+    kind: leadtasks
+    owner: ops
+    mode: "plan"
+    schedule: "08:05 Mon-Fri"   # five minutes ahead of lead_check, so the check lists what could not be fixed
+    summary: A lead with no open task gets the task its column's own sequence would have created.
+    # Plan 2.7. A ghosting lead with a drip step ahead of it already has its next action.
+    gate_allow: [lead]
+    board: Lead Management
+    task_assignee: preset       # preset keeps the task preset's own assignee; record gives the task to the record's assignee
+    task_for: {}                # a status to a task preset title, where the column's own preset is not the right one
+    proof_preset: "Board - No Tasks (no next action)"
+    max_create: 50
+    max_reads: 80
+
+  lead_weekly:
+    kind: leadtasks
+    job: weekly
+    owner: ops
+    mode: "plan"
+    schedule: "Wed 08:20"
+    summary: The weekly deeper pass on every lead, card against status, notes after conversations, overdue and undated tasks, and the check presets themselves.
+    # Plan 2.7. Reads only.
+    board: Lead Management
+    check_presets: ["3. Leads Missing Tasks"]
+    column_ids: {}
+    seed_columns: {}
+
+  lead_nurture:
+    kind: leadtasks
+    job: nurture
+    owner: sales
+    mode: "plan"
+    schedule: "08:15 Mon-Fri"
+    summary: Every Follow Up record on a confirmed number holds one dated call task 90 days out.
+    # Plan 2.13. The cold drip in lead_drips covers the months between.
+    gate_allow: [lead]
+    statuses: [follow_up]
+    due_days: 90
+    require_confirmed: true
+    lead_manager_id: ""
+
+  lead_appointments:
+    kind: appointments
+    owner: sales
+    mode: "plan"
+    schedule: "every 30 min 08:00-19:00 Mon-Sat"
+    summary: Every walkthrough gets a post and comps when it is booked, a confirm call the day before and a recorded outcome that sets the next move.
+    # Plan 2.10. An appointment is a task with a start, an end and an outcome, made in DataSift or
+    # through the booking workflow. `outcomes:` changes what an outcome makes the next task.
+    gate_allow: [lead]
+    offers_board: Acquisitions
+    comps_workflow: quick_screen
+    comps_agent: sales
+    outcome_grace_hours: 24
+    give_up_days: 14
+    check_column: true          # once a day, count cards in Appointment Booked that have no appointment
+    lead_manager_id: ""
+    column_ids: {}
+    seed_columns: {}
+    max_reads: 40
+
+  lead_exits:
+    kind: exits
+    owner: ops
+    mode: "plan"
+    schedule: "1st 07:10"
+    summary: Dead and Not Interested cards leave the board after 30 days with the status kept; a dead lead returns to marketing after 180 days if the house has not sold.
+    # Plan 2.14, decision D27 (yours). remarket_dead false keeps dead leads dead.
+    board: Lead Management
+    card_days: 30
+    remarket_dead: true
+    remarket_days: 180
+    column_ids: {}
+    seed_columns: {}
+    max_remove: 40
+    max_remarket: 25
+    max_reads: 120
+
+  # ------------------------------------------------------------------ Text lane and outreach limits
+  # Off with the rule (gate.registry_flag false, 2026-11-17). Kept so an install that wants the
+  # registry rule can switch the flag and these two daily counts back on.
+  ftm_registry_scrub:
+    kind: scrub
+    owner: ops
+    lane: ftm
+    mode: "off"
+    schedule: "08:20 Mon-Fri"
+    summary: The do-not-call registry flags on the first-to-market call lane remembered and counted, so no flagged number is texted or put on a call list.
+    presets:
+      - FTM - 02 Ready to Call
+      - FTM - 03 Call Attempt 1
+      - FTM - 04 Call Attempt 2
+      - FTM - 05 Call Attempt 3
+      - FTM - 06 Call Attempt 4
+    calls: hold
+    hold_unseen: false
+    max_records: 60
+
+  top1000_registry_scrub:
+    kind: scrub
+    owner: ops
+    lane: top1000
+    mode: "off"
+    schedule: "08:25 Mon-Fri"
+    summary: The do-not-call registry flags on the Top 1,000 text and call lane remembered and counted, so no flagged number is texted or put on a call list.
+    presets:
+      - Priority - 01 Ready to Text
+      - Priority - 02 Texted, Not Yet Called
+      - Priority - 02 Ready to Call
+      - Priority - 03 Call Attempt 1
+      - Priority - 04 Call Attempt 2
+      - Priority - 05 Call Attempt 3
+      - Priority - 06 Call Attempt 4
+    calls: hold
+    hold_unseen: false
+    max_records: 60
+
+  ftm_texts:
+    kind: textlane
+    owner: ops
+    lane: ftm
+    pipeline: ftm_pipeline             # on the live board each card gets the text its column stands for (Day N, text N)
+    mode: "plan"
+    schedule: "08:45 Mon-Fri"       # after the board's morning pass (08:35), before the window opens at 9
+    summary: First-to-market owners texted on Days 1 to 3 of the board, one opening text a full attempt, staged for a person to release.
+    covers: [sccampaign, texttouch]
+    series: opening
+    presets:
+      - FTM - 02 Ready to Call
+      - FTM - 03 Call Attempt 1
+      - FTM - 04 Call Attempt 2
+    system: smarter_contact
+    label: FTM
+    numbers_per_owner: 3
+    require_screen: true
+    stop_on_correct: true
+    urgent_copy: true
+    urgent_tag: Auction Critical
+    text_usd: 0.02
+    daily_usd: 10
+    daily_owners: 150
+    max_records: 150
+    max_new: 150
+
+  top1000_texts:
+    kind: textlane
+    owner: ops
+    lane: top1000
+    mode: "plan"
+    schedule: "08:50 Mon-Fri"       # after the county texts, so first to market is first under the day's caps
+    summary: New Top 1,000 owners loaded for text 1 the day they land and texts 2 and 3 on the next two days, staged for a person to release.
+    covers: [sccampaign, texttouch]
+    series: opening
+    presets:
+      - Priority - 01 Ready to Text
+      - Priority - 02 Texted, Not Yet Called
+      - Priority - 02 Ready to Call
+      - Priority - 03 Call Attempt 1
+      - Priority - 04 Call Attempt 2
+    system: smarter_contact
+    label: Top 1000
+    numbers_per_owner: 3
+    require_screen: true
+    stop_on_correct: true
+    urgent_copy: false              # the sale-date copy is for a courthouse notice: a Top 1,000 house has no sale date
+    text_usd: 0.02
+    daily_usd: 10
+    daily_owners: 150
+    max_records: 150
+    max_new: 150
+
+  ftm_followup_texts:
+    kind: textlane
+    owner: ops
+    lane: ftm
+    pipeline: ftm_pipeline             # on the live board the follow-ups start when the card reaches Exhausted
+    mode: "plan"
+    schedule: "10:15 Mon-Fri"
+    summary: First-to-market follow-up texts from Exhausted on, ending with the breakup text, staged for a person to release.
+    covers: [scaudit]
+    series: followup
+    system: smarter_contact
+    label: FTM
+    numbers_per_owner: 3
+    require_screen: true
+    stop_on_correct: true
+    text_usd: 0.02
+    daily_usd: 10
+
+  top1000_followup_texts:
+    kind: textlane
+    owner: ops
+    lane: top1000
+    mode: "plan"
+    schedule: "10:20 Mon-Fri"
+    summary: Top 1,000 follow-up texts after the call round, ending with the breakup text, staged for a person to release.
+    covers: [scaudit]
+    series: followup
+    system: smarter_contact
+    label: Top 1000
+    numbers_per_owner: 3
+    require_screen: true
+    stop_on_correct: true
+    text_usd: 0.02
+    daily_usd: 10
+
+  outreach_limits:
+    kind: limits
+    owner: ops
+    mode: "plan"
+    schedule: ["19:20 Mon-Fri", "07:25 daily"]   # the evening run checks today so far, the morning run all of yesterday
+    summary: The day's dials and texts checked against the outreach limits; every one broken is named by caller and by a number's last four digits.
+    # Plan 4.6. These numbers are also what every text stage asks before it stages anything
+    # (limits.room), whatever this stage's mode.
+    call_hours: "09:00-19:00"   # people call 9am to 7pm, on the business clock and on the owner's own
+    text_hours: "09:00-18:00"   # what the machine sends goes out 9am to 6pm, on both clocks
+    calls_per_line_day: 25
+    texts_per_line_day: 25
+    text_lines: 10              # how many sending numbers carry the day's texts: 25 x 10 = 250 a day
+    lines_per_caller: 10
+    monthly_texts: 20000
+    owner_texts_day: 1
+    owner_texts_week: 5
+    owner_dials_number_day: 1   # one call per owner a day: a number is not dialed twice
+    platform_cap: 3             # Smarter Contact: three campaign texts in seven days, then fourteen days of rest
+    platform_window_days: 7
+    platform_rest_days: 14
+    count_record_counter: true  # the record's own text counter counts the other texting system's texts
+
+  # ------------------------------------------------------------------ Trace, auction, second chances and the other lanes (plan 1.8, 1.13, 4.1 to 4.4)
+  ftm_refresh:
+    kind: native_trace
+    owner: research
+    lane: ftm
+    mode: "plan"
+    schedule: "Sun 05:00"
+    summary: Active first-to-market records last traced 180 or more days ago traced again by DataSift, free and outside the per-record cap.
+    presets:
+      - FTM - 01 Skipped No Numbers
+      - FTM - 02 Ready to Call
+      - FTM - 03 Call Attempt 1
+      - FTM - 04 Call Attempt 2
+      - FTM - 05 Call Attempt 3
+      - FTM - 06 Call Attempt 4
+    retrace_after_days: 180
+    min_batch: 20
+    max_records: 1000
+
+  top1000_trace_refresh:
+    kind: native_trace
+    owner: research
+    lane: top1000
+    mode: "plan"
+    schedule: "Sun 05:20"
+    summary: Active Top 1,000 records last traced 180 or more days ago traced again by DataSift, free and outside the per-record cap.
+    presets:
+      - Priority - 01 Skipped No Numbers
+      - Priority - 01 Ready to Text
+      - Priority - 02 Texted, Not Yet Called
+      - Priority - 02 Ready to Call
+      - Priority - 03 Call Attempt 1
+      - Priority - 04 Call Attempt 2
+      - Priority - 05 Call Attempt 3
+      - Priority - 06 Call Attempt 4
+    retrace_after_days: 180
+    min_batch: 20
+    max_records: 1000
+
+  hot_auction_tasks:
+    kind: auctiontasks
+    owner: analysis
+    lane: hot_auction
+    mode: "plan"
+    schedule: "08:05 Mon-Fri"     # after ftm_auction (07:45) has set the tags
+    summary: Hot auctions worked past the call round, closed the day after the sale, and checked once 45 days later.
+    scope_tags: [FTM, Courthouse Data]
+    tag: Auction Soon
+    critical_days: 14
+    custom_date_fields: [Foreclosure Date]
+    date_fields: [auction_date, tax_auction_date]
+    trust_builtin_foreclosure_date: false
+    priority_package: true        # D34 (yours)
+    package_value: [1, 700000]
+    package_min_equity_pct: 20
+    door_knock: true
+    close_out: true               # D39 (yours)
+    after_sale_status: Auction Date Passed
+    deed_check_days: 45
+    deed_check_per_run: 10
+    still_owned_tag: Still Owned After Sale
+    max_reads: 150
+
+  second_chances:
+    kind: secondchance
+    owner: analysis
+    mode: "plan"
+    schedule: "08:40 Mon-Fri"
+    summary: Every Not Interested record gets a task to call its Correct number again, on the clock its list sets.
+    statuses: [not_interested]
+    intervals: {auction: 30, probate: 45, "priority 1": 45, "priority 2": 45, code: 90, tax: 90, "priority 3": 90, other: 90}   # D23
+    max_per_run: 50
+    max_reads: 150
+
+  caller_book:
+    kind: callerbook
+    owner: analysis
+    lane: agency
+    mode: "off"                   # retired 2026-11-13: Priority 1 records are the agency track now; the callers work the Priority track
+    schedule: "Mon 07:30"
+    summary: Each caller gets a book of new Priority 1 records on Monday morning, and nothing more until the next Monday.
+    presets: [Hottest - 02 Ready to Call]
+    book_size: 75                 # D5
+    caller_cap: 2000              # D2 (yours)
+    best_rungs: 6
+    top_up: false
+    dream100_list: Dream 100
+    dream100_per_day: 20
+
+  strong_native_trace:
+    kind: native_trace
+    owner: research
+    lane: agency
+    mode: "off"                   # retired 2026-11-13: Strong records are the agency track now
+    schedule: "every 60 min 08:00-18:00 Mon-Fri"
+    presets: [Strong - 00 Needs Skipped]
+    tranche: true
+    scoped: true
+    min_age_hours: 1
+
+  strong_score:
+    kind: score
+    owner: research
+    lane: agency
+    mode: "off"                   # retired 2026-11-13: Strong records are the agency track now
+    schedule: "09:00 Mon-Fri"
+    presets: [Strong - 02 Ready to Call, Strong - 03 Call Attempt 1, Strong - 04 Call Attempt 2, Strong - 05 Call Attempt 3, Strong - 06 Call Attempt 4]
+    tranche: true
+    drop_status: DEAD
+    write_line_type: true
+    max_records: 250
+    recheck_days: 7
+
+  strong_dial_file:
+    kind: dialexport
+    owner: ops
+    lane: agency
+    mode: "off"                   # retired 2026-11-13: the calling agency dials these from the monthly file
+    schedule: "07:40 Mon-Fri"
+    summary: The current Strong tranche as a daily power-dialer file of Dial First and Second numbers nobody has reached, landlines last.
+    presets: [Strong - 02 Ready to Call, Strong - 03 Call Attempt 1, Strong - 04 Call Attempt 2, Strong - 05 Call Attempt 3, Strong - 06 Call Attempt 4]
+    tranche: true
+    every_days: 0.8               # under a day: the Strong round is a call each weekday
+    power_dialer_over: 1000       # D36 (yours): Kixie Power List, one proof call first
+    rest_after_days: 5
+    max_reads: 400
+
+  bulk_native_trace:
+    kind: native_trace
+    owner: research
+    lane: agency
+    mode: "off"                   # retired 2026-11-13: Bulk records are the agency track now
+    schedule: "every 60 min 08:00-18:00 Mon-Fri"
+    presets: [Bulk - 00 Needs Skipped]
+    tranche: true
+    scoped: true
+    min_age_hours: 1
+
+  bulk_score:
+    kind: score
+    owner: research
+    lane: agency
+    mode: "off"                   # retired 2026-11-13: Bulk records are the agency track now
+    schedule: "09:15 Mon-Fri"
+    presets: [Bulk - 02 Ready to Call, Bulk - 03 Call Attempt 1, Bulk - 04 Call Attempt 2, Bulk - 05 Call Attempt 3, Bulk - 06 Call Attempt 4, Bulk - 07 Call Attempt 5]
+    tranche: true
+    drop_status: DEAD
+    write_line_type: true
+    max_records: 250
+    recheck_days: 7
+
+  bulk_dial_file:
+    kind: dialexport
+    owner: ops
+    lane: agency
+    mode: "off"                   # retired 2026-11-13: the calling agency dials these from the monthly file
+    schedule: "Mon 07:50"
+    summary: The current Bulk tranche as a weekly power-dialer file; each record is dialed about once a month to attempt 6.
+    presets: [Bulk - 02 Ready to Call, Bulk - 03 Call Attempt 1, Bulk - 04 Call Attempt 2, Bulk - 05 Call Attempt 3, Bulk - 06 Call Attempt 4, Bulk - 07 Call Attempt 5]
+    tranche: true
+    every_days: 30
+    power_dialer_over: 1000
+    rest_after_days: 5
+    max_reads: 400
+
+  rehash_dial_file:
+    kind: dialexport
+    owner: ops
+    mode: "plan"
+    schedule: "1st 07:30"
+    summary: Records that never answered, back in the power dialer every 90 days.
+    presets: ["Rehash - Ready (never answered)"]
+    gate_allow: [exhausted]       # a finished round is the point of a rehash; nothing else is lifted
+    every_days: 90
+    rest_after_days: 5
+    max_reads: 400
+
+
+  # ------------------------------------------------------------------ Phase 6: KPIs, alarms and measurement
+  # Every number these stages judge against is in team/kpi.yaml (the KPI catalog); none is set here.
+  # None of them contacts a homeowner. The only change to the account is deal_sources' closing fields.
+  kpi_alarms:
+    kind: alarms
+    owner: ops
+    mode: "plan"
+    schedule: "19:25 Mon-Fri"
+    summary: The day's numbers checked against the catalog's alarms; each one is said once, with what to check first and the list to move to.
+    covers: [kpi]
+    ready_lists:
+      - {lane: ftm, preset: FTM - 02 Ready to Call}
+      - {lane: top1000, preset: Priority - 02 Ready to Call}
+    trace_check:
+      label: first-to-market records
+      scope_tags: [FTM]
+      waiting_preset: FTM - 00 Needs Skipped
+      no_number_preset: FTM - 01 Skipped No Numbers
+    stale_days: 4
+
+  goal_sheet:
+    kind: goals
+    owner: ops
+    mode: "plan"
+    schedule: "Mon 07:40"
+    summary: The revenue goal worked back to deals, leads, conversations and dials, each marked behind, at risk or on track, with a quarterly owner review on top.
+    covers: [kpi]
+    # Plan 6.4. Dials, conversations and leads are judged on 30 days, contracts and deals on 90, each
+    # caller on 90. The revenue goal and the average deal in team/kpi.yaml are placeholders until set.
+    closed_statuses: [closed]
+    contract_statuses: [under_contract]
+    owner_review: quarterly        # quarterly | always | off
+    max_record_reads: 40           # records opened a run to credit a new lead to its caller
+
+  deal_sources:
+    kind: dealsource
+    owner: ops
+    mode: "plan"
+    schedule: "03:10 daily"        # the night list
+    summary: Each closed deal recorded with its lane, list, channel, days from first touch and three names; each month, deals by source and cost per deal.
+    # Plan 6.5. The deal rows are the autopilot's own record. Live, it also fills seven custom fields
+    # on the record, each only when empty: create them first (text fields), the stage names any missing.
+    closed_statuses: [closed]
+    contract_statuses: [under_contract]
+    researched_tags: [Deep Prospected]
+    list_order: [Foreclosure, Probate, Tax Sale, Tax Delinquent, Liens, Condemned, Code Violation, Eviction, Divorce, Obituary]
+    write_fields: true
+    fields:
+      lane: Deal Lane
+      list: Deal List
+      channel: Deal Channel
+      days: Days From First Touch
+      generated_by: Lead Generated By
+      carried_by: Lead Carried By
+      closed_by: Deal Closed By
+    fee_field: ""                  # the custom field holding what a deal paid, for the margin in the owner review
+    mail_tracking_lines: {}        # "8655550140": handwritten_letter, or "" for a line every piece shares
+    max_records: 25                # closings read a run
+    max_lead_reads: 60             # records opened for the monthly table, to place a lead's channel
+
+  cadence_tuner:
+    kind: cadence
+    owner: ops
+    mode: "plan"
+    schedule: "1st 03:40"          # monthly, on the night list
+    summary: Every sold record's last conversation set against its sale date; proposes follow-up intervals 15 days shorter where leads are being lost. It never edits anything.
+    # Plan 6.6. A proposal only: the intervals in team/kpi.yaml and in DataSift are yours to change.
+    sold_statuses: [sold]
+    days: 120                      # sale dates this far back (the sale date lags a closing by weeks)
+    auction_marks: [Foreclosure, Auction Soon]
+    priority_marks: [Probate]
+    max_records: 150               # sold records opened a run; one already studied is not opened again
+
+  coaching_picks:
+    kind: coachpick
+    owner: ops
+    mode: "plan"
+    schedule: "19:30 Mon-Fri"      # after the capture; weekly picks on weekly_on, a new hire's every day
+    summary: The two best and two worst calls of each caller picked from the call log and queued for call coaching, daily in a new hire's first week.
+    covers: [callpull]
+    # Plan 6.7. It picks, it does not grade. Notes go to the owner first.
+    weekly_on: Fri
+    new_hires: {}                  # Name: "YYYY-MM-DD", the caller's first day
+    workflow: call_coaching
+    agent: ops
+    outcome_hours: 24
+
+  research_results:
+    kind: researchstats
+    owner: ops
+    mode: "plan"
+    schedule: "1st 03:50"          # monthly, on the night list
+    summary: Each researched record read 30 days on, was a decision maker reached, by which number, did it become a lead, against the teaching's 50 to 70 percent.
+    # Plan 3.11.
+    researched_tags: [Deep Prospected]
+    closed_statuses: [closed]
+    max_records: 60                # researched records opened a run; each is read once
+
+  # ------------------------------------------------------------------ The research lane (plan 3.1, 3.2, 3.5 to 3.8, 3.10)
+  research_queue:
+    kind: researchqueue
+    owner: research
+    mode: "plan"
+    schedule: "every 30 min 08:00-17:00 Mon-Fri"
+    summary: Research works one ranked queue inside its daily budget; each record gets the tag Research Queued and one card.
+    # When this goes live, switch ftm_deep_prospect, ftm_return_mail and ftm_no_numbers off, so the
+    # queue is the one door into research.
+    presets: ["02 Obituary / Deceased", "03 Exhausted Call -> DP", "03b No Live Number -> DP", "04 Return Mail -> DP", "05 Vacant -> DP", "01 No / Bad Phone"]
+    hints: {"03 Exhausted Call -> DP": exhausted, "03b No Live Number -> DP": no_number, "04 Return Mail -> DP": returned_mail, "05 Vacant -> DP": vacant_mailing, "01 No / Bad Phone": no_number}
+    scope_tags: [Auction Soon, Tax Sale Redemption]
+    scope_lists: [Probate, Condemned]
+    statuses: [Deep Prospecting]
+    # The Return Mail status and the return tags (read the way ftm_return_mail reads them). The do-not-mail
+    # flag is left to ftm_return_mail: its scan needs one lane's scope, never the whole account. This was
+    # `true`, which the reader refuses ("return_signals must be a mapping"), so no return was read here.
+    return_signals: {statuses: [Return Mail], tags: [Return Mail, Returned Mail], flag: false}
+    research_by_list: {Condemned: arrival, Foreclosure: arrival, Probate: arrival, Liens: exhausted}   # plan 1.17
+    workflow: deep_prospect
+    agent: research
+    rate_usd: 1.21
+    daily_usd: 25
+    max_open: 2                   # one worker runs every task: five 8-minute research runs would hold the clock 40 minutes
+    card_column: {title: Check Relatives, uuid: "00000000-0000-0000-0000-000000000000"}    # prod-account's Deep Prospecting board, read 2026-11-16 (src/siftline_columns.py)
+    card_done_column: ""                                # uuid of the done column; empty leaves the card
+    # The deeper pass (2026-11-15): research that comes back thin (owner status Unknown, nobody named to
+    # sign, no Dial First or Second number for a living signer, an unsettled dispute between the two
+    # researchers, or under two sources) is sent back ONCE with more searches, the whole family looked up
+    # in the obituary index first and the referee always run. Still thin after that: the tag below, for a
+    # person and the paid lookups, never a third pass. Needs the low-cost engine on the box (the Claude
+    # researcher reads no depth).
+    deeper: true
+    thin_rules: [owner_unknown, no_decision_maker, no_number, dispute, few_sources]
+    thin_min_sources: 2
+    deeper_rate_usd: 2.50         # an estimate until measured
+    deeper_daily_usd: 10
+    deeper_max_per_run: 1
+    deeper_searches: 24           # a first pass has 14
+    deeper_pages: 20              # a first pass has 12
+    deeper_referee: always
+    person_tag: "Research Needs a Person"   # create it, and a preset that shows it, before going live
+
+  heir_lane:
+    kind: heirlane
+    owner: ops
+    mode: "plan"
+    schedule: "09:15 Mon-Fri"
+    summary: Researched records worked one verified heir at a time by one caller, texted by name about the property, written to at the heir's own address.
+    gate_allow: [heir, in_research]
+    heir_caller: null        # D19
+    attempts_per_heir: 5
+    letters_per_heir: 4
+    text_system: smarter_contact
+    daily_pieces: 30
+    daily_texts: 30
+
+  obituary_lane:
+    kind: obituary
+    owner: research
+    mode: "plan"
+    schedule: "09:40 Mon-Fri"
+    summary: Obituary records held a month, one soft letter before month three, researched at three months, mailed monthly until then, matched against probate filings.
+    covers: [obitcamp, obitmail]   # the org-chart agents whose job this stage does (obituary_mail retired 2026-11-13)
+    presets: ["Obituary - All"]
+    gate_allow: [deceased]
+    call_presets: ["06 Obituary - Ready to Call", "07 Obituary - Call Attempt 1", "08 Obituary - Call Attempt 2", "09 Obituary - Call Attempt 3"]
+    calls: after_research
+    # The estate pipeline's obituary half (Ty, 2026-11-16: probate and obituary get their own pipeline). The copy
+    # takes the swipe file's heir note and follow-up shapes, held to this lane's rule: no death, no list, the street
+    # named, to "The <Surname> Family". It prints as a file, never through DataSift's mail, which would print the
+    # owner of record's name, and that may be the person who died.
+    soft_copy: "Hello, my name is {sender}, and I buy houses here in East Tennessee. I'm writing to the family at {street}. If keeping the house isn't the plan, I'd be glad to help. I can buy it as it sits, belongings and all, on whatever timeline feels right. There's no hurry at all. You can reach me at {phone}."
+    monthly_copy:
+      - "Hello, this is {sender}. I wrote a while back about the house at {street}. I know life gets busy, so I wanted to try once more. If selling it as it is would ever help your family, call or text {phone}. Even if you're not ready, I'm glad to answer questions."
+      - "Hello from {sender}. I'm still interested in the house at {street}. Nothing needs to be fixed or cleaned out, and you can leave whatever you don't want. If the time is ever right, please call or text {phone}."
+      - "Hello, {sender} here about {street}. I buy houses here in East Tennessee and can work around your family's schedule. If you'd like to talk, my number is {phone}. Please keep this letter, even if you're not ready to decide yet."
+
+  probate_honest:
+    kind: probate
+    owner: analysis
+    mode: "plan"
+    schedule: "Mon 07:40"
+    summary: Probate kept honest as a list a person approves, flagged addresses by the measured split, old probates to mail only, a no called again at 45 days.
+    recall: auto
+
+  paid_lookups:
+    kind: paidlookup
+    owner: ops
+    mode: "plan"
+    schedule: "09:05 Mon-Fri"
+    summary: Records every source missed and worth the money queued for the assistant's paid people search, with a weekly task.
+    presets: ["01 No / Bad Phone", "03b No Live Number -> DP"]
+    assistant: null          # D37
+
+  # ------------------------------------------------------------------ The two tracks (the owner's decision, 2026-11-13)
+  # Priority: first to market plus the Top 1,000, worked in-house by the stages above (lanes: [ftm,
+  # top1000]). Agency: everything else in the buy box, sent once a month to the calling agency.
+  # Both rank by the Dream 100 opportunity score (src/dream100_build.py), one owner one slot, from
+  # one shared SiftMap sweep a month (search only, never a detail read). Neither writes in plan mode.
+  # First population on purpose, without taking the stage live:
+  #   python -m agents.autopilot.top1000 plan          (from src/)
+  #   TOP1000_ALLOW=1 python -m agents.autopilot.top1000 apply --commit
+  morning_callbacks:
+    kind: callbacks
+    owner: sales
+    mode: "plan"                  # read only: it posts the list and writes nothing, so plan mode is enough
+    # Three times a day, not once (measured 2026-11-15 over 30 days of the log): about 15 owners a day
+    # call in and miss us, mostly between 2 and 5pm, and 80% had no call back by 1pm the next
+    # business day. Each run lists everyone still waiting since the end of the last business day.
+    schedule: ["08:15 Mon-Fri", "12:30 Mon-Fri", "17:15 Mon-Fri"]
+    summary: Every owner who called in and reached nobody, left a voicemail or texted in since the end of the last business day, and whom nobody has answered yet, with the house and who has it; before the dialing day, at midday and before close.
+    # The lesson: "The lead manager's day starts by clearing the queue: every missed call, voicemail
+    # and text message in the dialer inboxes is called back and processed before any task preset."
+    max_owners: 25
+    sync_calls: 60                # log pages read to bring the calls and texts copy up to date first
+
+  lead_notes:
+    kind: leadnotes
+    owner: sales
+    mode: "plan"
+    schedule: "every 30 min 08:00-20:00 Mon-Sat"
+    summary: Every answered call with a lead, or a real conversation on a prospect, becomes one lead note in one format from its recording (the four pillars and the intake answers, each quoted from the call) plus the custom fields that exist; a lead moved to Hot Lead or Acquisitions gets one What we know note, so nobody asks the seller twice.
+    # Plan 2.9, decision D16 (open: about 20 core answers from the call, the ones that change the offer
+    # in fields, the rest in the note). C8.21: at a handoff the seller never repeats an answer. The
+    # lesson: lead notes follow one trained format, tied to the four pillars (C9.17). An answer the code
+    # cannot find quoted in the transcript is Unknown. About $0.003 a minute to transcribe (OpenRouter)
+    # and about $0.001 a call for the notes (Claude Haiku 5.5, thinking off).
+    read_fields: false            # the research gate does not use the Owner Deceased field: no extra read per record
+    daily_usd: 2.00               # this stage's own day cap, about 100 calls
+    min_seconds: 90               # a shorter answered call is a greeting or a voicemail
+    prospect_seconds: 180         # a call this long counts on a prospect that is not a lead yet
+    call_events: [owner.call.answered]   # add owner.call.received for inbound calls a person picked up
+    first_days: 2                 # how far back the first run reaches
+    settle_minutes: 15            # a call this fresh may not have its recording yet
+    max_age_days: 7               # a call still not done after this long is closed
+    max_transcriptions: 12        # a run
+    max_model_calls: 12           # a run
+    max_reads: 60                 # DataSift record reads a run, about two a call
+    max_minutes: 30
+    audio_per_min: 0.003          # estimates for the caps; what OpenRouter and Claude bill is what is booked
+    extract_usd: 0.003
+    model: claude-haiku-5-5
+    max_tries: 3
+    recording_grace_hours: 24     # a recording gone this soon after the call is tried again
+    keep_days: 60                 # transcripts kept on the box, then deleted
+    fields:                       # answer -> custom field label; only labels that exist are written
+      reason: Motivation
+      timeline: Timeline          # exists on prod-account
+      condition: Condition
+      asking_price: Asking Price
+      occupancy: Occupancy
+      mortgage_balance: Mortgage Balance   # the label the encumbrance stage fills too
+      months_behind: Months Behind         # the label the encumbrance stage fills too
+    overwrite_fields: false       # a value a person or another stage put in a field is kept; Unknown is replaced
+    handoff_statuses: [Hot Lead, underwrite]   # add under_contract and push_deal for the transactions and dispo handoffs (C8.21)
+    handoff_delay_minutes: 45     # so the call that made the lead hot is noted first
+    handoff_wait_hours: 24
+    sync: true
+    sync_calls: 60                # log pages read to bring the calls copy up to date first
+
+  lead_encumbrances:
+    kind: encumbrance
+    owner: sales
+    mode: "plan"
+    schedule: "every 30 min 08:00-19:00 Mon-Sat"
+    summary: When a record becomes a lead, its encumbrances are filled in from what can be checked (delinquent county tax from the Trustee's own bills, the liens our lien records put on it, the mortgage on the record), with Unknown where nothing was checked, in a note and in the intake fields that exist.
+    # The lesson: "Fill the encumbrance fields: mortgage balance, months behind, back taxes (Unknown
+    # until checked) and the back taxes amount, HOA, and code violation liens." Writes Tax delinquency
+    # amount and a note "Encumbrances" on the record; never Total Delinquency (liens plus taxes, kept
+    # by the lien records). County tax only, Knox and Blount (the Trustee sites), by street.
+    gate_allow: [lead]
+    lead_statuses: [new_lead, No Contact New Lead, Cold Lead, Warm Lead, Hot Lead, Ghosting Lead, follow_up, lead,
+                    underwrite, under_contract, push_deal, transactions, refer_lead]
+    first_window_days: 14         # how far back the first run looks for records that became leads
+    max_records: 15               # new leads checked a run (a record read, its fields, up to four county requests)
+    max_tries: 3                  # runs a lead waits for the county tax site before its note says Unknown
+    note: true
+    fields:                       # what each value fills; a label the account does not have goes in the note only
+      tax: Tax delinquency amount
+      mortgage_balance: Mortgage Balance
+      months_behind: Months Behind
+      hoa: HOA
+      code_liens: Code Liens
+    overwrite: [tax]              # the county's figure replaces an older one; every other field a person filled is kept
+
+  phone_cleanup:
+    kind: phonecleanup
+    owner: research
+    mode: "plan"
+    schedule: "08:05 Mon-Fri"      # after the 06:30 first-to-market pull lands probate notices, before dialing
+    summary: When a probate filing names the executor, the relatives' numbers earlier research put on the owner are moved down to Dial Fourth and tagged Before Executor, so the caller reaches the one person in charge first; nothing is deleted, a number a person set is never touched, and every move can be undone.
+    # C3.14: "that has to be manually done by a data manager... Scary to make mass changes like that."
+    # So at most 25 records are changed a run, the first write is read back, and undo puts every tag back.
+    scope_lists: [Probate, Obituary]
+    scope_tags: [Deep Prospected, Heir Identified]
+    pr_fields: [Personal Representative, Decision Maker]   # after the record's own personal representative
+    pr_phone_fields: [Personal Representative Phone]
+    hold_confidence: ["low", "none"]
+    lower_tier: "Dial Fourth"
+    why_tag: "Before Executor"
+    keep_signers: decision_maker   # before probate opens every heir may sign; always / never
+    max_reads: 150
+    max_records: 25
+    recheck_days: 14
+
+  new_hire_week:
+    kind: newhire
+    owner: ops
+    mode: "plan"
+    schedule: ["18:45 Mon-Fri"]    # after the calling day ends (18:00), before coaching_picks (19:30)
+    summary: Every answered call a new hire made that day, transcribed and graded on the rubric of their role each evening of their first week; the notes are staged for the owner to touch up and release before the new hire sees them.
+    covers: [coldcoach, lmcoach, closercoach]
+    # Ty, 2026-11-15: "New-hire first week: every call graded daily, with the coaching notes coming to
+    # you before the caller." Nothing reaches a new hire until a releaser types release batch N and
+    # confirm N; a reply "edit N: <your version>" replaces the draft, and both are kept.
+    people: []
+    #   - {name: "Dana", role: caller, start: "2026-11-16", slack_user: "U0EXAMPLE1"}
+    #   - {name: "Rae Example", role: lead manager, start: "2026-11-23"}   # no Slack id: the team channel
+    #   name: exactly as the call log names the caller (a DataSift user's first name); uuid: optional user id
+    #   role: caller, lead manager or closer (picks the rubric); start: the first day, YYYY-MM-DD
+    first_week_days: 5             # business days graded every day, counted from the start
+    max_calls_per_day: 25          # calls sent to be graded, per new hire per day
+    daily_usd: 10                  # this stage's dollars a day, before the autopilot's and the brain's caps
+    min_seconds: 15                # a shorter answered call is a greeting or a hang-up and is never sent
+    catch_up_days: 1               # an evening the box missed is written up the next evening
+    include_inbound: false         # true grades the new hire's answered inbound calls too
+    points: 3                      # things to keep and to change per call, 1 to 3
+
+  complete_records:
+    kind: complete
+    owner: research
+    mode: "plan"
+    # Two passes a night inside the night budget (70 requests a minute, 3,800 an hour, shared by every
+    # stage): a completion costs about 3 requests (read, owner update, tag), so a pass of 1,000 takes
+    # about 50 minutes and the second pass picks up whatever the first left. The 1,297 people on prod-account
+    # (practice run 2026-11-15) finish on the first night; with trusts switched on, about two nights.
+    schedule: ["00:40 daily", "03:40 daily"]
+    summary: The incomplete records owned by people completed the way the course teaches (C2.27), the person's name moved into first and last so the record turns clean, companies and anything uncertain left for a person, then DataSift's free skip trace on the ones completed.
+    # Measured on prod-account 2026-11-15: 11,532 incomplete records: 7,405 companies, 2,813 trusts named for
+    # people, 1,297 people (a name in the company field 739, an initial for a first name 251, life
+    # estates 124, both names 116, a last name only 67). Proven on one record the same day: the owner
+    # update turns it clean.
+    per_run: 1000                 # completions a pass
+    read_cap: 1400                # full record reads a pass (a held record costs a read too)
+    siftmap_cap: 500              # SiftMap reads a pass, for an initial or a missing first name (its own counter)
+    trusts: "hold"                # until the owner decides; "complete" rewrites a trust named for a person to that person (C11.28)
+    life_estates: "complete"      # the life tenant is the owner today (C11.28)
+    trace: true                   # DataSift's own free skip trace once 20 or more are completed
+    min_batch: 20
+
+  lost_deal_audit:
+    kind: lostdeals
+    owner: analysis
+    mode: "plan"                  # read only: it writes nothing to the account in any mode
+    schedule: "1st 04:20"         # monthly, on the night list, after the cadence and research reports
+    summary: Every house in our account that sold last month to an investor, who bought it and what we did or missed first (never worked, worked but never reached, reached but not followed up, a lead we lost), with the repeat buyers named as possible dispo buyers.
+    # C10.37 and lesson 2-06 at 2:28. The investor test is the deal-odds label's own
+    # (deal_odds_train.investor_entity). DataSift refreshes last_sold about two months after a
+    # closing, so the months before the audited one are read again for late arrivals.
+    months_back: 1                # the month audited: 1 is the calendar month before this one
+    catch_up_months: 2
+    max_records: 150              # sold houses opened a run (one record read each)
+    siftmap_cap: 150              # SiftMap deed reads a run (the house is in the account)
+    portfolio_min: 3              # a buyer SiftMap shows owning this many properties is an investor
+    nominal_floor: 10000          # under this a deed is a family or no-price transfer
+    resale_months: 24             # a seller who bought within this long is an investor reselling
+    gap_lines: 3                  # the channel shows six lines: the biggest gaps, the repeat buyers, the file
+
+  neighborhood_suppression:
+    kind: suppression
+    owner: analysis
+    mode: "plan"                  # it suggests; a person applies the change file with preset_patch.py
+    schedule: "1st 04:40"
+    summary: Neighborhoods whose worked records keep going bad (dead leads, not interested, a bad-area tag) far more often than the account's own rate, proven by a count and written into a preset change file for you to approve; it never changes a preset.
+    # C10.34. A neighborhood the presets already skip is not suggested again.
+    window_days: 180
+    bad_statuses: [Dead Lead, not_interested]
+    bad_tags: [Bad Area]          # a caller tags a lead from a bad area; the tag does not exist yet
+    min_bad: 5
+    min_worked: 8
+    min_lift: 0.15                # at least 15 points above the account's own bad share
+    max_chance: 0.05              # and under a 1 in 20 chance at the account's rate
+    read_cap: 400                 # worked records opened a run for their neighborhood, each once
+    apply_to: excluding           # excluding: the presets that already skip neighborhoods; marketing: every call, mail and pre-call preset
+
+  tax_watch:
+    kind: taxwatch
+    owner: analysis
+    mode: "plan"
+    # Weekly at night, inside the night budget (70 requests a minute, 3,800 an hour, shared by every stage):
+    # a record costs 2 DataSift reads (the record, its custom fields) and 2 to 5 county requests, so 300
+    # take about 25 minutes. Clear of complete_records (00:40, about 50 minutes) and owner_lanes (02:30).
+    schedule: "Sun 01:35"
+    summary: County tax status on the records the team works (leads, hot auctions, tax sale, probate, tax delinquent, obituary, the Top 1000), read from the county Trustee's own bills and written back until paid; a record that has paid gets 0, the tag Taxes Paid and a dated note.
+    covers: [tax]                 # the org-chart agent whose job this stage extends (upload-time Tax Enricher)
+    statuses: [new_lead, No Contact New Lead, Cold Lead, Warm Lead, Hot Lead, Ghosting Lead, follow_up, lead, underwrite, under_contract, push_deal, transactions, refer_lead]
+    urgent_tags: [Auction Critical, Auction Soon]          # read first and every week, like a lead
+    scope_lists: [Tax Sale, Probate, Tax Delinquent, Obituary]
+    scope_tags: [Top 1000]
+    hold_tags: [Do Not Market, recently sold, Estate Sold, Wrong House]
+    amount_field: Tax delinquency amount                   # never Total Delinquency (liens plus taxes); refused if named
+    year_field: tax_delinquent_year                        # documented property PATCH; empty leaves the year alone
+    paid_tag: Taxes Paid                                   # create it before going live
+    recheck_days: 91              # a clean reading, no parcel, a held record, another county
+    recheck_owing_days: 28        # a reading that owes, or bills that could not be read
+    recheck_urgent_days: 7        # a lead or a hot auction
+    delinquent_from: "03-01"      # a reading taken before this day is due again once it passes
+    max_records: 300              # records read in full a run
+    max_scan: 5000                # search rows listed per list, tag or status set
+    max_minutes: 40               # one worker runs every stage
+    county_pause_s: 0.5
+    note: true
+    alert_leads: true             # a lead that newly owes or has paid is one alert to the pipeline channel
+    zero_on_blank: false          # a clean reading on a blank field leaves it blank
+    individuals_only: true        # people only (2026-11-14)
+    estates_are_people: true      # a person's estate counts as the person
+
+  # ------------------------------------------------------------------ Three lead workflows (track leadprep, 2026-11-15)
+  lead_property_check:
+    kind: leadprep
+    owner: sales
+    mode: "plan"
+    schedule: "every 10 min 08:00-18:00 Mon-Fri"
+    summary: Each new lead's house looked up on Zillow before the first call, the listing in the last six months, the agent, how it ended, the last sale and a one-phrase condition from the old listing photos, written in one Property check note.
+    # Rules C9.16, L14.115, L14.117, L14.122, L10.34. One OpenWebNinja details call (about $0.01) and one
+    # photo read by Claude Haiku 5.5 (about a tenth of a cent) per new lead. Plan mode reads and gates and
+    # spends nothing. Never SiftMap's images route (DataSift's acceptable use prohibits it).
+    gate_allow: [lead]
+    recheck_statuses: []          # e.g. [underwrite] checks the house again when it reaches acquisitions
+    recheck_days: 90
+    months_listed: 6
+    per_run: 10
+    per_day: 25
+    max_reads: 40
+    max_photos: 4
+    photo_width: 768
+    model: claude-haiku-5-5
+    daily_usd: 1
+    sync_calls: 60
+
+  closer_handoff:
+    kind: closertext
+    owner: sales
+    mode: "plan"
+    schedule: "every 5 min 09:00-18:00 Mon-Fri"
+    summary: When a lead moves to acquisitions, a short text from the closer naming the teammate the seller spoke with and saying the call comes in a few minutes, staged for a person to release; the closer is pinged in the pipeline channel.
+    # Rules C5.21, C8.13, C8.21. Nothing is sent from here: a releaser types release batch N, and the texting
+    # side sends the load file from the closer's own line. A text is good for an hour after the move.
+    gate_allow: [lead]
+    statuses: [underwrite]        # the account's Acquisitions status, exactly as stored
+    columns: []                   # lead board column ids whose card move is a handoff (Send to Acquisitions sets no status)
+    closer: ""                    # the closer's first name: Ty to name
+    closer_line: ""               # the closer's own ten-digit number: Ty to name
+    lead_manager: ""              # named when the call log names nobody (decision D13)
+    talk_seconds: 60
+    lookback_days: 30
+    good_for_minutes: 60
+    once_days: 7
+    max_items: 10
+    text_usd: 0.02
+    system: smrtphone
+    ping: true
+    sync_calls: 60
+
+  primary_phone:
+    kind: primaryphone
+    owner: sales
+    mode: "plan"
+    schedule: "every 30 min 09:00-19:00 Mon-Fri"
+    summary: A number a caller marks CORRECT made the owner's primary phone, so DataSift's own sequences and the dialer use the number that reaches the owner; the old primary is kept for undo.
+    # Rules L14.95, L5.21. PATCH /api/internal/owner/{uuid}/ {"primary_phone": ...}. Prove it on one staging
+    # record first (from src/):
+    #   PRIMARY_PHONE_ALLOW=1 python -m agents.autopilot.primaryphone prove --owner <uuid> --number <+1...> --commit
+    sources: []                   # empty: any writer of the mark; [kixie] acts on the dialer's marks only
+    allow: [lead, not_interested]
+    override_confirmed: false
+    max_owners: 50
+    max_reads: 120
+    sync_calls: 60
+
+  # ------------------------------------------------------------------ account checks and the business audit
+  # Both read only. A finding is for a person to fix in the DataSift app: sequences live in Sequence
+  # Builder, which the published API does not reach.
+  account_checks:
+    kind: accountchecks
+    owner: ops
+    mode: "plan"
+    schedule: "07:25 Mon-Fri"
+    summary: The account's own automations read for what they get wrong (a sequence text that keeps failing, a sequence that texts records that are not leads, tasks on someone who is not a caller, tasks that do not fit their record).
+    window_days: 7              # the sequence text checks read this many days of the log copy
+    match_seconds: 120          # a sequence's text and the card, task or assignment the same run made land this close
+    min_failures: 3             # a sequence is named once this many of its texts failed...
+    fail_share: 0.5             # ...and at least this share of what it sent
+    min_prospect_sends: 2       # texts to records that were not leads before a sequence is named
+    overdue_bulk: 10            # one person holding this many tasks past their date is named
+    stale_task_days: 30
+    min_created: 20
+    min_completed_share: 0.1    # tasks made and not done: named when fewer than this share were completed
+    also_ok: []                 # people besides the callers who may hold open tasks (a closer), by first name or user uuid
+    prospecting_statuses: [follow_up]   # a record in one of these is still prospecting (lesson 7-07 at 2:31)
+    task_fits: {}               # a task title -> the status(es) it belongs to, where the account's titles differ from the lead board's
+    max_task_pages: 10          # 100 tasks a page
+    max_record_reads: 60
+
+  business_audit:
+    kind: bizaudit
+    owner: analysis
+    mode: "plan"
+    schedule: "1st 07:45"
+    summary: The course's quarterly business audit scored ahead of time from the account's own data; the questions only the owner can answer are listed for him.
+    # The scheduler has no quarterly slot: the stage runs on the 1st and audits only a period it has
+    # not audited yet. An ask from Slack always answers.
+    every_months: 3             # quarterly; 1 while starting out (C13.59)
+    window_days: 91
+    max_data_score: 4           # a true 5 is rare: the data never claims one, the owner can
+    answers: {}                 # the owner's own 1 to 5 by question id (M1 to K5); an answer also overrides the data
+    labels: {}                  # K5's wording, from the audit sheet the Day 5 workbook links to
+    ni_follow_days: 30          # a Not Interested owner is due a call back after this long
+    note_hours: 24              # a note this long after a conversation documents it
+    max_record_reads: 30        # per question that joins records to owners
+
+  tax_sale_results:
+    kind: taxsale
+    owner: analysis
+    mode: "plan"
+    schedule: "07:50 Mon-Fri"           # before research_queue's first slot (08:00)
+    summary: The Knox tax sale results read row by row; every former owner who can still redeem tagged Tax Sale Redemption for the research queue with the deadline on the record, the winning bidders added to the buyer registry as cash buyers.
+    # Tenn. Code Ann. 67-5-2701: the right to redeem runs from the court's order confirming the sale. The
+    # period the Trustee prints on a row wins over the statute. Buying a redemption right runs into the
+    # anti-profiteering rule in 67-5-2701(b)(2): every note says to check with a lawyer first.
+    read_fields: false
+    archive_dir: ""                     # default /data/knox: a copy of the first-to-market box's tax_sale_docs.json and tax_sale_archive/
+    county: Knox
+    tag: Tax Sale Redemption
+    note: true
+    period_rule: "shorter"
+    confirmed: {}                       # e.g. {"2026-06-02": "2026-06-30"}: the window starts at the court's order
+    sale_dates: {}
+    scales:
+      - {from: "2026-07-01", steps: [[3, "12 months"]], over: "90 days"}                     # Public Chapter 971 (2026)
+      - {from: "1900-01-01", steps: [[5, "12 months"], [7, "180 days"]], over: "90 days"}    # 67-5-2701(a)(1)(B)
+    min_days_left: 5
+    max_records: 40
+    recheck_days: 7
+    roll_check: true
+    max_roll_lookups: 20
+    buyers: true
+    registry_dir: ""
+    government_bidders: [Knox County, City of Knoxville, State of Tennessee]
+
+  agency_scorecard:
+    kind: agencyscore
+    owner: ops
+    mode: "plan"
+    schedule: "8th 08:10"          # monthly: the agency reports a finished month in its first week
+    summary: What the calling agency sent back last month against what it was sent (leads, no's, wrong numbers, removals, cost per lead) beside the in-house lanes over the same month, and what to ask the agency for when only its PDF came back.
+    month: last                    # last, this, or YYYY-MM
+    monthly_fee: 0                 # the agency's fee a month; 0 until the owner sets it
+    inhouse_monthly_cost: 0        # what the in-house lanes cost a month; 0 until set
+    ask: ""                        # empty uses the workflow's default words (AGENTS_AGENCY_RESULTS_ASK)
+    lead_months: 3                 # agency leads this many months back are followed to contracts
+    sales_test_min_leads: 10       # C13.18: this many agency leads and no contract this month reads as a sales problem
+    contract_statuses: [under_contract]
+    closed_statuses: [closed]
+    appointment_kind: appointment
+    sync: true                     # refresh the log copy (calls, state, board) first
+    max_log_calls: 150
+
+  contact_rate:
+    kind: contactrate
+    owner: ops
+    mode: "plan"                  # read only: the report is the same in plan and live mode
+    schedule: "09:10 Mon"
+    summary: Of the owners first worked each week (first dialed or texted), how many we have reached since (a conversation of a minute or more, a text reply, or a number marked correct), the last six complete weeks overall and by lane, the way a friend's Contact Rate Bot reports it.
+    # Ty, 2026-11-16: "for the records that are actively being marketed to or signed out. Probably a better
+    # way to think about it." Each week is a cohort, counted once and cumulatively. First read on prod-account
+    # (weeks 41 to 46): 248 of 4,109 owners first worked were reached (6.0%).
+    weeks: 6
+    cohort: worked                # worked: first dialed or texted that week; signed_out: first assigned to a person that week
+    count_correct: true           # a number marked CORRECT counts as reached (a short "yes it's me" is a contact)
+
+  kpi_tracker:
+    kind: kpitracker
+    owner: ops
+    mode: "plan"                  # read only: the snapshot is the same in plan and live mode
+    schedule: ["07:45 Mon-Fri", "12:30 Mon-Fri", "19:30 Mon-Fri"]   # 19:30 runs after daily_capture (19:15) and kpi_alarms (19:25)
+    summary: One snapshot of the operations numbers three times a weekday (calls, leads, deals, the county board, direct mail, channels, lists, goals and costs), published as the brain's own tracker page with one CSV per tab that any Google Sheet mirrors with IMPORTDATA, and one Slack message a day edited in place.
+    covers: [kpi]
+    # Ty, 2026-11-16: mirror how the DataSift KPI tracker works, "as core and as simple for any universal users
+    # to run as we possibly can", no Lambda or AWS. kpisinks.py publishes; a Google credential is optional.
+    run: auto                     # the first slot is the morning, the last the evening
+    sync: true
+    groups: [calls, state, texts, board]
+    max_log_calls: 400
+    max_counts: 60
+    max_lead_rows: 2000
+    months: 6
+    weeks: 6
+    caller_days: 20
+    lead_days: 5
+    ledger_rows: 200
+    qualified_statuses: [Hot Lead, Warm Lead, Cold Lead]   # F9
+    contract_statuses: [under_contract]
+    closed_statuses: [closed]
+    lost_statuses: [lost_deal, Dead Lead, not_interested]
+    pipeline_stages: [top1000_attempts]
+    feeds: [Foreclosure, Probate, Liens, Condemned, Obituary]
+    not_callers: []               # F15
+    ledger_streets: false         # F4: record links only
+    tab_runs:
+      Direct Mail: [morning, evening]
+      Lists: [morning]
+      Costs: [morning]
+    publish:
+      title: "KPI tracker"
+      slack: "edit"               # one message a day, edited in place; posts or off
+      how_tab: "How it is counted"
+
+  auction_mail:
+    kind: mailcadence
+    owner: ops
+    lane: ftm
+    mode: "plan"
+    schedule: "09:45 Mon-Fri"
+    summary: Foreclosure records with a sale date, mailed weekly on a countdown from that date and staged for a person to release.
+    # SPEC 6.3 and 7 (2026-11-16). Timed by the day a piece lands; nothing lands later than 2 days before the sale.
+    # Ty, 2026-11-16 (from the swipe file's pre-foreclosure lane): one piece lands every week until the sale.
+    anchor: sale_date
+    vendor: siftmail
+    internal_routes: true
+    send: staged
+    scope: {lists: [Foreclosure], tags: [FTM]}
+    clock:
+      anchor_field: Foreclosure Date        # custom field, YYYY-MM-DD; read, never printed
+      first: on_entry
+      gap_days: 7                           # the weekly hit (was 6, tightening to 3 in the last 10 days)
+      final_window_days: 10
+      final_gap_days: 7                     # weekly to the end; also the auction lane's minimum gap between pieces
+      latest_in_home_days_before: 2
+      lead_calendar_days: 7                 # 2 business days to the send date, 3 to deliver
+      delivery_days: 3
+      max_pieces: 6
+      fill: {first: A1, last: [A5, A6], middle: [A2, A3, A4]}
+      postponed: retime                     # pieces left re-timed; the closing pair at most once more
+      after_sale: {grace_days: 14, hand_to: ftm_mail, start_at_step: 2}
+      refresh_days: 1                       # the sale date is read again daily, so a postponement is seen the next morning
+    min_batch: 1                            # Ty, 2026-11-16: "we can absolutely do Sift Mail with any count"
+    daily_pieces: 50
+    daily_usd: 40
+    prices: {handwritten_letter: 1.89, options_letter: 1.22, check_letter: 1.10, postcard: 0.74, closing_letter: 1.22, last_note: 1.22}
+    # Designs approved by Ty 2026-11-17 (output/siftmail/playbook_mapping.json). The typed letters are the closed
+    # grey #10 with a live stamp (product 3); a piece with design_noname goes out named only where SiftMail would
+    # print a clean first name (mail.is_named).
+    pieces:
+      - {id: A1, piece: handwritten_letter, product_id: 16, envelope: 16, design: "00000000-0000-0000-0000-000000000000", external_identifier: "", design_noname: "00000000-0000-0000-0000-000000000000", external_identifier_noname: ""}
+      - {id: A2, piece: options_letter,     product_id: 3,  envelope: 3,  design: "00000000-0000-0000-0000-000000000000", external_identifier: ""}
+      - {id: A3, piece: check_letter,       product_id: 1,  envelope: 1,  design: "00000000-0000-0000-0000-000000000000", external_identifier: "", design_noname: "00000000-0000-0000-0000-000000000000", external_identifier_noname: ""}   # DataSift's check-voucher template, no amount, double-window envelope (Ty, 2026-11-16)
+      - {id: A4, piece: postcard,           product_id: 14, design: "00000000-0000-0000-0000-000000000000", external_identifier: "", street_view: true}
+      - {id: A5, piece: closing_letter,     product_id: 3,  envelope: 3,  design: "00000000-0000-0000-0000-000000000000", external_identifier: ""}
+      - {id: A6, piece: last_note,          product_id: 3,  envelope: 3,  design: "00000000-0000-0000-0000-000000000000", external_identifier: ""}
+    sender: {}
+
+  probate_mail:
+    kind: mailcadence
+    owner: ops
+    lane: ftm
+    mode: "plan"
+    schedule: "10:15 Mon-Fri"
+    summary: Personal representatives of confirmed decedent houses, from the week the estate opens to month 24, staged for a person to release.
+    # SPEC 6.4 and 7 (2026-11-16). Never two pieces closer than 14 days; confirmed houses only.
+    anchor: filed_date
+    vendor: siftmail
+    internal_routes: true
+    send: staged
+    scope: {lists: [Probate], tags: [FTM], not_tags: [Wrong House, Estate Sold]}
+    require: decedent_house                 # the probate stage's audit split, or the upload owner guard after 11-11
+    clock:
+      anchor_field: Probate Open Date       # read, never printed; then the notice month tag, then Date Added
+      min_gap_days: 14
+      steps:                                # in-home targets
+        - {piece: PB1, at: on_entry}
+        - {piece: PB2, after_days: 14}
+        - {piece: PB3, after_days: 14}
+        - {piece: PB4, after_days: 30}
+        - {piece: PB5, after_days: 30}
+        - {piece: PB6, after_days: 30}
+        - {piece: PB7, after_days: 30}
+        - {piece: PB10, after_days: 30}
+        - {piece: PB8, after_days: 30}
+        - {piece: PB9, after_days: 30}
+        - {piece: PB4, after_days: 30}
+        - {piece: PB8, after_days: 30}
+        - {piece: PB9, after_days: 30}
+        - {piece: PB10, after_days: 30}
+      after_month_12: {every_days: 75, rotate: [PB4, PB8, PB10, PB9], until_month: 24}
+    min_batch: 1                            # Ty, 2026-11-16: SiftMail takes any count
+    daily_pieces: 50
+    daily_usd: 40
+    prices: {letter: 1.22, options_letter: 1.22, steps_letter: 1.22, postcard: 0.74, family_postcard: 0.74}
+    # Designs approved by Ty 2026-11-17 (output/siftmail/playbook_mapping.json). The typed letters are the closed
+    # grey #10 with a live stamp (product 3); the handwritten notes go named only where SiftMail would print a clean
+    # first name (mail.is_named), the "Hi there," twin to everyone else.
+    pieces:
+      - {id: PB1, piece: letter,             product_id: 3,  envelope: 3,  design: "00000000-0000-0000-0000-000000000000", external_identifier: ""}
+      - {id: PB2, piece: handwritten_letter, product_id: 16, envelope: 16, design: "00000000-0000-0000-0000-000000000000", external_identifier: "", design_noname: "00000000-0000-0000-0000-000000000000", external_identifier_noname: ""}
+      - {id: PB3, piece: options_letter,     product_id: 3,  envelope: 3,  design: "00000000-0000-0000-0000-000000000000", external_identifier: ""}
+      - {id: PB5, piece: letter,             product_id: 3,  envelope: 3,  design: "00000000-0000-0000-0000-000000000000", external_identifier: ""}
+      - {id: PB6, piece: handwritten_letter, product_id: 16, envelope: 17, design: "00000000-0000-0000-0000-000000000000", external_identifier: "", design_noname: "00000000-0000-0000-0000-000000000000", external_identifier_noname: ""}
+      - {id: PB7, piece: steps_letter,       product_id: 3,  envelope: 3,  design: "00000000-0000-0000-0000-000000000000", external_identifier: ""}
+      - {id: PB8, piece: handwritten_letter, product_id: 16, envelope: 16, design: "00000000-0000-0000-0000-000000000000", external_identifier: "", design_noname: "00000000-0000-0000-0000-000000000000", external_identifier_noname: ""}
+      - {id: PB9, piece: letter,             product_id: 3,  envelope: 3,  design: "00000000-0000-0000-0000-000000000000", external_identifier: ""}
+      # the estate pipeline's own soft postcards (Ty, 2026-11-16: probate and obituary get their own pipeline,
+      # so the evergreen cards no longer stand in here)
+      - {id: PB4,  piece: postcard,        product_id: 14, design: "00000000-0000-0000-0000-000000000000", external_identifier: "", street_view: true}
+      - {id: PB10, piece: family_postcard, product_id: 14, design: "00000000-0000-0000-0000-000000000000", external_identifier: "", street_view: true}
+    sender: {}
+
+  # ------------------------------------------------------------------ call review (track callreview, 2026-11-15)
+  attempt_log:
+    kind: attemptlog
+    owner: sales
+    mode: "plan"
+    schedule: "every 15 min 08:00-19:30 Mon-Sat"
+    summary: After every call to a lead, one dated line (the attempt number and what happened) on ONE pinned running note on the owner's message board, written from the call log, so nobody types "no answer, left vm" by hand.
+    # Measured 2026-10-16 to 11-15 on prod-account: 165 notes typed by hand saying only "no answer" or "left vm"
+    # (about 13 a business day, 12 to 30 s after the dial), one running note per lead pinned (45 pins)
+    # and added to (29 of 55 edits). Free. Never two pinned notes on one lead. Prove the owner board on a
+    # test record first: python src/agents/autopilot/proofs.py run --key-env STAGING_DATASIFT_KEY --record <uuid> --only owner_board_note --commit
+    gate_allow: [not_interested]   # the call that ended a lead is logged, though the dialer marked it Not Interested seconds later
+    read_fields: false            # a note contacts nobody: no Owner Deceased field read per record
+    statuses: [new_lead, No Contact New Lead, Cold Lead, Warm Lead, Hot Lead, Ghosting Lead, follow_up, lead,
+               underwrite, under_contract, push_deal, transactions, refer_lead]
+    settle_minutes: 10
+    first_hours: 24
+    lead_grace_minutes: 30        # a dial this soon before the record became a lead made it one: attempt 1
+    transcript_seconds: 90        # an answered call this long waits for lead notes' transcript
+    transcript_wait_minutes: 120  # then the line says "answered" and the length
+    disposition_minutes: 30
+    pair_minutes: 10
+    max_owners: 20
+    max_reads: 80
+    board_page: 50
+    max_records: 2
+    note_max: 3900                # a longer log continues in a new note; the old one is unpinned first
+    caller_names: true
+    sync: true
+    sync_calls: 40
+
+  call_screen:
+    kind: callscreen
+    owner: ops
+    mode: "plan"
+    schedule: ["19:45 Mon-Fri"]   # after the daily capture (19:15) and the coaching picks (19:30)
+    summary: Each evening every answered call of a minute or more is read for a price given on the phone, a soft yes nothing followed, a Not Interested or Dead Lead with no real refusal, and, on a lead that went quiet or a contract that fell apart, the objection nobody asked about; every flag quotes the call, and the owner reads them first.
+    # C9.39, C8.12, C9.37 with L10.37 and L10.38, A13.1. Claude Haiku 5.5, thinking off: well under a
+    # tenth of a cent a call; a transcript nobody kept costs about $0.003 a minute (OpenRouter).
+    daily_usd: 0.50
+    min_seconds: 60
+    call_events: [owner.call.answered, owner.call.received]
+    first_hours: 24
+    settle_minutes: 120           # a call this fresh is screened the next evening: its soft yes gets time for a follow-up
+    max_age_days: 7
+    max_calls: 60
+    max_reads: 120
+    transcribe: true
+    max_transcriptions: 8
+    max_minutes: 30
+    audio_per_min: 0.003
+    screen_usd: 0.002
+    model: claude-haiku-5-5
+    min_quote_words: 3
+    disposition_hours: 12
+    no_statuses: [not_interested, Dead Lead]
+    quiet_statuses: [Ghosting Lead]
+    lost_statuses: [lost_deal]
+    contract_statuses: [under_contract, transactions]
+    closed_statuses: [closed, close_out, sold]
+    quiet_calls: 2
+    quiet_days: 45
+    follow_up_task: true
+    task_due_days: 1
+    sync: true
+    sync_calls: 60
+
+  top1000_refresh:
+    kind: top1000
+    owner: analysis
+    lane: top1000
+    mode: "plan"
+    schedule: ["1st 00:20", "1st 03:20", "2nd 00:20", "3rd 00:20"]   # monthly; the later slots only finish what the first could not
+    summary: The Top 1,000 owners re-ranked once a month on deal odds (the chance an investor buys one of their houses within six months, learned from what sold), one owner one slot; who would gain and lose the tag is listed, with the ranking as a file.
+    # Ranked on deal odds since 2026-11-14 (src/deal_odds.py, fitted by src/deal_odds_train.py):
+    # tested on the half-year after its training window, its top 1,000 houses held 17 of 574 investor
+    # deals, against 10 for the old Dream score's core and 4 for the Priority 1 combinations.
+    # score: dream100 puts the old points back for comparison.
+    score: deal_odds
+    min_room: 15000               # a house with under $15,000 of discount room has no room for a fee
+    individuals_only: true        # people only, no companies or trusts (the owner's rule, 2026-11-14); the agency file inherits it
+    # The pool: the agency track's own rows (owner and status of each house), plus the records that
+    # hold the tag now and the records on the Agency list, so a house sent last month can still be
+    # promoted. If the parallel preset build splits the queue in two, list both titles here.
+    presets: [Agency - 01 Queue]
+    pool_lists: [Agency]
+    counties:
+      - {fips: "47093", name: Knox, state: TN}
+      - {fips: "47009", name: Blount, state: TN}
+    size: 1000                    # owners, not houses: a selected owner gets the tag on every house in the buy box
+    tag: Top 1000
+    finalists: 1.5                # 1,500 owners read in full for their phones (reach) and the full gate
+    keep_in_round: true           # a holder that falls out keeps the tag until its round ends
+    exclude_lists: [Obituary]     # the obituary lane and its research have these owners; the Priority presets do not exclude them
+    weights: today                # the Dream 100 weight set (D31): today or taught
+    read_fields: false            # the gate's custom-field read is one more request per finalist; the in-house stages read it when they act
+    max_reads: 1500               # records opened a run (remembered facts_days, so a stopped run continues)
+    max_writes: 2500              # tag changes a run
+    max_searches: 900             # SiftMap searches a run (its own request counter), 100 rows each
+    page_size: 100                # SiftMap's fair use asks for pages of 25 to 100
+    facts_days: 5
+    d4d_cohort: ""                # the D4D cohort file on the box; empty looks in DATA_DIR/d4d/cohort.json
+
+  agency_export:
+    kind: agencyexport
+    owner: ops
+    lane: agency
+    mode: "plan"
+    schedule: "every 60 min 00:00-05:00 daily"   # the month's file from the 1st once the Top 1,000 is done; other nights only mark a sent file
+    summary: The month's file for the calling agency, the top 5,000 owners not sent in 90 days in the format the agency already maps, staged for a person to send.
+    presets: [Agency - 01 Queue]  # the agency track; if the parallel preset build splits it in two, list both titles here
+    counties:
+      - {fips: "47093", name: Knox, state: TN}
+      - {fips: "47009", name: Blount, state: TN}
+    size: 5000                    # owners in the file
+    resend_days: 90               # an owner is not sent again sooner than this (enforced here: a preset cannot filter the date field)
+    exclude_lists: [Obituary]     # owners the obituary lane works are not sent to the agency
+    margin: 0.10                  # owners read past the size, so the file fills after the ones the agency cannot dial
+    list: Agency                  # a sent record goes on this list
+    field: Sent to Agency         # and this custom date field is set to the day the file was sent
+    list_name: Agency call list   # the file's name and its Read me title
+    about: "The agency track: owners in the buy box who are not first to market and not in the Top 1,000, highest Dream 100 score first."
+    after_stage: top1000_refresh  # the file waits for this month's Top 1,000
+    read_fields: false
+    max_reads: 2500               # records opened a run (every house of a candidate owner, remembered facts_days)
+    max_writes: 1200              # records marked a run from a sent file (two writes each)
+    release_writes: 100           # records marked inside the release itself; the night runs mark the rest
+    release_reads: 400            # records read again at release (only the ones whose log changed since staging)
+    max_field_reads: 300          # Agency-list records with no send date the autopilot knows, read a run
+    plan_harvest: true            # a plan reads the records too, so the file can be looked at before going live
+    registry_numbers: hold        # read only while gate.registry_flag is true (it is false here, so flagged numbers go in the file); send = keep them either way
+    max_searches: 900
+    page_size: 100
+    facts_days: 5

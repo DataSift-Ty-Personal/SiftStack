@@ -1,0 +1,706 @@
+"""Upload the Knox first-to-market CSV into DataSift entirely over the API.
+
+Auth: mints a user JWT from DATASIFT_EMAIL / DATASIFT_PASSWORD in .env via
+POST /api/token/. No pasted token, nothing to expire mid-run. The Open API key
+cannot do this job: custom fields do not exist anywhere in its 93-route surface,
+so every write to them 401s. The minted JWT reaches the internal API where they do.
+
+Record creation goes to the INTERNAL route, /api/internal/property/. The Open
+API route /property/ started returning HTTP 403 "You do not have permission"
+on 2026-09-01 for every method and under BOTH auth types (minted JWT and the
+Api-Key), with the account itself unchanged (super-admin, active, 89 of
+100,000 records used). Five daily runs scraped cleanly and uploaded nothing
+before the watchdog said so. create_property() tries the internal route first
+and falls back to the legacy route only on a 403 or 404, so a reversal at
+DataSift cannot break the uploader in the other direction.
+
+Three contract details, each of which fails SILENTLY or cryptically:
+  * tags must be an ARRAY. A comma string creates one tag literally named
+    "Courthouse Data, code_violation, Knox".
+  * a select field's value must be the OPTION'S UUID, not its label. Sending
+    "LEN" returns {"non_field_errors": ["'LEN' is not a valid UUID."]}.
+  * `notes` on the property payload is accepted with 200 and then discarded.
+
+    python src/datasift_api_upload.py --limit 1            # dry run
+    python src/datasift_api_upload.py --limit 1 --commit   # one record, verified
+    python src/datasift_api_upload.py --commit             # the whole file
+"""
+from __future__ import annotations
+
+import argparse
+import csv
+import json
+import os
+import time
+import urllib.error
+import urllib.request
+from datetime import datetime
+
+BASE = "https://apiv2.reisift.io"
+CREATE_ROUTE = "/api/internal/property/"   # verified open 2026-09-05
+LEGACY_CREATE_ROUTE = "/property/"          # Open API; 403 for everyone since 2026-09-01
+
+# CSV column -> custom-field label
+FIELD_MAP = {
+    "Outstanding Lien Amount": "Outstanding Lien Amount",
+    "Liens Active vs Total": "Liens Active vs Total",
+    "Lien Type": "Lien Type",
+    "Total Delinquency": "Total Delinquency",
+    "Est Equity": "Est Equity",
+    "Debt vs Equity Pct": "Debt vs Equity Pct",
+    "Upside Down": "Upside Down",
+    "Upside Down Reason": "Upside Down Reason",
+    "Tax Deliquent Value": "Tax delinquency amount",   # DataSift's own typo
+    "Notice Type": "Notice Type",
+    "County": "County",
+    "Source URL": "Source URL",
+    "Personal Representative": "Personal Representative",
+    "Decedent Name": "Decedent Name",
+    # The courthouse SALE date. Missing from this map from the move to the API uploader
+    # (2026-08-14) to 2026-11-11, so every foreclosure uploaded in between landed with no sale date
+    # anywhere on the record (found by the autopilot: Hot Auction read 0 across 981 courthouse
+    # records). Auction Soon and every auction-urgency rule read this field.
+    "Foreclosure Date": "Foreclosure Date",
+    "Date Added": "Date Added",
+}
+
+
+def field_map() -> dict:
+    """FIELD_MAP plus the columns the newer feeds and the intake screen can write.
+
+    Kept apart from FIELD_MAP so nothing that imports the constant changes. Every extra column is
+    blank on today's upload files (a notice row leaves Tax Auction Date empty unless it is a tax
+    sale, and the intake columns do not exist until the intake switch is on), so with no new
+    setting this maps exactly what FIELD_MAP maps. Each label is a setting because the account
+    names its own fields; a label the account lacks is skipped with a warning, never guessed.
+    """
+    e = os.environ
+    out = dict(FIELD_MAP)
+    # A tax sale rides the hot auction lane by its sale date, so the date must reach a field.
+    out["Tax Auction Date"] = (e.get("FTM_TAX_SALE_DATE_FIELD") or "Tax Auction Date").strip()
+    out["Mortgage Debt"] = (e.get("FTM_DEBT_FIELD") or "Mortgage Debt").strip()
+    out["Listing Status"] = (e.get("FTM_LISTING_FIELD") or "Listing Status").strip()
+    if (e.get("FTM_NOTICE_TEXT") or "").strip().lower() == "field":
+        out["Notice Text"] = (e.get("FTM_NOTICE_TEXT_FIELD") or "Notice Text").strip()
+    return out
+
+
+def iso_date(raw: str) -> str:
+    """A date value in the form DataSift stores (YYYY-MM-DD), or "" when it cannot be read.
+    The formatter writes M/D/YYYY for the old upload wizard."""
+    s = str(raw or "").strip()
+    for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%m/%d/%y", "%Y/%m/%d"):
+        try:
+            return datetime.strptime(s[:10] if fmt == "%Y-%m-%d" else s, fmt).date().isoformat()
+        except ValueError:
+            continue
+    return ""
+
+
+def env() -> dict:
+    """Credentials from the process environment, with .env as a fallback.
+
+    Environment FIRST, on purpose. This used to read ./.env unconditionally,
+    which meant the uploader could only ever run from a workstation checkout
+    with that file present and the right working directory. On a Fly machine
+    every secret arrives as an env var and there is no .env at all, so the old
+    version died on FileNotFoundError before it made a single call.
+    """
+    out = dict(os.environ)
+    try:
+        with open(".env", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    k, v = line.split("=", 1)
+                    # Never let a stale file shadow an explicitly-set env var.
+                    out.setdefault(k.strip(), v.strip())
+    except OSError:
+        pass
+    return out
+
+
+def _budget():
+    """The first-to-market request budget, or None when it is off (the default) or not shipped.
+
+    Off unless FTM_RATE_BUDGET is set, so this module behaves exactly as before on every box
+    that has not asked for it: the brain and the texting app import this file too and keep
+    their own budgets."""
+    if not os.environ.get("FTM_RATE_BUDGET", "").strip():
+        return None                    # the default: nothing is imported, nothing is counted
+    try:
+        import ftm_budget
+    except Exception:  # noqa: BLE001
+        return None
+    return ftm_budget if ftm_budget.enabled() else None
+
+
+def _refusal_wait(body: str, retry_after, attempt: int) -> float:
+    """Seconds to wait after a 429: the Retry-After header, else the server's "available in N
+    seconds" hint, else a growing pause. Capped so one refusal cannot stall a run for minutes."""
+    try:
+        if retry_after:
+            return min(90.0, float(retry_after) + 1)
+    except (TypeError, ValueError):
+        pass
+    words = (body or "").split("available in")
+    if len(words) > 1:
+        digits = "".join(c for c in words[1].strip().split(" ")[0] if c.isdigit())
+        if digits:
+            return min(90.0, int(digits) + 2)
+    return 10.0 * (attempt + 1)
+
+
+class ApiError(RuntimeError):
+    """An HTTP error from apiv2, carrying the status and the raw body.
+
+    The message keeps the old "HTTP <code> on <method> <path>: <body>" shape
+    so every caller that string-matches on it still works; the attributes
+    exist so create_property() can read the uuid DataSift hands back inside
+    a 400 without parsing prose.
+    """
+
+    def __init__(self, code: int, method: str, path: str, body: str):
+        self.code, self.method, self.path, self.body = code, method, path, body
+        super().__init__("HTTP %s on %s %s: %s" % (code, method, path, body[:200]))
+
+    def json(self):
+        try:
+            return json.loads(self.body)
+        except ValueError:
+            return None
+
+
+class Api:
+    def __init__(self, api_key: str = ""):
+        e = env()
+        self.token = ""
+        self.minted = 0.0
+        # An explicit key targets that key's own account (an agency or test account),
+        # whatever login this box carries.
+        self.api_key = (api_key or "").strip()
+        if self.api_key:
+            return
+        if not (e.get("DATASIFT_EMAIL") and e.get("DATASIFT_PASSWORD")):
+            # No login on this box (the agents app, a customer install): the Open API key
+            # reaches every /api/internal/ route this uploader writes (verified 2026-11-03),
+            # so nobody ever hands over a password.
+            self.api_key = (e.get("REISIFT_API_KEY") or "").strip()
+            if not self.api_key:
+                raise RuntimeError(
+                    "Set REISIFT_API_KEY (the DataSift Open API key), or DATASIFT_EMAIL / "
+                    "DATASIFT_PASSWORD on a workstation that still mints a JWT."
+                )
+            return
+        self.email, self.pw = e["DATASIFT_EMAIL"], e["DATASIFT_PASSWORD"]
+        self._mint()
+
+    def _mint(self):
+        body = json.dumps({"email": self.email, "password": self.pw}).encode()
+        req = urllib.request.Request(BASE + "/api/token/", data=body, method="POST",
+                                     headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=45) as r:
+            self.token = json.loads(r.read())["access"]
+        self.minted = time.time()
+
+    def call(self, path, method="GET", body=None, _retry=True, headers=None, _refused=0):
+        # JWTs are short-lived; refresh transparently rather than dying mid-run.
+        if not self.api_key and time.time() - self.minted > 1800:
+            self._mint()
+        budget = _budget()
+        if budget is not None:
+            # This box's share of the account's request limit (plan 0.14). Counted here because
+            # every DataSift write and read on the box passes through this one method.
+            budget.acquire("datasift")
+        data = json.dumps(body).encode() if body is not None else None
+        auth = "Api-Key " + self.api_key if self.api_key else "Bearer " + self.token
+        hdrs = {"Authorization": auth, "Content-Type": "application/json"}
+        hdrs.update(headers or {})
+        req = urllib.request.Request(BASE + path, data=data, method=method, headers=hdrs)
+        try:
+            with urllib.request.urlopen(req, timeout=60) as r:
+                t = r.read().decode()
+                return json.loads(t) if t.strip().startswith(("{", "[")) else t
+        except urllib.error.HTTPError as e:
+            if e.code == 401 and _retry and not self.api_key:
+                self._mint()
+                return self.call(path, method, body, _retry=False, headers=headers)
+            text = e.read().decode()
+            if e.code == 429 and budget is not None and _refused < 3:
+                # With the budget on, a refusal from the server is counted for the health report
+                # and waited out on the server's own hint, instead of costing the row.
+                budget.note("datasift:429")
+                time.sleep(_refusal_wait(text, e.headers.get("Retry-After") if e.headers else None, _refused))
+                return self.call(path, method, body, _retry=_retry, headers=headers, _refused=_refused + 1)
+            raise ApiError(e.code, method, path, text)
+
+
+_ROUTE_DECIDED = {"route": ""}
+
+
+def create_property(api: "Api", body: dict) -> dict:
+    """POST a property record, returning the API's response dict.
+
+    Internal route first. Only an HTTP 403 or 404 on it (the route is gone or
+    re-gated) triggers one retry on the legacy Open API route. Every other
+    error propagates unchanged so the caller keeps counting it as a failure.
+    The route that answered is logged once per process so a run's log says
+    which surface it actually wrote through.
+    """
+    if not body.get("owner"):
+        # The internal route validates `owner` BEFORE the duplicate check, so
+        # an address-only body 400s whether or not the record exists. Callers
+        # that send address-only bodies are using the old upsert as a LOOKUP
+        # (find the uuid, attach lists/tags), so do exactly that.
+        existing = find_property(api, body.get("address") or {})
+        if not existing:
+            raise RuntimeError("create_property: no owner in payload and no record at "
+                               "%r; the internal route cannot create without an owner"
+                               % (body.get("address") or {}).get("street"))
+        attach_to_record(api, existing, body)
+        return {"uuid": existing, "existing": True}
+    try:
+        res = api.call(CREATE_ROUTE, "POST", body)
+        route = CREATE_ROUTE
+    except ApiError as e:
+        existing = _existing_uuid(e)
+        if existing:
+            # The internal route does NOT upsert. A duplicate address returns
+            # 400 {"non_field_errors": ["Property address already exists!"],
+            # "property": ["<uuid>"]}, so the uuid is right there. Lists and
+            # tags ACCUMULATE onto that record, the owner is left alone, and
+            # the caller gets the same {"uuid": ...} shape either way. This
+            # mirrors what the retired Open API upsert did.
+            attach_to_record(api, existing, body)
+            res = {"uuid": existing, "existing": True}
+            route = CREATE_ROUTE
+        elif e.code in (403, 404):
+            res = api.call(LEGACY_CREATE_ROUTE, "POST", body)
+            route = LEGACY_CREATE_ROUTE
+        else:
+            raise
+    if _ROUTE_DECIDED["route"] != route:
+        _ROUTE_DECIDED["route"] = route
+        print("  create route: POST %s" % route, flush=True)
+    return res
+
+
+def _existing_uuid(e: ApiError) -> str:
+    """The uuid inside DataSift's duplicate-address 400, or ""."""
+    if e.code != 400:
+        return ""
+    j = e.json()
+    if not isinstance(j, dict):
+        return ""
+    errs = " ".join(str(x) for x in (j.get("non_field_errors") or []))
+    if "already exists" not in errs.lower():
+        return ""
+    prop = j.get("property")
+    if isinstance(prop, list) and prop:
+        return str(prop[0])
+    if isinstance(prop, str):
+        return prop
+    return ""
+
+
+def _names(items) -> list[str]:
+    out = []
+    for t in items or []:
+        n = (t.get("name") or t.get("title")) if isinstance(t, dict) else t
+        if n:
+            out.append(str(n))
+    return out
+
+
+def _norm(s) -> str:
+    return " ".join(str(s or "").upper().replace(".", "").replace(",", " ").split())
+
+
+def find_property(api: "Api", address: dict) -> str:
+    """uuid of the record at this address, or "". READ-ONLY.
+
+    The records search is POST /api/internal/property/ with
+    x-http-method-override: GET and `search: address_prefix:<street>` (the
+    Deal Room crm_api contract). DataSift standardizes streets on ingest
+    ("6520 EXAMPLE GAP RD" is stored as "6520 Example Gap Rd"), so the match is
+    case- and punctuation-insensitive on street, then zip5 when both sides
+    carry one.
+    """
+    street = address.get("street") or ""
+    if not street.strip():
+        return ""
+    body = {"limit": 10, "offset": 0, "ordering": "-list_count",
+            "query": {"must": {"property_type": "clean",
+                               "search": "address_prefix:" + street.strip()}}}
+    r = api.call("/api/internal/property/", "POST", body,
+                 headers={"x-http-method-override": "GET"})
+    rows = (r.get("results") or r.get("data") or []) if isinstance(r, dict) else []
+    want_zip = str(address.get("postal_code") or "")[:5]
+    for row in rows:
+        a = row.get("address") or {}
+        if _norm(a.get("street")) != _norm(street):
+            continue
+        got_zip = str(a.get("zip5") or a.get("postal_code") or "")[:5]
+        if want_zip and got_zip and want_zip != got_zip:
+            continue
+        return row.get("uuid") or ""
+    return ""
+
+
+# A record carrying one of these tags has been researched: its owner slot holds the person research
+# verified (a living heir, an executor), not whoever the latest notice happens to name.
+RESEARCHED_TAGS = {"deep prospected", "heir identified"}
+
+
+def owner_guard(rec: dict) -> str:
+    """Why a re-upload must NOT replace this record's owner, or "" when it may (build plan 0.16).
+
+    The uploader used to rewrite the owner whenever a notice named someone different. A republished
+    foreclosure notice, a later probate filing or the county stage's daily re-send therefore put a
+    researched record back to the dead borrower, and the next caller asked for a dead man by name.
+    A researched record, and a record whose owner is marked deceased, keep the owner they have.
+    The one exception is decided by the caller: a probate notice names the personal representative
+    the court appointed, and that person does replace the owner (with a note saying so)."""
+    tags = {t.lower() for t in _names(rec.get("tags"))}
+    if tags & RESEARCHED_TAGS:
+        return "the record has been researched"
+    if (rec.get("owner") or {}).get("deceased"):
+        return "the owner is marked deceased and research has not named a living person yet"
+    return ""
+
+
+def _owner_label(o: dict) -> str:
+    return " ".join(str(o.get(k) or "").strip() for k in ("first_name", "last_name")).strip() or str(o.get("company") or "").strip()
+
+
+def attach_to_record(api: "Api", uuid: str, body: dict) -> None:
+    """Apply a create payload to a record that already exists.
+
+    Lists and tags ACCUMULATE: add-lists takes a STRING title (an array 201s
+    and does nothing, per dispo_flow), so one call per list; tags have no
+    per-record add route that honours its filter, so they are a
+    read-modify-write PATCH of the full set (the crm_standalone contract).
+    The owner is PATCHed only when the payload carries one that differs
+    from what the record holds, which is what the retired Open API upsert
+    did (repair_pr_owners relied on it); an omitted owner is left alone.
+    A researched record or one with a deceased owner keeps its owner unless
+    the upload is a probate notice (owner_guard); either way a note says
+    what the notice named.
+    """
+    lists = body.get("lists") or []
+    if isinstance(lists, str):
+        lists = [x.strip() for x in lists.split(",") if x.strip()]
+    for title in lists:
+        api.call("/api/internal/property/%s/add-lists/" % uuid, "POST", {"lists": title})
+    want = [t for t in (body.get("tags") or []) if t]
+    owner = body.get("owner") or {}
+    if not want and not owner:
+        return
+    rec = api.call("/api/internal/property/%s/" % uuid)
+    patch: dict = {}
+    if want:
+        current = _names(rec.get("tags"))
+        merged = current + [t for t in want if t not in current]
+        if merged != current:
+            patch["tags"] = merged
+    note = ""
+    if owner:
+        have = rec.get("owner") or {}
+        keys = ("first_name", "last_name", "company")
+        if any(_norm(owner.get(k)) != _norm(have.get(k)) for k in keys if k in owner):
+            why = owner_guard(rec)
+            probate = "probate" in {str(x).strip().lower() for x in lists}
+            before = _owner_label(have)
+            if why and not probate:
+                # Keep the owner research put there. The notice's name is not lost: it goes in a note.
+                note = ("A new notice names %s as the owner. The owner on this record was kept because %s."
+                        % (_owner_label(owner) or "someone else", why))
+            else:
+                patch["owner"] = owner
+                if why:
+                    note = ("Owner changed to the personal representative named in a probate notice (%s). Before: %s."
+                            % (_owner_label(owner) or "unnamed", before or "none"))
+    if patch:
+        api.call("/api/internal/property/%s/" % uuid, "PATCH", patch)
+    # The county stage re-sends the same rows every morning, so the same sentence would otherwise be
+    # added to the record's notes every day. Said once is enough.
+    if note and note not in str(rec.get("notes") or ""):
+        api.call("/api/internal/property/%s/add-notes/" % uuid, "POST", {"notes": note})
+
+
+_attach_existing = attach_to_record  # older name
+
+
+def field_index(api: Api) -> dict:
+    """label -> {uuid, field_type, options{label: option_uuid}}"""
+    r = api.call("/api/internal/custom-fields/?limit=999")
+    out = {}
+    for f in r.get("results") or []:
+        out[f["label"]] = {
+            "uuid": f["uuid"], "field_type": f.get("field_type"),
+            "options": {o.get("label"): o.get("uuid") for o in (f.get("options") or [])},
+        }
+    return out
+
+
+def build_property(row: dict) -> dict:
+    addr = {"street": row["Property Street Address"],
+            "city": row.get("Property City") or "",
+            "state": row.get("Property State") or "TN",
+            "postal_code": row.get("Property ZIP Code") or ""}
+    mail = {"street": row.get("Mailing Street Address") or addr["street"],
+            "city": row.get("Mailing City") or addr["city"],
+            "state": row.get("Mailing State") or addr["state"],
+            "postal_code": row.get("Mailing ZIP Code") or addr["postal_code"]}
+    # Entity owners (LLC, INC, TRUST...) have no first name, and the API
+    # rejects a blank one: {"owner":{"first_name":["This field may not be blank."]}}.
+    # Send them as `company` instead and omit the person fields entirely --
+    # omitting a key is not the same as sending "".
+    first = (row.get("Owner First Name") or "").strip()
+    last = (row.get("Owner Last Name") or "").strip()
+    owner: dict = {"address": mail}
+    if first:
+        owner["first_name"] = first
+        if last:
+            owner["last_name"] = last
+    elif last:
+        owner["company"] = last
+    body = {"address": addr, "owner": owner}
+    if row.get("Lists"):
+        body["lists"] = row["Lists"]
+    if row.get("Tags"):
+        # ARRAY, not a comma string
+        body["tags"] = [t.strip() for t in row["Tags"].split(",") if t.strip()]
+    return body
+
+
+def field_pairs(row: dict, idx: dict, warn: set) -> list[dict]:
+    pairs = []
+    for col, label in field_map().items():
+        # values arrive as str from CSV but as int/float when called in-process
+        raw = str(row.get(col) if row.get(col) is not None else "").strip()
+        if not raw:
+            continue
+        f = idx.get(label)
+        if not f:
+            warn.add(label)
+            continue
+        val = raw
+        if f["field_type"] in ("select", "multiselect"):
+            val = f["options"].get(raw)
+            if not val:                      # option missing: skip, never guess
+                warn.add("%s option %r" % (label, raw))
+                continue
+        elif f["field_type"] == "date":
+            val = iso_date(raw)
+            if not val:                      # unreadable date: skip, never guess
+                warn.add("%s date %r" % (label, raw))
+                continue
+        pairs.append({"field_uuid": f["uuid"], "value": val})
+    return pairs
+
+
+def write_fields(api: "Api", uuid: str, pairs: list[dict], warn: set) -> int:
+    """PATCH the custom fields. One refused value sinks the whole batch, so a refusal is retried one
+    field at a time (the dream100_dp writeback rule): a bad date must never cost the record its
+    Notice Type and County. Returns how many fields landed."""
+    path = "/api/internal/property/%s/custom-field/update-values/" % uuid
+    try:
+        api.call(path, "PATCH", pairs)
+        return len(pairs)
+    except ApiError:
+        landed = 0
+        for p in pairs:
+            try:
+                api.call(path, "PATCH", [p])
+                landed += 1
+            except ApiError as e:
+                warn.add("field %s refused (HTTP %s)" % (p["field_uuid"][:8], e.code))
+        return landed
+
+
+def _row_lists(row: dict) -> list[str]:
+    return [x.strip() for x in str(row.get("Lists") or "").split(",") if x.strip()]
+
+
+def _appeared_ledger(warn: set):
+    """The ledger that decides "appeared again", or None when the rule is off (the default)."""
+    try:
+        import ftm_intake
+        if not ftm_intake.appeared_again_on():
+            return None, ""
+        return ftm_intake.AppearedLedger(), ftm_intake.appeared_again_tag()
+    except Exception as e:  # noqa: BLE001  (a tag is never worth an upload)
+        warn.add("Appeared Again not applied (%s: %s)" % (type(e).__name__, str(e)[:60]))
+        return None, ""
+
+
+def _notice_text_note(api, uuid: str, row: dict, was_existing: bool, warn: set) -> None:
+    """FTM_NOTICE_TEXT=notes: the notice text as its own note, added once per notice.
+
+    The custom field is the preferred home (see ftm_intake). This is for an account that has
+    no such field yet. An existing record is read first so a republished notice does not stack
+    a second copy of the same text."""
+    text = str(row.get("Notice Text") or "").strip()
+    if not text or (os.environ.get("FTM_NOTICE_TEXT") or "").strip().lower() != "notes":
+        return
+    try:
+        if was_existing:
+            have = str((api.call("/api/internal/property/%s/" % uuid) or {}).get("notes") or "")
+            if text[:80] in have:
+                return
+        api.call("/api/internal/property/%s/add-notes/" % uuid, "POST", {"notes": "Notice text: " + text})
+    except Exception as e:  # noqa: BLE001
+        warn.add("notice text note not added (%s)" % type(e).__name__)
+
+
+def upload_rows(rows: list[dict], *, commit: bool = False,
+                sleep: float = 0.1, out_dir: str = "output", new_filing: bool = False) -> dict:
+    """Push rows into DataSift. Returns counts so a caller can act on them.
+
+    Broken out of main() so the scheduled runner can call it in-process and
+    report real numbers to Slack, instead of shelling out and parsing stdout.
+
+    `new_filing` says these rows come from a pull (not a hand re-send), which is the only time
+    the Appeared Again rule may apply; the rule itself stays off until FTM_TAG_APPEARED_AGAIN
+    is set.
+    """
+    api = Api()
+    idx = field_index(api)
+    print("[%s] %d records | JWT minted | %d custom fields known\n"
+          % ("COMMIT" if commit else "DRY RUN", len(rows), len(idx)))
+
+    warn: set = set()
+    created = fielded = failed = existing = again = 0
+    errors: list[str] = []
+    ledger, again_tag = _appeared_ledger(warn) if (commit and new_filing) else (None, "")
+    stopped = ""
+    t0 = time.time()
+    for i, row in enumerate(rows, 1):
+        prop = build_property(row)
+        pairs = field_pairs(row, idx, warn)
+        if not commit:
+            if i <= 2:
+                print(json.dumps(prop, indent=1)[:420])
+                print("  -> %d custom-field values\n" % len(pairs))
+            continue
+        try:
+            res = create_property(api, prop)
+            uuid = res.get("uuid") if isinstance(res, dict) else None
+            # `created` counts every record that now carries this payload,
+            # new or pre-existing; the runner's success test rides on it and
+            # the county stage re-sends the same rows daily on purpose.
+            created += 1
+            was_existing = bool(isinstance(res, dict) and res.get("existing"))
+            if was_existing:
+                existing += 1
+            if uuid and pairs:
+                if write_fields(api, uuid, pairs, warn):
+                    fielded += 1
+            if uuid and row.get("Notes"):
+                # notes are dropped from the property payload; post separately
+                try:
+                    api.call("/api/internal/property/%s/add-notes/" % uuid,
+                             "POST", {"notes": row["Notes"][:2000]})
+                except Exception:
+                    pass
+            if uuid and row.get("Notice Text"):
+                _notice_text_note(api, uuid, row, was_existing, warn)
+            if uuid and ledger is not None:
+                street, zip5 = row.get("Property Street Address", ""), row.get("Property ZIP Code", "")
+                if was_existing and again_tag and ledger.should_tag(street, zip5, _row_lists(row)):
+                    try:
+                        api.call("/api/internal/property/%s/add-tags/" % uuid, "POST", {"tags": again_tag})
+                        again += 1
+                    except Exception as e:  # noqa: BLE001
+                        warn.add("%s tag not added (%s)" % (again_tag, type(e).__name__))
+                ledger.record(street, zip5, _row_lists(row))
+        except Exception as e:
+            if type(e).__name__ == "BudgetExhausted":
+                # The hour's request budget is used. Every row after this one would be refused
+                # the same way, so stop and say how many were not sent; they count as failed, and
+                # the runner leaves them unhandled for the next run.
+                stopped = str(e)
+                failed += len(rows) - i + 1
+                errors.append("stopped at row %d of %d: %s" % (i, len(rows), stopped[:150]))
+                print("  STOPPED", errors[-1])
+                break
+            failed += 1
+            msg = "%s | %s" % (str(row.get("Property Street Address", ""))[:30], str(e)[:150])
+            errors.append(msg)
+            if len(errors) <= 5:
+                print("  FAIL", msg)
+        if i % 100 == 0:
+            print("   %d/%d created=%d fields=%d failed=%d %.0fs"
+                  % (i, len(rows), created, fielded, failed, time.time() - t0), flush=True)
+        time.sleep(sleep)
+
+    if ledger is not None:
+        try:
+            ledger.save()
+        except Exception as e:  # noqa: BLE001
+            warn.add("Appeared Again ledger not saved (%s)" % type(e).__name__)
+    if stopped:
+        warn.add("upload stopped early: %s" % stopped[:120])
+    if warn:
+        print("\nWARNINGS (values skipped, never guessed):")
+        for w in sorted(warn):
+            print("   ", w)
+
+    err_path = ""
+    if commit:
+        print("\ncreated=%d (of which %d already existed)  custom-fields-set=%d  failed=%d  %.0fs"
+              % (created, existing, fielded, failed, time.time() - t0))
+        if again:
+            print("tagged %s: %d" % (again_tag, again))
+        if errors:
+            os.makedirs(out_dir, exist_ok=True)
+            err_path = os.path.join(out_dir, "upload_errors.txt")
+            with open(err_path, "w", encoding="utf-8") as f:
+                f.write("\n".join(errors))
+            print("errors -> %s (%d)" % (err_path, len(errors)))
+    else:
+        print("\nNothing written. Re-run with --commit.")
+
+    return {
+        "submitted": len(rows), "created": created, "existing": existing,
+        "fielded": fielded, "failed": failed, "warnings": sorted(warn), "errors": errors,
+        "error_file": err_path, "committed": commit, "appeared_again": again,
+        "seconds": round(time.time() - t0, 1),
+    }
+
+
+def upload_csv(path: str, *, commit: bool = False, limit: int = 0,
+               start: int = 0, sleep: float = 0.1, out_dir: str = "output",
+               new_filing: bool = False) -> dict:
+    """Read an upload CSV and push it. Same return shape as upload_rows."""
+    with open(path, encoding="utf-8") as fh:
+        rows = list(csv.DictReader(fh))
+    if start:
+        rows = rows[start:]
+    if limit:
+        rows = rows[:limit]
+    return upload_rows(rows, commit=commit, sleep=sleep, out_dir=out_dir, new_filing=new_filing)
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--csv", default="output/knox_ftm_pull.csv")
+    ap.add_argument("--commit", action="store_true")
+    ap.add_argument("--limit", type=int, default=0)
+    ap.add_argument("--start", type=int, default=0)
+    ap.add_argument("--sleep", type=float, default=0.1)
+    a = ap.parse_args()
+
+    res = upload_csv(a.csv, commit=a.commit, limit=a.limit,
+                     start=a.start, sleep=a.sleep)
+    # A commit run that created nothing from a non-empty file is a failure,
+    # not a quiet success, the same class of bug as the 13 "successful"
+    # zero-notice scrapes.
+    if a.commit and res["submitted"] and not res["created"]:
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

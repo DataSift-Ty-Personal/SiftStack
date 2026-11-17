@@ -1,0 +1,1068 @@
+"""reisift / DataSift bridge.
+
+Reuses the shared Deal Room `_api/clients` auth + CRM client rather than
+re-implementing them, and degrades to a stated reason when that path is not
+available (the receiver may run on a box that has no Deal Room checkout).
+
+Every write here is gated on config.DRY_RUN so the whole agent can be run
+end-to-end against production data without touching a record.
+"""
+from __future__ import annotations
+
+import functools
+import logging
+import time
+import re
+import sys
+from typing import Any, Optional
+
+from . import config, store
+
+log = logging.getLogger(__name__)
+
+_UNAVAILABLE = ""
+
+
+@functools.lru_cache(maxsize=1)
+def _load():
+    """Import the Deal Room client modules once. Returns (reisift_auth, CRMClient)."""
+    global _UNAVAILABLE
+    clients = config.DEALROOM_API / "clients"
+    if not clients.exists():
+        _UNAVAILABLE = f"Deal Room clients not found at {clients} (set DEALROOM_API_PATH)"
+        return None, None
+    if str(clients) not in sys.path:
+        sys.path.insert(0, str(clients))
+    try:
+        import reisift_auth  # type: ignore
+        from crm_api import CRMClient  # type: ignore
+    except Exception as exc:  # noqa: BLE001 - any import failure degrades the same way
+        _UNAVAILABLE = f"cannot import reisift clients: {exc}"
+        return None, None
+    return reisift_auth, CRMClient
+
+
+@functools.lru_cache(maxsize=1)
+def client():
+    """A CRM client, or None.
+
+    Prefers the shared Deal Room CRMClient (richer and better tested). Falls
+    back to the self-contained `crm_standalone` client driven by REISIFT_API_KEY
+    so a cloud box does not need a Deal Room checkout on disk.
+
+    Pinning REISIFT_ACCOUNT matters on the shared path: the default
+    `active_account` is the ~48h admin JWT, and when it expires every call
+    throws while the run still exits zero. That is exactly the silent
+    degradation the buyer sweep hit.
+    """
+    import os
+
+    global _UNAVAILABLE
+    auth, CRMClient = _load()
+    if auth is not None:
+        os.environ.setdefault("REISIFT_ACCOUNT", config.SIFT_ACCOUNT)
+        try:
+            if config.SIFT_IMPERSONATE:
+                auth.start_impersonation(config.SIFT_IMPERSONATE)
+            return _budgeted(CRMClient())
+        except Exception as exc:  # noqa: BLE001
+            _UNAVAILABLE = f"CRM auth failed: {exc}"
+
+    from . import crm_standalone
+
+    standalone = crm_standalone.from_env()
+    if standalone is not None:
+        log.info("using the standalone reisift client (REISIFT_API_KEY)")
+        return _budgeted(standalone)
+    _UNAVAILABLE = (
+        _UNAVAILABLE
+        or "no Deal Room clients and no REISIFT_API_KEY; CRM writes are unavailable"
+    )
+    return None
+
+
+def _budgeted(c):
+    """Count this client's requests against the app's DataSift share (build plan 0.14).
+
+    Only when SMS_AGENT_RATE_BUDGET is on. With it off the client is handed back untouched, so a
+    deploy that does not set the switch sends exactly the requests it sent before. The wrap is on
+    this one object: crm_standalone's class is shared with other apps and is not changed.
+    """
+    if not config.RATE_BUDGET:
+        return c
+    from . import ratebudget
+
+    return ratebudget.wrap(c)
+
+
+def unavailable_reason() -> str:
+    if client() is None:
+        return _UNAVAILABLE or "CRM client unavailable"
+    return ""
+
+
+def _dry(action: str, **kw) -> dict:
+    log.info("DRY_RUN crm.%s %s", action, kw)
+    return {"_dry_run": True, "action": action, **kw}
+
+
+# ------------------------------------------------------------------- reads
+
+# reisift throttles /api/internal hard and answers 429 with its own
+# 'available in N seconds' hint, and it returns 502s in bursts under load.
+# Neither is an answer, but the shared Deal Room CRMClient raises on both,
+# so a blast read them as buyers whose dial tier could not be determined.
+# On a 193-record dry run that silently held 15 real buyers. A GET is
+# idempotent, so retrying at this boundary is safe whichever client is
+# underneath, and it covers the shared client we do not own.
+_RETRY_HINT = re.compile('available in ([0-9]+)', re.I)
+
+
+def request_retry(c, *args, **kwargs):
+    """`c._request` with the throttle backoff every read here needs.
+
+    The shared Deal Room client raises on 429 rather than waiting, and reisift
+    throttles /api/internal hard enough that a morning build trips it. Only
+    `get_record` handled that; `resolve_preset` and `fetch_cohort` did not, so
+    one throttled call raised all the way out of the campaign build and cost
+    the entire day's sends. Both were hit on the first preview run.
+
+    Read paths only. A write must not be retried blindly.
+    """
+    last = None
+    for attempt in range(4):
+        try:
+            return c._request(*args, **kwargs)
+        except Exception as exc:  # noqa: BLE001
+            last = exc
+            wait = _transient_wait(exc, attempt) if attempt < 3 else 0.0
+            if not wait:
+                raise
+            log.info("crm read transient (%s); retrying in %ss", str(exc)[:70], wait)
+            time.sleep(wait)
+    raise last  # pragma: no cover - the loop either returns or raises
+
+
+def _transient_wait(exc: Exception, attempt: int) -> float:
+    """Seconds to wait before retrying, or 0 when this is a real failure."""
+    msg = str(exc)
+    low = msg.lower()
+    if '429' in msg or 'throttl' in low:
+        hit = _RETRY_HINT.search(msg)
+        return float(int(hit.group(1)) + 1) if hit else 2.0 * (attempt + 1)
+    if any(code in msg for code in ('500', '502', '503', '504')):
+        return float(2 ** attempt)
+    if 'timed out' in low or 'connection' in low:
+        return float(2 ** attempt)
+    return 0.0
+
+
+# Short-lived record cache.
+#
+# `dial_tier`'s docstring has claimed for months that "the full record is
+# lru-cached". It never was: there is no decorator here, and one candidate
+# through `seed.build` costs FOUR to FIVE separate fetches of the same record
+# (dial_tier_checked, dial_tier -> find_phone_object, deal_context for the
+# county, _resolve_sender -> deal_context, then map_all_phones). reisift
+# throttles /api/internal hard, and 429s show up in production logs during the
+# morning campaign build for exactly this reason.
+#
+# TTL rather than lru_cache because this runs inside a long-lived worker thread,
+# where a process-lifetime cache would serve a record from hours ago. Every
+# write invalidates, so the only staleness window is between two reads.
+_RECORD_TTL_SECONDS = 300
+_RECORD_CACHE_MAX = 2000
+_record_cache: dict[str, tuple[float, dict]] = {}
+
+
+def forget_record(record_uuid: str) -> None:
+    """Drop a record from the cache. Called after every write that changes it."""
+    _record_cache.pop(record_uuid, None)
+
+
+def get_record(record_uuid: str, fresh: bool = False) -> Optional[dict]:
+    """The full record, cached for `_RECORD_TTL_SECONDS`.
+
+    Pass `fresh=True` to bypass the cache. A write's read-back MUST do so, or
+    it verifies against the copy taken before the write and reports success for
+    a write that changed nothing.
+    """
+    c = client()
+    if not c or not record_uuid:
+        return None
+
+    if not fresh:
+        hit = _record_cache.get(record_uuid)
+        if hit and (time.time() - hit[0]) < _RECORD_TTL_SECONDS:
+            return hit[1]
+
+    last = None
+    for attempt in range(4):
+        try:
+            rec = c.get_record(record_uuid)
+            if rec:
+                if len(_record_cache) >= _RECORD_CACHE_MAX:
+                    # Cheap bound. Drop the oldest tenth rather than clearing,
+                    # so a long build does not lose everything at once.
+                    for key in sorted(_record_cache, key=lambda k: _record_cache[k][0])[:200]:
+                        _record_cache.pop(key, None)
+                _record_cache[record_uuid] = (time.time(), rec)
+            return rec
+        except Exception as exc:  # noqa: BLE001
+            last = exc
+            wait = _transient_wait(exc, attempt) if attempt < 3 else 0.0
+            if not wait:
+                break
+            log.info('get_record %s transient (%s); retrying in %ss',
+                     record_uuid, str(exc)[:60], wait)
+            time.sleep(wait)
+    log.warning('get_record %s failed: %s', record_uuid, last)
+    return None
+
+
+@functools.lru_cache(maxsize=1)
+def _user_directory() -> dict:
+    """uuid -> first name for the account's users.
+
+    reisift publishes no documented user endpoint, so the config file is the
+    source of truth and the API probe only fills gaps. A wrong name here signs
+    a stranger's name to a real conversation, so an unresolved uuid must stay
+    unresolved rather than be guessed.
+    """
+    directory = dict(config.senders())
+    c = client()
+    if not c:
+        return directory
+    for path in ("/api/internal/user/", "/api/internal/users/", "/api/internal/account/users/"):
+        try:
+            resp = c._request(path, params={"limit": 200})
+        except Exception:  # noqa: BLE001 - probing undocumented routes
+            continue
+        rows = resp.get("results") if isinstance(resp, dict) else resp
+        if not isinstance(rows, list):
+            continue
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            uuid = row.get("uuid") or row.get("id")
+            first = (row.get("first_name") or "").strip()
+            if not first and row.get("name"):
+                first = str(row["name"]).split()[0]
+            if uuid and first and uuid not in directory:
+                directory[uuid] = first
+        if rows:
+            break
+    return directory
+
+
+def sender_name_for(assigned_to: str) -> str:
+    """The first name that signs this thread. Empty when we genuinely do not know."""
+    if not assigned_to:
+        return config.SENDER_NAME
+    name = _user_directory().get(assigned_to, "")
+    if name:
+        return str(name).strip().split()[0]
+    log.warning(
+        "assigned_to %s has no name mapping; add it to %s", assigned_to, config.SENDERS_FILE
+    )
+    return config.SENDER_NAME
+
+
+def deal_context(record_uuid: str) -> dict:
+    """The facts the responder is allowed to use. Nothing derived, nothing guessed.
+
+    Field names are the live record names, which are NOT the CSV upload names:
+    estimate_value, equity_percent, last_sold, rental_value, year, etc.
+    """
+    rec = get_record(record_uuid)
+    if not rec:
+        return {}
+    addr = rec.get("address") or {}
+    owner = rec.get("owner") or {}
+    # `assigned_to` is a bare uuid on the record, not a dict.
+    assigned = rec.get("assigned_to")
+    if isinstance(assigned, dict):
+        assigned = assigned.get("uuid") or assigned.get("id") or ""
+    ctx = {
+        "record_uuid": record_uuid,
+        "assigned_to": assigned or "",
+        "assigned_name": sender_name_for(assigned or ""),
+        "owner_first": owner.get("first_name") or "",
+        "owner_last": owner.get("last_name") or "",
+        "owner_company": owner.get("company") or "",
+        "street": addr.get("street") or "",
+        "city": addr.get("city") or "",
+        "state": addr.get("state") or "",
+        "zip": addr.get("postal_code") or "",
+        "county": addr.get("county") or "",
+        "vacant": addr.get("vacant"),
+        "status": rec.get("status") or "",
+        "beds": rec.get("bedrooms"),
+        "baths": rec.get("bathrooms"),
+        "sqft": rec.get("sqft"),
+        "year_built": rec.get("year"),
+        "estimated_value": rec.get("estimate_value"),
+        "equity_percent": rec.get("equity_percent"),
+        "last_sold": rec.get("last_sold"),
+        "rental_value": rec.get("rental_value"),
+        "tags": [t.get("name") if isinstance(t, dict) else str(t) for t in (rec.get("tags") or [])],
+    }
+    return {k: v for k, v in ctx.items() if v not in (None, "", [])}
+
+
+_PRESETS_TTL_SECONDS = 300
+_presets_cache: tuple[float, list] | None = None
+
+
+def _all_presets(fresh: bool = False) -> Optional[list]:
+    """The account's filter presets, fetched once per build rather than per source.
+
+    This listing is ~107 presets and was re-fetched for EVERY source title, so
+    adding two FTM sources turned five identical calls into seven. That is both
+    wasteful and the most likely place to trip the throttle, which is exactly
+    what happened on the first preview run.
+    """
+    global _presets_cache
+    if not fresh and _presets_cache and (time.time() - _presets_cache[0]) < _PRESETS_TTL_SECONDS:
+        return _presets_cache[1]
+    c = client()
+    if not c:
+        return None
+    try:
+        resp = request_retry(c, "/api/internal/filter-preset/", params={"limit": 999})
+    except Exception as exc:  # noqa: BLE001
+        log.warning("could not list filter presets: %s", exc)
+        return None
+    presets = resp.get("results") or resp.get("data") or resp or []
+    if isinstance(presets, dict):
+        presets = presets.get("results") or []
+    _presets_cache = (time.time(), presets)
+    return presets
+
+
+def resolve_preset(title: str) -> tuple[Optional[dict], str]:
+    """Find a filter preset by title and return its live `filters.must`.
+
+    Pulling the cohort FROM the preset means we inherit every suppression rule
+    already encoded there (dead statuses, Mail Only, Recently Sold, skiptraced,
+    call-attempt gates). A record Ty edits in DataSift drops out of our sends
+    automatically, with no second list to keep in sync.
+    """
+    presets = _all_presets()
+    if presets is None:
+        return None, ""
+    wanted = title.strip().lower()
+    match = next((p for p in presets if (p.get("title") or "").strip().lower() == wanted), None)
+    if match is None:
+        match = next((p for p in presets if wanted in (p.get("title") or "").lower()), None)
+    if match is None:
+        return None, ""
+    filters = match.get("filters") or match.get("filter_data") or {}
+    must = filters.get("must") if isinstance(filters, dict) else None
+    return (must if isinstance(must, dict) else None), match.get("title") or title
+
+
+def fetch_cohort(must: dict, limit: int = 0) -> list[dict]:
+    """Page the records currently sitting in a preset.
+
+    THE RETRY IS NOT OPTIONAL. reisift throttles /api/internal hard, and the
+    shared Deal Room client raises on a 429 rather than waiting. `get_record`
+    has handled that since the dispo build; this did not, so a single throttled
+    page anywhere in the sweep raised through `from_preset`, through
+    `campaign.build`, into the worker's bare except, and dropped the whole
+    day's campaign with one line in the log. Caught live on the first preview
+    run with seven sources instead of five, because more sweeps means more
+    chances to be throttled.
+    """
+    c = client()
+    if not c:
+        return []
+    seen, out, offset = set(), [], 0
+    while True:
+        body = {"limit": 250, "offset": offset, "query": {"must": must}}
+        resp = None
+        last = None
+        for attempt in range(4):
+            try:
+                resp = request_retry(c, "/api/internal/property/", method="POST", body=body,
+                                     method_override="GET")
+                break
+            except Exception as exc:  # noqa: BLE001
+                last = exc
+                wait = _transient_wait(exc, attempt) if attempt < 3 else 0.0
+                if not wait:
+                    break
+                log.info("fetch_cohort page at offset %s transient (%s); retrying in %ss",
+                         offset, str(exc)[:60], wait)
+                time.sleep(wait)
+        if resp is None:
+            # Return what we have rather than raising. A partial cohort sends
+            # to fewer people; an exception sends to nobody all day.
+            log.warning("fetch_cohort stopped at offset %s: %s", offset, last)
+            break
+
+        rows = resp.get("results") or resp.get("data") or []
+        count = resp.get("count", 0)
+        for row in rows:
+            uuid = row.get("uuid")
+            if uuid and uuid not in seen:
+                seen.add(uuid)
+                out.append(row)
+        offset += len(rows)
+        if not rows or offset >= count or (limit and len(out) >= limit):
+            break
+        # reisift refuses offset+limit beyond 10,000 outright.
+        if offset + 250 > 10000:
+            log.warning("fetch_cohort capped at %s rows; the preset holds %s", len(out), count)
+            break
+    return out[:limit] if limit else out
+
+
+def list_presets() -> list[str]:
+    presets = _all_presets() or []
+    return sorted((p.get("title") or "") for p in presets if isinstance(p, dict))
+
+
+def phone_is_dnc(phone: str) -> Optional[bool]:
+    """Is THIS number flagged do-not-call? True / False / None when unknown.
+
+    The flag lives only on a search row's representative phone, and the full
+    record omits the field entirely rather than returning false. That is fine
+    while we only ever text the representative phone. It is not fine now that
+    the campaign picks the best phone off the record, because roughly half of
+    those numbers have never appeared as anyone's representative and their flag
+    has therefore never been seen.
+
+    KNOW WHAT THIS CANNOT DO. Measured 2026-08-31, 6 of 6: searching for a
+    number that is NOT its record's representative phone returns the record
+    with the REPRESENTATIVE phone attached, so the searched number's own flag
+    never appears and this returns None. The full record and
+    `/api/internal/owner/{uuid}/` both expose only number, type, status, tags
+    and is_connected. The flag is therefore unavailable for those numbers,
+    not merely unread, and no endpoint in this API surfaces it.
+
+    So: reliable for a representative phone, None for the rest. The caller
+    decides what None means; see `config.REQUIRE_VISIBLE_DNC`.
+    """
+    c = client()
+    digits = store.clean_phone(phone)
+    if not c or len(digits) != 10:
+        return None
+    try:
+        resp = request_retry(
+            c, "/api/internal/property/", method="POST",
+            body={"limit": 5, "query": {"must": {"search": digits}}},
+            method_override="GET",
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.warning("DNC probe failed for %s: %s", digits, exc)
+        return None
+    for row in resp.get("results") or []:
+        ph = row.get("phone") if isinstance(row.get("phone"), dict) else {}
+        if store.clean_phone(ph.get("number") or "") == digits:
+            return bool(ph.get("doNotCall"))
+    return None
+
+
+def find_records_by_phone(phone: str, limit: int = 10) -> list[dict]:
+    """Every record carrying this phone number, verified.
+
+    The generic `search` filter matches a phone, but it is a fuzzy search, so
+    each hit is confirmed against the owner's actual phone list before it counts.
+
+    Returns a LIST on purpose. Skip-trace routinely attaches one number to
+    several owners: 865-555-0144 came back on three records across two
+    different owners. When somebody says "wrong number, leave me alone", that
+    number is bad on every record it touches, not just the one we happened to
+    text. Dispositioning only one leaves the others live to be dialled tomorrow.
+    """
+    c = client()
+    digits = store.clean_phone(phone)
+    if not c or len(digits) != 10:
+        return []
+    try:
+        resp = c._request(
+            "/api/internal/property/", method="POST",
+            body={"limit": limit, "query": {"must": {"search": digits}}},
+            method_override="GET",
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.warning("phone lookup failed for %s: %s", digits, exc)
+        return []
+
+    out = []
+    for row in resp.get("results") or []:
+        uuid = row.get("uuid")
+        if not uuid:
+            continue
+        full = get_record(uuid) or {}
+        owner = full.get("owner") if isinstance(full.get("owner"), dict) else {}
+        for p in owner.get("phones") or []:
+            if store.clean_phone(p.get("number")) == digits:
+                out.append({
+                    "record_uuid": uuid,
+                    "owner_uuid": owner.get("uuid") or "",
+                    "phone_obj": p,
+                    "address": (full.get("address") or {}).get("street") or "",
+                })
+                break
+    return out
+
+
+def record_phones(record_uuid: str) -> list[str]:
+    """Every phone on the record, cleaned to 10 digits.
+
+    This exists because of what the June backfill showed: **5 of 9 real replies
+    arrived from a DIFFERENT number than the one we texted.** People answer from
+    whichever line is in their hand. Mapping only the number we sent to would
+    leave the majority of replies unroutable, escalating them as "unknown"
+    instead of attaching them to their record.
+    """
+    rec = get_record(record_uuid)
+    if not rec:
+        return []
+    owner = rec.get("owner") if isinstance(rec.get("owner"), dict) else {}
+    out = []
+    for phone in owner.get("phones") or []:
+        digits = store.clean_phone(phone.get("number") if isinstance(phone, dict) else phone)
+        status = (phone.get("status") or "").upper() if isinstance(phone, dict) else ""
+        # A number already marked WRONG or DEAD still belongs to this record for
+        # routing purposes: if it texts us, we want the context, not a mystery.
+        if len(digits) == 10:
+            out.append(digits)
+    return out
+
+
+def map_all_phones(record_uuid: str, context: Optional[dict] = None) -> int:
+    """Map every phone on a record to it, so a reply from any line routes."""
+    phones = record_phones(record_uuid)
+    if not phones:
+        return 0
+    ctx = context if context is not None else deal_context(record_uuid)
+    # The owner's id rides along only when owner-wide revocation is on (build plan 0.17): it is
+    # how a stop on one number finds the owner's numbers on ANOTHER of their records. The record
+    # is already in the cache from record_phones above, so this costs no request.
+    owner = owner_uuid_for(record_uuid) if config.OWNER_REVOKE else ""
+    for phone in phones:
+        store.map_phone(phone, record_uuid=record_uuid, owner_uuid=owner, context=ctx or None)
+    return len(phones)
+
+
+def custom_fields(record_uuid: str) -> dict:
+    """label -> value for the record's custom fields that hold a value ({} when unreadable).
+
+    Read only when SMS_AGENT_GATE_READ_FIELDS is on: the Owner Deceased field is one of the four
+    places a death is recorded, and it is the one that costs a request of its own.
+    """
+    c = client()
+    if not c or not record_uuid:
+        return {}
+    try:
+        resp = request_retry(c, f"/api/internal/property/{record_uuid}/custom-field/")
+    except Exception as exc:  # noqa: BLE001
+        log.warning("custom fields unreadable on %s: %s", record_uuid[:8], exc)
+        return {}
+    items = resp if isinstance(resp, list) else (resp.get("results") or resp.get("data") or [])
+    out = {}
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        cf = item.get("custom_field") if isinstance(item.get("custom_field"), dict) else {}
+        label = (cf.get("label") or cf.get("name") or cf.get("title") or "").strip()
+        if label and item.get("value") not in (None, ""):
+            out[label] = item["value"]
+    return out
+
+
+def owner_uuid_for(record_uuid: str) -> str:
+    rec = get_record(record_uuid)
+    owner = (rec or {}).get("owner") or {}
+    return owner.get("uuid") or ""
+
+
+def find_phone_object(record_uuid: str, phone: str,
+                      fresh: bool = False) -> tuple[str, Optional[dict]]:
+    """(owner_uuid, phone object) for a number on a record."""
+    rec = get_record(record_uuid, fresh=fresh)
+    if not rec:
+        return "", None
+    owner = rec.get("owner") if isinstance(rec.get("owner"), dict) else {}
+    target = store.clean_phone(phone)
+    for p in owner.get("phones") or []:
+        if store.clean_phone(p.get("number")) == target:
+            return owner.get("uuid") or "", p
+    return owner.get("uuid") or "", None
+
+
+# ------------------------------------------------------------------ writes
+
+# Observed live on prod-account, not guessed. The DNC variants matter: Sift records
+# "do not contact" as part of the phone status rather than as a separate flag,
+# and it keeps the correct/wrong judgement alongside it. That makes the phone
+# record itself the suppression, so a number stops being texted no matter which
+# tool builds the next campaign.
+PHONE_STATUSES = (
+    "UNKNOWN", "CORRECT", "WRONG", "DEAD", "NO_ANSWER",
+    "DNC", "CORRECT_DNC", "WRONG_DNC",
+)
+
+# What a phone becomes when its owner opts out, preserving what we already knew
+# about whether the number reaches the right person.
+DNC_FOR = {
+    "CORRECT": "CORRECT_DNC",
+    "WRONG": "WRONG_DNC",
+    "WRONG_DNC": "WRONG_DNC",
+    "CORRECT_DNC": "CORRECT_DNC",
+}
+
+
+def dnc_status(record_uuid: str, phone: str, wrong_number: bool = False) -> str:
+    """The DNC status to write, given what the phone already says."""
+    if wrong_number:
+        return "WRONG_DNC"
+    _, obj = find_phone_object(record_uuid, phone)
+    current = ((obj or {}).get("status") or "UNKNOWN").upper()
+    return DNC_FOR.get(current, "DNC")
+
+
+DIAL_TIERS = ("Dial First", "Dial Second", "Dial Third", "Dial Fourth", "Drop")
+
+
+def dial_tier_uuids(wanted=("Dial First", "Dial Second"), sample: int = 400) -> dict:
+    """Tag NAME -> uuid for the dial tiers, derived once and cached.
+
+    Two payloads describe the same phone differently: the slim search result
+    carries tag UUIDs, the full record carries tag names. Names are the stable
+    contract across accounts, but reading them costs one record fetch per
+    candidate, which is fine for a hundred records and absurd for nine thousand.
+
+    So the mapping is learned once by joining the two payloads on a handful of
+    records, cached on disk, and everything afterwards filters on uuid straight
+    from the search result at no extra cost. Cheap and still not hard-coded to
+    one account's ids.
+    """
+    import json
+
+    cached = store.get_meta("dial_tier_uuids")
+    if cached:
+        try:
+            found = json.loads(cached)
+            if all(w in found for w in wanted):
+                return found
+        except ValueError:
+            pass
+
+    c = client()
+    if not c:
+        return {}
+    try:
+        res = c._request(
+            "/api/internal/property/", method="POST", method_override="GET",
+            body={"limit": sample, "query": {"must": {"phone": 1}}},
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.warning("could not sample records to learn dial tier uuids: %s", exc)
+        return {}
+
+    found: dict = {}
+    for rec in (res.get("results") or []):
+        ph = rec.get("phone") or {}
+        uuids = ph.get("tags") or []
+        if not uuids:
+            continue
+        full = get_record(rec.get("uuid") or "")
+        if not full:
+            continue
+        for p in ((full.get("owner") or {}).get("phones") or []):
+            if store.clean_phone(p.get("number")) != store.clean_phone(ph.get("number")):
+                continue
+            names = [
+                (t.get("title") or t.get("name")) if isinstance(t, dict) else str(t)
+                for t in (p.get("tags") or [])
+            ]
+            if len(names) == len(uuids):
+                for name, uu in zip(names, uuids):
+                    if name in DIAL_TIERS:
+                        found[name] = uu
+            break
+        if all(w in found for w in wanted):
+            break
+
+    if found:
+        store.set_meta("dial_tier_uuids", json.dumps(found))
+        log.info("learned dial tier uuids: %s", sorted(found))
+    return found
+
+
+def dial_tier_checked(record_uuid: str, phone: str) -> tuple[str, bool]:
+    """(tier, whether the record could actually be read).
+
+    The second value exists so a CRM outage is never silently reported as
+    "these numbers are all low tier". One means send nothing until it is fixed;
+    the other means the list is genuinely unqualified.
+    """
+    rec = get_record(record_uuid)
+    if not rec:
+        return "", False
+    return dial_tier(record_uuid, phone), True
+
+
+def dial_tier(record_uuid: str, phone: str) -> str:
+    """Which dial tier a number carries, by tag NAME.
+
+    Deliberately name-based. The slim search payload exposes phone tags as
+    uuids, which are per-account values that would silently match nothing if
+    this ever ran against a different Sift account; the tag names are the
+    stable contract. `get_record` is TTL-cached, so this costs one fetch per
+    record rather than one per phone.
+
+    Returns "" when the phone carries no tier tag at all.
+    """
+    _, obj = find_phone_object(record_uuid, phone)
+    if not obj:
+        return ""
+    names = {
+        (t.get("title") or t.get("name") or t.get("tag")) if isinstance(t, dict) else str(t)
+        for t in (obj.get("tags") or [])
+    }
+    for tier in DIAL_TIERS:
+        if tier in names:
+            return tier
+    return ""
+
+
+def _phone_payload(phone_obj: dict, **overrides) -> dict:
+    """The FULL phone object the upsert endpoint requires.
+
+    `upsert-phones` matches by number and REPLACES the object, so anything left
+    out is wiped: the type, the dial tier tags, the status, the connected flag.
+    Every writer builds its payload here so the two of them cannot drift, and
+    so adding a third does not reintroduce the wipe.
+    """
+    tags = [
+        t.get("title") or t.get("name") or t.get("tag") if isinstance(t, dict) else str(t)
+        for t in (phone_obj.get("tags") or [])
+    ]
+    payload = {
+        "number": store.clean_phone(phone_obj.get("number")),
+        "type": (phone_obj.get("type") or "UNKNOWN").upper(),
+        "tags": [t for t in tags if t],
+        "status": (phone_obj.get("status") or "UNKNOWN").upper(),
+        "is_connected": phone_obj.get("is_connected", True),
+        "verified": phone_obj.get("verified", False),
+    }
+    payload.update(overrides)
+    return payload
+
+
+def set_phone_type(record_uuid: str, phone: str, line_type: str) -> dict:
+    """Write the real line type onto a phone, preserving everything else."""
+    line_type = (line_type or "").upper()
+    if line_type not in ("MOBILE", "LANDLINE", "UNKNOWN"):
+        return {"error": f"refusing to write line type {line_type!r}"}
+    c = client()
+    if not c:
+        return {"error": unavailable_reason()}
+    owner_uuid, phone_obj = find_phone_object(record_uuid, phone)
+    if not owner_uuid or not phone_obj:
+        return {"error": "owner_uuid or phone not found on record"}
+    if (phone_obj.get("type") or "UNKNOWN").upper() == line_type:
+        return {"skipped": "already " + line_type, "verified": True}
+
+    payload = _phone_payload(phone_obj, type=line_type)
+    if config.DRY_RUN:
+        return _dry("set_phone_type", owner=owner_uuid, payload=payload)
+    try:
+        c._request(f"/api/internal/owner/{owner_uuid}/upsert-phones/",
+                   method="POST", body={"phones": [payload]})
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"write failed: {exc}"}
+
+    forget_record(record_uuid)
+    _, after = find_phone_object(record_uuid, phone, fresh=True)
+    got = (after or {}).get("type", "")
+    return {"written": line_type, "verified": (got or "").upper() == line_type}
+
+
+def add_phone_tag(record_uuid: str, phone: str, tag: str) -> dict:
+    """Add a tag to one phone, keeping the tier tags it already carries.
+
+    Used to mark a litigator where the dialer and the mail lanes can see it,
+    not only this program.
+    """
+    c = client()
+    if not c:
+        return {"error": unavailable_reason()}
+    owner_uuid, phone_obj = find_phone_object(record_uuid, phone)
+    if not owner_uuid or not phone_obj:
+        return {"error": "owner_uuid or phone not found on record"}
+
+    payload = _phone_payload(phone_obj)
+    if tag in payload["tags"]:
+        return {"skipped": "already tagged", "verified": True}
+    payload["tags"] = payload["tags"] + [tag]
+    if config.DRY_RUN:
+        return _dry("add_phone_tag", owner=owner_uuid, payload=payload)
+    try:
+        c._request(f"/api/internal/owner/{owner_uuid}/upsert-phones/",
+                   method="POST", body={"phones": [payload]})
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"write failed: {exc}"}
+
+    forget_record(record_uuid)
+    _, after = find_phone_object(record_uuid, phone, fresh=True)
+    names = {(t.get("title") or t.get("name") or t.get("tag")) if isinstance(t, dict) else str(t)
+             for t in ((after or {}).get("tags") or [])}
+    return {"written": tag, "verified": tag in names}
+
+
+def set_phone_status(record_uuid: str, phone: str, status: str) -> dict:
+    """Flip one phone to any status in PHONE_STATUSES.
+
+    Endpoint captured from the reisift UI: POST /api/internal/owner/{owner_uuid}
+    /upsert-phones/ with the FULL phone object. It upserts by number, so the
+    type / tags / is_connected must be preserved or they are wiped.
+    """
+    status = status.upper()
+    if status not in PHONE_STATUSES:
+        return {"error": f"invalid phone status {status}"}
+    c = client()
+    if not c:
+        return {"error": unavailable_reason()}
+
+    owner_uuid, phone_obj = find_phone_object(record_uuid, phone)
+    if not owner_uuid or not phone_obj:
+        return {"error": "owner_uuid or phone not found on record"}
+    if (phone_obj.get("status") or "UNKNOWN").upper() == status:
+        return {"skipped": "already " + status}
+
+    payload = _phone_payload(phone_obj, status=status)
+    if config.DRY_RUN:
+        return _dry("set_phone_status", owner=owner_uuid, payload=payload)
+    try:
+        c._request(
+            f"/api/internal/owner/{owner_uuid}/upsert-phones/",
+            method="POST",
+            body={"phones": [payload]},
+        )
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"write failed: {exc}"}
+
+    # Read back. A write that 200s and changes nothing is the failure mode
+    # this whole codebase keeps rediscovering. `fresh=True` is load bearing:
+    # without it the cache hands back the copy taken before the write and this
+    # check verifies the write against its own stale input.
+    forget_record(record_uuid)
+    _, after = find_phone_object(record_uuid, phone, fresh=True)
+    got = (after or {}).get("status", "")
+    return {"written": status, "verified": (got or "").upper() == status}
+
+
+def add_tags(record_uuid: str, tags: list[str]) -> dict:
+    c = client()
+    if not c:
+        return {"error": unavailable_reason()}
+    if config.DRY_RUN:
+        return _dry("add_tags", uuid=record_uuid, tags=tags)
+    try:
+        out = c.add_tags(record_uuid, tags, dry_run=False)
+        forget_record(record_uuid)
+        return out
+    except Exception as exc:  # noqa: BLE001
+        return {"error": str(exc)}
+
+
+def add_list(record_uuid: str, title: str) -> dict:
+    """Attach one list by TITLE. add-lists takes a STRING; an array 201s and
+    attaches nothing (the datasift_api_upload contract)."""
+    c = client()
+    if not c:
+        return {"error": unavailable_reason()}
+    if config.DRY_RUN:
+        return _dry("add_list", uuid=record_uuid, list=title)
+    try:
+        out = c._request(f"/api/internal/property/{record_uuid}/add-lists/",
+                         method="POST", body={"lists": title})
+        forget_record(record_uuid)
+        return out if isinstance(out, dict) else {"ok": True}
+    except Exception as exc:  # noqa: BLE001
+        return {"error": str(exc)}
+
+
+def set_status(record_uuid: str, status: str) -> dict:
+    c = client()
+    if not c:
+        return {"error": unavailable_reason()}
+    if config.DRY_RUN:
+        return _dry("set_status", uuid=record_uuid, status=status)
+    try:
+        out = c.update_status(record_uuid, status, dry_run=False)
+        forget_record(record_uuid)
+        return out
+    except Exception as exc:  # noqa: BLE001
+        return {"error": str(exc)}
+
+
+def assign(record_uuid: str, user_uuid: str) -> dict:
+    """Set the record's assignee.
+
+    Deliberately NOT crm_api.assign(): that method PATCHes `assignee`, which
+    returns 200 and silently no-ops. The field the API actually reads is
+    `assigned_to` (a bare uuid, not a dict).
+    """
+    c = client()
+    if not c:
+        return {"error": unavailable_reason()}
+    if config.DRY_RUN:
+        return _dry("assign", uuid=record_uuid, assigned_to=user_uuid)
+    try:
+        out = c._request(
+            f"/api/internal/property/{record_uuid}/",
+            method="PATCH",
+            body={"assigned_to": user_uuid},
+        )
+        forget_record(record_uuid)
+        return out
+    except Exception as exc:  # noqa: BLE001
+        return {"error": str(exc)}
+
+
+def bump_sms_attempts(record_uuid: str) -> dict:
+    """Add one to the record's SMS attempt counter in Sift.
+
+    Verified writable and persistent on `property.sms_attempts` (2026-08-12).
+
+    Worth doing for a reason beyond bookkeeping: the counter is the only place a
+    HUMAN sees that the agent has been working a record. A prospector opening a
+    file otherwise has no idea whether it has had one text or three, which is
+    exactly the context that decides how they open the call. It also makes
+    "texts sent" answerable from Sift itself rather than only from our SQLite,
+    so the number survives this box.
+
+    Read-modify-write, which can lose a concurrent increment. Accepted: sends
+    are paced a minute apart and one record is never texted twice in a day, so
+    two writers on one record is not a situation that arises.
+    """
+    c = client()
+    if not c:
+        return {"error": unavailable_reason()}
+    if config.DRY_RUN:
+        return _dry("bump_sms_attempts", uuid=record_uuid)
+    try:
+        current = c._request(f"/api/internal/property/{record_uuid}/", method="GET")
+        count = int(current.get("sms_attempts") or 0) + 1
+        c._request(
+            f"/api/internal/property/{record_uuid}/", method="PATCH",
+            body={"sms_attempts": count},
+        )
+        forget_record(record_uuid)
+        return {"sms_attempts": count}
+    except Exception as exc:  # noqa: BLE001 - never fail a send over a counter
+        return {"error": str(exc)}
+
+
+def tag_uuids(names) -> list:
+    """Resolve tag titles to uuids. Property queries filter on uuid, not title."""
+    c = client()
+    if not c:
+        return []
+    try:
+        raw = c._request("/api/internal/tag/?limit=1000", method="GET")
+    except Exception as exc:  # noqa: BLE001
+        log.warning("tag lookup failed: %s", exc)
+        return []
+    rows = raw if isinstance(raw, list) else (raw.get("results") or raw.get("data") or [])
+    lookup = {t.get("title"): t.get("uuid") for t in rows if t.get("title")}
+    return [lookup[n] for n in names if n in lookup]
+
+
+def reassert_handoff_assignment(assignee_uuid: str, limit: int = 200) -> dict:
+    """Re-pin every escalated record onto the handoff owner.
+
+    Escalation sets status to new_lead, and a DataSift sequence on that status
+    change reassigns the record to whoever owns new leads. That sequence runs
+    asynchronously, so it can land AFTER our assignment and quietly take the
+    record back. The prospector then cannot open the hot lead she was just
+    paged about, which is the exact failure this whole handoff exists to avoid.
+
+    Winning that race is not something we control, so instead we keep checking.
+    The query is one call against a handful of records, cheap enough to run
+    every worker pass.
+    """
+    if not assignee_uuid:
+        return {"skipped": "no handoff assignee configured"}
+    c = client()
+    if not c:
+        return {"error": unavailable_reason()}
+
+    want = tag_uuids([config.TAG_ESCALATED])
+    if not want:
+        return {"checked": 0, "reassigned": 0}
+    try:
+        res = c._request(
+            "/api/internal/property/", method="POST", method_override="GET",
+            body={"limit": limit, "query": {"must": {"any_tags": want}}},
+        )
+    except Exception as exc:  # noqa: BLE001
+        return {"error": str(exc)}
+
+    rows = res.get("results") or res.get("data") or []
+    moved = []
+    for row in rows:
+        uuid = row.get("uuid")
+        if not uuid:
+            continue
+        full = get_record(uuid) or {}
+        current = full.get("assigned_to")
+        if isinstance(current, dict):
+            current = current.get("uuid") or ""
+        if current == assignee_uuid:
+            continue
+        result = assign(uuid, assignee_uuid)
+        if not result.get("error"):
+            moved.append(uuid)
+            log.info("re-pinned escalated record %s (was %s)", uuid[:8], current or "unassigned")
+    return {"checked": len(rows), "reassigned": len(moved)}
+
+
+LAND_CARD_MARKER = "Land deal card"
+
+
+def land_deal_card(record_uuid: str) -> str:
+    """The pinned land deal card on a record ('' when it has none or the read fails).
+
+    Written by smarter_contact_land.py --phase deals: the offer range, what the parcel could sell for,
+    the builders and land buyers near it. Read ONLY for the Slack handoff, never for the responder: it
+    carries prices, and the agent's prompt is built from deal_context, which never reads notes.
+    """
+    if not record_uuid:
+        return ""
+    c = client()
+    if c is None:
+        return ""
+    try:
+        if hasattr(c, "get_messages"):
+            msgs = c.get_messages(record_uuid, limit=50)
+        else:
+            resp = c._request(f"/api/internal/property/{record_uuid}/message/", params={"limit": 50})
+            msgs = resp.get("results", []) if isinstance(resp, dict) else resp
+    except Exception as exc:  # noqa: BLE001 - a missing card must never block a handoff
+        log.warning("land deal card read failed on %s: %s", record_uuid[:8], exc)
+        return ""
+    for m in msgs or []:
+        text = str(m.get("message") or "")
+        if text.startswith(LAND_CARD_MARKER):
+            return text
+    return ""
+
+
+def post_note(record_uuid: str, message: str, pinned: bool = False) -> dict:
+    c = client()
+    if not c:
+        return {"error": unavailable_reason()}
+    if config.DRY_RUN:
+        return _dry("post_note", uuid=record_uuid, message=message[:120])
+    try:
+        return c.add_message(record_uuid, message, pinned=pinned, dry_run=False)
+    except Exception as exc:  # noqa: BLE001
+        return {"error": str(exc)}

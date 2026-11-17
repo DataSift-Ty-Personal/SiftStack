@@ -1,0 +1,60 @@
+name: Docs
+
+# docs/agents.json describes the agent system. Two things render from it: the
+# committed markdown map, and the published interactive chart. If the JSON
+# moves and the markdown does not, the repo starts documenting a system that
+# no longer exists, and nobody notices because both files still look fine.
+
+on:
+  push:
+    paths:
+      - "docs/**"
+      - "tools/agent_map.py"
+      - "src/**"
+      - ".github/workflows/docs.yml"
+  pull_request:
+    paths:
+      - "docs/**"
+      - "tools/agent_map.py"
+      - "src/**"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  agent-map:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Every agent points at a file that exists
+        # An org chart is worth exactly the accuracy of its file references.
+        # This caught a market report agent pointing at src/generate_knox_report.py,
+        # a module that had never existed under that name, while the real
+        # generator sat untracked in a gitignored output/ directory.
+        run: python tools/agent_map.py --audit
+
+      - name: AGENT-MAP.md is current
+        run: python tools/agent_map.py --check
+
+      - name: No em dashes or en dashes in published docs
+        # House style, and the fastest tell that prose was machine-written.
+        run: |
+          python - <<'PY'
+          import pathlib, sys
+          bad = []
+          for p in list(pathlib.Path("docs").rglob("*.md")) + [pathlib.Path("README.md")]:
+              t = p.read_text(encoding="utf-8", errors="replace")
+              for i, line in enumerate(t.splitlines(), 1):
+                  if "—" in line or "–" in line:
+                      bad.append(f"{p.as_posix()}:{i}: {line.strip()[:90]}")
+          for b in bad:
+              print(f"::error::{b}")
+          print(f"checked; {len(bad)} line(s) with a dash character")
+          sys.exit(1 if bad else 0)
+          PY

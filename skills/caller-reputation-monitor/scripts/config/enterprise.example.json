@@ -1,0 +1,41 @@
+{
+  "_comment": "OPTIONAL - only needed for the Telnyx L2 upgrade. Business identity for Telnyx Number Reputation Enterprise vetting. Copy to enterprise.json and fill in. Used ONCE by `telnyx_setup.py register`. Field names + enums verified against Telnyx POST /v2/enterprises (see references/telnyx-api-contract.md). EIN format XX-XXXXXXX. website must be a live HTTPS URL.",
+  "legal_name": "REPLACE - Your Company LLC",
+  "doing_business_as": "REPLACE - Your Company LLC",
+  "organization_type": "commercial",
+  "organization_legal_type": "llc",
+  "country_code": "US",
+  "jurisdiction_of_incorporation": "REPLACE - state of incorporation",
+  "website": "https://REPLACE-with-live-https-site.com",
+  "fein": "XX-XXXXXXX",
+  "industry": "real_estate",
+  "number_of_employees": "1-10",
+  "organization_contact": {
+    "first_name": "REPLACE",
+    "last_name": "REPLACE",
+    "email": "REPLACE@example.com",
+    "job_title": "Owner",
+    "phone_number": "+15555550100"
+  },
+  "billing_contact": {
+    "first_name": "REPLACE",
+    "last_name": "REPLACE",
+    "email": "REPLACE@example.com",
+    "phone_number": "+15555550100"
+  },
+  "organization_physical_address": {
+    "street_address": "REPLACE",
+    "city": "REPLACE",
+    "administrative_area": "XX",
+    "postal_code": "REPLACE",
+    "country_code": "US"
+  },
+  "billing_address": {
+    "street_address": "REPLACE",
+    "city": "REPLACE",
+    "administrative_area": "XX",
+    "postal_code": "REPLACE",
+    "country_code": "US"
+  },
+  "_industry_note": "industry is a fixed Telnyx enum; 'real_estate' is expected valid but confirm against the live API error if register 422s (alternatives seen: technology, healthcare, retail, finance, legal, insurance). number_of_employees enum: 1-10|11-50|51-200|201-500|501-2000|2001-10000|10001+."
+}

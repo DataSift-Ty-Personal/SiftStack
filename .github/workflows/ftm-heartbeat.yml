@@ -1,0 +1,105 @@
+name: FTM heartbeat
+
+# Watches the first-to-market pull from OUTSIDE the box.
+#
+# The machine already posts its own daily digest at 08:00 local, and that covers
+# every failure the run can observe about itself. It cannot cover the one that
+# matters most: a process cannot report that the machine it lives on has stopped.
+# If siftstack-ftm goes down, or the scheduler thread dies, the digest simply
+# never arrives, and a missing message looks exactly like a quiet morning.
+#
+# That is not hypothetical here. Four of the nine scheduled days to 2026-08-28
+# produced zero notices, and the only reason anyone found out was going to look.
+#
+# Unlike the SMS agent, this app has no HTTP service to curl (fly.ftm.toml has no
+# [http_service] and no healthcheck, deliberately: it is a batch job, not a
+# server). So the probe runs the health check over SSH and reads its verdict.
+
+on:
+  schedule:
+    # 14:00 UTC = 10:00 EDT / 09:00 EST. Both sit clear of the 08:00 local digest
+    # in either half of the year, which a fixed 13:00 UTC would not: that lands
+    # exactly on 08:00 EST and would race the very post it is checking for.
+    - cron: "0 14 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ftm-heartbeat
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+
+      - name: Ask the box whether today's pull is healthy
+        id: probe
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: |
+          if [ -z "$FLY_API_TOKEN" ]; then
+            echo "status=unconfigured" >> "$GITHUB_OUTPUT"
+            echo "detail=No FLY_API_TOKEN repo secret, so the watchdog cannot reach the machine." >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          set +e
+          OUT=$(flyctl ssh console -a siftstack-ftm \
+                  -C "python /app/src/ftm_health.py --check" 2>&1)
+          RC=$?
+          set -e
+          echo "$OUT"
+
+          # Read the verdict off the printed line rather than trusting the exit
+          # code alone: flyctl does not reliably propagate a remote non-zero, and
+          # a watchdog that silently always passes is worse than none at all.
+          VERDICT=$(printf '%s' "$OUT" | grep -oE '^(GREEN|AMBER|RED) ' | head -1 | tr -d ' ')
+
+          if [ -z "$VERDICT" ]; then
+            echo "status=unreachable" >> "$GITHUB_OUTPUT"
+            echo "detail=The machine did not answer (flyctl exit $RC). It is most likely stopped, out of credit, or mid-deploy. No FTM data is being pulled while this is true." >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ "$VERDICT" = "RED" ]; then
+            LINE=$(printf '%s' "$OUT" | grep -E '^RED ' | head -1)
+            echo "status=red" >> "$GITHUB_OUTPUT"
+            {
+              echo "detail<<EOF"
+              echo "$LINE"
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
+          else
+            echo "status=ok" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Tell Slack when the pull is not healthy
+        if: steps.probe.outputs.status != 'ok'
+        env:
+          SLACK_WEBHOOK: ${{ secrets.FTM_HEALTH_WEBHOOK }}
+        run: |
+          if [ -z "$SLACK_WEBHOOK" ]; then
+            echo "::error::FTM is ${{ steps.probe.outputs.status }} and no Slack webhook is configured."
+            exit 1
+          fi
+          # printf, not a heredoc: inside a YAML block scalar every line is
+          # indented and an indented closing EOF does not terminate a heredoc, so
+          # the step would break on the alert path only. Worst place to hide a bug.
+          printf -v TEXT '%s\n%s\n\n%s\n%s' \
+            "*FTM pull is ${{ steps.probe.outputs.status }}*" \
+            "${{ steps.probe.outputs.detail }}" \
+            "This came from the watchdog, not the box, so it also fires when the daily digest never arrives." \
+            'Check: `fly status -a siftstack-ftm` then `fly logs -a siftstack-ftm`'
+
+          jq -nc --arg t "$TEXT" '{text: $t}' \
+            | curl -sS -X POST -H 'Content-Type: application/json' -d @- "$SLACK_WEBHOOK"
+          echo
+          # Fail the run too, so the outage shows in the Actions tab even if Slack
+          # is the part that is broken.
+          echo "::error::FTM is ${{ steps.probe.outputs.status }}"
+          exit 1

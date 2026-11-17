@@ -1,0 +1,13 @@
+{
+  "name": "siftstack-crm",
+  "description": "Every SiftStack CRM skill in one install.",
+  "author": {
+    "name": "DataSift"
+  },
+  "dependencies": [
+    "account-blueprint",
+    "sift-operations",
+    "sift-sequences",
+    "siftstack-core"
+  ]
+}

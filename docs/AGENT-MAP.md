@@ -1,0 +1,2495 @@
+# SiftStack AI Agent Org Chart
+
+*Every agent, what triggers it, what it touches, where a human still signs off, and the specific trap each one exists to avoid*
+
+96 agents across 9 divisions. Generated from [`docs/agents.json`](agents.json) by `tools/agent_map.py`. Build 1.0.61, 2026-11-10.
+
+Do not hand-edit this file. Edit `docs/agents.json` and re-run the generator.
+
+## How to read this
+
+Every entry carries the same five things, because the fifth is the one that matters:
+
+- **Trigger**: what starts it.
+- **Does**: the steps it actually runs.
+- **Human**: where a person still has to sign off. An empty list means it runs unattended.
+- **Outputs**: what comes out.
+- **The trap**: the specific failure this agent exists to prevent. Most were found in production, not in review, and several of them failed silently for weeks before anyone noticed. That field is the real documentation.
+
+## Rollout phases
+
+- **Phase 1 - Running in production**: Live today. Proven on real deals.
+- **Phase 2 - Scaling / gated**: Built and validated, held behind a human go/no-go.
+- **Phase 3 - Next build**: Designed, not yet wired end to end.
+
+## Top of the org
+
+### Operator
+
+`CLAUDE.md` &middot; phase 1 &middot; live
+
+Sets the buy box, approves spend, gives the go on anything that touches a homeowner.
+
+**Trigger.** Always on. Every gated action routes here.
+
+**Does.**
+
+- Defines buy box: single family, AVM $1 to $700,000
+- Approves outbound sends, offer numbers, and contract gates
+- Re-approves the locked material list each project cycle
+
+**Human checkpoint.**
+
+- Every Phase 2 gate
+- Any dollar figure that reaches a seller or buyer
+
+**Outputs.** Go / no-go decisions, Buy box parameters
+
+> **The trap this exists to avoid.** The named company is litigation bait. Outbound identity is anchored to the assigned human, never to a business name.
+
+### Claude Orchestrator
+
+`CLAUDE.md` &middot; phase 1 &middot; live
+
+The session that reads the repo, picks the right agent chain, and runs it end to end.
+
+**Trigger.** Operator prompt, scheduled task, or an inbound webhook.
+
+**Does.**
+
+- Reads CLAUDE.md for domain rules and hard-won gotchas
+- Selects the skill or module chain for the job
+- Runs the chain, degrades gracefully on any missing credential
+- Reports what it did and what it could not do
+
+**Human checkpoint.**
+
+- Approves any irreversible or billable action
+
+**Outputs.** Excel workbooks, CSV uploads, PDF research packs, Slack summaries
+
+**Touches.** Claude, Cowork, Claude Code
+
+> **The trap this exists to avoid.** A run that succeeds with no data is worse than one that fails. Every agent must state an explicit reason when it degrades.
+
+## Divisions
+
+### Data Acquisition
+
+*First to market or it is not worth pulling*
+
+15 agents.
+
+#### Intake Orchestrator (division lead)
+
+`src/main.py` &middot; phase 1 &middot; live
+
+Routes every source into one NoticeData shape, dedupes by address, stamps provenance.
+
+**Trigger.** python src/main.py daily | historical, or the Apify daily schedule.
+
+**Does.**
+
+- Filters saved searches by county and notice type
+- Fans out to the right importer for each source
+- Deduplicates by address, keeping the most recent
+- Stamps date_added (our run date) separately from date_published (the legal filing date)
+
+**Human checkpoint.**
+
+- Reviews the run summary before upload
+
+**Outputs.** Sift upload CSV, Run summary stats
+
+**Touches.** main.py, data_formatter.py, Apify
+
+> **The trap this exists to avoid.** Date semantics split two ways. date_added is when WE added it; date_published is the legal filing date. Everything downstream that reasons about timing must anchor on date_published.
+
+#### Scheduled FTM Runner
+
+`src/ftm_runner.py` &middot; phase 1 &middot; live
+
+One unattended first-to-market pull of foreclosure and probate for Knox and Blount, running in the cloud instead of on a workstation.
+
+**Trigger.** The scheduler at 06:30 America/New_York, or python src/ftm_runner.py --commit by hand.
+
+**Does.**
+
+- Preflights credentials, egress, state dir and saved searches
+- Rotates to a fresh proxy session id per PROCESS, counter held on the volume
+- Scrapes, enriches and uploads, then persists seen_ids ONLY after the upload succeeds
+- Reports a 0-notice run as EMPTY and exits non-zero
+
+**Human checkpoint.**
+
+- Approves the first scheduled run before --commit is added to FTM_ARGS
+
+**Outputs.** Upload CSV, ftm_runs.jsonl history, Run summary
+
+**Touches.** Fly.io siftstack-ftm, Playwright, Apify proxy, /data volume
+
+> **The trap this exists to avoid.** Zero notices is a FAILURE, not a quiet day. There is deliberately no inference that a missing challenge means a cleared gate; that exact reasoning reported 13 consecutive dead runs as successful over 19 days. seen_ids is persisted only AFTER a successful upload, because an aborted run that had already written it left 204 notices flagged as handled that were never sent anywhere, and a retry would have skipped every one of them permanently.
+
+#### Egress Proxy Resolver
+
+`src/proxy_resolver.py` &middot; phase 1 &middot; live
+
+Decides which IP the scrape goes out from, because the site gates on egress rather than on code.
+
+**Trigger.** Every scraper run, before the first page load.
+
+**Does.**
+
+- Resolution order: SIFTSTACK_PROXY_URL, then Apify groups via token lookup, then direct
+- Rewrites illegal characters in the session id and logs the substitution
+- Raises NoticeAccessBlocked on a refusal so the run aborts instead of grinding
+
+**Human checkpoint.** None. Runs unattended.
+
+**Outputs.** A proxy URL, A sanitized sticky session id
+
+**Touches.** Apify proxy, BUYPROXIES94952
+
+> **The trap this exists to avoid.** Apify session ids accept only letters, digits, underscore and dot. A hyphen in the name returns 407 Proxy Authentication Required, which is indistinguishable from a rejected password, and cost a full day of debugging byte-identical credentials. Separately: the site blocks an IP by VOLUME, around 204 notices per session, so the backfill runs one process per saved-search-month rather than one long job.
+
+#### FTM Scheduler
+
+`src/ftm_schedule.py` &middot; phase 1 &middot; live
+
+The long-lived process that decides when the pull fires, business-local.
+
+**Trigger.** Container CMD. Runs continuously.
+
+**Does.**
+
+- Computes the next fire time in the business timezone
+- Launches ftm_runner as a fresh PROCESS so the proxy session rotates
+- Records each run exit code
+
+**Human checkpoint.** None. Runs unattended.
+
+**Outputs.** Scheduled runs, Exit codes
+
+**Touches.** Fly.io, ftm_runner.py
+
+> **The trap this exists to avoid.** A scheduler process rather than fly machine run --schedule, because Fly schedules are coarse and pick their own minute, while a first-to-market pull wants a specific business-local hour. Being first is the entire product.
+
+#### Notice Scraper
+
+`src/scraper.py` &middot; phase 1 &middot; live
+
+Drives tnpublicnotice.com through 8 saved searches and paginates every result.
+
+**Trigger.** Daily run, or historical backfill over 12 months.
+
+**Does.**
+
+- Reuses saved session cookies, falls back to fresh login
+- Selects each saved search from the Smart Search dropdown
+- Paginates results at 50 per page
+- Opens each notice detail page
+
+**Human checkpoint.** None. Runs unattended.
+
+**Outputs.** Raw notice HTML, Notice IDs
+
+**Touches.** Playwright, tnpublicnotice.com, cookies.json
+
+> **The trap this exists to avoid.** The site is ASP.NET WebForms. All navigation is __doPostBack with ViewState, so plain HTTP requests would have to hand-manage ViewState and EventValidation. Browser automation is not optional here.
+
+#### Turnstile Gate Runner
+
+`src/captcha_solver.py, src/scrapfly_client.py` &middot; phase 1 &middot; live
+
+Clears the Cloudflare Turnstile challenge that sits in front of every notice detail page.
+
+**Trigger.** Every notice detail page open.
+
+**Does.**
+
+- Reads the sitekey off the LIVE page, and logs SITEKEY ROTATED rather than dying quietly
+- Selects the solve method and the response field from CAPTCHA_KIND
+- Creates the cf-turnstile-response input when the headless widget never renders one
+- Runs the blocking 2Captcha call in a thread so the browser event loop keeps servicing the page
+- Raises NoticeAccessBlocked on an IP refusal and aborts the whole run
+
+**Human checkpoint.** None. Runs unattended.
+
+**Outputs.** Rendered notice HTML
+
+**Touches.** Cloudflare Turnstile, 2Captcha, Playwright
+
+> **The trap this exists to avoid.** The gate migrated from reCAPTCHA to Cloudflare Turnstile on 2026-07-13. config.py recorded the migration but the solver still called recaptcha() and injected into g-recaptcha-response, a field the page no longer reads, so EVERY solve was billed and discarded. The gate is session-level, so one solve covers the rest of the run. A blocked IP now aborts instead of grinding 50 results times 3 attempts against a wall, and the page shows no challenge at all from a blocked address, which is why this looks like a solver bug when it is an egress problem.
+
+#### Notice Parser
+
+`src/notice_parser.py` &middot; phase 1 &middot; live
+
+Pulls address, owner, and dates out of free-text legal notice bodies.
+
+**Trigger.** Every notice fetched.
+
+**Does.**
+
+- Regex extraction into the NoticeData dataclass
+- Owner name taken from the deed-of-trust 'executed by' language
+- Probate owner set to the Personal Representative, never the deceased
+
+**Human checkpoint.** None. Runs unattended.
+
+**Outputs.** Structured NoticeData
+
+**Touches.** notice_parser.py
+
+> **The trap this exists to avoid.** There are no structured HTML fields on the site. Address, owner, and dates are all embedded in free-text notice bodies, so the regex layer is load bearing.
+
+#### Foreclosure Filter
+
+`src/foreclosure_filter.py` &middot; phase 1 &middot; live
+
+Keeps only real first-to-market trustee sales out of the foreclosure search results.
+
+**Trigger.** Any record from a Foreclosure saved search.
+
+**Does.**
+
+- Matches full notice text against observed trustee sale title variations
+- Applies INCLUDE_PHRASES and EXCLUDE_PHRASES
+- Non-foreclosure notice types pass through unfiltered
+
+**Human checkpoint.** None. Runs unattended.
+
+**Outputs.** Filtered foreclosure set
+
+**Touches.** foreclosure_filter.py
+
+> **The trap this exists to avoid.** Not everything in a Foreclosure saved search is a foreclosure. Skipping this filter poisons the whole downstream list.
+
+#### Courthouse Photo Importer
+
+`src/photo_importer.py, src/image_utils.py` &middot; phase 1 &middot; live
+
+Turns phone photos of courthouse terminal screens into structured records.
+
+**Trigger.** photo-import command, or a new file landing in Dropbox.
+
+**Does.**
+
+- EXIF transpose, blur check, bilateral filter, perspective correction, Otsu threshold
+- Tesseract OCR at PSM 4
+- LLM parse into NoticeData across all 7 notice types
+
+**Human checkpoint.**
+
+- Runner takes the photos at the terminal
+
+**Outputs.** NoticeData records
+
+**Touches.** OpenCV, Tesseract, LLM parser
+
+> **The trap this exists to avoid.** Moire from terminal screens is the number one OCR killer. Bilateral filter plus Otsu beats adaptive threshold and CLAHE, and PSM 4 beats the PSM 6 that every research guide recommends. Do not run Tesseract OSD rotation on phone photos, EXIF already handled it.
+
+#### PDF Importer
+
+`src/pdf_importer.py` &middot; phase 1 &middot; live
+
+Ingests scanned notice PDFs into the same pipeline.
+
+**Trigger.** Manual import of a scanned batch.
+
+**Does.**
+
+- pypdfium2 renders pages to images
+- Shared OCR utilities extract text
+- Records flow into the standard enrichment pipeline
+
+**Human checkpoint.** None. Runs unattended.
+
+**Outputs.** NoticeData records
+
+**Touches.** pypdfium2, Tesseract
+
+> **The trap this exists to avoid.** PDF and photo imports set date_added explicitly and it is preserved, not re-stamped by the pipeline run.
+
+#### Dropbox Watcher
+
+`src/dropbox_watcher.py` &middot; phase 1 &middot; live
+
+Cursor-based polling so a runner just uploads photos and walks away.
+
+**Trigger.** Continuous loop, default 15 minute interval.
+
+**Does.**
+
+- Polls the Dropbox cursor for new files
+- Resolves county and notice type from the folder path
+- Processes through the photo importer, then deletes on success
+
+**Human checkpoint.**
+
+- Runner organizes uploads as /County/notice_type/
+
+**Outputs.** Processed records, dropbox_state.json
+
+**Touches.** Dropbox API
+
+> **The trap this exists to avoid.** Folder path IS the metadata. /Knox/eviction/photo.jpg is how county and type get resolved, so a misfiled photo is a mislabeled record.
+
+#### Knox FTM Puller
+
+`src/knox_ftm_pull.py` &middot; phase 1 &middot; live
+
+Sweeps every Knox source that carries a property address and applies the buy box.
+
+**Trigger.** python src/knox_ftm_pull.py
+
+**Does.**
+
+- Pulls liens, state and federal tax liens, and trustee deeds from the Register of Deeds
+- Pulls notices from tnpublicnotice, condemnations from city agendas, evictions from the court
+- Enriches against SiftMap, applies buy box, writes the upload CSV
+- Routes upside-down records to a separate exclusion file
+
+**Human checkpoint.**
+
+- Operator sets the buy box
+
+**Outputs.** knox_ftm_pull.csv, _upside_down.csv
+
+**Touches.** Register of Deeds, Knox Tax API, SiftMap
+
+> **The trap this exists to avoid.** Condemnations are one cycle only and evictions are one week only. The city overwrites its agenda PDFs and the court keeps only the current week, so roughly 86 back-dated URLs all 404. These accumulate forward or not at all.
+
+#### Lien Resolver
+
+`src/knox_lien_resolve.py` &middot; phase 1 &middot; live
+
+Turns lien debtor names into parcels, then drops anyone already satisfied.
+
+**Trigger.** python src/knox_lien_resolve.py --all
+
+**Does.**
+
+- Liens carry no parcel id, so the join is debtor name into the open county tax API
+- Computes active liens as recorded minus released
+- Drops fully cleared debtors, states '3 of 8 still active' in Notes
+
+**Human checkpoint.** None. Runs unattended.
+
+**Outputs.** Debtor to parcel matches
+
+**Touches.** Knox Tax API, Register of Deeds
+
+> **The trap this exists to avoid.** 27,493 release documents exist against 12 months of liens, and 8% of lead debtors had EVERY lien already satisfied. Release filtering is not optional. Full-run name-join hit rate is 40%, not the 64% a sorted sample suggested.
+
+#### Foreclosure Consolidator
+
+`src/consolidate_foreclosures.py` &middot; phase 1 &middot; live
+
+Builds a master list of still-active foreclosures from the last N months of runs.
+
+**Trigger.** python src/consolidate_foreclosures.py --months 3
+
+**Does.**
+
+- Pulls each Apify run's output.csv from its key-value store
+- Merges local output CSVs
+- Dedupes by property, keeping the latest sale date
+- Drops anything whose auction date has already passed
+
+**Human checkpoint.** None. Runs unattended.
+
+**Outputs.** foreclosure_master_active_<date>.csv
+
+**Touches.** Apify
+
+> **The trap this exists to avoid.** Dedupe by property, not by notice. Republished and postponed notices collapse to one record only if you key on address plus city and keep the latest sale date.
+
+#### Proof-of-Source Capture
+
+`archive/notice_screenshots/notice_screenshot.py` &middot; phase 1 &middot; retired
+
+RETIRED 2026-08-14. Captured a full-page screenshot of each notice as proof of source.
+
+**Trigger.** The moment the CAPTCHA clears and the notice is visible.
+
+**Does.**
+
+- Full-page screenshot of the detail page
+- Hosted to Apify key-value store or Google Drive
+- URL rides along as a custom field plus a Notes line into DataSift
+
+**Human checkpoint.** None. Runs unattended.
+
+**Outputs.** notice_<ID>.png, Hosted screenshot URL
+
+**Touches.** Scrapfly, Google Drive, Apify
+
+> **The trap this exists to avoid.** Retired because nothing used it, and it was the slowest step in a foreclosure notice, which matters directly on a multi-thousand-notice backfill. The fields, the CSV column and the DataSift custom field are deliberately KEPT so historical records retain their URLs.
+
+### Enrichment & Identity
+
+*Who actually owns it and who can legally sign*
+
+13 agents.
+
+#### Enrichment Pipeline (division lead)
+
+`src/enrichment_pipeline.py` &middot; phase 1 &middot; live
+
+Ten-plus step chain that takes a bare address to a dialable decision maker.
+
+**Trigger.** Every record after intake.
+
+**Does.**
+
+- Address standardization, property data, tax data
+- Obituary and heir research where the owner is deceased
+- Skip trace waterfall, then phone scoring
+- Stamps date_added at run time
+
+**Human checkpoint.**
+
+- Reviews decision-maker confidence before calling
+
+**Outputs.** Enriched NoticeData
+
+**Touches.** enrichment_pipeline.py
+
+> **The trap this exists to avoid.** Every step is optional and states its own failure. One dead API must never take the record with it.
+
+#### Address Standardizer
+
+`src/address_standardizer.py` &middot; phase 1 &middot; live
+
+Normalizes addresses so dedupe and CRM matching actually work.
+
+**Trigger.** Step 1 of enrichment.
+
+**Does.**
+
+- Smarty API standardization
+- Normalized form used as the dedupe key
+
+**Human checkpoint.** None. Runs unattended.
+
+**Outputs.** Standardized address
+
+**Touches.** Smarty
+
+> **The trap this exists to avoid.** Address is the upsert key for DataSift. If standardization drifts, re-runs create duplicates instead of updating.
+
+#### Property Enricher
+
+`src/property_enricher.py` &middot; phase 1 &middot; live
+
+Pulls beds, baths, sqft, year built, and valuation for the subject.
+
+**Trigger.** Step 2 of enrichment.
+
+**Does.**
+
+- Zillow property-details-address endpoint
+- Merged into NoticeData
+
+**Human checkpoint.**
+
+- County card overrides beat the aggregator
+
+**Outputs.** Property facts
+
+**Touches.** OpenWeb Ninja, Zillow
+
+> **The trap this exists to avoid.** Aggregators get bedroom counts wrong. Explicit CLI county-card values always win over Zillow, and the whole dual-track ARV rests on the bed count being right.
+
+#### Tax Enricher
+
+`src/tax_enricher.py` &middot; phase 1 &middot; live
+
+Pulls per-parcel delinquency, assessed value, and owner of record.
+
+**Trigger.** Step 3 of enrichment.
+
+**Does.**
+
+- Knox County Tax API by parcel
+- Delinquent year gated on a positive per-parcel amount
+
+**Human checkpoint.** None. Runs unattended.
+
+**Outputs.** Tax delinquency, Parcel data
+
+**Touches.** Knox County Tax API
+
+> **The trap this exists to avoid.** The county API returns bills per OWNER. Without the per-parcel gate, a multi-parcel owner stamps one property's debt onto another. Only about 12% of parcels owe anything, so a sparse column is correct.
+
+#### Obituary Enricher
+
+`src/obituary_enricher.py` &middot; phase 1 &middot; live
+
+Finds the date of death and the named representative for deceased owners.
+
+**Trigger.** Owner flagged deceased, or a probate record.
+
+**Does.**
+
+- Probate preset sets DM to the court-named PR and skips obituary search entirely
+- Otherwise searches obituary sources for the decedent
+- Runs the DOD sanity check against the publication date
+
+**Human checkpoint.**
+
+- Must confirm the decedent IS the owner of record
+
+**Outputs.** Date of death, Decision maker, Obituary URL
+
+**Touches.** Obituary sources, Knox Tax API, Scrapfly
+
+> **The trap this exists to avoid.** THE SPOUSE-OBITUARY TRAP. An obituary on the record does not mean the OWNER died. A live Blount case had the husband's obituary on a living widow's record. An unresearched caller would have asked a recent widow for her dead husband. Always match decedent against owner of record first.
+
+#### Deep Prospecting v5
+
+`skills/deep-prospecting-v5` &middot; phase 1 &middot; live
+
+Resolves heirs and required signers via SmartSkip, then confirms against published obituaries.
+
+**Trigger.** Confirmed deceased owner that no cheaper path resolved.
+
+**Does.**
+
+- SmartSkip batch returns relatives AND their phones in one row
+- Tracerfy gap-fills the roughly 7% of relatives left phoneless
+- Mandatory free obituary and web research supplies DOD and true relationships
+- Trestle scores every number into dial tiers
+
+**Human checkpoint.**
+
+- Research pass is mandatory, never skipped
+
+**Outputs.** Heir map, Master dial sheet, Branded PDF pack
+
+**Touches.** SmartSkip, Tracerfy, Trestle IQ, Scrapfly
+
+> **The trap this exists to avoid.** SmartSkip is WRONG about death. It returned Deceased=false for a man who died with a published funeral-home obituary, and it has no DOD column at all. 63% of relationship labels come back generic. The obituary layer is what makes it trustworthy. Cost is $0.24 per record, 4.9x cheaper than the retired Enformion path.
+
+#### Entity Researcher
+
+`src/enformion_business.py, src/entity_researcher.py` &middot; phase 1 &middot; live
+
+Unmasks the human behind an LLC, trust, or corporation.
+
+**Trigger.** Owner is an entity, not a person.
+
+**Does.**
+
+- Enformion BusinessV2 returns officers from corp filings
+- Filters out entity self-references and registered-agent fronts
+- Reverse-lookups an LLC's residential mailing address to find the principal
+
+**Human checkpoint.** None. Runs unattended.
+
+**Outputs.** Named principals
+
+**Touches.** Enformion BusinessV2, SiftMap
+
+> **The trap this exists to avoid.** Entities cannot be name-traced. 35 of 321 vacant owners were LLCs or trusts, so filter them out of the consumer skip-trace batch up front or you burn the spend. The v1 BusinessSearch type is access-denied; only BusinessV2 works.
+
+#### Tracerfy Skip Trace
+
+`src/tracerfy_skip_tracer.py, src/tracerfy_ftm.py` &middot; phase 1 &middot; live
+
+Cheap batch phone and email fill at about two cents a record.
+
+**Trigger.** Any record or relative missing contact data.
+
+**Does.**
+
+- Batch submission
+- Merge found phones back by address upsert
+
+**Human checkpoint.** None. Runs unattended.
+
+**Outputs.** Phone numbers, Emails
+
+**Touches.** Tracerfy
+
+> **The trap this exists to avoid.** DataSift MERGES phones rather than replacing them, so Tracerfy and Enformion accumulate. Run them sequentially, then re-score and re-tag. One live run went from 109 to 302 phones across 33 records.
+
+#### Phone Validator
+
+`src/phone_validator.py` &middot; phase 1 &middot; live
+
+Scores every number and sorts the call list into dial tiers.
+
+**Trigger.** After every skip-trace pass.
+
+**Does.**
+
+- Trestle phone_intel scores activity and line type
+- Tiers: 81-100 dial first, 61-80 second, 41-60 third, 21-40 fourth, 0-20 drop
+- Litigator risk check
+- Writes phone tags back to DataSift
+
+**Human checkpoint.** None. Runs unattended.
+
+**Outputs.** Tiered dial list, DataSift phone tags
+
+**Touches.** Trestle IQ
+
+> **The trap this exists to avoid.** On a shared household line the owner rule wins: the number carries source and tier only, never a relationship tag, or the dial sheet labels the owner's own landline 'Husband'.
+
+#### Probate Property Finder
+
+`src/property_lookup.py` &middot; phase 1 &middot; live
+
+Finds the property when the court record has names but no address.
+
+**Trigger.** Probate record with a PR and decedent but no property.
+
+**Does.**
+
+- Tier 1: Knox Tax API name search, scored by token overlap, accept at 0.4 or better
+- Tier 2: executor family search for transferred family property
+- Tier 3: people search for the decedent's last known address
+
+**Human checkpoint.**
+
+- Confidence score reviewed before the record ships
+
+**Outputs.** Property address, Confidence score
+
+**Touches.** Knox Tax API, People search, Scrapfly
+
+> **The trap this exists to avoid.** Courthouse probate records have decedent and executor names but no property address. Without this three-tier lookup the entire probate niche is unusable.
+
+#### Research Agent
+
+`src/agents/research/deep_prospect.py` &middot; phase 2 &middot; gated
+
+Deep prospects one record on its own when its status changes to Deep Prospecting, then writes the decision makers and their numbers back.
+
+**Trigger.** DataSift sequence: status changed to Deep Prospecting, webhook to the siftstack-agents box.
+
+**Does.**
+
+- The webhook queues a task and answers in milliseconds
+- Runs the single-record v5 chain with Claude as the researcher, using web search and fetch
+- A claim that cites a page Claude never opened in this run moves to unresolved
+- Spends only inside a per-run and a daily cap, and skips a paid phase rather than crossing one
+- Writes phones, notes and death fields back, then posts the property file to Slack
+
+**Human checkpoint.**
+
+- Dry by default: no vendor spend and no CRM write until live mode is switched on
+
+**Outputs.** Property file, CRM write-back, Slack post
+
+**Touches.** Claude, SmartSkip, Trestle, DataSift API, Fly.io
+
+> **The trap this exists to avoid.** An obituary on the record does not mean the owner died: it is often the spouse's. The owner is marked deceased only when an obituary opened in this run backs it AND the decedent shares two name tokens with the owner of record.
+
+#### Single-Record Deep Prospect
+
+`src/deep_prospect_record.py` &middot; phase 1 &middot; live
+
+Runs deep prospecting v5 on any one record by its street line, including the heir pass an estate needs.
+
+**Trigger.** python src/deep_prospect_record.py --address "<street>" --phase records, then smartskip, heirs, score, verify, build, writeback
+
+**Does.**
+
+- Reuses every Dream 100 deep-prospecting phase
+- Heir pass: a second SmartSkip bulk order with each decision maker as the subject, at a street, never name plus city
+- Trestle Real Contact says whose number each one really is
+- Gap-fills a decision maker with no live number
+
+**Human checkpoint.**
+
+- A researcher writes the research and analysis files (the Research agent automates this)
+- --commit to spend or write
+
+**Outputs.** Property pack PDF, CRM write-back
+
+**Touches.** SmartSkip, Tracerfy, Trestle Real Contact, Knox County Tax API, DataSift API
+
+> **The trap this exists to avoid.** Drop obituary middle names on heir traces: three of four children came back empty with them and all three matched without. Query the county tax API by street, never by the CRM parcel id, because the search is fuzzy and a parcel id returned 22 unrelated parcels.
+
+#### Dream 100 Deep Prospect
+
+`src/dream100_dp.py` &middot; phase 1 &middot; live
+
+Researches the top of the Dream 100 until each record names who must sign and which number reaches them.
+
+**Trigger.** python src/dream100_dp.py --phase records | smartskip | merge | gapfill | score | build | writeback | qa
+
+**Does.**
+
+- Pulls the record, its activity log and the county title
+- SmartSkip relatives and phones, then gap-fill and Trestle tiers
+- A researcher writes sourced facts; the module never invents a relative
+- Builds a pack per property and writes the findings back
+
+**Human checkpoint.**
+
+- Every claim in the research layer carries a URL and a verbatim quote
+
+**Outputs.** Pack PDF per property, Workbook plus a redacted demo twin, CRM write-back
+
+**Touches.** SmartSkip, Tracerfy, Trestle, OpenRouter / Gemini, DataSift API
+
+> **The trap this exists to avoid.** Every record changed once researched: three of the top five owners were dead and the team had been calling all three by name. Audio models also invent speech on short call recordings (660 words from 11 seconds), so a transcript counts only at 3 words a second or less of real audio.
+
+### Deal Analysis
+
+*What it is worth, what it costs, what you can pay*
+
+13 agents.
+
+#### Post-Walkthrough Package (division lead)
+
+`src/post_walkthrough.py` &middot; phase 1 &middot; live
+
+The one workbook you build the hour after walking a house. Nine sheets, Sift-linked.
+
+**Trigger.** python src/post_walkthrough.py after a walk.
+
+**Does.**
+
+- Loads the LIVE Sift lead as the anchor, not just the address
+- Spins comps, rehab, walk findings, exits, and the dispo stack together
+- Renders Overview, Exit Strats, Comps, Active-Pending, Repair Logic, Repair Numbers, Buyer Targets, Outreach, Lender Analysis
+
+**Human checkpoint.**
+
+- Walkthrough JSON is the human layer and overrides the live record
+
+**Outputs.** 9-sheet branded Excel workbook
+
+**Touches.** Sift Deal Room API, SiftMap, Zillow, openpyxl
+
+> **The trap this exists to avoid.** Exact numbers, not ranges, in the cells. A wide band is not an answer you can take to a seller or a buyer. The lo/hi still drives the math and surfaces as one 'If it moves' sensitivity line.
+
+#### Comp Package Engine
+
+`src/comp_package.py, src/zillow_market_api.py` &middot; phase 1 &middot; live
+
+Boundary-filtered comps and dual-track ARV for a subject property.
+
+**Trigger.** python src/comp_package.py with a subject address.
+
+**Does.**
+
+- Band-partitioned Zillow /search pull to beat the 41-row cap
+- Boundary clip by bbox AND street regex, both applied
+- Condition bucketing by sold price over Zestimate ratio
+- Dual-track ARV, then MAO math and buyer matching
+
+**Human checkpoint.**
+
+- County card overrides for beds, baths, sqft, year built
+
+**Outputs.** Branded comp workbook
+
+**Touches.** OpenWeb Ninja /search, Zillow
+
+> **The trap this exists to avoid.** The API contract moved. similar-sale-homes is retired and 404s. Every /search caps at 41 rows with totalPages=1, so you partition by price band and recursively split saturated bands, 50 to 80 calls to recover 2 to 3 years. price_min and price_max are SILENTLY ignored, so always check the echoed parameters object.
+
+#### Dual-Track ARV Engine
+
+`src/post_walkthrough.py, src/comp_package.py` &middot; phase 1 &middot; live
+
+Prices the subject inside its own bedroom band and labels reconfig upside separately.
+
+**Trigger.** Called by the comp package and post-walkthrough.
+
+**Does.**
+
+- Base ARV from same-bed renovated comps only, clamped to that band's median
+- Reconfig-to-more-beds rides as a labeled UPSIDE track capped at band p75
+- tight_arv applies recency, size window, and same-bed rules for underwriting
+- refine_bucket demotes investor buys that Zillow re-anchored to look renovated
+
+**Human checkpoint.**
+
+- Reconfig upside credited only after a walkthrough verifies the layout converts
+
+**Outputs.** Base ARV, Upside ARV, Basis string
+
+**Touches.** comp_package.py
+
+> **The trap this exists to avoid.** A subject below the comp set's bed count lives in a LOWER value band than per-bedroom adjustments imply. In 37914, renovated 2-beds capped at $215-280K while same-size 3/2s ran $285-385K. Extra square footage cannot escape the band.
+
+#### Rehab Estimator
+
+`src/rehab_estimator.py, src/sku_pricing.py` &middot; phase 1 &middot; live
+
+Room-by-room, four-tier scope priced off the locked Knox material list.
+
+**Trigger.** Deal analysis or post-walkthrough.
+
+**Does.**
+
+- SKU baskets per category from the locked master material list
+- Engine labor per category, regional multiplier on LABOR ONLY
+- Any missing SKU drops the whole category back to the legacy table with a loud log
+- Self-perform estimate alongside the GC grand total
+
+**Human checkpoint.**
+
+- Signed bids replace estimates and collapse the range
+
+**Outputs.** Itemized scope, 4-scenario matrix, Self-perform estimate
+
+**Touches.** Locked material list, Home Depot SKU pricing
+
+> **The trap this exists to avoid.** THE DOUBLE-DISCOUNT TRAP. Locked prices are already Knox-local, so applying the 0.88 regional multiplier to materials under-prices by about 12%. The multiplier is labor only in SKU mode, and a test asserts the exact basket math to catch a leak.
+
+#### Master Material List
+
+`src/material_list.py` &middot; phase 1 &middot; live
+
+The frozen, git-tracked price source every Knox estimate reads from.
+
+**Trigger.** Re-locked only when the PM re-approves the list.
+
+**Does.**
+
+- Pulls fresh Knox pricing by zip
+- --lock writes the git-tracked JSON and CSV twins
+- An ordinary re-pull refreshes cache but can never drift prices into estimates
+
+**Human checkpoint.**
+
+- PM re-approval required to re-lock
+
+**Outputs.** master_materials_locked_37914.json, CSV twin
+
+**Touches.** Home Depot, SERP pull
+
+> **The trap this exists to avoid.** Only --lock writes to data/. That single rule is what stops a casual re-pull from silently changing every estimate in flight. Current lock: 94 of 94 search keys priced, 88 SKU rows plus 12 allowances.
+
+#### Vendor Directory Builder
+
+`skills/vendor-directory-builder/SKILL.md` &middot; phase 1 &middot; live
+
+Community-sourced, record-verified contractor and vendor directory for a market. Answers who does the work after the repair number is set.
+
+**Trigger.** New market, a crew gap, a specialty trade to fill, or a found list to vet. The vendor-directory-builder skill.
+
+**Does.**
+
+- Mine the local investor community by in-group search per trade, harvest self-promoters and recommendation-thread comments
+- Verify every name against public records: phone provenance, service area, rating with review count, license board, BBB
+- Geography sweep, gap analysis against the trade taxonomy, then the niche gatekeeper layer (utility districts, permit offices)
+- Render the filterable Excel directory with build_directory.py: Directory, Top Picks, Methodology, reference tabs
+
+**Human checkpoint.**
+
+- Logged-in browser for private Facebook groups
+- Vetting calls and the small-test-job filter before trusting a low-confidence row
+
+**Outputs.** Filterable Excel directory with top picks and a serves-market flag on every row
+
+**Touches.** Facebook group search, State license boards, BBB, openpyxl
+
+> **The trap this exists to avoid.** Service area is the most common silent failure: 5 of the first Knox list served other counties entirely. And AI-found lists carry wrong phone numbers, so every unverifiable row ships as UNVERIFIED rather than deleted or invented. Never fabricate a field; someone will dial it.
+
+#### Contractor Call Sheet
+
+`skills/contractor-call-sheet/SKILL.md` &middot; phase 1 &middot; live
+
+Turn a finished vendor directory into same-day outreach: a printable call sheet plus personalized first-contact drafts.
+
+**Trigger.** A finished directory and the words who do I call first. The contractor-call-sheet skill.
+
+**Does.**
+
+- Build the one-page call sheet from the directory Excel with build_call_sheet.py, top picks grouped by trade
+- Flag cross-validated call-first providers in a banner
+- Draft a personalized text and voicemail per top pick from that provider's own row, varied so no two read alike
+- Attach the six vetting-call questions for whoever dials
+
+**Human checkpoint.**
+
+- A person sends every message. The skill drafts, it never sends.
+
+**Outputs.** Printable HTML call sheet, Per-provider outreach drafts and the vetting-call script
+
+**Touches.** openpyxl
+
+> **The trap this exists to avoid.** The sheet is mechanical so a script builds it; the outreach is judgment so the model drafts it. Merging them into one mail-merge produces the exact spammy sameness the split exists to avoid. They talk to each other.
+
+#### Exit Strategy Engine
+
+`src/post_walkthrough.py` &middot; phase 1 &middot; live
+
+Scores each lane off the conservative ARV and says why each is in or out.
+
+**Trigger.** Post-walkthrough render.
+
+**Does.**
+
+- Scores wholesale assignment, wholetail, flip same-config, flip reconfig, BRRRR
+- Only lanes that clear their gate get a suggestion block
+- Everything ruled out is named in the headline and explained
+- Names the BUYER's exit on the outreach sheet, never our hold
+
+**Human checkpoint.**
+
+- Reconfig lane gated on walkthrough verification
+
+**Outputs.** Ranked exit lanes with rationale
+
+**Touches.** post_walkthrough.py
+
+> **The trap this exists to avoid.** The template's six exit slots were placeholders, not a quota. If nothing clears its gate, the two closest misses render under an explicit banner rather than fabricating a recommendation. Novation is not modelled at all, it was removed rather than hidden.
+
+#### Deal Analyzer
+
+`src/deal_analyzer.py` &middot; phase 1 &middot; live
+
+MAO, ROI, and financing scenarios across multiple loan structures.
+
+**Trigger.** analyze-deal command or the deal-analyzer plugin.
+
+**Does.**
+
+- 75% and 70% MAO rules
+- Hard money at 12%, conventional at 7%, 2 points, 2.5% closing
+- Exit strategy comparison
+
+**Human checkpoint.**
+
+- Operator sets target margin
+
+**Outputs.** MAO, ROI, Financing comparison
+
+**Touches.** deal_analyzer.py
+
+> **The trap this exists to avoid.** Transfer tax defaults are Tennessee-specific. The skill ships a state reference table because shipping one state's number as universal is how community users get burned.
+
+#### Lender Analysis
+
+`src/post_walkthrough.py` &middot; phase 1 &middot; live
+
+Bakes private money into every resale lane and renders the lender's own view.
+
+**Trigger.** A financing block present in the walkthrough JSON.
+
+**Does.**
+
+- Profit goes net of debt: points plus interest over the lane's hold
+- Sources and uses, draw schedule, loan-to-ARV, equity cushion
+- Band-floor stress case and payoff waterfall at the point ARV
+- Lender's annualized yield
+
+**Human checkpoint.**
+
+- Assumed terms paint a red placeholder banner until real terms land
+
+**Outputs.** Lender Analysis sheet
+
+**Touches.** post_walkthrough.py
+
+> **The trap this exists to avoid.** ROI reads as cash-on-cash when financed, and a financed flip must ALSO clear the $10K wholesale floor to stay suggested. No financing block means the old cash-basis math, byte identical.
+
+#### Lot Split Underwriter
+
+`src/lot_split_underwrite.py` &middot; phase 2 &middot; live
+
+Underwrites splitting a parcel as its own exit lane.
+
+**Trigger.** python src/lot_split_underwrite.py
+
+**Does.**
+
+- Parcel and zoning review
+- Split scenario economics
+- Comparison against the standard lanes
+
+**Human checkpoint.**
+
+- Zoning confirmation before relying on it
+
+**Outputs.** Lot split underwrite workbook
+
+**Touches.** Knox Tax API, SiftMap
+
+> **The trap this exists to avoid.** Run on two live deals. Treat the split as an exit lane that competes with the others, not as free upside stacked on top.
+
+#### Lender Package Builder
+
+`src/lender_package.py` &middot; phase 1 &middot; live
+
+The 8-piece set handed to a private money lender to fund one named property.
+
+**Trigger.** python src/lender_package.py --spec deals/<deal>.json
+
+**Does.**
+
+- Mirrors The Repair Estimator block for block, inputs inline beside the answers
+- Writes 240+ live Excel formulas off workbook defined names, including the prose
+- Rolls the 65-line repair grid up into the front page
+- Sizes every column from what a cell will DISPLAY, not what it holds
+
+**Human checkpoint.**
+
+- Reviews and edits the blue input cells directly in Excel
+- Negotiates the loan amount, the one input that sets the deal
+
+**Outputs.** The Private Lender Package.xlsx, 8 tabs
+
+**Touches.** openpyxl, deal spec JSON
+
+> **The trap this exists to avoid.** Read the workbook back before regenerating over it. Ty reviews in Excel and edits inputs directly; on one review he made three changes and mentioned one. Also: DayOne = Loan minus RehabTotal is derived, never typed, because typing the closing advance let financed closing costs land in the draw tranche and the holdback disagreed with the repair budget by $1,608.
+
+#### Lender Document Set
+
+`src/lender_docs.py` &middot; phase 1 &middot; live
+
+Cover letter, promissory note, personal guarantee, closing instructions, insurance request, investor sheet, satisfaction and release.
+
+**Trigger.** python src/lender_docs.py --spec deals/<deal>.json
+
+**Does.**
+
+- Picks exactly one side of every either/or branch from the spec
+- Renders one signature block per company member on the guarantee
+- Re-reads every rendered document and raises if the internal notes block survived
+
+**Human checkpoint.**
+
+- Signs. A closing attorney draws the deed of trust on their own form.
+
+**Outputs.** 7 .docx documents, numbered 1 and 3 through 8
+
+**Touches.** python-docx, CMO Stack voice guide
+
+> **The trap this exists to avoid.** The templates carry a NOTES FOR CLAUDE block that must never reach a lender, so build_all re-reads each rendered file and raises rather than trusting the code path. main exits 1 if fewer than 7 documents write, and stale files from a previous numbering are deleted, so a folder cannot grow a second copy of everything.
+
+### Dispo & Buyers
+
+*Deed-verified buyers before you need them*
+
+10 agents.
+
+#### Deal Package Generator (division lead)
+
+`src/deal_package.py` &middot; phase 1 &middot; live
+
+Six-sheet workbook that turns analysis into a dial sheet somebody can work today.
+
+**Trigger.** python src/deal_package.py --spec
+
+**Does.**
+
+- Deal Summary, Dial Sheet, Deal Math, Comps, Pitch and Sequence, Sources and Audit
+- Per-buyer open and target prices, tuned to each buyer's model
+- 30-second script, objection answers, day-by-day plan
+
+**Human checkpoint.**
+
+- Operator approves the ask prices
+
+**Outputs.** 6-sheet branded workbook
+
+**Touches.** openpyxl, buyer_sweep output
+
+> **The trap this exists to avoid.** Per-buyer ask prices are tuned to each buyer's model, self-performer above landlord above out-of-state. One blast number leaves money on the table and burns credibility.
+
+#### Buyer Sweep
+
+`src/buyer_sweep.py` &middot; phase 1 &middot; live
+
+Deed-level sweep of who actually buys in a zip, ranked by fit.
+
+**Trigger.** python src/buyer_sweep.py --zip
+
+**Does.**
+
+- Pulls the sold universe, filters to the investor band
+- Per sale runs SiftMap autocomplete then get_detail for the DEED sale history
+- Aggregates buyer name, cash flag, portfolio size, equity, mailing
+- Ranks by purchase count, band fit, and portfolio
+
+**Human checkpoint.** None. Runs unattended.
+
+**Outputs.** Ranked buyer list JSON and CSV
+
+**Touches.** SiftMap, Zillow /search, Enformion BusinessV2
+
+> **The trap this exists to avoid.** THE REVERSE-ADDRESS MOVE. When an LLC's mailing address is a residence, reverse-look up that address and take the human owner as the principal. Live run resolved 175 of 193 sales and unmasked two LLCs to the people living at their mailing addresses, one of them a family-named LLC.
+
+#### Dispo Skiptrace
+
+`src/dispo_skiptrace.py` &middot; phase 1 &middot; live
+
+Three-source waterfall with a built-in audit matrix showing which source missed.
+
+**Trigger.** After the buyer sweep ranks a list.
+
+**Does.**
+
+- Source 1 Enformion person search, address-anchored
+- Source 2 Tracerfy batch at two cents a record
+- Source 3 web people-search cross-check, merged in manually
+- Dedupes the union, Trestle-scores every unique number
+
+**Human checkpoint.**
+
+- Web source is manual because aggregators bot-block
+
+**Outputs.** Cross-confirmed contact list, Per-contact source audit
+
+**Touches.** Enformion, Tracerfy, Trestle IQ
+
+> **The trap this exists to avoid.** The audit matrix answers the question everyone forgets to ask: did we skip-trace this landline at BOTH Tracerfy and Enformion? Single-source numbers get flagged so you know what you are actually dialing.
+
+#### Buyer Prospector
+
+`skills/buyer-prospector` &middot; phase 1 &middot; live
+
+Builds a county buyers list from a nationwide database of active buyers.
+
+**Trigger.** Any new market.
+
+**Does.**
+
+- Pulls buyers for the county from 84K-plus records
+- Categorizes LLCs, trusts, and corporations
+- Researches decision makers for skip tracing across 50-state SOS lookups
+
+**Human checkpoint.**
+
+- Reviews entity research before spending on skip trace
+
+**Outputs.** County buyers workbook
+
+**Touches.** Nationwide buyer database, State SOS sites
+
+> **The trap this exists to avoid.** This is the cold-start answer for a new market. The buyer sweep needs deed history you do not have yet; the prospector gives you a list on day one.
+
+#### Dispo Buyer Registry
+
+`src/dispo_buyers.py` &middot; phase 1 &middot; live
+
+Turns a county's investor transactions into a deduped registry of PEOPLE with scored phones, so a deal blast has somebody real to text.
+
+**Trigger.** python src/dispo_buyers.py --phase sweep|recent|hydrate|aggregate|unmask|principals|skipinput|phones|crm-phones|profiles|score
+
+**Does.**
+
+- Sweeps SiftMap by investor transaction type, collapsed by owner for the hold types
+- Hydrates each property for the deed owner, since search rows carry no name
+- Dedupes by mailing address with a suite guard, logging every merge AND every refusal
+- Unmasks LLC principals free by reverse-address, then pays Enformion only for what that missed
+- Harvests phones the CRM already holds, then Trestle-scores and writes dial tiers
+
+**Human checkpoint.**
+
+- Approves the paid Enformion and SmartSkip passes before they bill
+- Reads the agent-titled principals, which are often the company's lawyer
+
+**Outputs.** registry.json, buyer_profiles.json, phones.json, phone_scores.json, 5-sheet buyer workbook
+
+**Touches.** SiftMap, Enformion BusinessV2, SmartSkip, Tracerfy, TrestleIQ, reisift
+
+> **The trap this exists to avoid.** THE RENTAL LABEL LAGS OVER A YEAR. SiftMap cannot call a purchase a rental until it observes the property being rented, so a recent buy-and-hold sits under 'pending'. Requiring txn_types == {'rental'} took 111 landlords to ZERO the moment recency was applied. The rule is 'any rental history AND holds at least as many as it exits'.
+
+#### Dispo Deal Blast
+
+`src/sms_agent/dispo_campaign.py` &middot; phase 1 &middot; live
+
+Texts one named deal to the buyers whose own deed history says they buy at that price, then hands every reply to a human.
+
+**Trigger.** python src/sms_agent/dispo_campaign.py --deal deals/<id>.json --queue, then cli.py release --touch 1
+
+**Does.**
+
+- Builds the cohort from verified registry data, not the search's one representative phone
+- Matches each buyer's real price band against the ask, asymmetrically
+- Renders copy per cohort and AUDITS every message, never a sample
+- Stages as HELD and writes the deal onto each thread so the responder can answer
+- Release is a separate, deliberate step
+
+**Human checkpoint.**
+
+- Owns release: staging sends nothing
+- Sends the address, photos and lockbox code; the agent only offers them
+
+**Outputs.** Held outbox rows, A Slack launch notice naming what was staged
+
+**Touches.** reisift, smrtPhone, Slack
+
+> **The trap this exists to avoid.** THE PRICE BAND IS ASYMMETRIC. Above a buyer's band is affordability; below it is only interest. A symmetric 0.35 tolerance kept 68 of 199 buyers at a $75,000 ask and dropped people for being too BIG, which is the wrong reason to skip anyone. The floor is divided by a multiple while the ceiling keeps the tolerance.
+
+#### Dispo Buyer Phonebook
+
+`src/sms_agent/dispo_phonebook.py` &middot; phase 1 &middot; live
+
+Converts a finished blast into a durable asset: verified buyers grouped and summarised, and the people who asked out suppressed forever.
+
+**Trigger.** python -m sms_agent.dispo_phonebook --commit
+
+**Does.**
+
+- Classifies every recipient from what they actually typed, never a hand-kept list
+- Suppresses opt-outs, wrong numbers and hard nos, and marks wrong numbers WRONG in the CRM
+- Writes a pinned per-buyer summary a caller can read before dialling
+- Leaves non-responders alone so the next blast can reach them
+
+**Human checkpoint.**
+
+- Reads the VERIFY flag where a principal came back with an agent title
+
+**Outputs.** Suppression rows, Pinned CRM notes, Verified-buyer tags
+
+**Touches.** reisift
+
+> **The trap this exists to avoid.** SCOPE IT TO THE SENDING POOL. Both programs share one database, so an unscoped pass classified 947 recipients including the acquisitions traffic, and committing it would have suppressed SELLER numbers as a side effect of a dispo cleanup. The pools are disjoint, so the sending number is the program.
+
+#### Dispo Sequential Flow
+
+`src/dispo_flow.py` &middot; phase 1 &middot; live
+
+The CRM lanes a buyer moves through, mirroring the acquisitions preset system so nobody is texted twice.
+
+**Trigger.** python src/dispo_flow.py --phase infra|clean --commit
+
+**Does.**
+
+- Creates the buyer list, tags and filter presets
+- Gates progression on the dialer's OWN counters, not on flow tags
+- Rebuilds the folder from scratch and reads every preset back
+
+**Human checkpoint.**
+
+- Approves deleting and rebuilding a preset folder
+
+**Outputs.** A DataSift list, tags and the sequential presets
+
+**Touches.** reisift
+
+> **The trap this exists to avoid.** COUNTER-DRIVEN, NOT TAG-DRIVEN. A preset that gates calling behind a 'texted' tag shows zero forever and reads as broken. Progression rides sms_attempts and predictivecall_attempts, which the dialer increments itself.
+
+#### Deal Buyer Match
+
+`src/deal_buyer_match.py, src/deal_buyer_dp.py` &middot; phase 1 &middot; live
+
+Finds the top ten buyers for one contracted house and the number that reaches each one's decision maker.
+
+**Trigger.** python src/deal_buyer_match.py --slug <deal> --phase all, then python src/deal_buyer_dp.py --phase crm | dossier | trace | verify | export
+
+**Does.**
+
+- Polygon sweep of comps and investor buys around the subject
+- Recovers unlabeled flips from the deed chain
+- One slot per operator, and three or more lifetime purchases
+- Trestle Real Contact tests each number against a named decision maker
+
+**Human checkpoint.**
+
+- Decision makers come from a researched file, never the module
+
+**Outputs.** Buyers workbook, Dial sheet CSV
+
+**Touches.** SiftMap, SmartSkip, Trestle Real Contact
+
+> **The trap this exists to avoid.** The buyer registry prices an exited flipper at the EXIT, the sale to the retail homebuyer, so its price band is a resale band. One operator read a $307,500 median on a book of $100,000 to $200,000 buys. The match recovers the buy from the deed before the exit.
+
+#### Builder Land Desk
+
+`src/builder_land.py` &middot; phase 2 &middot; gated
+
+Reads each builder's buy box off their own deeds, then matches the lots on the ground to the builders who would buy them.
+
+**Trigger.** python src/builder_land.py --market <name> --fips <codes> --phase all
+
+**Does.**
+
+- Counts purchases by deed date, so a 13-lot takedown is one purchase
+- Buy box: where they buy, lot size, price paid, what they build and sell
+- A lot fits a builder when one of their own lots sits nearby at a size inside their range
+- Offer is what the fitting builders paid nearby, minus the fee
+
+**Human checkpoint.**
+
+- Decides which market to work and calls the builders
+
+**Outputs.** Builder Land Desk workbook, Lot mail list
+
+**Touches.** opensearch MCP, SiftMap
+
+> **The trap this exists to avoid.** A lot wholesaled at 1.5 times before the build reads as the builder's purchase plus the new-home sale unless the exit is priced like a finished house, which misattributes the builder and hides the middleman. Knox and Blount came out yes; Union County OH no, because its repeat buyers are production builders.
+
+### Outreach & Marketing
+
+*The seller should feel found, not targeted*
+
+13 agents.
+
+#### Two-Way SMS Agent (division lead)
+
+`src/sms_agent/` &middot; phase 1 &middot; live
+
+Sends outreach, reads replies live on smrtPhone and Smarter Contact, classifies them, writes back to the CRM, hands positives to a prospector.
+
+**Trigger.** smrtPhone smsIncoming webhook, the Smarter Contact reply webhook, or a seeded outreach touch.
+
+**Does.**
+
+- Receiver ingests the webhook into a SQLite event log
+- Classifier decides intent, opt-outs decided by regex and never by a model
+- Responder drafts inside a hard output validator
+- CRM writes phone status, opt-outs, and lead status; Slack gets the handoff
+
+**Human checkpoint.**
+
+- Runs live at autonomy phase 2: classifies, writes back and hands off. The seller auto-campaign stays switched off.
+
+**Outputs.** Classified replies, CRM writes, Slack handoffs
+
+**Touches.** smrtPhone API, Smarter Contact, DataSift API, Slack, Fly.io, SQLite
+
+> **The trap this exists to avoid.** DataSift webhooks CANNOT see an inbound text. Webhooks shipped as a sequence ACTION, so all ten triggers are CRM state changes. smrtPhone's smsIncoming is the only inbound leg. That single constraint shapes the entire architecture.
+
+#### Reply Classifier
+
+`src/sms_agent/respond.py` &middot; phase 2 &middot; gated
+
+Reads an inbound text and decides what it means, with a confidence floor.
+
+**Trigger.** Every inbound SMS.
+
+**Does.**
+
+- Regex rules handle opt-outs and obvious cases
+- Model handles the rest at a 0.80 confidence floor
+- Below the floor it drafts for a human instead of paging a prospector
+
+**Human checkpoint.**
+
+- Anything under the confidence floor
+
+**Outputs.** Intent label, Confidence, Soft vs hard no
+
+**Touches.** Claude, smrtPhone
+
+> **The trap this exists to avoid.** THE REPLY PATH COULD NOT TELL A BUYER THREAD FROM A SELLER THREAD. The buyer profile, the dispo playbook and the deal facts block all existed and were tested, but nothing in the live path passed program, so a buyer asking 'how much?' got the SELLER playbook and a validator that blocks every dollar figure. The signal is the number the reply arrived ON: the pools are disjoint, so sender_pool.program_for() decides it with nothing to keep in sync.
+
+#### Reply Drafter
+
+`src/sms_agent/respond.py` &middot; phase 3 &middot; planned
+
+Writes the reply in a human voice, inside a validator that hard-blocks anything risky.
+
+**Trigger.** A classified reply that warrants a response.
+
+**Does.**
+
+- Given almost nothing on purpose: first name, street line, city, county
+- Signs as the record's assigned human, resolved from the assignee uuid
+- Validator blocks dollar amounts, list names, links, zips, two questions, or self-identifying as automated
+
+**Human checkpoint.**
+
+- Phase 3 holds every draft in Slack for approval
+
+**Outputs.** Draft reply
+
+**Touches.** Claude, playbook.md
+
+> **The trap this exists to avoid.** A DISPO AGENT MAY QUOTE EXACTLY ONE FIGURE: the approved asking price on the deal sheet. An invented number is blocked, and the contract price is blocked without the audit ever being told what it is, because every money token must equal the approved price. On an address-forward deal the address is whitelisted the same way; the lockbox code is never in the facts at all, so the agent can offer it but cannot give it.
+
+#### Text Touch Builder
+
+`skills/text-touch-builder` &middot; phase 1 &middot; live
+
+Four pre-call SMS touches per hot record, varied like cold email so nothing looks blasted.
+
+**Trigger.** A ready-to-call list export.
+
+**Does.**
+
+- Renders identity check, drip, soft ask, and breakup touches
+- Rotates copy variants across the pools
+- Writes back into Text Touch 1-4 custom fields via CSV re-import
+
+**Human checkpoint.**
+
+- Caller copies the next touch into the dialer before calling
+
+**Outputs.** Four touches per record in DataSift
+
+**Touches.** DataSift Add-Data, text-touch-builder skill
+
+> **The trap this exists to avoid.** clean_first('E A Whitfield') took the first token of length 2 or more, walked past the initials, and greeted people by their SURNAME. The fix is positional: only tokens BEFORE the surname can supply a first name. This bug shipped in two places and was fixed in both.
+
+#### MMS Screenshot Sender
+
+`src/mms_sender.py` &middot; phase 2 &middot; gated
+
+Texts each foreclosure homeowner the actual auction notice image.
+
+**Trigger.** Operator go, per campaign.
+
+**Does.**
+
+- Text goes via the Compose Message modal
+- Image goes via the conversation reply box inside main-iframe
+- File set on a hidden input, send arrow clicked by bounding box position
+
+**Human checkpoint.**
+
+- PAUSED pre-send. Requires explicit operator GO.
+
+**Outputs.** Sent MMS with proof-of-source image
+
+**Touches.** smrtPhone web app, Playwright, Dropbox
+
+> **The trap this exists to avoid.** smrtPhone has an API for TEXT but not for MMS, which is what forced the browser route. Replies carry no image, so the API is the right transport for conversation and the browser is only for the original screenshot send.
+
+#### Obituary Mail Campaign
+
+`src/obituary_campaign.py, src/obituary_mail_export.py` &middot; phase 2 &middot; live
+
+Builds and validates the direct mail drop for the obituary list.
+
+**Trigger.** After the obituary opportunity ranking.
+
+**Does.**
+
+- Export, validate addresses, produce the mail file
+
+**Human checkpoint.**
+
+- Operator approves the drop
+
+**Outputs.** Validated mail export
+
+**Touches.** DataSift API, Address validation
+
+> **The trap this exists to avoid.** Never name the list. Foreclosure, probate, inherited, tax, lien: none of those words appear in outreach copy, because the seller should feel found, not targeted.
+
+#### Caller Reputation Monitor
+
+`skills/caller-reputation-monitor` &middot; phase 1 &middot; live
+
+Keeps outbound numbers out of Spam Likely by watching your own call outcomes.
+
+**Trigger.** Daily.
+
+**Does.**
+
+- Monitors every caller ID by answer rate, call length, and short calls
+- Runs a warm-up, active, watch, rest, retire lifecycle with dial caps
+- Writes an HTML health dashboard and a recommended dial pool
+
+**Human checkpoint.**
+
+- Walks the operator through free carrier registration
+
+**Outputs.** Number health dashboard, Recommended dial pool
+
+**Touches.** smrtPhone, Carrier registries
+
+> **The trap this exists to avoid.** The phone number is the asset. Every autonomy decision in the SMS agent exists to protect it.
+
+#### Sender Pool Manager
+
+`src/sms_agent/sender_pool.py` &middot; phase 2 &middot; gated
+
+Owner-bound number pool so a callback reaches the person who claimed to text.
+
+**Trigger.** Every outbound send.
+
+**Does.**
+
+- 18 numbers at 25 a day, 450 a day total
+- Prefers the assigned caller's own numbers
+- Sticky number per conversation wins over owner preference
+- Quiet hours 8am-9pm recipient-local with up to 30 minutes of wake jitter
+- Pins a program to ONE pool; a pinned pool that is missing returns nothing rather than falling back
+- Applies per-pool daily caps and per-pool send gaps, so one program's pacing never moves another's
+
+**Human checkpoint.** None. Runs unattended.
+
+**Outputs.** Assigned sender number
+
+**Touches.** smrtPhone, sms_numbers.json
+
+> **The trap this exists to avoid.** THE POOL FELL BACK TO THE SELLER NUMBERS. pool() returned every number in the account when the owner had no pool of their own, so a dispo blast spread across all 24 numbers including the 19 acquisitions lines. Three things break at once: the 10DLC cap is counted per database so the other program's budget is spent invisibly, one number carries two programs, and a callback rings the wrong flow. No numbers is a loud failure; the seller pool is a silent one.
+
+#### Obituary Mail Export
+
+`src/obituary_mail_export.py` &middot; phase 2 &middot; gated
+
+Turns the ranked obituary opportunity list into a validated mail file.
+
+**Trigger.** After obituary_opportunity ranks the list.
+
+**Does.**
+
+- Pulls the ranked records
+- Validates deliverable mailing addresses
+- Writes the mail-house export
+
+**Human checkpoint.**
+
+- Approves the drop and the spend
+
+**Outputs.** Mail export CSV
+
+**Touches.** DataSift API, Smarty
+
+> **The trap this exists to avoid.** Every row ships a must-verify note. Whether the person who died is the owner of record is NOT verifiable from CRM data, and the spouse-obituary trap is live on every single row: an obituary on the record does not mean the OWNER died.
+
+#### Smarter Contact Reply Agent
+
+`src/sms_agent/sc_inbound.py` &middot; phase 1 &middot; live
+
+Reads every Smarter Contact reply the moment it lands, files the disposition in DataSift and answers the who-is-this questions, so a human only takes the interested owners.
+
+**Trigger.** Smarter Contact reply webhook to /hooks/smartercontact on the Fly box.
+
+**Does.**
+
+- Checks the bearer token, stores the reply in the event log, then claims it once so a retry is never processed twice
+- Opt-outs, insults and a bare no are decided by rules before any model reads the text
+- Writes phone status, the DNC list, Do Not Market and lead status on every record carrying the number
+- Answers who and how questions from fixed pools, once per thread, then hands off
+- An interested owner gets NO reply: Slack tags the prospector with a link that opens the thread
+
+**Human checkpoint.**
+
+- Prospector takes every interested owner by phone
+- Auto reply and auto label each sit behind their own switch
+
+**Outputs.** DataSift dispositions, Smarter Contact labels and DNC, Slack handoffs
+
+**Touches.** Smarter Contact, DataSift API, Zillow, Slack, Fly.io
+
+> **The trap this exists to avoid.** SMARTER CONTACT LABELS NEVER REACH DATASIFT ON THEIR OWN. Its integration only sends on a manual Export to CRM, so 14 of 17 not-interested records read blank until the agent set the status itself. The record comes from the contact's own APN field, not the phone map, which pointed somewhere else on 9 of 74 threads.
+
+#### Smarter Contact Campaign Builder
+
+`src/smarter_contact_launch.py` &middot; phase 1 &middot; live
+
+Builds the templates and groups and schedules each touch in Smarter Contact, split by time zone and held to the account's approved throughput.
+
+**Trigger.** python src/smarter_contact_launch.py --phase campaign | touch (dry by default; --commit --schedule sends)
+
+**Does.**
+
+- Templates, labels, quick replies and workflows are created and read back by smarter_contact_setup.py
+- Groups split by the phone's area code, because the send window runs on the account's Eastern clock
+- Follow-ups go out as standard campaigns on audited groups, never as Smarter Contact follow-up drafts
+- Refuses more than 6 texts a minute per campaign
+
+**Human checkpoint.**
+
+- Owns the go on every scheduled campaign
+
+**Outputs.** Scheduled Smarter Contact campaigns
+
+**Touches.** Smarter Contact
+
+> **The trap this exists to avoid.** A follow-up draft snapshots its recipients into a hidden group nobody can edit, and Smarter Contact has no call to add a contact to a campaign, so a removal from a sending campaign cannot be undone. Touch 2 and 3 are built as plain campaigns on groups the audit has already cleaned.
+
+#### Pre-Send Audit
+
+`src/smarter_contact_audit.py` &middot; phase 1 &middot; live
+
+Rebuilds who a touch would text from first principles and drops anyone a do-not source says to leave alone.
+
+**Trigger.** python src/smarter_contact_audit.py before every follow-up; smarter_contact_remaining.py before a first touch.
+
+**Does.**
+
+- The previous touch's group minus everyone who replied by text or call
+- Checks Smarter Contact suppressions, the agent's suppression table, Sift status, the DNC list, the Do Not Market tag and the registry do-not-call flag
+- Checks Zillow agent listings, because Sift's MLS field lags
+- Writes the cleaned group the touch phase reads
+
+**Human checkpoint.**
+
+- Reviews the flagged counts before the touch is scheduled
+
+**Outputs.** Audited groups, Flag counts by reason
+
+**Touches.** Smarter Contact, DataSift API, Zillow
+
+> **The trap this exists to avoid.** The first Priority 1 push never filtered Sift status or DNC. The Touch 2 audit flagged 478 of 1,054 recipients (146 sold, 157 not interested, 102 on the do-not-call registry) and every one of them had already received Touch 1.
+
+#### Deliverability Readout
+
+`src/sms_agent/deliverability.py` &middot; phase 1 &middot; live
+
+Answers whether the texts actually reached a handset, per pool and per number, from the raw event log.
+
+**Trigger.** python src/sms_agent/cli.py deliverability [--days 30 --full]
+
+**Does.**
+
+- Reads the receiver's delivery callbacks, never the send path
+- Share of sends that got a final carrier verdict
+- What the carrier said when it refused
+- Whether replies per send are trending down
+
+**Human checkpoint.**
+
+- Decides whether to rest or replace a number
+
+**Outputs.** Verdict by pool and by number
+
+**Touches.** SQLite event log, smrtPhone
+
+> **The trap this exists to avoid.** Sent means handed to the carrier, not delivered. Only delivered and undelivered are verdicts, and until the receiver dedupe fix shipped it kept only the first callback per message, so every rate it reports for that period is a floor.
+
+### CRM Operations
+
+*Get it into DataSift without silently losing half of it*
+
+9 agents.
+
+#### Upload Orchestrator (division lead)
+
+`src/datasift_api_upload.py` &middot; phase 1 &middot; live
+
+Owns the path from finished CSV to live, tagged, enriched CRM records.
+
+**Trigger.** --upload-datasift on any run.
+
+**Does.**
+
+- Mints a JWT and re-mints every 30 minutes so long runs cannot die on expiry
+- Upserts by address so re-runs never duplicate
+- Fires enrich and skip trace after upload
+- Verifies one record read-back before releasing the file
+
+**Human checkpoint.**
+
+- Always upload one record and read it back first
+
+**Outputs.** Live CRM records
+
+**Touches.** DataSift API, Playwright
+
+> **The trap this exists to avoid.** Four traps that each fail silently. Tags must be an ARRAY or you create one tag literally named the whole comma string. A select field needs the OPTION'S UUID, not its label. Entity owners cannot have a blank first_name, and omitting a key is not the same as sending empty. notes on the property payload returns 200 and is discarded.
+
+#### API Uploader
+
+`src/datasift_api_upload.py` &middot; phase 1 &middot; live
+
+Pushes records entirely over the API, no browser.
+
+**Trigger.** python src/datasift_api_upload.py --commit
+
+**Does.**
+
+- POST /property/ upserts by address
+- Custom fields PATCH separately by field uuid
+- Notes posted separately from the property payload
+- Lists accumulate rather than overwrite
+
+**Human checkpoint.**
+
+- --limit 1 verification run is mandatory
+
+**Outputs.** Created and updated records
+
+**Touches.** DataSift internal API
+
+> **The trap this exists to avoid.** The Open API key CANNOT do this job. Custom fields do not exist anywhere in its 93-route surface and every write 401s. Only the minted user JWT reaches /api/internal/ where they do.
+
+#### Schema Setup
+
+`src/datasift_schema_setup.py` &middot; phase 1 &middot; live
+
+Creates custom fields, select options, and lists. Idempotent, dry-run by default.
+
+**Trigger.** python src/datasift_schema_setup.py --commit
+
+**Does.**
+
+- Creates the field structure
+- Select fields require options in the same POST
+- Safe to re-run
+
+**Human checkpoint.** None. Runs unattended.
+
+**Outputs.** CRM schema
+
+**Touches.** DataSift internal API
+
+> **The trap this exists to avoid.** Dry run by default is the right posture for anything that mutates an account's schema. Creating a select custom field REQUIRES its options in the same POST.
+
+#### Upload Wizard Driver
+
+`src/datasift_uploader.py` &middot; phase 1 &middot; live
+
+Drives the 5-step browser upload wizard when the API path will not do.
+
+**Trigger.** Legacy or wizard-only flows.
+
+**Does.**
+
+- Setup, tags, upload file, map columns, review and finish
+- Core address fields auto-map; tags, lists, and custom fields need manual mapping
+
+**Human checkpoint.**
+
+- Watches the column mapping step
+
+**Outputs.** Uploaded list
+
+**Touches.** Playwright, DataSift web app
+
+> **The trap this exists to avoid.** Only core address fields reliably auto-map. Tags, Lists, and every enrichment column routinely stay unmapped in step 4, which is exactly how you upload 2,500 records that attach to nothing.
+
+#### Preset Manager
+
+`src/datasift_uploader.py, src/niche_sequential.py` &middot; phase 1 &middot; live
+
+Discovers and updates the filter presets that drive sequential marketing through the web app. For building the whole preset system in a new account, Account Blueprint Apply does it over the API with a read-back per preset.
+
+**Trigger.** manage-presets --all
+
+**Does.**
+
+- Opens the filter panel, scrolls to the bottom, expands Filter Presets
+- Applies the Sold exclusion across all presets
+- Saves with overwrite confirmation
+
+**Human checkpoint.** None. Runs unattended.
+
+**Outputs.** Updated presets
+
+**Touches.** Playwright, DataSift web app
+
+> **The trap this exists to avoid.** The filter panel is a scrollable div, not the viewport, so Playwright's scroll_into_view_if_needed does nothing. You need JS scrollIntoView. And the Beamer NPS iframe blocks ALL pointer events globally until you remove it from the DOM.
+
+#### Sequence Builder
+
+`src/sequence_templates.py` &middot; phase 1 &middot; live
+
+Builds the 26 TCA sequence templates via drag and drop. For cloning the live sequences into a new account, Account Blueprint Apply creates them over the API with board columns and task presets re-linked.
+
+**Trigger.** create-sold-sequence, or sequence template deployment.
+
+**Does.**
+
+- Trigger, condition, then actions
+- Slow mouse drag in 20 incremental steps because cards are draggable=false
+- Duplicate name detection retries with a V2 suffix
+
+**Human checkpoint.** None. Runs unattended.
+
+**Outputs.** Live sequences
+
+**Touches.** Playwright, React DnD
+
+> **The trap this exists to avoid.** Cards carry draggable=false so Playwright's native drag will not work. Mouse down, 20 incremental moves at 50ms, mouse up, with 500ms pauses between phases.
+
+#### SiftMap Sold Tagger
+
+`src/datasift_uploader.py` &middot; phase 1 &middot; live
+
+Tags sold properties so they drop out of active marketing.
+
+**Trigger.** manage-sold --months-back 12
+
+**Does.**
+
+- Searches by city, not county
+- Adds records with tags
+- Sold Property Cleanup sequence fires on the tag
+
+**Human checkpoint.** None. Runs unattended.
+
+**Outputs.** Tagged sold records
+
+**Touches.** Playwright, SiftMap
+
+> **The trap this exists to avoid.** Known limitation, stated out loud: SiftMap filters set values visually but do not trigger a React re-query, so only the 3 to 5 sidebar-visible properties get added per run.
+
+#### Account Blueprint Export
+
+`src/account_blueprint/export.py` &middot; phase 1 &middot; live
+
+Reads the reference account live and writes its whole operating structure to one portable, uuid-free JSON: preset folders and presets, statuses, lists, tags, custom fields, task presets, boards, sequences, SiftMap presets.
+
+**Trigger.** python src/clone_account.py --phase export
+
+**Does.**
+
+- Reads every family through the Open API key, falling back per family to a staff JWT
+- Translates every uuid to a title reference by meaning first, then sniffs whatever is left so no unknown field can smuggle a uuid out
+- Replaces send-sms and send-email actions with a manual marker, drops stale timestamps, prunes 236 tags to the 21 the system uses
+- Refuses its own output on any uuid, phone number or email left in the file
+
+**Human checkpoint.** None. Runs unattended.
+
+**Outputs.** output/blueprints/<label>_<date>.json, the blueprint shipped inside the account-blueprint skill
+
+**Touches.** DataSift internal API, Open API key, map.reisift.io
+
+> **The trap this exists to avoid.** The user listing returns a FLAT ARRAY, not {results}. The previous mirror did r.get('results') on it, swallowed the AttributeError, and shipped an empty user index, so every caller-queue preset in the staging account pointed at the wrong human for a month and nobody saw it. Also: a saved preset stores relative date windows the records search rejects, so a count off the saved filter is an upper bound and is labelled that way.
+
+#### Account Blueprint Apply
+
+`src/account_blueprint/apply.py` &middot; phase 1 &middot; live
+
+Builds any DataSift account in the reference account's structure from the blueprint, in dependency order, with a read-back on every object and a report naming every gap. Stdlib only, so a community member runs it on their own account with their own login.
+
+**Trigger.** python src/clone_account.py --phase plan | apply --commit | verify
+
+**Does.**
+
+- Gate: token email must match the target, its account must differ from the blueprint's source, a live read must agree, or exit 3 before the first write
+- Statuses, lists, tags, custom fields, task presets, boards, presets, sequences, SiftMap, each read back and compared before the next family resolves against it
+- A preset with any unresolvable reference is refused, never narrowed; a sequence whose trigger points at a missing column is skipped
+- First object on a never-used create route is probed and read back before the batch; SiftMap presets land with auto-add OFF
+- verify re-lists every family and counts records per preset, naming the empty tag when a preset matches nothing
+
+**Human checkpoint.**
+
+- Runs plan and reads the configure-by-hand list before --commit
+- Re-adds SMS and email actions with their own integration
+- Sets the assignees the source named by first name
+
+**Outputs.** Live account structure, apply_<target>_<time>.md and .json report, resumable state file
+
+**Touches.** DataSift internal API, target JWT or email + password, map.reisift.io
+
+> **The trap this exists to avoid.** Ready to Call minus its Priority 1 gate is every record with a phone: a different population wearing the same name. So a dropped reference refuses the preset rather than creating a narrower one. The live staging-account run then taught four server rules in a row: a task preset takes exactly one assignee key with the other two absent, create-task-by-preset requires a fresh end_of_day, and list and column titles are unique ignoring case and whitespace ('Arrests ' with a trailing space collided with 'Arrests'). Every one failed loudly only because each create is read back.
+
+### Market Intelligence
+
+*Where to spend the next marketing dollar*
+
+9 agents.
+
+#### Market Analyzer (division lead)
+
+`src/market_analyzer.py` &middot; phase 1 &middot; live
+
+Six-factor weighted zip scoring with letter grades and budget allocation.
+
+**Trigger.** After a market finder extraction.
+
+**Does.**
+
+- Distress 30, Value 20, Equity 15, Tax Delinquency 15, Competition 10, DOM 10
+- Grades A through D
+- Allocates budget across the top zips
+
+**Human checkpoint.**
+
+- Operator sets the budget
+
+**Outputs.** Scored zip list, Budget allocation
+
+**Touches.** market_analyzer.py
+
+> **The trap this exists to avoid.** Weights are set from measured distribution, not intuition. Weighting a near-constant variable produces a ranking with no spread, which looks rigorous and tells you nothing.
+
+#### Market Finder Extractor
+
+`src/extract_market_finder.py` &middot; phase 1 &middot; live
+
+Pulls every zip and neighborhood row out of DataSift Market Finder.
+
+**Trigger.** python src/extract_market_finder.py
+
+**Does.**
+
+- Selects state and county via InputMultiSearch
+- Paginates all pages at 20 rows each
+- Extracts the county summary panel via regex
+
+**Human checkpoint.** None. Runs unattended.
+
+**Outputs.** Market finder JSON
+
+**Touches.** Playwright, DataSift Market Finder
+
+> **The trap this exists to avoid.** There is no HTML table element. The data table is entirely div-based styled-components, so searching for tr or td finds nothing. It is pagination, not infinite scroll, and pagination controls sit below the viewport until you scroll the body container.
+
+#### County Market Report Generator
+
+`src/county_market_report.py` &middot; phase 1 &middot; live
+
+Merges a Market Finder extraction with a public-data bundle into a 7-sheet county research workbook. County-agnostic.
+
+**Trigger.** After extraction and scoring.
+
+**Does.**
+
+- Blends Sift data with BLS, Census, Zillow, Redfin, FBI crime data
+- Renders 7 branded sheets
+
+**Human checkpoint.** None. Runs unattended.
+
+**Outputs.** 7-sheet market report
+
+**Touches.** openpyxl, Public data sources
+
+> **The trap this exists to avoid.** Sheets 4, 5 and 6 (Economic, Crime, Recommendations) are FULLY populated rather than placeholders, which is the difference between a report someone acts on and a template someone files. Lived in a gitignored output/ directory until 2026-08-17, where it was one cleanup away from being lost.
+
+#### Obituary Opportunity Ranker
+
+`src/obituary_opportunity.py` &middot; phase 1 &middot; live
+
+Turns the obituary list into a lean-budget call order.
+
+**Trigger.** python src/obituary_opportunity.py
+
+**Does.**
+
+- Pulls detail and custom fields, applies gates, scores six weighted components
+- Gates: under 3 months since death, already sold, dead statuses, upside down, over buy box
+- Renders a branded 6-sheet Excel
+
+**Human checkpoint.**
+
+- Every row ships a Must Verify note
+
+**Outputs.** Ranked call order workbook
+
+**Touches.** DataSift API, openpyxl
+
+> **The trap this exists to avoid.** Total Delinquency is liens PLUS taxes. Reading it as the tax figure double counts the lien and inflates exactly the records the model exists to surface. It put a lien-only record at rank 1 before the fix. Also: gate on lead status, not just on sold, or a not_interested record tops your ranking.
+
+#### Dream 100 Ranker
+
+`src/dream100.py` &middot; phase 1 &middot; live
+
+Ranks the driving-for-dollars top 3,000 by opportunity size and puts the hundred biggest on a CRM list.
+
+**Trigger.** python src/dream100.py --phase pull | build | attach
+
+**Does.**
+
+- Joins the visual distress rank, the full CRM record and the lists the account attached
+- Scores deal size 35, condition 20, investor 20, evidence 15, reach 10
+- Gates dead statuses, buyers, MLS listings, upside down and anything outside the buy box
+- Attaches the Dream 100 list and tag with a read-back
+
+**Human checkpoint.**
+
+- Works the list owner by owner
+
+**Outputs.** Workbook with a Portfolio owners sheet, Dream 100 list and tag
+
+**Touches.** DataSift API
+
+> **The trap this exists to avoid.** The biggest finding is the Portfolio owners sheet, not the ranking. 194 owners hold two or more of the 3,000 and the top one holds 22. One conversation there is worth more than a dozen single rows, and a per-property score cannot see it.
+
+#### D4D Call List
+
+`src/d4d_call_list.py` &middot; phase 1 &middot; live
+
+Turns the visual distress ranking into a dialer-ready list: every row a record, skip traced, every number scored and written back.
+
+**Trigger.** python src/d4d_call_list.py --phase cohort | pull | skiptrace | harvest | score | writeback | export | qa
+
+**Does.**
+
+- The top N of the visual distress ranking becomes the cohort
+- Pulls missing records in by id, which skip traces them on the unlimited plan
+- Trestle scores every unscored number
+- Writes tiers onto the CRM phones and exports a callable file and a no-phone file
+
+**Human checkpoint.**
+
+- --commit to spend; one record is read back before the rest
+
+**Outputs.** Callable CSV, No-phone CSV, Tiered CRM phones
+
+**Touches.** DataSift API, SiftMap, Trestle, Visual distress model
+
+> **The trap this exists to avoid.** Pulling a record in by id skip traces it on its own, so the browser skip trace wizard was never needed. It was also broken: its list filter no longer matched, so it would have skip traced the whole account. That run was stopped at the Send To menu before it submitted.
+
+#### Doors Per Deal Ladder Pull
+
+`src/knox_blount_top15k.py, src/franklin_top30k.py` &middot; phase 1 &middot; live
+
+Walks a county's market share ladder rung by rung and pulls the top N records into an account.
+
+**Trigger.** python src/knox_blount_top15k.py or python src/franklin_top30k.py
+
+**Does.**
+
+- Reads the County List Playbook ladder in its own work order
+- Each rung counts only the records the rungs above did not already reach
+- Re-sizes every rung under the buy box and dedupes
+- Stops at the target count and pulls by id
+
+**Human checkpoint.**
+
+- Picks the account and the target count
+
+**Outputs.** Records in the account, Calling agency export
+
+**Touches.** County List Playbook, SiftMap, DataSift API
+
+> **The trap this exists to avoid.** The read-back probe must be a record NEW to the account. An existing one reads as saved at once, before the async job attaches the list, so it passes whether or not the pull worked.
+
+#### Agency Test Pools
+
+`src/ai_pools.py, src/pull_by_ids.py, src/agency_call_list.py` &middot; phase 1 &middot; live
+
+Builds ranked, non-overlapping record pools from the properties index and hands a calling agency one row per owner.
+
+**Trigger.** python src/ai_pools.py --market <market>, then pull_by_ids.py and agency_call_list.py
+
+**Does.**
+
+- Reads the properties index through the read-only opensearch MCP
+- Ranks by realtor or investor AI score under the buy box, with no overlap between pools
+- Pulls by id so DataSift's own skip trace fills the phones
+- Exports callable numbers only, mobiles first
+
+**Human checkpoint.**
+
+- Picks the market, the pool size and the account
+
+**Outputs.** Pools in the account, Calling agency call list
+
+**Touches.** opensearch MCP, DataSift API
+
+> **The trap this exists to avoid.** No Trestle and no do-not-call scrub on purpose: the agency scrubs the registry and litigators itself. The opensearch client refuses to start unless the server runs read-only, because its default configuration allows writes to the production cluster.
+
+#### Buildable Lot Finder
+
+`src/vacant_land.py` &middot; phase 2 &middot; gated
+
+Finds every vacant lot of 0.20 to 2.00 acres in a county, screens out what cannot carry a house, prices an offer band and writes the mail plan.
+
+**Trigger.** python src/vacant_land.py --phase all
+
+**Does.**
+
+- County GIS is the truth for the parcel, SiftMap for the owner
+- Screens built-on, landlocked, floodplain, slivers, steep and non-residential lots
+- Reads slope from USGS 3DEP lidar
+- Prices off real lot sales in the same township and size band
+
+**Human checkpoint.**
+
+- The pull into an account stays dry until an account is chosen
+
+**Outputs.** Buildable lots workbook, Mail list CSV
+
+**Touches.** County GIS, SiftMap, USGS 3DEP
+
+> **The trap this exists to avoid.** The county's vacant class lags construction. 2,185 vacant-class sales over 36 months had a median of $590,000 at 7.5 times land value: they were new houses. Built-on is read from the dwelling year, the sale price against land value, and recent permits.
+
+### Coaching & Performance
+
+*Grade the humans and the agents on the same rubric*
+
+8 agents.
+
+#### Call Coaching Engine (division lead)
+
+`src/call_coaching/` &middot; phase 1 &middot; live
+
+Pulls real recordings, transcribes with tonality, routes to three grading rubrics.
+
+**Trigger.** Weekly, or on demand per caller.
+
+**Does.**
+
+- Pull calls over the minimum duration that have a recording
+- Transcribe with delivery notes, then triage into a pipeline
+- Route to cold call, lead manager, or closer rubric
+- Write per-call reports and per-caller scorecards
+
+**Human checkpoint.**
+
+- Coach reviews scorecards with the caller
+
+**Outputs.** Coaching reports, Scorecards, Excel workbook
+
+**Touches.** smrtPhone, OpenRouter Gemini, Claude
+
+> **The trap this exists to avoid.** Voicemails and wrong numbers are never scored. Short calls get their own scale, because grading a 40-second wrong number against a full discovery rubric produces a meaningless zero.
+
+#### Call Puller
+
+`src/call_coaching/pull_calls.py` &middot; phase 1 &middot; live
+
+Fetches the call log and downloads recordings.
+
+**Trigger.** Start of a coaching run.
+
+**Does.**
+
+- POST /logs/calls/filtered as a DataTables form with a cookie session
+- Filters by minimum seconds and presence of a recording
+- Downloads MP3s from the direct recording URL
+
+**Human checkpoint.**
+
+- Session expiry means re-running the login script
+
+**Outputs.** Call metadata, MP3 recordings
+
+**Touches.** smrtPhone web session
+
+> **The trap this exists to avoid.** Recording URLs on rec.smrtphone.io are public once known, no auth. The call log itself needs the cookie session, and an expired session exits 2 rather than returning an empty list.
+
+#### Transcription & Triage
+
+`src/call_coaching/transcribe.py` &middot; phase 1 &middot; live
+
+Two passes: diarized transcript with delivery notes, then strict-JSON triage.
+
+**Trigger.** Each downloaded recording.
+
+**Does.**
+
+- Pass 1: audio to diarized transcript with bracketed delivery notes and a pace, tone, talk-balance summary
+- Pass 2: text to strict JSON, call type, pipeline, worth_grading
+- Groups the review queue by pipeline
+
+**Human checkpoint.** None. Runs unattended.
+
+**Outputs.** Transcripts, review_queue.json
+
+**Touches.** OpenRouter, Gemini 2.5 Flash
+
+> **The trap this exists to avoid.** AGENT and SELLER labels are decided by CONTENT with the caller name as anchor. On a callback the labels otherwise swap, and every downstream grade is then assigned to the wrong person.
+
+#### Cold Call Coach
+
+`skills/cold-call-coach` &middot; phase 1 &middot; live
+
+Grades opener, motivation probing, objection handling, tonality, close.
+
+**Trigger.** Transcripts triaged to the cold_call pipeline.
+
+**Does.**
+
+- Scores against the cold-calling rubric
+- Calibration examples keep reliability inside 3 points
+- JSON score footer per call
+
+**Human checkpoint.**
+
+- Coach delivers the feedback
+
+**Outputs.** Per-call report, Caller scorecard
+
+**Touches.** Claude, DataSift Call Playbook
+
+> **The trap this exists to avoid.** Measured reliability is stated as plus or minus 3 points. A grading rubric that will not state its own error bar is not a measurement, it is an opinion.
+
+#### Lead Manager Coach
+
+`skills/lead-manager-coach` &middot; phase 1 &middot; live
+
+Grades the four pillars, roadblocks, no-ladder, and next-action discipline.
+
+**Trigger.** Transcripts triaged to lead_management.
+
+**Does.**
+
+- Scores qualification: condition, timeline, motivation, price
+- Call quality only, no CRM hygiene scoring
+
+**Human checkpoint.**
+
+- Coach delivers the feedback
+
+**Outputs.** Per-call report, Scorecard
+
+**Touches.** Claude, LEAD-M_1.MD
+
+> **The trap this exists to avoid.** Deliberately excludes CRM hygiene. Mixing 'did you update the record' into a call-quality score hides whether the person can actually run a conversation.
+
+#### Closer Coach
+
+`skills/closer-coach` &middot; phase 1 &middot; live
+
+Grades the money conversation, the three-option offer stack, and commitment locking.
+
+**Trigger.** Transcripts triaged to closing.
+
+**Does.**
+
+- Discovery deepening
+- Offer presentation
+- Objection frameworks
+- Negotiation timeline reports
+
+**Human checkpoint.**
+
+- Coach delivers the feedback
+
+**Outputs.** Per-call report, Scorecard
+
+**Touches.** Claude, DataSift Call Playbook
+
+> **The trap this exists to avoid.** The flywheel worth building next: point these same three rubrics at the SMS agent's own threads, so the texter is graded exactly like the humans.
+
+#### KPI Engine
+
+`skills/kpi-engine` &middot; phase 1 &middot; live
+
+Activity-log pull and funnel pacing straight from the account.
+
+**Trigger.** Daily or weekly.
+
+**Does.**
+
+- Pulls the activity log with its own JWT
+- Three distinct rates, lead counting including new_lead statuses
+- Funnel pacing from dials to correct to leads to appointments to contracts
+- Outputs markdown, CSV, Excel, or Slack
+
+**Human checkpoint.**
+
+- Benchmarks are baselines to tune per operation, not targets
+
+**Outputs.** KPI report, Slack digest
+
+**Touches.** DataSift API, Slack
+
+> **The trap this exists to avoid.** Benchmarks ship as tune-per-operation baselines. Publishing someone else's conversion rate as a target is how you get a team optimizing for a number that never applied to them.
+
+#### Playbook Creator
+
+`skills/playbook-creator` &middot; phase 1 &middot; live
+
+Turns a narrated screen recording or transcript into an SOP, a playbook, or a Scribe-style step guide, with real screenshots and an agent-executable .sop.md twin.
+
+**Trigger.** Any repeatable process worth documenting. Best input: a narrated screen recording.
+
+**Does.**
+
+- Video to transcript + actions + judgment (transcribe_video.py, OpenRouter Gemini)
+- Frames extracted at action timestamps become the real screenshots
+- Mermaid flowcharts, decision trees, Scribe-style step format
+- Agent twin: RFC 2119 constraints, validated .sop.md, served from sops/ as a slash prompt
+- Seven-node chart limit, 5th grade reading level
+
+**Human checkpoint.**
+
+- Operator records the walkthrough and narrates the decisions
+- Verify frames and blur customer data before sharing
+
+**Outputs.** Word doc SOP with embedded screenshots, Agent-executable .sop.md, Process maps
+
+**Touches.** ffmpeg, OpenRouter (optional), Mermaid, docx, validate_sop.py
+
+> **The trap this exists to avoid.** Seven nodes per chart and a 5th grade reading level are hard limits, not style preferences. An SOP nobody can follow at 7am is not an SOP.
+
+### Sphere of Influence
+
+*Reverse-search a realtor's own contact export into a scored homeowner call list.*
+
+6 agents.
+
+#### SOI Pipeline (division lead)
+
+`src/soi_intake.py` &middot; phase 2 &middot; retired
+
+Turns name-and-email-only contact exports into confirmed metro homeowners ranked by Realtor AI score.
+
+**Trigger.** A realtor hands over a Facebook or LinkedIn contact export.
+
+**Does.**
+
+- Normalize and dedupe the roster
+- Join against free county owner rolls
+- Pay to resolve only the misses
+- Score the confirmed homeowners
+
+**Human checkpoint.**
+
+- Decides the call order and makes the calls
+
+**Outputs.** soi_priority_list.csv
+
+**Touches.** SQLite, Enformion, SiftMap
+
+> **The trap this exists to avoid.** First live run: 848 raw rows to 728 unique people to 222 confirmed metro homeowners to 191 scored. The distribution is steep, one at 95+, six in the 80s, so the 95+ bar isolates a real call list rather than a third of the sphere.
+
+#### Contact Intake
+
+`src/soi_intake.py` &middot; phase 2 &middot; retired
+
+Normalizes and dedupes the raw social exports.
+
+**Trigger.** python src/soi_intake.py
+
+**Does.**
+
+- Normalizes names and emails
+- Dedupes across sources
+- Flags real-estate-industry domains as referral partners, not sphere
+
+**Human checkpoint.** None. Runs unattended.
+
+**Outputs.** soi_contacts_normalized.csv
+
+**Touches.** stdlib
+
+> **The trap this exists to avoid.** 27 contacts on the live run were kw.com, mortgage or title domains. Those are referral partners, not homeowner sphere, and scoring them as leads pollutes the call list.
+
+#### County Owner Pull
+
+`src/soi_county_pull.py, src/soi_owner_db.py` &middot; phase 2 &middot; retired
+
+Pulls the owner rolls for the whole metro, free.
+
+**Trigger.** python src/soi_county_pull.py then soi_owner_db.py
+
+**Does.**
+
+- Franklin from the open file server
+- Fairfield from the nightly CAMA dump
+- Four more counties from open ArcGIS layers
+- Loads 811,146 rows into SQLite
+
+**Human checkpoint.** None. Runs unattended.
+
+**Outputs.** output/soi/owners.db
+
+**Touches.** ArcGIS, SQLite
+
+> **The trap this exists to avoid.** The whole Columbus metro is free data and costs $0. Two traps: Franklin's newer-looking tab-delimited appraisal extract has NO owner fields at all, and the Parcel_CSV folder path is stale on purpose, so check the Last-Modified header rather than the path. The vendor search UIs are bot-walled and never needed.
+
+#### Owner Name Join
+
+`src/soi_owner_match.py` &middot; phase 2 &middot; retired
+
+Matches roster people to deeds.
+
+**Trigger.** python src/soi_owner_match.py
+
+**Does.**
+
+- Handles LAST FIRST M deed order and co-owner ampersands
+- Strips credentials from LinkedIn surnames
+- Searches the Facebook middle token as a maiden name
+- Boosts a household pair when two contacts hit the same deed
+
+**Human checkpoint.**
+
+- Reviews ambiguous same-name groups
+
+**Outputs.** soi_owner_matches.csv
+
+**Touches.** owners.db
+
+> **The trap this exists to avoid.** owner_occupied compares mailing address key to situs address key. Do NOT fall back to Franklin's OWNER_ADD1: it sometimes echoes the situs and false-flagged a Texas absentee as owner-occupied.
+
+#### Enformion Resolver
+
+`src/soi_enformion.py` &middot; phase 2 &middot; retired
+
+Pays to resolve only the roster misses.
+
+**Trigger.** python src/soi_enformion.py, about $0.10 per match
+
+**Does.**
+
+- Anchors Person Search on name plus the metro city and state
+- Matches the response emails against the contact's exported email
+- Cross-checks each resolved address back against owners.db
+
+**Human checkpoint.**
+
+- Approves the spend
+
+**Outputs.** soi_enformion_resolved.json
+
+**Touches.** Enformion Person Search
+
+> **The trap this exists to avoid.** EMAIL is the verifier. An exact email hit grounds identity with no address needed; name-only matches are kept but flagged. emailAddresses is a list of DICTS with .emailAddress inside, not a list of strings. Misses are free.
+
+#### Realtor Score Enrichment
+
+`src/soi_enrich.py` &middot; phase 2 &middot; retired
+
+Attaches the Realtor AI score to each confirmed homeowner.
+
+**Trigger.** python src/soi_enrich.py
+
+**Does.**
+
+- Autocomplete then get_detail per matched address
+- Requires a token overlap between the deed owner and SiftMap owner_info before trusting the row
+- Carries equity, mortgage, portfolio count and both investor scores
+
+**Human checkpoint.**
+
+- Calls the 95+ list
+
+**Outputs.** soi_priority_list.csv
+
+**Touches.** SiftMap
+
+> **The trap this exists to avoid.** realtor_score off SiftMap get_detail IS the Realtor AI score, and 95+ is a priority call. 8 rows were flagged rather than trusted because the deed owner and SiftMap owner did not overlap. Renters are kept on their own track as future first-time buyers.
+
+## What the system depends on
+
+**County & Public Record**
+
+- tnpublicnotice.com
+- Knox County Tax API
+- Register of Deeds
+- City condemnation agendas
+- Eviction court docket
+
+**Property & Market Data**
+
+- SiftMap
+- Zillow /search (OpenWeb Ninja)
+- Smarty
+- Redfin
+- BLS / Census / FBI
+- opensearch properties index (MCP, read-only)
+- USGS 3DEP lidar
+
+**Identity & Contact**
+
+- SmartSkip
+- Tracerfy
+- Enformion BusinessV2
+- Trestle IQ
+- Obituary sources
+
+**CRM & Comms**
+
+- DataSift (apiv2.reisift.io)
+- smrtPhone
+- Slack
+- Dropbox
+- Google Drive
+- Smarter Contact
+
+**Runtime & Access**
+
+- Apify Actor
+- Fly.io
+- Scrapfly
+- 2Captcha
+- Playwright
+- SQLite event log
+
+**Models & Knowledge**
+
+- Claude
+- OpenRouter / Gemini
+- Locked material list
+- DataSift Call Playbook
+- playbook.md
+
+---
+
+Install the skills that drive these agents: see the [README](../README.md#install-the-skill-library).

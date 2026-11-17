@@ -1,0 +1,29 @@
+{
+  "_comment": "Copy this file to numbers.json, then either run pull_smrtphone_numbers.py --commit to auto-fill the numbers array from your SmrtPhone account, or type your numbers in by hand. number = E.164 (+1XXXXXXXXXX). added = the date the number went live (drives the 3-week warm-up ramp; for numbers that have been dialing for a while, backdate it so they score as ACTIVE). caller = optional label for who dials on it.",
+  "business_name": "REPLACE - Your Company LLC",
+  "telnyx": {
+    "_note": "OPTIONAL Telnyx L2 (carrier-grade reputation). Leave empty unless you completed the Telnyx upgrade in telnyx_setup.py. enterprise_id is written here by `telnyx_setup.py register`, or read from TELNYX_ENTERPRISE_ID in .env.",
+    "enterprise_id": "",
+    "contact_email": ""
+  },
+  "registration": {
+    "_note": "Free Caller Registry tracking. Set submitted (YYYY-MM-DD) after you submit at freecallerregistry.com; recheck_by auto-fills to +90 days as a quarterly re-verify reminder (NOT a renewal). Flip each carrier engine to 'confirmed' as its acknowledgement email arrives.",
+    "feedback_id": "",
+    "submitted": "",
+    "recheck_by": "",
+    "carriers": {
+      "first_orion_tmobile": "pending",
+      "hiya_att": "pending",
+      "tns_verizon": "pending"
+    }
+  },
+  "excluded": [],
+  "numbers": [
+    {
+      "number": "+15555550100",
+      "label": "Example - replace or run pull_smrtphone_numbers.py --commit",
+      "caller": "",
+      "added": "2026-01-01"
+    }
+  ]
+}

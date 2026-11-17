@@ -1,0 +1,6 @@
+{
+  "name": "siftstack-core",
+  "description": "SiftStack doctor and setup: what works right now, what needs a key, what it costs, and what to do instead. Every SiftStack bundle depends on this.",
+  "author": { "name": "DataSift" },
+  "keywords": ["datasift", "real-estate", "setup", "doctor"]
+}
