@@ -30,7 +30,7 @@ class TestVacantLandFilter:
 
     def test_foreclosure_without_house_number_still_removed(self):
         """The filter must keep doing its real job on types that carry an address."""
-        out = _filter_vacant_land([_n("foreclosure", "0 Andersonville Pike")])
+        out = _filter_vacant_land([_n("foreclosure", "0 Example Pike")])
         assert out == []
 
     def test_foreclosure_with_no_address_removed(self):
@@ -44,7 +44,7 @@ class TestVacantLandFilter:
         """The exact shape of a scheduled Knox+Blount run."""
         batch = [
             _n("foreclosure", "158 Old Example Rd"),
-            _n("foreclosure", "0 Andersonville Pike"),
+            _n("foreclosure", "0 Example Pike"),
             _n("probate"),
             _n("probate"),
         ]

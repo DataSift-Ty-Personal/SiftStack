@@ -130,7 +130,7 @@ def test_a_new_record_is_created_with_its_list_tags_notes_and_phones():
     assert res["created"] == 1 and res["existing"] == 0 and res["phones"] == 3 and not res["stopped"]
     create = [c[2] for c in acct.calls if c[1] == U.CREATE_ROUTE][0]
     assert create["lists"] == "Eviction" and create["tags"] == ["Courthouse Data", "FTM", "eviction"]
-    assert acct.sent("/add-notes/") == [{"notes": "Eviction | photo import"}]
+    assert acct.sent("/message/") == [{"message": "Eviction | photo import"}]
     assert len(acct.phones) == 3
 
 

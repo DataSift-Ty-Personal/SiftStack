@@ -207,8 +207,10 @@ def _register():
 
 # The block this build proposes for team/autopilot.yaml, as a mapping (it must parse clean).
 SHIPPED = {"kind": "taxsale", "owner": "analysis", "mode": "plan", "schedule": ["07:50 Mon-Fri"], "summary": "x",
-           "read_fields": False, "archive_dir": "", "county": "Knox", "tag": "Tax Sale Redemption", "note": True,
-           "period_rule": "shorter", "confirmed": {}, "sale_dates": {}, "min_days_left": 5, "max_records": 40,
+           "read_fields": False, "fetch": True, "fetch_via": "residential", "page": "", "archive_dir": "", "county": "Knox",
+           "tag": "Tax Sale Redemption", "note": True, "period_rule": "shorter",
+           "confirmed": {"2026-06-02": "2026-06-30"}, "sale_dates": {"TaxSale25-FiNAL_RESULTS_PDF.pdf": "2026-06-02"},
+           "min_days_left": 5, "max_records": 40,
            "recheck_days": 7, "roll_check": True, "max_roll_lookups": 20, "buyers": True, "registry_dir": "",
            "government_bidders": ["Knox County", "City of Knoxville", "State of Tennessee"],
            "scales": [{"from": "2026-07-01", "steps": [[3, "12 months"]], "over": "90 days"},
@@ -220,7 +222,7 @@ def run(check, tmp: Path) -> None:
     from .autopilot import taxsale
     from .workflows import doorknock_route as dk
     keep = (config.DATA_DIR, config.DB_PATH, config.MODE, config.RUNS_DIR, config.PUBLIC_URL, config.WEBHOOK_SECRET)
-    hooks = (taxsale.READ, taxsale.lookup_parcel, dk.POLICY, dk.CRM, dk.GEOCODE, dk.NOW)
+    hooks = (taxsale.READ, taxsale.lookup_parcel, dk.POLICY, dk.CRM, dk.GEOCODE, dk.NOW, taxsale.FETCH)
     env = {k: os.environ.get(k) for k in ("AGENTS_DOORKNOCK_GEOCODER", "AGENTS_DOORKNOCK_START", "AGENTS_DOORKNOCK_MAX_READS",
                                           "AGENTS_DOORKNOCK_MAX_STOPS", "AGENTS_BUYER_REGISTRY_DIR")}
     root = Path(tmp) / "taxsale"
@@ -247,10 +249,11 @@ def run(check, tmp: Path) -> None:
     try:
         _pure(check, root)
         _wired(check)
+        _hold(check)
         _stage(check, root, rolls)
         _route(check, root)
     finally:
-        taxsale.READ, taxsale.lookup_parcel, dk.POLICY, dk.CRM, dk.GEOCODE, dk.NOW = hooks
+        taxsale.READ, taxsale.lookup_parcel, dk.POLICY, dk.CRM, dk.GEOCODE, dk.NOW, taxsale.FETCH = hooks
         for k, v in env.items():
             if v is None:
                 os.environ.pop(k, None)
@@ -329,10 +332,37 @@ def _pure(check, root: Path) -> None:
     check(len(got["rows"]) == 12 and got["pins"] == 12 and t.check_totals(got["rows"], got["totals"]) == "confirmed",
           "every row of the report is read and the rows add up to the printed totals to the cent")
     check(got["rows"][2]["wrapped"] == "ETAL", "a wrapped second line is kept with the row above it")
-    bad = t.parse_text(report(tamper=0.02))
-    check(t.check_totals(bad["rows"], bad["totals"]) == "broken", "rows that do not add up to the totals line read as broken")
+    bad = t.parse_text(report(tamper=25.0))
+    check(t.check_totals(bad["rows"], bad["totals"]) == "broken",
+          "rows that do not add up to the totals line read as broken (a small row's worth off)")
+    near = t.parse_text(report(tamper=0.04))
+    check(t.check_totals(near["rows"], near["totals"]) == "confirmed" and t.rounding_cents(195) == 98
+          and t.rounding_cents(12) == 7 and t.rounding_cents(1) == 1,
+          "a few cents off is the rounding of the printed cents: the real 195-row report's minimum bids sum 4 cents over")
     none = t.parse_text(report(totals=False))
     check(t.check_totals(none["rows"], none["totals"]) == "unconfirmed", "a report with no totals line reads as unconfirmed")
+    old_parse = {"status": "broken", "check": "broken", "rows": near["rows"], "totals": near["totals"], "pins": near["pins"]}
+    t.rejudge(old_parse)
+    check(old_parse["status"] == "table" and old_parse["check"] == "confirmed",
+          "a document read on an earlier run is judged again by today's rules without opening the PDF")
+
+    print("  the sale date and the decree")
+    o2 = t.options({"sale_dates": {"A.pdf": "2026-05-01"}})
+    on_page = {"file": "TaxSale99-FINAL.pdf", "label": "Tax Sale 99 final", "doc_sale": "", "page_sale": SALE,
+               "first_seen": "2026-06-10"}
+    check(t.sale_day(on_page, o2) == SALE, "with no date in the document, the date the page announced for its sale is the sale date")
+    check(t.sale_day(dict(on_page, first_seen="2026-05-20"), o2) == "",
+          "a page date later than the day the document was archived belongs to some other sale and is not used")
+    check(t.sale_day(dict(on_page, doc_sale="2026-06-03"), o2) == "2026-06-03" and t.sale_day(dict(on_page, file="A.pdf"), o2) == "2026-05-01",
+          "the document's own date comes before the page's, and the setting before both")
+    decree = {"file": "TaxSale99-DecreeConfirmingSale.pdf", "label": "Decree confirming sale", "status": "no_table",
+              "url": "https://trustee.example.test/assets/pdfs/TaxSale99-DecreeConfirmingSale.pdf", "doc_sale": "", "page_sale": ""}
+    table = {"file": "TaxSale99-FINAL_RESULTS.pdf", "label": "Tax Sale 99 final results", "status": "table", "doc_sale": SALE,
+             "url": "https://trustee.example.test/assets/pdfs/TaxSale99-FINAL_RESULTS.pdf"}
+    check(t.decrees([table, decree], t.options(None)) == [(SALE, decree)]
+          and t.decrees([dict(table, url="x/TaxSale98-FINAL.pdf", file="TaxSale98-FINAL.pdf", label="Tax Sale 98"), decree],
+                        t.options(None)) == [("", decree)],
+          "a scanned decree is tied to its sale by the sale number it shares with the results table, and to nothing else")
 
     print("  the note, the queue's side and the buyers")
     r = t.parse_line(_line(ROWS[1]))
@@ -390,7 +420,39 @@ def _pure(check, root: Path) -> None:
         return bool(t.block_problems(st))
     check(bad(period_rule="widest") and bad(confirmed={"2026-06-02": "soon"}) and bad(sale_dates={"a.pdf": "June"})
           and bad(scales=[{"from": "2026-07-01", "steps": [[3, "a while"]], "over": "90 days"}]) and bad(max_records=0)
-          and bad(tag="") and not bad(), "a typo in the block is refused when the playbook loads, and the shipped block is not")
+          and bad(tag="") and bad(fetch="yes") and bad(fetch_via="proxy") and bad(page="the trustee page") and not bad(),
+          "a typo in the block is refused when the playbook loads, and the shipped block is not")
+    o = t.options(None)
+    check(o["fetch"] is False and o["fetch_via"] == "direct",
+          "with no setting a box reads no page: the playbook turns the fetch on where it is wanted")
+
+    print("  the residential way round a refused request")
+    import knox_condemnations as kc
+    saved = (t.direct_get, kc._via_scrapfly, os.environ.get("SCRAPFLY_KEY"), t.FETCH)
+    url = "https://trustee.example.test/assets/pdfs/TaxSale99-FINAL_RESULTS.pdf"
+    try:
+        t.FETCH = None
+        t.direct_get = lambda u, timeout=60: (_ for _ in ()).throw(OSError("403 Client Error: Forbidden for url: %s" % u))
+        kc._via_scrapfly = lambda u, key, timeout=150: b"%PDF-1.4 read from a residential address"
+        os.environ["SCRAPFLY_KEY"] = "not-a-real-key"
+        refused: list = []
+        got = t.getter(t.options({"fetch_via": "residential"}), refused)(url)
+        check(got.startswith(b"%PDF-") and refused == [url],
+              "a refused plain request is tried again from a residential address, and the refusal is counted")
+        os.environ.pop("SCRAPFLY_KEY", None)
+        try:
+            t.getter(t.options({"fetch_via": "residential"}), [])(url)
+            stayed = False
+        except OSError:
+            stayed = True
+        check(stayed, "with no Scrapfly key on the box a refusal stays a refusal, for the run to say")
+        check(t.getter(t.options({"fetch_via": "direct"})) is t.direct_get, "direct means the plain request and nothing else")
+    finally:
+        t.direct_get, kc._via_scrapfly, t.FETCH = saved[0], saved[1], saved[3]
+        if saved[2] is None:
+            os.environ.pop("SCRAPFLY_KEY", None)
+        else:
+            os.environ["SCRAPFLY_KEY"] = saved[2]
 
 
 # ---------------------------------------------------------------------- the stage, run by run
@@ -423,6 +485,70 @@ def _wired(check) -> None:
           and not auctiontasks._redeeming("w-open", date(2026, 12, 2)),
           "the auction lane sees the open window, so it neither closes the record out nor runs the deed check on it")
     check("tax_redemption" in lanes.RESEARCH_AT_ONCE, "a redemption window opens research at once on a lane that waits")
+
+
+def _hold(check) -> None:
+    """The tag holds the former owner out of every outreach channel until a person takes it off (the gate's
+    research_tags), research may still take the record, and the research queue takes a few a day."""
+    from .autopilot import ftmpipeline, gate, policy, researchqueue as rq
+    from sms_agent import gate_rules
+    print("  the hold: no outreach to a former owner who can still redeem")
+    cfg = gate.parse({"research_tags": ["Tax Sale Redemption"]}, [])
+    rec = {"uuid": "h1", "status": None, "tags": ["Top 1000", "tax sale redemption"], "lists": ["Tax Sale"], "mls": "",
+           "owner": {"uuid": "o-h1", "first_name": "Pat", "last_name": "Example",
+                     "phones": [{"number": "8655550101", "type": "MOBILE", "tags": ["Dial First"], "status": "UNKNOWN"}]}}
+    held_on = [ch for ch in gate.CHANNELS if not gate.check(rec, ch, cfg=cfg).ok]
+    # The email channel (cold email, 2026-11-20) is held too: a former owner who can still redeem is emailed by nobody.
+    check(held_on == ["assign", "call", "text", "mail", "email", "trace", "score", "task"] and gate.check(rec, "research", cfg=cfg).ok,
+          "the tag holds every outreach and paid channel, in any case, and leaves research open: %s" % held_on)
+    v = gate.check(rec, "text", cfg=cfg)
+    check(v.reasons[0] == ("in_research", "tag Tax Sale Redemption")
+          and v.reason() == "held out for research (tag Tax Sale Redemption)",
+          "the reason names the tag, so the digest says why: %r" % v.reason())
+    check(gate.check(rec, "text").ok, "with no research tags set, the tag holds nothing (the default is empty)")
+    check(not gate.check(rec, "text", cfg=cfg, allow=("in_research",)).ok
+          and not gate.check(rec, "mail", cfg=cfg, allow=("heir", "in_research")).ok
+          and gate.check(rec, "task", cfg=cfg, allow=("research_tag",)).ok,
+          "the word that lets the heir lane past a Deep Prospecting status does not lift the tag; only research_tag does")
+    ds = dict(rec, status="Deep Prospecting", tags=["Top 1000"])
+    check(gate.check(ds, "text", cfg=cfg, allow=("in_research",)).ok
+          and gate.check(ds, "text", cfg=cfg).reason() == "held out for research",
+          "the Deep Prospecting status reads and lifts as it always did")
+    both = dict(ds, tags=["Tax Sale Redemption"])
+    check(not gate.check(both, "text", cfg=cfg, allow=("in_research",)).ok,
+          "a record with the status and the tag stays held while the tag is on")
+    check("research_tag" in policy.ALLOW_WORDS, "a stage may name research_tag in its gate_allow")
+    pc = gate_rules.parse({"research_tags": ["Tax Sale Redemption"]}, [])
+    check(gate_rules.check(rec, "text", cfg=pc).reasons == v.reasons and gate_rules.check(rec, "text").ok,
+          "the texting app's copy holds the same record for the same reason, once its settings name the tag")
+    probs = []
+    gate.parse({"research_tags": "Tax Sale Redemption"}, probs)
+    check(probs == ["gate.research_tags must be a list"], "a research_tags setting that is not a list is refused")
+
+    class Ctx:
+        class policy:
+            gate = cfg
+            lanes = None
+    state, why = ftmpipeline.record_state(Ctx(), dict(rec, tags=["FTM", "Tax Sale Redemption"], lists=["Foreclosure"]),
+                                          ftmpipeline.options({}))
+    check(state == "research" and "Tax Sale Redemption" in why and "Deep Prospecting" not in why,
+          "the county board holds the card in Research and says it is the tag, not a status: %r" % why)
+
+    print("  the research queue takes a few a day")
+
+    def queue_block(**kw):
+        return policy.Stage(id="q", kind="researchqueue", owner="research", mode="plan", summary="", schedule=[], presets=[],
+                            params=dict(kw))
+    check(rq.block_problems(queue_block(class_daily={"tax_redemption": 2})) == []
+          and rq.block_problems(queue_block()) == [],
+          "a class cap naming a rank class is accepted, and no cap at all is the default")
+    check(rq.block_problems(queue_block(class_daily={"tax_redemptions": 2}))
+          and rq.block_problems(queue_block(class_daily={"tax_redemption": -1}))
+          and rq.block_problems(queue_block(class_daily={"tax_redemption": "two"}))
+          and rq.block_problems(queue_block(class_daily=["tax_redemption"])),
+          "a misspelled class or a count that is not a whole number is refused when the playbook loads")
+    check(rq.options({"class_daily": {"Tax_Redemption": 2}})["class_daily"] == {"tax_redemption": 2},
+          "the class names read in any case")
 
 
 def _stage(check, root: Path, rolls: list) -> None:
@@ -487,14 +613,34 @@ def _stage(check, root: Path, rolls: list) -> None:
               for x in plan.lines), "the run names the sale, the parcels sold, how many can redeem and the soonest deadline")
     check(any("counted from the sale date" in x for x in plan.lines),
           "without the date the court confirmed the sale, the windows are counted from the sale date and the run says so")
-    check(any("research queue does not read the Tax Sale Redemption tag" in x for x in plan.lines) and not plan.problems,
+    decree = [p for p in plan.problems if "decree confirming" in p]
+    check(any("research queue does not read the Tax Sale Redemption tag" in x for x in plan.lines)
+          and not [p for p in plan.problems if p not in decree],
           "a plan run with no research queue reading the tag says so as a line, not a problem")
+    from . import channels
+    check(len(decree) == 1 and "of Jun 2, 2026" in decree[0] and "TaxSale99-DecreeConfirmingSale.pdf" in decree[0]
+          and "set `confirmed` on the stage" in decree[0] and channels.classify(decree[0], "taxsale") == "setup",
+          "a decree on file for a sale with no confirmed date asks a person for the date, as a setting to make: %r" % decree)
     check(plan.alerts == ["Knox tax sale results are in: 12 parcels sold on Jun 2, 2026; 10 former owners can still redeem, "
                           "the soonest by Nov 29, 2026."], "a newly read results document is one alert for the team: %r" % plan.alerts)
-    csv_path = Path(plan.run_dir) / "files" / "Tax_Sale_Redemption_For_A_Person.csv"
+    csv_path = Path(plan.run_dir) / "files" / t.LIST_FILE
     listed = csv_path.read_text(encoding="utf-8") if csv_path.is_file() else ""
     check("3300 Example Ln" in listed and "not in the account" in listed and "70 Twin Oak Dr" in listed,
           "the parcels that need a person are in a list with the reason, never created as records")
+    import csv as csv_mod
+    table = list(csv_mod.reader(listed.splitlines()))
+    body = table[1:]
+    check(table and table[0] == t.LIST_COLUMNS and len(body) == 10 and [r[0] for r in body] == sorted(r[0] for r in body),
+          "every open window is on the one list, nearest deadline first, and no closed one")
+    roe = next((r for r in body if r[4] == "081-033"), [""] * len(t.LIST_COLUMNS))
+    check(roe[10].startswith("would be tagged") and roe[11] == "https://app.reisift.io/records/properties/r-roe"
+          and roe[6].startswith("the sale date") and roe[8] == "5000.00",
+          "a row the stage would tag carries its record link, where its window is counted from and the money: %r" % roe)
+    moss = next((r for r in body if r[4] == "096-400"), [""] * len(t.LIST_COLUMNS))
+    fern = next((r for r in body if r[4] == "097-500"), [""] * len(t.LIST_COLUMNS))
+    check(moss[10].startswith("held back:") and "Do Not Market" in moss[10] and fern[10].startswith("carries the")
+          and any(line.startswith("Every open window, nearest deadline first (6 need a person)") for line in plan.lines),
+          "a held record says why, a record already tagged says so, and the run links the list with how many need a person")
     fact = ledger.fact("r-roe", t.FACT) or {}
     check(fact.get("until") == "2027-06-02" and fact.get("from") == "sale" and fact.get("parcel") == "081-033",
           "what the stage learned about a record is kept in plan mode too: the window, where it was counted from, the parcel")
@@ -526,7 +672,7 @@ def _stage(check, root: Path, rolls: list) -> None:
     unread = go(FakeCRM(SALE_RECS), data="data_unread")
     check(any("could not be read on this box: the archived file is not on this box" in p for p in unread.problems),
           "a results document this box cannot read is a problem, said with the reason")
-    t.READ = lambda p: [("rows", report(tamper=0.02) if Path(p).name == "aaa111.pdf" else "")]
+    t.READ = lambda p: [("rows", report(tamper=25.0) if Path(p).name == "aaa111.pdf" else "")]
     broken = go(FakeCRM(SALE_RECS), data="data_broken")
     check(any("did not add up to the printed totals" in p for p in broken.problems) and broken.head.startswith("Would tag 2"),
           "rows that do not add up to the totals are a loud problem, and the rows read are still worked")
@@ -534,8 +680,10 @@ def _stage(check, root: Path, rolls: list) -> None:
     nodate = go(FakeCRM(SALE_RECS), data="data_nodate")
     check(any("sale date could not be read" in p and "taxsale99-final_results.pdf".lower() in p.lower() for p in nodate.problems)
           and nodate.found == 0, "a report with no readable sale date is a problem that names the file, and nothing is worked")
-    fixed = go(FakeCRM(SALE_RECS), data="data_nodate", sale_dates={"TaxSale99-FINAL_RESULTS.pdf": SALE})
-    check(not fixed.problems and fixed.head.startswith("Would tag 2"), "setting the sale date for that file fixes it")
+    fixed = go(FakeCRM(SALE_RECS), data="data_nodate", sale_dates={"TaxSale99-FINAL_RESULTS.pdf": SALE},
+               confirmed={SALE: "2026-06-30"})
+    check(not fixed.problems and fixed.head.startswith("Would tag 2"), "setting the sale date for that file fixes it: %r"
+          % fixed.problems)
     t.READ = lambda p: [("rows", texts.get(Path(p).name, ""))]
     try:
         import pdfminer.high_level  # noqa: F401
@@ -608,6 +756,59 @@ def _stage(check, root: Path, rolls: list) -> None:
     check(not [c for c in notag.calls if c[0] == "add_tags"]
           and any("no 'Tax Sale Redemption' tag in this account" in p for p in missing.problems),
           "a live run refuses to tag when the tag does not exist, and says to create it first")
+
+    # ------------------------------------------------------------------ the box reads the page itself
+    print("  the box reads the Trustee's page itself")
+    page_url = "https://trustee.example.test/services/tax-sale"
+    page = ('<html><body><p>Important Tax Sale 99 Information: Event Details: June 2nd, 2026 - Doors Open</p>'
+            '<a href="/assets/pdfs/TaxSale99-FINAL_RESULTS.pdf">Tax Sale 99 %s Final Results</a>'
+            '<a href="/assets/pdfs/TaxSale99-DecreeConfirmingSale.pdf">Tax Sale 99 %s Decree Confirming Sale</a>'
+            '</body></html>') % (EN, EN)
+    served = []
+
+    def trustee(url, *a, **k):
+        served.append(url)
+        if url == page_url:
+            return page.encode("utf-8")
+        if url.endswith("TaxSale99-FINAL_RESULTS.pdf"):
+            return b"%PDF-1.4 the results table of sale 99"
+        if url.endswith("TaxSale99-DecreeConfirmingSale.pdf"):
+            return b"%PDF-1.4 a scanned decree"
+        raise OSError("404 for %s" % url)
+
+    def by_content(p):
+        data = Path(p).read_bytes() if Path(p).is_file() else b""
+        return [("rows", report(head="REPORT OF SALE") if b"results table" in data else "")]
+
+    t.FETCH, t.READ = trustee, by_content
+    fetched = root / "fetched"
+    f1 = go(FakeCRM(SALE_RECS), data="data_fetch", archive_dir=str(fetched), fetch=True, page=page_url)
+    check(served[:1] == [page_url] and (fetched / "tax_sale_docs.json").is_file()
+          and len(list((fetched / "tax_sale_archive").glob("*.pdf"))) == 2,
+          "with fetch on, the box reads the Trustee's page itself and keeps the archive where the stage reads it")
+    check(f1.head.startswith("Would tag 2"),
+          "the sale date comes from the page's own announcement when the results print none: %r" % f1.head)
+    check(any(x.startswith("2 new documents on the Knox Trustee's tax sale page") for x in f1.lines)
+          and not any(EN in x for x in f1.lines), "the new documents are named, with plain hyphens")
+    check(len(f1.problems) == 1 and "decree confirming the Knox tax sale of Jun 2, 2026" in f1.problems[0],
+          "the decree is tied to its sale through the page, and its date is asked for: %r" % f1.problems)
+    served.clear()
+    f2 = go(FakeCRM(SALE_RECS), data="data_fetch", archive_dir=str(fetched), fetch=True, page=page_url,
+            confirmed={SALE: "2026-06-30"})
+    check(served == [page_url] and not f2.problems and f2.head.startswith("Would tag 2"),
+          "a later run reads only the page (a known document waits for its weekly recheck), and with the order's "
+          "date set there is nothing to ask: %r" % (f2.problems,))
+    t.FETCH = lambda url, *a, **k: (_ for _ in ()).throw(OSError("HTTP 403 Forbidden"))
+    f3 = go(FakeCRM(SALE_RECS), data="data_fetch_fail", archive_dir=str(root / "never_fetched"), fetch=True)
+    check(f3.head.startswith("No Knox tax sale results could be read") and any("page could not be read" in p for p in f3.problems)
+          and any("fetch_via: residential" in x for x in f3.lines) and f3.found == 0,
+          "a page this box is refused is a loud problem with the ways round it, never a quiet empty run: %r" % f3.head)
+    check(all(channels.classify(p, "taxsale") == "breakage" for p in f3.problems),
+          "and it is our own failure, for the issues channel")
+    f4 = go(FakeCRM(SALE_RECS), data="data_fetch", archive_dir=str(fetched), fetch=True, confirmed={SALE: "2026-06-30"})
+    check(f4.head.startswith("Would tag 2") and any("page could not be read" in p for p in f4.problems),
+          "with an archive already on the box, a refused page is said and the archive is still worked")
+    t.FETCH, t.READ = None, (lambda p: [("rows", texts.get(Path(p).name, ""))])
 
 
 def _draw_report(path: Path) -> Path:

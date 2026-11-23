@@ -106,6 +106,18 @@ RULE_CASES = [
     ("an install's own working status", lambda r: r.update(status="Brand New Status"),
      {"cfg": {"working_statuses": ["Brand New Status"]}}, ""),
     ("a record held for research", lambda r: r.update(status="Deep Prospecting"), {}, "in_research"),
+    ("a research tag holds a record like the research status", lambda r: _tags(r, "Tax Sale Redemption"),
+     {"cfg": {"research_tags": ["Tax Sale Redemption"]}}, "in_research"),
+    ("a research tag matches in any case", lambda r: _tags(r, "tax sale redemption"),
+     {"cfg": {"research_tags": ["Tax Sale Redemption"]}}, "in_research"),
+    ("with no research tags set, the tag holds nothing", lambda r: _tags(r, "Tax Sale Redemption"), {}, ""),
+    ("the in_research word does not lift a research tag", lambda r: _tags(r, "Tax Sale Redemption"),
+     {"cfg": {"research_tags": ["Tax Sale Redemption"]}, "allow": ("in_research", "heir", "lead")}, "in_research"),
+    ("research_tag lifts a research tag", lambda r: _tags(r, "Tax Sale Redemption"),
+     {"cfg": {"research_tags": ["Tax Sale Redemption"]}, "allow": ("research_tag",)}, ""),
+    ("a research status and a research tag stay held under in_research",
+     lambda r: (r.update(status="Deep Prospecting"), _tags(r, "Tax Sale Redemption")),
+     {"cfg": {"research_tags": ["Tax Sale Redemption"]}, "allow": ("in_research",)}, "in_research"),
     ("a status given as an object", lambda r: r.update(status={"title": "Hot Lead"}), {}, "lead"),
     ("a status object with a value", lambda r: r.update(status={"value": "sold", "title": "Sold"}), {}, "sold"),
     ("a listed house", lambda r: r.update(mls="Listed"), {}, "listed"),
@@ -177,7 +189,8 @@ STATUSES = [None, "", "prospecting", "sold", "new_lead", "Hot Lead", "Cold Lead"
             {"slug": "sold"}, "  SOLD  "]
 TAGS = ["FTM", "Do Not Market", "do not market", "Litigator", "deceased", "Verify Deceased", "Heir Identified",
         "recently sold", "Sold", "Mail Only", "Not Single Family", "Priority 1", "Priority 2", "Auction Soon",
-        "Obituary", "Probate", "Courthouse Data", {"title": "Mail Only"}, {"name": "Litigator"}]
+        "Obituary", "Probate", "Courthouse Data", {"title": "Mail Only"}, {"name": "Litigator"},
+        "Tax Sale Redemption", {"title": "tax sale redemption"}]
 LISTS = ["Foreclosure", "DNC", "dnc", "Obituary", "Probate", "Tax Delinquent", {"title": "Obituary"}]
 PHONE_STATUS = ["UNKNOWN", "", None, "CORRECT", "WRONG", "DEAD", "DNC", "CORRECT_DNC", "WRONG_DNC", "NO_ANSWER"]
 PHONE_TYPE = ["MOBILE", "LANDLINE", "UNKNOWN", "", None, "VOIP", "mobile"]
@@ -185,7 +198,7 @@ PHONE_TAGS = [[], ["Dial First"], ["Dial Second"], ["Dial Third"], ["Drop"], [{"
               ["Dial First", "Litigator"], ["Dial Second", "DNC"], ["Relative"]]
 NUMBERS = ["8655550101", "8655550102", "8655550103", "+1 (865) 555-0104", "18655550105", "555", ""]
 ALLOW = ["lead", "not_interested", "mail_only", "exhausted", "in_research", "unknown_status", "listed", "deceased",
-         "heir", "LEAD", " Heir "]
+         "heir", "LEAD", " Heir ", "research_tag"]
 LANES = ["", "lead", "heirs", "hot_auction", "ftm", "obituary", "priority1", "strong", "bulk", "made_up"]
 
 
@@ -223,6 +236,8 @@ def random_case(rng: random.Random) -> tuple[dict, dict]:
     if rng.random() < 0.15:
         kw["cfg"] = {"working_statuses": ["Something Else"], "callable_tiers": ["Dial First"],
                      "deceased_tags": ["deceased"], "suppress_lists": ["DNC", "Tax Delinquent"]}
+    if rng.random() < 0.3:
+        kw.setdefault("cfg", {})["research_tags"] = ["Tax Sale Redemption"]
     if rng.random() < 0.1:
         kw["markers"] = {"ftm": {"tags": ["Courthouse Data"]}, "strong": {"lists": ["Tax Delinquent"]}}
     return rec, kw
@@ -296,7 +311,8 @@ def run(check, rounds: int = 3000) -> None:
                 {"phone": None}, {}, {"phone": {"number": "865", "doNotCall": True}}, None):
         check(P.registry_flagged(row) == G.registry_flagged(row), "the registry flag reads the same off %r" % (row,))
     for block in ({"working_statuses": ["A"]}, {"read_fields": True}, {"do_not_market_tags": []},
-                  {"no_such_key": 1}, {"sold_tags": "not a list"}, None):
+                  {"no_such_key": 1}, {"sold_tags": "not a list"}, None, {"research_tags": ["Tax Sale Redemption"]},
+                  {"research_tags": "Tax Sale Redemption"}):
         pg, pp = [], []
         cg, cp = G.parse(block, pg), P.parse(block, pp)
         check(pg == pp and dataclasses.asdict(cg) == dataclasses.asdict(cp),

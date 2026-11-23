@@ -49,9 +49,11 @@ from . import researcher
 
 log = logging.getLogger(__name__)
 
-DEFAULT_PRIMARY = "deepseek/deepseek-v4.1-flash-1017"
-DEFAULT_SECOND = "meta/muse-ember"
-DEFAULT_REFEREE = "anthropic/claude-sonnet-5.5"
+import model_registry  # noqa: E402
+
+DEFAULT_PRIMARY = model_registry.default("research_primary")
+DEFAULT_SECOND = model_registry.default("research_second")
+DEFAULT_REFEREE = model_registry.default("research_referee")
 MAX_STEPS = 40
 PAGE_CHARS = 10000
 PROTECTED_MAX = 8            # Scrapfly pages per record, across every model
@@ -107,7 +109,7 @@ def settings() -> dict:
             "primary": _model("AGENTS_RESEARCH_MODEL", DEFAULT_PRIMARY) or DEFAULT_PRIMARY,
             "second": _model("AGENTS_RESEARCH_SECOND", DEFAULT_SECOND),
             "referee": _model("AGENTS_RESEARCH_REFEREE", DEFAULT_REFEREE),
-            "analysis": _model("AGENTS_ANALYSIS_MODEL", "off"),
+            "analysis": _model("AGENTS_ANALYSIS_MODEL", model_registry.default("who_signs")),
             "searches": _int("AGENTS_RESEARCH_SEARCHES", 14),
             "pages": _int("AGENTS_RESEARCH_PAGES", 12)}
 
@@ -482,16 +484,24 @@ TOOL_RULES = (
     "or name anyone as a signer, look up the owner of record and every person you would name as a signer. A row "
     "that matches on name and on age is strong evidence of a death; open the obituary to confirm it. Do not name "
     "a person as a required signer while their status is unverified: say that it is unverified."
-    "\n\nThe standard for Living, Deceased and Unknown. Nobody has a web page proving they are alive today, so "
-    "do not ask for one. Call a person Living when BOTH hold: (1) the index lookup and your searches show no "
-    "death that matches them on name AND on age or family, and (2) something recent places them in the present: "
-    "a notice, filing, deed, mortgage or listing from the last two years that names them as a living party, or "
-    "a skip trace subject record with a current address and no deceased flag. Same-name strangers in the index "
-    "with the wrong age, the wrong middle name or a death before that recent record do not count against them: "
-    "rule each one out in a line. Call a person Unknown only when a SPECIFIC candidate death could not be ruled "
-    "out (a row or obituary that fits on name and plausibly on age), or when nothing recent places them at all; "
-    "then name the candidate. Call a person Deceased only on an obituary, funeral home page or court record you "
-    "opened, or an index row that matches on name and age.")
+    "\n\nThe standard for Living, Deceased and Unknown. Call a person Deceased on ANY of these: an obituary, "
+    "funeral home page or court record you opened; an index row that matches on name and age; a memorial page "
+    "(Find a Grave, Legacy) that matches on name, on age or birth year, and on a spouse or child the family "
+    "records name; the skip trace flagging them deceased (skip_trace_says in the brief: the team's starting "
+    "point, so spend no searches on it and never set it aside by guessing it sits on the wrong person); or the "
+    "family telling the team so, in a reply quoted in the CRM board notes. When a title holder is deceased, "
+    "spend your searches on the heirs: the obituary's survivors, a child who died first and that child's "
+    "children, any will, trust or estate filing, and who is handling the house. Nobody has a web page proving "
+    "they are alive today, so do not ask for one. Call a person Living when ALL hold: (1) the skip trace does "
+    "not flag them deceased, (2) the index lookup and your searches show no death that matches them on name AND "
+    "on age or family, and (3) something recent places them in the present: a notice, filing, deed, mortgage or "
+    "listing from the last two years that names them as a living party, or a skip trace subject record with a "
+    "current address. Same-name strangers in the index with the wrong age, the wrong middle name or a death "
+    "before that recent record do not count against them: rule each one out in a line. Call a person Unknown "
+    "when a SPECIFIC candidate death could not be ruled out (a row or obituary that fits on name and plausibly "
+    "on age), or when nothing recent places them at all; then name the candidate. A survivors list in someone "
+    "else's obituary shows a person alive on that obituary's date only; for anyone past 75 it does not settle "
+    "today.")
 ASK = (
     "Research this property's owner of record and, if the owner has died, the heirs and who "
     "must sign. Use web search and web fetch: obituaries (legacy.com, funeral homes, local "
@@ -674,7 +684,7 @@ def _signers(f: dict) -> list[str]:
     return out
 
 
-def compare(a: dict, b: dict, absence_vouched: bool = False) -> dict:
+def compare(a: dict, b: dict, absence_vouched: bool = False, settled=(), owner_settled: bool = False) -> dict:
     """Where two researchers' fact sheets disagree. `hard` points go to the referee: they change
     who gets called or who signs. `soft` points ride along as flags for the person reading the file.
 
@@ -682,17 +692,29 @@ def compare(a: dict, b: dict, absence_vouched: bool = False) -> dict:
     any owner's name. Then "Living" against "could not confirm" is a note, because the one source
     that would show a death shows none. Everywhere else a split on the owner's status is settled,
     never averaged: calling a dead owner living and hanging a stranger's obituary on a living owner
-    are the two errors that hurt most."""
+    are the two errors that hurt most.
+
+    `settled` names the people the skip trace flags as deceased, and `owner_settled` says the owner of
+    record is one of them. The flag is the team's starting point on deaths, and the code applies it
+    after the memos whatever they say (researcher.guard_flagged_owners), so a split about one of those
+    deaths is a note: paying the referee to re-argue it buys nothing."""
     hard, soft = [], []
     sa, sb = _status(a), _status(b)
     if sa != sb:
         line = "Owner status: one researcher says %s, the other says %s." % (sa, sb)
-        (soft if absence_vouched and {sa, sb} == {"Living", "Unknown"} else hard).append(line)
+        if owner_settled:
+            soft.append(line + " The skip trace flags the owner deceased, which settles it.")
+        else:
+            (soft if absence_vouched and {sa, sb} == {"Living", "Unknown"} else hard).append(line)
     da, db, ma, mb = _decedents(a), _decedents(b), _signers(a), _signers(b)
     for dead, signers in ((da, mb), (db, ma)):
         for name, _ in dead:
             if any(same_person(name, s, strict=True) for s in signers):
-                hard.append("%s: one researcher lists this person as deceased, the other names them as a signer." % name)
+                line = "%s: one researcher lists this person as deceased, the other names them as a signer." % name
+                if any(same_person(name, f, strict=True) for f in settled or ()):
+                    soft.append(line + " The skip trace flags them deceased, which settles it.")
+                else:
+                    hard.append(line)
     owners = [str(x.get("name") or "") for f in (a, b) for x in (f or {}).get("owners") or [] if isinstance(x, dict)]
     for n1, d1 in da:
         twins = [d2 for n2, d2 in db if d2 and not VAGUE.search(d2) and same_person(n1, n2, strict=True)]
@@ -741,9 +763,11 @@ def pick_lead(first: dict, second: dict | None) -> dict:
 REFEREE_ASK = (
     "Two researchers worked this record independently and disagree. Settle ONLY the points in dispute, "
     "using the tools. Pages they already opened cost nothing to open again. Apply the standard for Living, "
-    "Deceased and Unknown exactly as written above: a title holder named in a recent notice or filing, with no "
-    "matching death in the index or in a search, is Living, and is named as a signer. Unknown is for a specific "
-    "candidate death that could not be ruled out, and you must name that candidate. Then write the complete "
+    "Deceased and Unknown exactly as written above: a person the skip trace flags deceased is Deceased, and you "
+    "spend nothing on that point; a title holder named in a recent notice or filing, with no matching death in "
+    "the index or in a search and no skip trace deceased flag, is Living, and is named as a signer. Unknown is "
+    "for a specific candidate death that could not be ruled out, and you must name that candidate. Then write "
+    "the complete "
     "final research memo for this "
     "record: every finding with its URL and a verbatim quote, the decedents with their verbatim survivors "
     "lists, the living people and their relationship to the owner, red flags, and what could not be "
@@ -920,7 +944,12 @@ def research(run, row, depth: dict | None = None) -> tuple[dict, float]:
     both = usable(first) and usable(second)
     vouched = index_covers(run) and bool(index_rows) and all(x["rows"].startswith("No obituary in the index")
                                                              for x in index_rows)
-    diff = compare(first["fact"], second["fact"], absence_vouched=vouched) if both else {"hard": [], "soft": []}
+    flagged = researcher.flagged_people(run)
+    primary = researcher._first_last(researcher.owner_of_record(run))
+    owner_settled = primary != ("", "") and any(p["title_holder"] and researcher._first_last(p["name"]) == primary
+                                               for p in flagged)
+    diff = (compare(first["fact"], second["fact"], absence_vouched=vouched, settled=[p["name"] for p in flagged],
+                    owner_settled=owner_settled) if both else {"hard": [], "soft": []})
     if second is not None and not both:
         diff["soft"].append("Only one researcher finished (%s did not), so there was no cross-check."
                             % (second if usable(first) else first)["model"])
@@ -963,6 +992,7 @@ def research(run, row, depth: dict | None = None) -> tuple[dict, float]:
     shaped["slug"] = slug
     shaped = researcher.enforce_sources(shaped, set(seen))
     shaped = apply_cross_check(shaped, diff, disputed=disputed, refereed=bool(referee and usable(referee, min_calls=1)))
+    shaped = researcher.guard_flagged_owners(shaped, run)
 
     usd = sum(r["usd"] for r in runs) + (referee["usd"] if referee else 0.0) + meter.usd + web.usd
     run.save("research/%s.json" % slug, shaped)

@@ -467,11 +467,11 @@ def test_notes_mode_adds_the_text_once(uploader, monkeypatch):
     text = "NOTICE OF SALE of the property at 412 Sample Hollow Rd, default having occurred under a deed of trust"
     stub = Stub(exists=False)
     uploader(stub, row={"Notice Text": text})
-    added = [c[2]["notes"] for c in stub.calls if c[1].endswith("/add-notes/")]
+    added = [c[2]["message"] for c in stub.calls if c[0] == "POST" and c[1].endswith("/message/")]
     assert added == ["Notice text: " + text]
     again = Stub(exists=True, notes="Notice text: " + text)
     uploader(again, row={"Notice Text": text})
-    assert not [c for c in again.calls if c[1].endswith("/add-notes/")], "a republished notice is not stacked"
+    assert not [c for c in again.calls if c[0] == "POST" and c[1].endswith("/message/")], "a republished notice is not stacked"
 
 
 def test_field_mode_sends_the_text_as_a_custom_field_and_not_as_a_note(uploader, monkeypatch):
@@ -481,7 +481,7 @@ def test_field_mode_sends_the_text_as_a_custom_field_and_not_as_a_note(uploader,
     uploader(stub, row={"Notice Text": "NOTICE OF SALE ..."})
     patches = [c[2] for c in stub.calls if c[0] == "PATCH" and c[1].endswith("/custom-field/update-values/")]
     assert patches == [[{"field_uuid": "f-text", "value": "NOTICE OF SALE ..."}]]
-    assert not [c for c in stub.calls if c[1].endswith("/add-notes/")]
+    assert not [c for c in stub.calls if c[0] == "POST" and c[1].endswith("/message/")]
 
 
 def test_the_module_holds_no_long_dash():

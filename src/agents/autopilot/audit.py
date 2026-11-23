@@ -14,11 +14,11 @@ What it checks for a dial:
   * the owner had no record a caller could work: every record of theirs was held by the gate before
     the dial (Do Not Market, an opt-out, a litigator, sold, a finished status, a death);
   * the number itself was already marked wrong, dead or do-not-call;
-  * the dial was outside calling hours;
-  * the same number was dialed three or more times in one day;
-  * one caller ID line carried more dials in a day than a line should (plan 4.6: 25). A line that
-    works past its cap is the line the carriers flag as spam, and a flagged line is answered by
-    nobody, which reads in the day's numbers as many dials and almost no conversations.
+  * the dial was outside calling hours, and the same number was dialed three or more times in one
+    day: only when no outreach limits stage is in the playbook, since that stage says both with the
+    caller and the number (each was posted twice a morning until 2026-11-18);
+  * one caller ID line carried more dials in a day than `line_cap`: OFF at 0, the default. A line
+    cap is a number-reputation tactic, and Ty does not want caller ID checks in SiftStack (2026-11-15).
 
 Texts are not in DataSift's log (Smarter Contact and the texting app keep their own), so this run
 covers calls and mail; the texting ledgers join when their app runs the same gate.
@@ -95,20 +95,27 @@ def run_audit(ctx: Ctx) -> None:
     findings: Counter = Counter()
     examples: dict[str, list] = defaultdict(list)
 
-    # --- cheap checks straight off the log
+    # --- cheap checks straight off the log. Calling hours and the same number dialed again in a day are
+    # the outreach limits check's to say, with the caller and the number: while that stage is in the
+    # playbook the audit leaves them to it, or each was posted twice every morning (2026-11-18).
+    limits_on = any(getattr(s, "kind", "") == "limits" and getattr(s, "mode", "off") != "off"
+                    for s in (getattr(ctx.policy, "stages", None) or {}).values())
     per_number_day: Counter = Counter()
     for e in dials:
         local = e["when"].astimezone(zone)
         m = local.hour * 60 + local.minute
-        if not hours[0] <= m < hours[1]:
+        if not limits_on and not hours[0] <= m < hours[1]:
             findings["dialed outside calling hours"] += 1
             examples["dialed outside calling hours"].append("%s at %s" % (e["data"].get("caller") or "a caller", local.strftime("%I:%M%p").lstrip("0").lower()))
         per_number_day[(e["data"].get("number"), local.date().isoformat())] += 1
     for (num, _day), n in per_number_day.items():
-        if num and n >= int(st.get("repeat_dials", 3)):
+        if not limits_on and num and n >= int(st.get("repeat_dials", 3)):
             findings["the same number dialed %d or more times in a day" % int(st.get("repeat_dials", 3))] += 1
-    # dials per caller ID line per day (the line is the number the owner sees ringing)
-    line_cap = int(st.get("line_cap", 25))
+    if limits_on:
+        ctx.out.tally["calling hours and repeat dials: said by the outreach limits check"] = 1
+    # dials per caller ID line per day (the line is the number the owner sees ringing). Off at 0, the
+    # default: a line cap is a number-reputation tactic, and Ty does not want caller ID checks (2026-11-15).
+    line_cap = int(st.get("line_cap", 0))
     per_line_day: Counter = Counter()
     for e in dials:
         line = e["data"].get("line") or ""
@@ -118,7 +125,7 @@ def run_audit(ctx: Ctx) -> None:
         lines = {ln for ln, _ in per_line_day}
         ctx.out.tally["caller ID lines used"] = len(lines)
         ctx.out.tally["most dials on one line in a day"] = max(per_line_day.values())
-        over = [(ln, n) for (ln, _d), n in per_line_day.items() if n > line_cap]
+        over = [(ln, n) for (ln, _d), n in per_line_day.items() if n > line_cap] if line_cap > 0 else []
         if over:
             label = "a caller ID line carried more than %d dials in a day" % line_cap
             findings[label] += len(over)

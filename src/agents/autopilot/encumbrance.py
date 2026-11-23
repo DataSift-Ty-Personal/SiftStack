@@ -59,7 +59,7 @@ from .. import store
 from . import activity, budget, lanes, leadclock, ledger
 from .auctiontasks import COUNTY_ROLLS
 from .stages import Ctx, addr, marks_of
-from .taxwatch import NoRoll, Unreadable, _fetch, county_tax, delinquent  # noqa: F401  (the shared county client)
+from .taxwatch import NoRoll, Unreadable, _fetch, call_lookup, county_tax, delinquent, lookup_owner  # noqa: F401  (the shared county client)
 
 SRC = Path(__file__).resolve().parents[2]
 if str(SRC) not in sys.path:
@@ -225,7 +225,7 @@ def _tax(ctx: Ctx, rec: dict, state: dict) -> dict:
         return {"status": "down", "tried": False, "why": state["county_down"]}
     lookup = (ctx.sources or {}).get("county_tax") or county_tax
     try:
-        found = lookup(street, county)
+        found = call_lookup(lookup, street, county, lookup_owner(rec))
     except budget.BudgetExhausted:
         raise
     except NoRoll as exc:

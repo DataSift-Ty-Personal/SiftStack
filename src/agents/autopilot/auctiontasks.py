@@ -8,7 +8,7 @@ inside 14. A tag starts nothing by itself. This stage does the work the tags sta
      exactly then that the owner has the least time left. So from that day the caller who holds
      the record gets a call task every two days until the sale. A task still open is not stacked
      under a second one; it is named, because an overdue call on a sale a week out is the thing
-     to see.
+     to see. `call_tasks: false` in the playbook leaves this step out and keeps the rest.
 
   2. THE LAST TWO WEEKS. Inside the critical tier a record whose buy box and equity are confirmed
      is listed for a priority package (decision D34), including one whose only numbers cannot be
@@ -24,10 +24,12 @@ inside 14. A tag starts nothing by itself. This stage does the work the tags sta
      each closed-out record is looked at once more. First the sold guard's own rule on the
      record's last sale (a sale on or after the sale date means it sold). Then the county tax
      roll, by street, because DataSift's last sale runs weeks behind the county's own record.
-     Only when the county still shows the borrower as owner does the record come back into the
-     lane, tagged so the caller knows why. A new owner on the roll, or a sale on the record, and
-     it stays closed. A republished notice gives a record a new sale date and is handled by the
-     auction stage as a new sale.
+     Only when the county still shows the borrower as owner does the record come back, tagged so
+     the caller knows why: into the lane, or, with `still_owned_remove_tags: [FTM]`, out of the
+     foreclosure flow to the long-term pool (the agency queue, or the Top 1,000 if it ranks). A
+     new owner on the roll, or a sale on the record, and it stays closed. A republished notice
+     gives a record a new sale date (and the FTM tag back) and is handled as a new sale, with its
+     own deed check.
 
 The borrower's name is remembered while the record is hot, because by day 45 the owner on the
 record may already be the buyer (a SiftMap add replaces owners), and comparing the county's owner
@@ -428,10 +430,8 @@ def _close_out(ctx: Ctx, rows: dict, today: date, state: dict, after_status: str
         if cur in WORKING:
             ctx.change(u, "status", cur or None, after_status)
             ctx.write("after sale", ctx.crm.set_status, u, after_status)
-            ctx.write("after sale note", ctx.crm.message, u,
-                      "The sale date (%s) has passed, so every channel stops. The county roll is checked once, %d days "
-                      "after the sale, and the record comes back only if the borrower still owns the house." % (
-                          laneroutes.nice_day(past[-1]), int(st.get("deed_check_days", 45))))
+            ctx.write("after sale note", ctx.crm.message, u, closed_out_note(
+                past[-1], int(st.get("deed_check_days", 45)), bool(_list(st.get("still_owned_remove_tags")))))
             ctx.out.tally["sale date passed: set %s" % after_status] += 1
             ctx.out.line("%s: sale on %s has passed, closed out" % (addr(row), laneroutes.nice_day(past[-1])))
             if ctx.live:
@@ -482,9 +482,15 @@ def judge(ctx: Ctx, rec: dict, sale: date) -> tuple[str, str]:
 
 
 def _bring_back(ctx: Ctx, rec: dict, sale: date, after_status: str) -> tuple[bool, str]:
-    """The borrower still owns the house: the record comes back into its lane. The status it held
-    before the close-out is restored (none, unless the playbook names one), a tag says why, and the
-    rest of the gate is asked first: an owner who opted out while the record was closed stays out.
+    """The borrower still owns the house: the record is marketable again. The status it held before
+    the close-out is restored (none, unless the playbook names one), a tag says why, and the rest of
+    the gate is asked first: an owner who opted out while the record was closed stays out.
+
+    Where it goes is the playbook's call. By default it comes back into its lane. With
+    `still_owned_remove_tags: [FTM]` it leaves the foreclosure flow instead (Ty, 2026-11-17: the
+    motivation has dropped off once the sale date is behind the owner): the foreclosure presets need
+    that tag, and the agency queue and the Top 1,000 leave it out, so taking it off moves the record
+    to the long-term pool. A republished notice puts the tag back with the new sale date.
     Returns (came back, why not)."""
     st = ctx.stage
     u = rec["uuid"]
@@ -502,10 +508,33 @@ def _bring_back(ctx: Ctx, rec: dict, sale: date, after_status: str) -> tuple[boo
     if tag:
         ctx.change(u, "add_tags", None, [tag])
         ctx.write("still owned tag", ctx.crm.add_tags, u, [tag], rec)
-    ctx.write("still owned note", ctx.crm.message, u,
-              "%d days after the sale date (%s) the county still shows the borrower as owner, so the sale did not go "
-              "through. Back in the lane." % (int(st.get("deed_check_days", 45)), laneroutes.nice_day(sale)))
+    drop = [str(t) for t in _list(st.get("still_owned_remove_tags")) if t]
+    if drop:
+        ctx.change(u, "remove_tags", drop, None)
+        ctx.write("leaves the foreclosure flow", ctx.crm.remove_tags, u, drop)
+    ctx.write("still owned note", ctx.crm.message, u, still_owned_note(int(st.get("deed_check_days", 45)), sale, bool(drop)))
     return True, ""
+
+
+def closed_out_note(sale: date, days: int, moves: bool) -> str:
+    """The note a record gets the day after its sale: every channel stops, and what the day-N check
+    will do with it."""
+    head = "The sale date (%s) has passed, so every channel stops. The county roll is checked once, %d days after the sale" % (
+        laneroutes.nice_day(sale), days)
+    if moves:
+        return head + (": a new owner keeps it closed, and if the borrower still owns the house it moves to the "
+                       "long-term marketing (the agency queue, or the Top 1,000 if it ranks there).")
+    return head + ", and the record comes back only if the borrower still owns the house."
+
+
+def still_owned_note(days: int, sale: date, moved: bool) -> str:
+    """The note a still-owned record gets: what the county showed, and where the record went."""
+    head = ("%d days after the sale date (%s) the county still shows the borrower as owner, so the sale did not go "
+            "through." % (days, laneroutes.nice_day(sale)))
+    if moved:
+        return head + (" With the sale date behind the owner it leaves the foreclosure lists for the long-term "
+                       "marketing (the agency queue, or the Top 1,000 if it ranks there).")
+    return head + " Back in the lane."
 
 
 def _deed_checks(ctx: Ctx, today: date, state: dict, after_status: str) -> None:
@@ -520,8 +549,6 @@ def _deed_checks(ctx: Ctx, today: date, state: dict, after_status: str) -> None:
     for row in ctx.crm.rows({"any_property_status": [after_status]}, cap=int(st.get("max_scan", 2000))):
         u = row["uuid"]
         fact = ledger.fact(u, "deed_check") or {}
-        if fact.get("verdict") in FINAL:
-            continue
         sale = _sale_of(u, today)
         if sale is None:
             dates = sale_dates(ctx, u, state, fresh_only=False)
@@ -529,6 +556,10 @@ def _deed_checks(ctx: Ctx, today: date, state: dict, after_status: str) -> None:
             sale = past[-1] if past else None
         if sale is None:
             ctx.out.tally["closed out with no sale date on file"] += 1
+            continue
+        # A verdict settles the sale it was made for. A republished notice gives the record a new
+        # sale, and that one gets its own check (a settled verdict for any sale used to end them all).
+        if fact.get("verdict") in FINAL and fact.get("sale") in (None, "", str(sale)):
             continue
         if _redeeming(u, today):
             ctx.out.tally["a tax sale redemption window is open: no deed check yet"] += 1
@@ -632,7 +663,14 @@ def run_auctiontasks(ctx: Ctx) -> None:
         hot.append((upcoming[0], (upcoming[0] - today).days, row, rec))
     hot.sort(key=lambda x: x[0])
     load: dict[str, int] = {}
-    made = sum(1 for sale, left, row, rec in hot if _call_task(ctx, row, rec, sale, left, people, load, ends, every))
+    # call_tasks: false keeps the rest of the lane (the lists, the close-out, the deed check) and makes
+    # no call task, for a team that has not taken the every-two-days calls on yet.
+    if st.get("call_tasks", True):
+        made = sum(1 for sale, left, row, rec in hot if _call_task(ctx, row, rec, sale, left, people, load, ends, every))
+    else:
+        made = 0
+        if hot:
+            ctx.out.tally["call tasks are off in the playbook (call_tasks: false)"] += len(hot)
     _last_weeks(ctx, hot, crit_days)
     # Records whose sale has passed are no longer tagged, so they are found by the lane's own tags.
     scope = [ctx.crm.tag_uuid(str(t)) for t in _list(st.get("scope_tags"))]

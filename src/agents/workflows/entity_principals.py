@@ -210,7 +210,8 @@ def _write(crm, u: str, rec: dict, company: str, found: dict, display: str, run_
             crm.set_custom_field(u, fid, value)
             out["fields"].append(label)
     text = _note(company, display, found.get("title") or "", found.get("source") or "")
-    if text.split(":")[0] not in str(rec.get("notes") or ""):
+    from ..autopilot.crm import record_said
+    if text.split(":")[0] not in record_said(crm, u, rec):     # notes field plus the message board
         ledger.change(run_id, WORKFLOW, u, "note", None, text)
         crm.message(u, text)
         out["note"] = True
@@ -235,7 +236,9 @@ def run(task: dict, *, crm=None, pol=None, map_client=None, officer_search=None,
     rec = crm.record(u) or {}
     if not rec.get("uuid"):
         return {"ok": False, "say": "No record with uuid %s." % u}
-    live = config.live()
+    # The deep prospect's rule (2026-11-19): on a free box, a lookup a stage named in AGENTS_LIVE_STAGES
+    # queued (the retrace stages, for a company or trust owner) runs live; an ask in Slack stays dry.
+    live = config.task_live(task)
     res = {"ok": True, "live": live, "record": u, "street": stages.addr(rec), "source_task": task.get("source") or "",
            "problems": [note] if note else [], "misses": [], "named": False}
     subj = subject_of(rec)

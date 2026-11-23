@@ -87,6 +87,12 @@ EXTRA: dict[str, tuple[str, str, str, bool, bool]] = {
     "kpitracker": ("kpitracker", "run_kpitracker", "free", False, False),
     # mail counted from a date: the auction countdown and the probate table (Ty, 2026-11-16; SiftMail SPEC 6.3, 6.4)
     "mailcadence": ("mailcadence", "run_mailcadence", "outreach", False, False),
+    # cold email (src/cold_email), moved off Ty's PC (2026-11-20): one install runs them (cold_email/coldstate.py).
+    # Reading replies and writing notes is free; the top-up loads people into a campaign that emails them.
+    "coldreplies": ("coldemail", "run_coldreplies", "free", False, False),
+    "coldtopup": ("coldemail", "run_coldtopup", "outreach", False, False),
+    "coldhealth": ("coldemail", "run_coldhealth", "free", False, False),
+    "coldstats": ("coldemail", "run_coldstats", "free", False, True),
 }
 
 

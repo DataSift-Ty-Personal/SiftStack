@@ -38,9 +38,13 @@ class FakeApi:
             for pair in body:
                 rec["fields"][pair["field_uuid"][2:]] = pair["value"]
             return {}
-        if path.endswith("/add-notes/"):
-            rec["notes"] += " | " + body["notes"]
-            return {}
+        if "/message/" in path:
+            # Notes live on the message board since the add-notes route was retired (2026-11-18).
+            board = rec.setdefault("board", [])
+            if method == "POST":
+                board.append(body["message"])
+                return {"uuid": "m%d" % len(board)}
+            return {"results": [{"message": m} for m in board]}
         if path.endswith("/remove-tags/"):
             rec["tags"] = [t for t in rec["tags"] if t not in body["tags"]]
             return {}
@@ -111,7 +115,8 @@ def test_a_fully_released_record_goes_to_zero_and_is_tagged(tmp_path):
     assert float(rec["fields"]["Total Delinquency"]) == 0.0
     assert kr.RELEASED_TAG in rec["tags"] and "lien_under_5k" not in rec["tags"]
     assert "Courthouse Data" in rec["tags"] and "lien" in rec["tags"]
-    assert "2 lien(s) released" in rec["notes"] and "0 of 2" in rec["notes"]
+    board = " | ".join(rec.get("board", []))
+    assert "2 lien(s) released" in board and "0 of 2" in board
 
 
 def test_a_partial_release_drops_the_total_to_what_is_still_owed(tmp_path):
@@ -165,7 +170,7 @@ def test_a_record_restated_from_one_months_filings_is_put_back_to_the_full_pictu
     rec = api.records["u1"]
     assert float(rec["fields"]["Outstanding Lien Amount"]) == 43400.0
     assert rec["fields"]["Liens Active vs Total"] == "3 of 3"
-    assert "Lien figures restated" in rec["notes"] and "lien_15k_50k" in rec["tags"]
+    assert "Lien figures restated" in " | ".join(rec.get("board", [])) and "lien_15k_50k" in rec["tags"]
 
 
 def test_two_debtors_on_one_house_are_counted_together_without_doubling(tmp_path):
@@ -200,7 +205,8 @@ def test_a_record_that_already_reads_true_is_left_untouched(tmp_path):
     assert stats["already_true"] == 1 and stats["updated"] == 0
     # No figure, tag or note is rewritten. It reads zero active liens, though,
     # so it still comes off the Liens list.
-    assert not any(m == "PATCH" or p.endswith(("/update-values/", "/add-notes/", "/remove-tags/"))
+    assert not any(m == "PATCH" or p.endswith(("/update-values/", "/remove-tags/"))
+                   or (m == "POST" and p.endswith("/message/"))
                    for m, p in api.calls)
     assert api.records["u1"]["lists"] == [] and stats["unlisted"] == 1
     assert kr.reconcile(scratch, api=api, commit=True)["to_update"] == 0
@@ -366,3 +372,15 @@ def test_a_new_lien_after_a_full_release_lets_the_record_be_unlisted_again_later
     assert json.loads((tmp_path / kr.UNLISTED).read_text(encoding="utf-8")) == ["u7"]
     after = kr.plan(kr.load_ledger(scratch), {"L1", "L2"}, AMOUNTS)[0]["after"]
     assert after == {"active": 1, "total": 3, "amount": 40000.0}
+
+
+def test_a_debtor_named_only_on_the_message_board_passes_the_guard(tmp_path):
+    # Since 2026-11-18 the upload's "Lien debtor" line lands on the message board, not in the old
+    # notes field. The guard must read both, or every lien uploaded since would never be cleared.
+    rec = _record()
+    rec["board"] = [rec["notes"]]
+    rec["notes"] = ""
+    api = FakeApi({"u1": rec})
+    stats = kr.reconcile(_scratch(tmp_path, _ledger(), {"L1", "L2"}), api=api, commit=True)
+    assert stats["updated"] == 1, stats
+    assert api.records["u1"]["fields"]["Liens Active vs Total"] == "0 of 2"

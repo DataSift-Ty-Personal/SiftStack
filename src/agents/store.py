@@ -235,11 +235,47 @@ def join_ask(task_id: int, text: str, not_before: str) -> bool:
         return True
 
 
-def claim_next() -> dict | None:
+CLAIM_LANES = {"": "", "people": " AND (source IS NULL OR source!='schedule')", "schedule": " AND source='schedule'"}
+# Scheduled stages that run on the people lane (2026-11-20). A few stages are quick and decide how fast
+# a seller hears back: the cold email reply watcher posts a hand raise that says "call within 5 minutes",
+# and behind a twenty-minute stage run on the schedule lane it would post twenty minutes late. A stage
+# whose playbook block says `fast_lane: true` is claimed by the people lane instead (after any task a
+# person started). Set once at boot from the playbook (set_fast_lane).
+FAST_LANE: frozenset = frozenset()
+
+
+def set_fast_lane(workflows) -> None:
+    global FAST_LANE
+    FAST_LANE = frozenset(str(w) for w in (workflows or ()) if w)
+
+
+def _claim_where(lane: str) -> tuple[str, tuple]:
+    where = CLAIM_LANES.get(lane)
+    if where is None:
+        raise ValueError("no claim lane %r" % lane)
+    if not FAST_LANE or lane == "":
+        return where, ()
+    names = tuple(sorted(FAST_LANE))
+    marks = ",".join("?" * len(names))
+    if lane == "people":
+        return " AND (source IS NULL OR source!='schedule' OR workflow IN (%s))" % marks, names
+    return " AND source='schedule' AND workflow NOT IN (%s)" % marks, names
+
+
+def claim_next(lane: str = "") -> dict | None:
+    """The next task for a worker. A task a person or an event started (a Slack ask, a reply that
+    resumes one, a release, a webhook, a handoff) goes before every scheduled stage run, then oldest
+    first (Ty, 2026-11-17: a question to Roma sat 15 minutes behind four stage runs).
+
+    `lane` lets the brain run one worker per kind: "people" takes only what a person or an event
+    started, "schedule" only scheduled stage runs, "" anything. Priority alone could not stop one
+    twenty-minute stage run, already under way, from holding a comps ask the same evening."""
+    where, args = _claim_where(lane)
     with _LOCK, _db() as c:
         c.execute("BEGIN IMMEDIATE")
-        row = c.execute("SELECT * FROM tasks WHERE status='queued' AND (not_before IS NULL OR not_before='' "
-                        "OR not_before<=?) ORDER BY id LIMIT 1", (now(),)).fetchone()
+        row = c.execute("SELECT * FROM tasks WHERE status='queued'" + where + " AND (not_before IS NULL OR not_before='' "
+                        "OR not_before<=?) ORDER BY CASE WHEN source='schedule' THEN 1 ELSE 0 END, id LIMIT 1",
+                        args + (now(),)).fetchone()
         if not row:
             c.execute("COMMIT")
             return None

@@ -56,6 +56,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from .. import config, store
+import model_registry
 from . import activity, budget, kpi, lanes, ledger, leadnotes
 from . import leadroutes as routes
 from .attemptlog import call_kind, transcript_of, turns
@@ -95,7 +96,7 @@ DEFAULTS = {
     "max_mb": 40,
     "audio_per_min": 0.003,         # estimates for the caps; what OpenRouter and Claude bill is what is booked
     "screen_usd": 0.002,
-    "model": "claude-haiku-5-5",
+    "model": model_registry.model("call_review"),
     "max_tokens": 1500,
     "max_tries": 3,
     "recording_grace_hours": 24,    # a recording gone this soon after the call is tried again

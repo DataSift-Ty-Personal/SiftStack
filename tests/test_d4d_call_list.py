@@ -112,7 +112,7 @@ check(r1["owner_type"] == "Absentee" and call_rows[1]["owner_type"] == "Company"
 check(call_rows[1]["est_value"] == 100000, "cohort est value fills when the record has none")
 check(call_rows[1]["source"] == "new" and r1["source"] == "existing", "source flag from pulled")
 check(len(phone_rows) == 6 and phone_rows[0]["owner_name"] == "Jane Doe", "phone rows one per callable phone with owner name")
-check(r1["crm_record_url"].endswith("/records/u1"), "CRM link")
+check(r1["crm_record_url"].endswith("/records/properties/u1"), "CRM link opens the record page, not the records list")
 
 with tempfile.TemporaryDirectory() as td:
     p = Path(td) / "x.csv"

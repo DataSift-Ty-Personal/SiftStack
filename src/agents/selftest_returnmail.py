@@ -91,6 +91,10 @@ class FakeCRM:
             self.recs[u]["notes"] = (self.recs[u].get("notes") or "") + "\n" + text
         return ""
 
+    def said(self, u, rec=None):
+        """The read-back read (notes field plus board): this fake keeps posted notes in `notes`."""
+        return str((rec if rec is not None else self.recs.get(u) or {}).get("notes") or "")
+
     def __getattr__(self, name):
         raise AssertionError("returned mail called %s on DataSift" % name)
 

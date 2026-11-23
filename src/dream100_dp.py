@@ -980,7 +980,10 @@ def build_note(d: dict) -> str:
     L = [MARKER + " " + date.today().isoformat(), an.get("headline", ""), ""]
     if an.get("owner_status"):
         L.append("Owner status: %s. %s" % (an["owner_status"], an.get("owner_status_note", "")))
-    dms = [p for p in an.get("people") or [] if p.get("role") in ("owner", "signer", "decision maker")]
+    # A dead owner keeps the role "owner" in the analysis, and the 2026-11-19 Example Pike note listed
+    # both of its deceased owners under "Decision makers". Only the living (or not yet settled) are listed.
+    dms = [p for p in an.get("people") or [] if p.get("role") in ("owner", "signer", "decision maker")
+           and p.get("living") != "Deceased"]
     if dms:
         L.append("Decision makers: " + ", ".join("%s (%s)" % (p["name"], _short_rel(p)) for p in dms[:5]))
     order = an.get("call_order") or [{"who": r["reaches_label"], "number": r["number"],
@@ -1970,6 +1973,15 @@ def phase_writeback(args, run: Run):
         may, why_not = (wb.deceased_flag(an, owner_now, strict=cfg["verified_only"] or cfg["owner_swap"])
                         if dead else (False, ""))
         fields, late = wb.owner_deceased_field(fields, [], an, (may, why_not))
+        if cfg["stale_dm"] and not str(fields.get(wb.DM_FIELDS[0]) or "").strip():
+            try:
+                got = api.call("/api/internal/property/%s/custom-field/" % uuid)
+                got = got.get("results") if isinstance(got, dict) else got
+                current = {(c.get("custom_field") or {}).get("label"): c.get("value")
+                           for c in got or [] if isinstance(c, dict)}
+                fields, late = wb.stale_dm(fields, late, an, current, date.today().isoformat())
+            except Exception as exc:  # noqa: BLE001  (a stale field left standing is today's behaviour)
+                entry["errors"].append("decision maker field not read: %s" % str(exc)[:120])
         entry["held"]["fields"] = entry["held"]["fields"] + [h for h in late if h not in entry["held"]["fields"]]
         if plan["phones"] and not moved:
             tags = {p["number"]: p["tags"] for p in plan["phones"]}
@@ -2047,6 +2059,16 @@ def phase_writeback(args, run: Run):
                     entry["errors"].append("owner deceased flag: %s" % str(exc)[:120])
             elif why_not:
                 entry["held"]["deceased"] = why_not
+        if marked and cfg["death_tags"]:
+            add, drop = wb.death_tags(now.get("tags"))
+            try:
+                if add:
+                    attach_to_record(api, uuid, {"tags": add})
+                for t in drop:
+                    api.call("/api/internal/property/%s/remove-tags/" % uuid, "POST", {"tags": t})
+                entry["death_tags"] = {"added": add, "removed": drop}
+            except Exception as exc:  # noqa: BLE001
+                entry["errors"].append("death tags: %s" % str(exc)[:120])
         if dec["suppress"]:
             try:
                 done = wb.suppress_litigator(api, uuid, owner_now.get("uuid") or plan["owner_uuid"])

@@ -54,16 +54,20 @@ logger = logging.getLogger("ftm_runner")
 # `sold` runs last so a lead uploaded this run onto an old Sold record is revived
 # in the same run instead of sitting dead until tomorrow.
 #
-# The stages after the first five are OFF: each one is a switch, and it runs only
+# `estate_ready` (2026-11-17) tags obituary records 30 days past the death for the
+# estate call presets; it touches no list and no upload, so it can sit anywhere
+# before `sold`.
+#
+# The stages outside TODAY_STAGES are OFF: each one is a switch, and it runs only
 # when its name is added to --stages (FTM_ARGS). The same ordering rule holds for
 # every stage that only PREPARES rows (appointments, tax_sale_report,
 # code_violations): it belongs BEFORE `county`, which uploads what they staged and
 # only then marks it handled. `deeds` reads the day's notice file and reuses the
 # recorder session `liens` opened, so it goes after both.
-TODAY_STAGES = ("notices", "capture", "liens", "county", "sold")
+TODAY_STAGES = ("notices", "capture", "liens", "county", "estate_ready", "sold")
 ALL_STAGES = ("notices", "tax_sale", "tax_delinquent", "public_notices",
               "capture", "liens", "appointments", "tax_sale_report", "code_violations",
-              "county", "deeds", "sold_reentry", "sold_audit", "sold")
+              "county", "deeds", "sold_reentry", "sold_audit", "estate_ready", "sold")
 # "capture" is in the default set even though it uploads nothing. The Knox City
 # condemnation agendas are OVERWRITTEN at the source: a cycle that is not
 # pulled while it is live cannot be recovered later, unlike foreclosure and
@@ -98,6 +102,9 @@ class RunResult:
     committed: bool = False
     stages: list = field(default_factory=list)
     blocked: bool = False
+    # When each paid source runs out, as this run read it (source_state). Kept in the run log so the
+    # 8am digest can say an ending subscription with no setting switched on.
+    sources: dict = field(default_factory=dict)
 
     @property
     def failed(self) -> bool:
@@ -119,13 +126,23 @@ LOGIN_EGRESS_ATTEMPTS = 3
 # broken enrichment step. Fewer is an ordinary quiet day.
 ALL_DROPPED_SUSPECT = int(os.environ.get("FTM_ALL_DROPPED_SUSPECT", "5") or 5)
 
-# Start warning this many days before the site subscription runs out. The
-# account has been on both a 365-day and a 30-day product, so the window has to
-# be short enough to mean something on the monthly one.
-# The account is on the 30 Day product set to auto-renew (Ty, 2026-11-11), so a
-# 14-day window would warn on half of all days and stop meaning anything. Three
-# days is late enough that a renewal which has NOT happened is worth a line.
-SUBSCRIPTION_WARN_DAYS = int(os.environ.get("SUBSCRIPTION_WARN_DAYS", "3") or 3)
+def _warn_days(source: str) -> int:
+    try:
+        import ftm_feeds
+        return ftm_feeds.warn_days(source)
+    except Exception:  # noqa: BLE001  (the feed table must never be why a run cannot start)
+        return 10
+
+
+# Start warning this many days before each paid subscription runs out: 3 for the notice site (its
+# 30 Day product is set to auto-renew, so a longer window shows a line for a third of every month)
+# and 10 for the Register of Deeds (its renewal is a purchase a person has to make). Before
+# 2026-11-19 the warning reached nobody: a stage warning only turned the digest amber, and the
+# two-line post printed amber as the all-clear. The 8am digest now says each ending subscription in
+# its own line. The lead times live in ftm_feeds.PAID_SOURCES: SUBSCRIPTION_WARN_DAYS for the notice
+# site (it set both before the recorder had its own) and ROD_SUBSCRIPTION_WARN_DAYS for the recorder.
+SUBSCRIPTION_WARN_DAYS = _warn_days("tnpublicnotice")
+ROD_SUBSCRIPTION_WARN_DAYS = _warn_days("register_of_deeds")
 
 
 def _subscription_warning(res, today: datetime | None = None) -> None:
@@ -147,6 +164,24 @@ def _subscription_warning(res, today: datetime | None = None) -> None:
         )
 
 
+def _search_warnings(res, searches, bounded: bool = False) -> None:
+    """Say which saved searches were not really read. A search that never opened, or whose date
+    window could not be applied, adds nothing and reads exactly like a quiet day (Knox probate
+    produced nothing for a week before anyone could tell why), so each one is a run warning."""
+    import scraper
+
+    for note in getattr(scraper, "DAILY_WINDOW_NOTE", []) or []:
+        res.warnings.append("Daily date window: " + note + ".")
+    stats = getattr(scraper, "SEARCH_STATS", {}) or {}
+    for s in searches:
+        row = stats.get(s.saved_search_name) or {}
+        if row.get("window_failed"):
+            res.warnings.append(f"{s.saved_search_name}: the date window could not be applied, "
+                                "so this search read nothing.")
+        elif not row.get("reached") and not bounded:
+            res.warnings.append(f"{s.saved_search_name}: the search never opened, so it read nothing.")
+
+
 def _next_proxy_session_suffix() -> str:
     """Return a rotating suffix so each run gets a different upstream IP.
 
@@ -166,6 +201,20 @@ def _next_proxy_session_suffix() -> str:
     except Exception as exc:
         logger.debug("Could not persist proxy session counter: %s", exc)
     return f"_{n}"
+
+
+def _notes_problem(up: dict) -> str:
+    """What to say when an upload's notes did not land, or "" when they did.
+
+    The notes carry the notice type, the Auction line, the source link and the Lien debtor line a
+    release check reads. On 2026-11-19 every note went to a retired route and the runs read OK.
+    A stray refusal stays a warning; three or more, or every note in the file, fails the stage so
+    the run report reaches #issues."""
+    bad, tried = int(up.get("notes_failed") or 0), int(up.get("notes_tried") or 0)
+    if not bad or (bad < 3 and bad < tried):
+        return ""
+    return ("NOTES NOT POSTED on %d of %d records (%s): the records are in DataSift, their notes are not"
+            % (bad, tried, up.get("notes_error") or "refused"))
 
 
 def _revert_seen(seen_ids: dict, before: set) -> None:
@@ -329,6 +378,7 @@ def _stage_notices(args) -> StageResult:
             raise _Blocked(res) from exc
 
     _subscription_warning(res)
+    _search_warnings(res, searches, bounded=bool(getattr(args, "max_notices", 0)))
 
     if not notices:
         # Deliberately a failure. Foreclosure and probate notices publish
@@ -436,6 +486,15 @@ def _stage_notices(args) -> StageResult:
             f"{res.records} records, {up['created']} into DataSift, "
             f"{up['fielded']} with custom fields, {up['failed']} failed"
         )
+        # The records are in, so the notices stay handled even when their notes did not land
+        # (re-scraping them would spend page views on an IP the site rations). The run reads red
+        # so a person, or the issue fixer, sees it and backfills with
+        # `python src/datasift_api_upload.py --csv <this file> --commit`.
+        problem = _notes_problem(up)
+        if problem:
+            res.status = "failed"
+            res.detail += (f"; {problem}; backfill: datasift_api_upload.py --csv "
+                           f"{os.path.basename(str(csv_path))} --commit")
         # ONLY here. The records are in the CRM, so skipping them next run is
         # correct. Persisting any earlier is how an aborted run silently
         # orphaned 204 notices: flagged as done, never sent.
@@ -560,6 +619,12 @@ def _stage_county(args) -> StageResult:
     res.uploaded = up["created"]
     res.status = "ok" if (not args.commit or up["created"]) else "failed"
     res.detail = f"{len(rows)} records, {up['created']} into DataSift"
+    # A lien's release check reads the debtor line in the record's notes, so liens whose notes
+    # did not land stay staged and go again tomorrow, notes included.
+    problem = _notes_problem(up) if args.commit else ""
+    if problem and res.status == "ok":
+        res.status = "failed"
+        res.detail += f"; {problem}; the staged liens stay staged and are sent again tomorrow"
     # Only after a committed upload that landed. A dry run or a failed upload
     # leaves the staged liens to be sent tomorrow.
     if args.commit and res.status == "ok":
@@ -638,7 +703,7 @@ def _stage_liens(args) -> StageResult:
             f"{stats['with_parcels']} matched to {stats['parcels']} parcels"
         )
         days = stats.get("subscription_days")
-        if days is not None and days <= SUBSCRIPTION_WARN_DAYS:
+        if days is not None and days <= ROD_SUBSCRIPTION_WARN_DAYS:
             res.warnings.append(
                 f"The Register of Deeds subscription expires in {days} day(s). "
                 "Renew it at paxsub.knoxrod.org or the lien pull stops."
@@ -809,6 +874,42 @@ def _stage_sold(args) -> StageResult:
     return res
 
 
+def _stage_estate_ready(args) -> StageResult:
+    """The thirty-day tag that lets an obituary record into the estate call flow (Ty, 2026-11-17).
+
+    The estate call presets in the account ("Estate - 00..06") show a courthouse probate at once and
+    an obituary record only once its death is 30 days old. A preset cannot say that in one filter
+    (its keys AND, and the app reads a date window only on the include side), so the presets read
+    the probate notice tag OR the tag "Obituary 30+ Days". This stage puts that tag on every obituary
+    record whose obituary date crossed 30 days since the last run, about two a day
+    (src/agents/autopilot/flows.py `ready`). A record the stage misses waits a day, which is the safe
+    direction. Writes only on a committed run. Never fatal to the run.
+    """
+    res = StageResult(name="estate_ready")
+    t0 = time.time()
+    try:
+        # The autopilot client paces itself through a small SQLite budget; on this box it lives on
+        # the volume. Nothing else in this run imports the agents package, so this is the first say.
+        os.environ.setdefault("AGENTS_DATA_DIR", str(config.STATE_DIR / "agents"))
+        from agents.autopilot import flows, preset_patch
+        log_path = config.STATE_DIR / "estate_ready" / ("ready_%s.jsonl" % datetime.now().strftime("%Y-%m-%d"))
+        st = flows.ready(preset_patch.key_only_crm(1.0), commit=bool(args.commit), allowed=bool(args.commit),
+                         log_path=log_path, out=lambda *_a, **_k: None)
+    except Exception as exc:
+        res.status = "failed"
+        res.detail = f"{type(exc).__name__}: {exc}"
+        res.seconds = time.time() - t0
+        return res
+    res.status = "ok"
+    res.records = int(st.get("tagged") or 0)
+    if st.get("allowed"):
+        res.detail = f"{res.records} obituary record(s) tagged {flows.READY_TAG} (30 days past the death)"
+    else:
+        res.detail = f"dry: {st.get('due', 0)} obituary record(s) due the tag {flows.READY_TAG}"
+    res.seconds = time.time() - t0
+    return res
+
+
 # ── stages that are off until named in --stages ───────────────────────
 
 
@@ -845,7 +946,7 @@ def _stage_appointments(args) -> StageResult:
         res.records = stats["staged"]
         res.detail = knox_appointments.describe(stats)
         days = stats.get("subscription_days")
-        if days is not None and days <= SUBSCRIPTION_WARN_DAYS:
+        if days is not None and days <= ROD_SUBSCRIPTION_WARN_DAYS:
             res.warnings.append(
                 f"The Register of Deeds subscription expires in {days} day(s). "
                 "Renew it at paxsub.knoxrod.org or the recorder pulls stop.")
@@ -1034,7 +1135,8 @@ def _stage_sold_audit(args) -> StageResult:
 
 
 STAGE_FUNCS = {"notices": _stage_notices, "capture": _stage_capture,
-               "liens": _stage_liens, "county": _stage_county, "sold": _stage_sold,
+               "liens": _stage_liens, "county": _stage_county, "estate_ready": _stage_estate_ready,
+               "sold": _stage_sold,
                # Off unless named in --stages:
                "tax_sale": _stage_feed("tax_sale"), "tax_delinquent": _stage_feed("tax_delinquent"),
                "public_notices": _stage_feed("public_notices"),
@@ -1062,7 +1164,7 @@ def switch_report() -> list[str]:
 
         asked = ftm_feeds.requested_stages()
         extra = [s for s in asked if s not in TODAY_STAGES]
-        lines.append("\n  stages beyond today's five: " + (", ".join(extra) if extra else "none"))
+        lines.append("\n  stages beyond today's run: " + (", ".join(extra) if extra else "none"))
         unknown = [s for s in asked if s not in ALL_STAGES]
         if unknown:
             lines.append("    NOT A STAGE (the run would exit 2): " + ", ".join(unknown))
@@ -1123,6 +1225,8 @@ def doctor() -> int:
 
     for line in switch_report():
         print(line)
+    print(f"  subscription warnings: {SUBSCRIPTION_WARN_DAYS} days before tnpublicnotice ends, "
+          f"{ROD_SUBSCRIPTION_WARN_DAYS} before the Register of Deeds")
 
     print(f"\n  gate: {config.CAPTCHA_KIND}  sitekey={config.TURNSTILE_SITEKEY}")
     print(f"  output dir: {config.OUTPUT_DIR}")
@@ -1176,17 +1280,31 @@ def source_state(today: datetime | None = None) -> dict:
 
     The notice site prints its expiry date on the dashboard and the recorder prints days left in
     its header. Both are read during the run and both used to be thrown away unless they were
-    within three days, so "how long until either lapses" could only be answered by logging in."""
+    within three days, so "how long until either lapses" could only be answered by logging in.
+
+    Each reading keeps the day it was TAKEN (the modules stamp it), which is not always today: the
+    scheduler runs every run in one process, so a stage that stopped before it logged in leaves the
+    last reading on the module, and dating that today would add a day to the recorder's count."""
     out: dict = {}
-    day = (today or datetime.now()).strftime("%Y-%m-%d")
+    if today is not None:
+        day = today.strftime("%Y-%m-%d")
+    else:
+        try:
+            day = config.run_date()
+        except Exception:
+            day = datetime.now().strftime("%Y-%m-%d")
     try:
         # Read off the module only when a stage already loaded it: this must never be the
         # reason the browser library gets imported.
         sub = (sys.modules["scraper"].SUBSCRIPTION or {}) if "scraper" in sys.modules else {}
         expires = sub.get("expires") or ""
-        if expires:
-            left = (datetime.strptime(expires, "%Y-%m-%d").date() - datetime.strptime(day, "%Y-%m-%d").date()).days
-            out["tnpublicnotice"] = {"expires": expires, "days_left": left, "read": day,
+        if expires or sub.get("expired"):
+            left = None
+            if expires:
+                left = (datetime.strptime(expires, "%Y-%m-%d").date()
+                        - datetime.strptime(day, "%Y-%m-%d").date()).days
+            out["tnpublicnotice"] = {"expires": expires, "days_left": left, "read": sub.get("read") or day,
+                                     "state": "expired" if sub.get("expired") else "active",
                                      "product": sub.get("product") or ""}
     except Exception:
         pass
@@ -1194,7 +1312,8 @@ def source_state(today: datetime | None = None) -> dict:
         if "knox_rod" in sys.modules:
             sub = sys.modules["knox_rod"].SUBSCRIPTION or {}
             if sub.get("days") is not None or sub.get("state"):
-                out["register_of_deeds"] = {"days_left": sub.get("days"), "state": sub.get("state") or "", "read": day}
+                out["register_of_deeds"] = {"days_left": sub.get("days"), "state": sub.get("state") or "",
+                                            "read": sub.get("read") or day}
     except Exception:
         pass
     return out
@@ -1326,6 +1445,10 @@ def main(argv=None) -> int:
             ))
 
     run.finished = datetime.now().isoformat(timespec="seconds")
+    try:
+        run.sources = source_state()
+    except Exception as exc:  # noqa: BLE001  (bookkeeping must never cost the run its log)
+        logger.debug("Could not read the paid sources: %s", exc)
 
     print("\n" + "=" * 60)
     print(_summary_text(run).replace(":rotating_light:", "!!").replace(":white_check_mark:", "OK"))

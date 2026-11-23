@@ -73,6 +73,9 @@ CREATE TABLE IF NOT EXISTS ap_texts (
 CREATE INDEX IF NOT EXISTS ap_texts_owner ON ap_texts(owner_uuid, day);
 CREATE INDEX IF NOT EXISTS ap_texts_batch ON ap_texts(batch_id, record_uuid);
 CREATE INDEX IF NOT EXISTS ap_texts_day ON ap_texts(day, status);
+CREATE TABLE IF NOT EXISTS ap_sc_texted (
+    number TEXT PRIMARY KEY, first_seen TEXT, last_seen TEXT, times INTEGER DEFAULT 1, batch_id INTEGER DEFAULT 0,
+    stage TEXT DEFAULT '', owner_uuid TEXT DEFAULT '', record_uuid TEXT DEFAULT '');
 """
 _READY: set = set()
 OTHER = "other"                  # a text the record's own counter shows and the autopilot did not send
@@ -95,9 +98,12 @@ def ensure() -> None:
 class Limits:
     call_hours: tuple = (9 * 60, 19 * 60)      # people call 9am to 7pm, on both clocks
     text_hours: tuple = (9 * 60, 18 * 60)      # what the machine sends goes out 9am to 6pm, on both clocks
-    calls_per_line_day: int = 25
+    # The two caller ID line rules are OFF (0) unless a playbook sets them: they are number-reputation
+    # tactics, and Ty, 2026-11-15, does not want caller ID checks in SiftStack ("a very dated tactic";
+    # the callers use a separate tool). The text-side caps below are carrier throughput, not reputation.
+    calls_per_line_day: int = 0
     texts_per_line_day: int = 25
-    lines_per_caller: int = 10
+    lines_per_caller: int = 0
     text_lines: int = 10                       # how many sending numbers carry the day's texts
     monthly_texts: int = 20000
     owner_texts_day: int = 1
@@ -313,6 +319,25 @@ def release_text(batch_id: int, record_uuid: str, keep_numbers) -> int:
     return done
 
 
+def unrelease(batch_id: int, numbers) -> dict[str, int]:
+    """Take one batch's released texts to these numbers out of the count: the batch was released while
+    Smarter Contact was still building its load, and the final answer shows the numbers never went into
+    a started campaign (textlane.settle_loads). Returns record uuid -> how many rows. A row taken out
+    reads not_loaded: no limit, thread or touch counts it, so its owner can be texted again."""
+    ensure()
+    want = {gate.digits(n) for n in numbers or []} - {""}
+    out: dict[str, int] = {}
+    if not want:
+        return out
+    with store._LOCK, store._db() as c:
+        for r in c.execute("SELECT id, number, record_uuid FROM ap_texts WHERE batch_id=? AND status='released'",
+                           (int(batch_id),)).fetchall():
+            if r["number"] in want:
+                c.execute("UPDATE ap_texts SET status='not_loaded' WHERE id=?", (r["id"],))
+                out[r["record_uuid"] or ""] = out.get(r["record_uuid"] or "", 0) + 1
+    return out
+
+
 def drop_text(batch_id: int, record_uuid: str = "", status: str = "dropped") -> int:
     """Take a batch's staged rows (one record's, or all of them) out of the count."""
     ensure()
@@ -485,6 +510,56 @@ def own_bump(record_uuid: str, total: int, when: datetime) -> None:
         ledger.set_fact(record_uuid, SEEN_FACT, {"total": int(total), "at": _iso(when)})
 
 
+# ---------------------------------------------------------------------- numbers Smarter Contact texted before
+# The texting app gives text 1 only to a number whose Smarter Contact thread holds no text yet
+# (sc_load, skip_texted): the October Priority 1 campaigns texted thousands of these owners from
+# Smarter Contact itself, and nothing in DataSift says so. Each number it leaves out for that reason
+# is remembered here, by number, for good (a thread does not go away), so text 1 is never staged to
+# it again (2026-11-19: batch 8 re-staged 17 owners batch 5 had already lost this way, a slot each).
+def note_sc_texted(numbers: dict, *, batch_id: int = 0, stage: str = "", now: datetime | None = None) -> int:
+    """Remember numbers Smarter Contact said it had texted before. `numbers` maps a number to its
+    (owner uuid, record uuid), either may be empty. Returns how many were not known yet."""
+    ensure()
+    stamp = _iso(now) if now else store.now()
+    new = 0
+    with store._LOCK, store._db() as c:
+        for raw, who in (numbers or {}).items():
+            n = gate.digits(raw)
+            if not n:
+                continue
+            owner, record = (tuple(who) + ("", ""))[:2] if isinstance(who, (list, tuple)) else ("", "")
+            row = c.execute("SELECT number FROM ap_sc_texted WHERE number=?", (n,)).fetchone()
+            if row is None:
+                c.execute("INSERT INTO ap_sc_texted (number, first_seen, last_seen, times, batch_id, stage, owner_uuid, "
+                          "record_uuid) VALUES (?,?,?,1,?,?,?,?)",
+                          (n, stamp, stamp, int(batch_id or 0), stage or "", owner or "", record or ""))
+                new += 1
+            else:
+                c.execute("UPDATE ap_sc_texted SET last_seen=?, times=times+1 WHERE number=?", (stamp, n))
+    return new
+
+
+def sc_texted(numbers) -> set[str]:
+    """Which of these numbers Smarter Contact has said it texted before."""
+    want = sorted({gate.digits(n) for n in numbers or []} - {""})
+    if not want:
+        return set()
+    ensure()
+    out: set[str] = set()
+    with store._LOCK, store._db() as c:
+        for i in range(0, len(want), 400):
+            part = want[i:i + 400]
+            q = "SELECT number FROM ap_sc_texted WHERE number IN (%s)" % ",".join("?" * len(part))
+            out.update(r["number"] for r in c.execute(q, part).fetchall())
+    return out
+
+
+def sc_texted_count() -> int:
+    ensure()
+    with store._LOCK, store._db() as c:
+        return int(c.execute("SELECT COUNT(*) AS n FROM ap_sc_texted").fetchone()["n"])
+
+
 # ---------------------------------------------------------------------- room: the check before the send
 @dataclass
 class Room:
@@ -650,12 +725,13 @@ def day_breaches(start: datetime, end: datetime, lim: Limits, tz: str, policy=No
     add("dialed outside %s on the business clock" % _hours_text(lim.call_hours), late, late_ex)
     add("dialed outside the owner's own daytime", own, own_ex)
 
-    # --- 25 dials per caller ID line
+    # --- dials per caller ID line (off at 0, the default: see Limits)
     per_line: Counter = Counter(e["data"].get("line") or "" for e in dials)
     per_line.pop("", None)
-    over = sorted(((n, ln) for ln, n in per_line.items() if n > int(lim.calls_per_line_day)), reverse=True)
-    add("a caller ID line carried more than %d dials" % lim.calls_per_line_day, len(over),
-        ["the line ending %s made %d" % (ln[-4:], n) for n, ln in over])
+    if int(lim.calls_per_line_day) > 0:
+        over = sorted(((n, ln) for ln, n in per_line.items() if n > int(lim.calls_per_line_day)), reverse=True)
+        add("a caller ID line carried more than %d dials" % lim.calls_per_line_day, len(over),
+            ["the line ending %s made %d" % (ln[-4:], n) for n, ln in over])
 
     # --- 10 lines per caller. A dial names no caller (the dialer adds the name on the answer), so a
     # line is matched to whoever answered calls on it; with one caller that day, every line is theirs.
@@ -672,9 +748,10 @@ def day_breaches(start: datetime, end: datetime, lim: Limits, tz: str, policy=No
             continue
         who = (e["data"].get("caller") or "").strip() or line_caller.get(ln) or (next(iter(named)) if len(named) == 1 else "")
         lines_by[who or "a caller the log does not name"].add(ln)
-    wide = sorted(((len(v), k) for k, v in lines_by.items() if len(v) > int(lim.lines_per_caller)), reverse=True)
-    add("a caller dialed from more than %d numbers" % lim.lines_per_caller, len(wide),
-        ["%s used %d" % (who, n) for n, who in wide])
+    if int(lim.lines_per_caller) > 0:       # off at 0, the default: see Limits
+        wide = sorted(((len(v), k) for k, v in lines_by.items() if len(v) > int(lim.lines_per_caller)), reverse=True)
+        add("a caller dialed from more than %d numbers" % lim.lines_per_caller, len(wide),
+            ["%s used %d" % (who, n) for n, who in wide])
 
     # --- one call per owner a day: the same number of an owner dialed again
     per_owner_number: Counter = Counter((e["resource"], e["data"].get("number") or "") for e in dials if e["data"].get("number"))
@@ -757,7 +834,8 @@ def run_limits(ctx) -> None:
     local = ctx.now.astimezone(zone)
     today0 = local.replace(hour=0, minute=0, second=0, microsecond=0)
     # An evening run (after calling hours) checks today; a morning run checks yesterday.
-    last = today0 + timedelta(days=1) if local.hour >= int(st.get("day_ends_hour", 19)) else today0
+    evening = local.hour >= int(st.get("day_ends_hour", 19))
+    last = today0 + timedelta(days=1) if evening else today0
     days = max(1, int(st.get("days", 1)))
     total_n, shown_day, shown = 0, "", ([], {})
     for i in range(days, 0, -1):
@@ -773,7 +851,12 @@ def run_limits(ctx) -> None:
     ctx.out.found = totals.get("dials", 0) + totals.get("texts", 0)
     for b in sorted(found, key=lambda x: -x["n"]):
         ctx.out.tally[b["label"]] = b["n"]
-        ctx.out.problem("%d: %s%s" % (b["n"], b["label"], (" (%s)" % ", ".join(b["examples"])) if b["examples"] else ""))
+        text = "%d: %s%s" % (b["n"], b["label"], (" (%s)" % ", ".join(b["examples"])) if b["examples"] else "")
+        # A day's broken limits are said once, by the morning run that reads the whole day. The evening
+        # run reads the same day so far, and its problems were posted again the next morning (each run
+        # falls on a different business day): 11-17's three broken limits went to the issues channel at
+        # 7:20pm and again at 7:25am. So the evening run keeps them as lines.
+        (ctx.out.line if evening else ctx.out.problem)(text)
     ctx.out.tally["dials checked"] = totals.get("dials", 0)
     ctx.out.tally["texts checked"] = totals.get("texts", 0)
     ctx.out.tally["caller ID lines used"] = totals.get("lines", 0)
@@ -789,7 +872,9 @@ def run_limits(ctx) -> None:
     if not ctx.out.found:
         ctx.out.head = "%s: no dials or texts to check." % nice
     elif found:
-        ctx.out.head = "%s: %s. %d limit(s) were broken; each is named below." % (nice, what, len(found))
+        ctx.out.head = "%s%s: %s. %d limit(s) were broken; each is named below%s." % (
+            nice, " so far" if evening else "", what, len(found),
+            " and said in the morning, once the whole day is read" if evening else "")
     else:
         ctx.out.head = "%s: %s. Every limit held." % (nice, what)
 

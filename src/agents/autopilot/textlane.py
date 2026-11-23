@@ -80,12 +80,27 @@ log = logging.getLogger(__name__)
 KIND = "text"                       # the ap_batches kind every text batch carries
 SERIES = ("opening", "followup")
 CLOSED_FACT = "text_closed:%s:%s"   # series, lane: this record's series is over, do not read it again
+TEXT_ANCHOR = "text_anchor:%s:%s"  # stage, lane: series_start first_text, the day the stage's series began (set at release)
+PRIOR_DAYS = 45                    # how far back a first_text stage looks for another stage's text in the series
 ANCHOR_FACT = "followup_anchor:%s"  # lane: the lane day the follow-up series opened for the record
 UNKNOWN_FACT = "text_entry_unknown:%s"   # lane: the record's log did not show when it entered the lane
 UNKNOWN_RETRY = timedelta(hours=20)      # ask the log again on a later day
 UNKNOWN_TRIES = 3                        # after that many empty answers the record is taken as old
 SCREEN_PLAN_HIT = "death_screen_plan_hit"
 TIER_RANK = {"Dial First": 0, "Dial Second": 1}
+# Text 1 and the numbers Smarter Contact texted before (2026-11-19). The texting app starts text 1 only
+# on a number whose Smarter Contact thread holds no text yet, and says so per number; the brain
+# remembers each one (limits.note_sc_texted) and never stages text 1 to it again. An owner left with no
+# other number is closed for the opening texts, and looked at again after SC_RECHECK_DAYS in case a
+# trace has found a new number since.
+SC_BEFORE = "texted before"              # how the texting app's reason for that skip starts (sc_load.run)
+SC_CLOSED_WHY = "texted before in Smarter Contact"
+SC_RECHECK_DAYS = 30
+SC_LEARNED_KEY = "autopilot:sc_texted:learned"   # the highest text batch whose load was read for them
+SC_LEFT_OUT = "numbers left out of text 1: Smarter Contact texted them before (text 1 goes only to a new thread)"
+SC_CLOSED = "opening texts closed for the record: Smarter Contact texted every number it could get text 1 on before"
+SC_HOLD = "Smarter Contact texted every number before (text 1 goes only to a number with no thread)"
+SC_NOT_LOADED = "not loaded: Smarter Contact texted the number before (remembered, never staged for text 1 again)"
 
 # ---------------------------------------------------------------------- the copy
 # Placeholders: {first} the owner's first name, {addr} the street line, {sender} the first name of
@@ -158,6 +173,46 @@ URGENT = {
         "Hey there, on {addr} I can skip the listing and work around your date. Worth a quick call? {sender}",
     ]),
 }
+# Texts 1 to 3 for a probate record (Ty, 2026-11-18: the Priority 1 opener asks "Still the owner?",
+# which reads wrong to an executor whose parent just died). They go to the personal representative the
+# court named, so they never assume the person owns the house, never ask "is it yours", and never name
+# the death, the estate or the court: 1 is the right-person check, 2 the soft ask, 3 what selling to
+# us looks like. A stage maps a list to this set with `list_sets: {Probate: ftm_probate}`.
+PROBATE = {
+    1: ([
+        "Hi {first}, it's {sender}, a local buyer. Sorry to bother you. Am I reaching the right person about {addr}?",
+        "Hey {first}, {sender} here. I hope I have the right number. Are you the person to ask about {addr}?",
+        "Hi {first}, this is {sender}. I'll keep it short. Who would be the best person to talk to about {addr}?",
+        "Hey {first}, it's {sender}, a buyer here in town. Is {addr} something you have a say in?",
+    ], [
+        "Hello, this is {sender} with a quick question. Is there a good person to ask about {addr}?",
+        "Hey there, {sender} here. Who would be the best person to talk to about {addr}?",
+    ]),
+    2: ([
+        "Hi {first}, {sender} again. If selling {addr} is ever on the table, could we talk? No rush at all.",
+        "Hey {first}, following up about {addr}. Would selling it ever be worth a short talk? {sender}",
+        "Hi {first}, it's {sender}. No pressure on {addr}. Would you ever want to hear what I could do?",
+        "Hey {first}, {sender} here. Whenever the time is right, would you talk with me about {addr}?",
+    ], [
+        "Hello, it's {sender}. If {addr} might be sold someday, I'd be glad to talk. Would that be alright?",
+        "Hey there, {sender} checking in on {addr}. Is a quick chat about selling worth it at some point?",
+    ]),
+    3: ([
+        "Hi {first}, I buy as-is, so {addr} would need no repairs or cleanout. Worth a short call? {sender}",
+        "Hey {first}, with me {addr} needs no showings and no agent, and I work around your timing. Can we talk? {sender}",
+        "Hi {first}, {sender} here. I keep things simple on {addr}: as-is, your timing, no agent. Open to a quick call?",
+        "Hey {first}, I can take {addr} as it sits and keep the paperwork easy. Worth a short talk? {sender}",
+    ], [
+        "Hi, {sender} here. I buy as-is, so {addr} would need no repairs or cleanout. Would a short call help?",
+        "Hey there, with me {addr} needs no showings and no agent. Is the right person open to a call? {sender}",
+    ]),
+}
+SETS = ("p1", "ftm_followup", "ftm_urgent", "ftm_probate")
+SET_WORDS = {"ftm_probate": "Probate"}      # the word a list set's groups carry, so its campaigns never mix sets
+
+
+def _list_names(rec: dict) -> set[str]:
+    return {str((x.get("title") or x.get("name")) if isinstance(x, dict) else x).strip().lower() for x in rec.get("lists") or []}
 # The afternoon text (plan 1.3): one short message to a number that was dialed today and not
 # reached, in the thread the owner already has. Every line is true by construction: the number was
 # dialed today, and "again" is true because the thread exists.
@@ -263,6 +318,9 @@ def variants() -> list[tuple[str, str, bool, str]]:
     for step, (named, noname) in URGENT.items():
         out += [("urgent text %d named[%d]" % (step, i), t, True, "ask") for i, t in enumerate(named)]
         out += [("urgent text %d no-name[%d]" % (step, i), t, False, "ask") for i, t in enumerate(noname)]
+    for step, (named, noname) in PROBATE.items():
+        out += [("probate text %d named[%d]" % (step, i), t, True, "ask") for i, t in enumerate(named)]
+        out += [("probate text %d no-name[%d]" % (step, i), t, False, "ask") for i, t in enumerate(noname)]
     out += [("afternoon named[%d]" % i, t, True, "thread") for i, t in enumerate(AFTERNOON[0])]
     out += [("afternoon no-name[%d]" % i, t, False, "thread") for i, t in enumerate(AFTERNOON[1])]
     return out
@@ -353,6 +411,8 @@ def template_title(template_set: str, step: int, audience: str, i: int) -> str:
         return "FTM F%d %s %02d" % (step, aud, i)
     if template_set == "ftm_urgent":
         return "FTM Urgent T%d %s %02d" % (step, aud, i)
+    if template_set == "ftm_probate":
+        return "FTM Probate T%d %s %02d" % (step, aud, i)
     return "P1 T%d %s %02d" % (step, aud, i)
 
 
@@ -361,7 +421,7 @@ def templates(sender: str) -> list[dict]:
     as a literal name), for whoever creates them there. The afternoon text is not a template: it
     is typed into an open thread, one owner at a time."""
     out = []
-    for template_set, pools in (("ftm_followup", FOLLOWUP), ("ftm_urgent", URGENT)):
+    for template_set, pools in (("ftm_followup", FOLLOWUP), ("ftm_urgent", URGENT), ("ftm_probate", PROBATE)):
         for step, (named, noname) in pools.items():
             for audience, pool in (("named", named), ("noname", noname)):
                 for i, text in enumerate(pool, 1):
@@ -379,6 +439,8 @@ def template_titles(template_set: str, step: int, audience: str) -> list[str]:
         pool = FOLLOWUP[step][1 if audience == "noname" else 0]
     elif template_set == "ftm_urgent":
         pool = URGENT[step][1 if audience == "noname" else 0]
+    elif template_set == "ftm_probate":
+        pool = PROBATE[step][1 if audience == "noname" else 0]
     elif template_set != "p1":
         return []            # a template set this module does not know: the load names it, the launcher finds it
     else:
@@ -559,13 +621,22 @@ def block_problems(st) -> list[str]:
         out.append("stage %s: labels must map a lane to its group name prefix" % st.id)
     if series == "opening" and not st.presets:
         out.append("stage %s: the opening texts need the presets that hold the lane's new records" % st.id)
-    for key, low in (("numbers_per_owner", 1), ("daily_owners", 0), ("max_records", 1), ("max_new", 1)):
+    for key, low in (("numbers_per_owner", 1), ("daily_owners", 0), ("max_records", 1), ("max_new", 1), ("sc_recheck_days", 0)):
         v = st.get(key)
         if v is not None and (isinstance(v, bool) or not isinstance(v, int) or v < low):
             out.append("stage %s: %s must be a whole number, %d or more" % (st.id, key, low))
     v = st.get("text_usd")
     if v is not None and (isinstance(v, bool) or not isinstance(v, (int, float)) or v < 0):
         out.append("stage %s: text_usd must be what one text costs, in dollars" % st.id)
+    if st.get("auto_release") is not None and not isinstance(st.get("auto_release"), bool):
+        out.append("stage %s: auto_release must be true or false" % st.id)
+    if st.get("since") and since_day(st) is None:
+        out.append("stage %s: since must be a date, YYYY-MM-DD" % st.id)
+    if series_start(st) not in ("lane", "first_text"):
+        out.append("stage %s: series_start must be lane or first_text, not %r" % (st.id, st.get("series_start")))
+    ls = st.get("list_sets")
+    if ls is not None and (not isinstance(ls, dict) or any(str(v) not in SETS for v in ls.values())):
+        out.append("stage %s: list_sets must map a list title to one of %s" % (st.id, ", ".join(SETS)))
     return out
 
 
@@ -773,6 +844,10 @@ def run_textlane(ctx: Ctx) -> None:
         ctx.out.head = "%s is not a sending day." % today.strftime("%A")
         return
     expire_stale(ctx, today_s)
+    if ctx.live:
+        # A load an earlier run stopped waiting on: its final answer corrects the count before anything new
+        # is staged, so today's texts never rest on a text that did not go.
+        settle_loads(ctx)
     if not limits.zones_known():
         ctx.out.problem("the area code table did not load on this box, so every number goes in the late group and no "
                         "owner's own clock is checked")
@@ -798,6 +873,17 @@ def run_textlane(ctx: Ctx) -> None:
     # Texts 1 to 3 go out on the templates the account already holds: the Priority 1 touches, which
     # acknowledge the noise and never the situation. A lane with its own opening copy names its set.
     opening_set = str(st.get("opening_set", "p1")).strip() or "p1"
+    # A record that entered its lane before `since` gets nothing from this stage: the follow-up
+    # series switched live on 2026-11-18 must not text weeks-old records that never had text 1.
+    since = since_day(st)
+    auto = bool(st.get("auto_release", False))
+    list_sets = {str(k): str(v) for k, v in dict(st.get("list_sets") or {}).items()}
+    recheck = sc_recheck_days(st)
+    if series == "opening":
+        learned = learn_past_loads(ctx.now)
+        if learned:
+            ctx.out.line("Learned %d number(s) Smarter Contact had texted before, from loads it answered earlier: text 1 is "
+                         "never staged to them." % learned)
 
     from . import ftmpipeline
     plans = {}
@@ -830,13 +916,21 @@ def run_textlane(ctx: Ctx) -> None:
     usd = 0.0
     messages = 0
     reads = new_reads = 0
+    closed_sc = 0
+    reopened: set = set()       # closed because Smarter Contact had texted every number, and due a fresh look
     by_step: Counter = Counter()
     tally = ctx.out.tally
     series_words = "opening texts" if series == "opening" else "follow-up texts"
     # On the board the series closes by the card's column, so it is remembered under its own key: a
     # series closed by the calendar before the board went live does not stop the board's texts.
-    keys = {ln: (CLOSED_FACT % (series, ln) + (":board" if plans[ln]["board"] else ""), UNKNOWN_FACT % ln,
-                 "lane_entry:%s" % ln) for ln in plans}
+    # series_start: first_text (Ty, 2026-11-18: "text all of the foreclosures in total"): the series
+    # counts from the day this stage first texts the record, not from when it entered the lane, so a
+    # foreclosure that landed weeks ago still gets texts 1 to 3. Its anchor and its closed mark are
+    # this stage's own, so the lane-day stage's marks neither block it nor are changed by it.
+    first_text = series_start(st) == "first_text"
+    keys = {ln: (CLOSED_FACT % (series, ln) + (":board" if plans[ln]["board"] else "") + ((":" + st.id) if first_text else ""),
+                 UNKNOWN_FACT % ln,
+                 (TEXT_ANCHOR % (st.id, ln)) if first_text else "lane_entry:%s" % ln) for ln in plans}
     facts = _facts(sorted({k for trio in keys.values() for k in trio} | {"death_screen"}))
 
     # Order of work, decided from what is already remembered and with no request made: lane by lane,
@@ -852,10 +946,18 @@ def run_textlane(ctx: Ctx) -> None:
             if row["_lane"] != ln:
                 continue
             u = row.get("uuid") or ""
-            if not u or u in facts[closed_key]:
+            if not u:
                 continue
+            if u in facts[closed_key]:
+                if not sc_reopens(facts[closed_key][u], ctx.now, recheck):
+                    continue
+                reopened.add(u)
+                tally["looked at again: closed %d or more days ago because Smarter Contact had texted every number" % recheck] += 1
             if u in facts[entry_key]:
                 known.append((title, row))
+                continue
+            if first_text:              # no lane entry to look up: a record with no anchor starts today
+                fresh.append((title, row))
                 continue
             tried = facts[unknown_key].get(u)
             if not isinstance(tried, dict):
@@ -904,6 +1006,22 @@ def run_textlane(ctx: Ctx) -> None:
                     # Asked before the record is opened: a card held for its call costs no read.
                     tally["the text for the card's day went already: the card waits on its call"] += 1
                     continue
+        elif first_text:
+            # The series counts from its first text: this stage's anchor, else the first text another
+            # stage already sent the owner in this series (so the lane-day stage's text 1 is followed by
+            # text 2 here, never a second text 1), else today. No log read.
+            # The OPENING series is the start of the whole sequence, so a follow-up stage counts from
+            # the owner's first opening text too, and an owner never opened stays at day 0 (no follow-up).
+            # A record looked at again after a Smarter Contact close starts over: its anchor is the day of
+            # a text 1 that never went out.
+            v = facts[entry_key].get(u) if u not in reopened else None
+            if v:
+                entered = date.fromisoformat(str(v)[:10])
+            else:
+                prior = limits.touches(owner, today_s, since_day=(today - timedelta(days=PRIOR_DAYS)).isoformat(),
+                                       series="opening") if owner else []
+                entered = min((date.fromisoformat(t["day"]) for t in prior), default=today)
+            day = lanes.business_days(entered, today)
         else:
             # Which day of the lane is it for this record? The first look reads the record's log once;
             # after that the answer is remembered, and a record whose series is over is never read again.
@@ -937,6 +1055,9 @@ def run_textlane(ctx: Ctx) -> None:
                 continue
             entered = entered_at.astimezone(zone).date()
             day = lanes.business_days(entered, today)
+        if since is not None and entered < since:
+            tally["entered the lane before %s, when these texts began" % since.isoformat()] += 1
+            continue
         if day > window[1]:
             ledger.set_fact(u, closed_key, {"day": day, "at": ctx.now.isoformat(timespec="seconds")})    # knowledge, kept in plan mode too
             tally["%s closed for the record (past day %d of the lane)" % (series_words, window[1])] += 1
@@ -1022,12 +1143,27 @@ def run_textlane(ctx: Ctx) -> None:
                 if not keep:
                     tally["no number left on the owner's thread"] += 1
                     continue
+            else:
+                # Text 1 goes only to a number Smarter Contact has no thread for. A number it said it
+                # texted before is left out here, before it can take a place in the load; an owner
+                # with no other number is closed for the opening texts, so it stops taking a slot
+                # every day, and looked at again after `sc_recheck_days`.
+                old = limits.sc_texted(n["number"] for n in keep)
+                if old:
+                    keep = [n for n in keep if n["number"] not in old]
+                    tally[SC_LEFT_OUT] += len(old)
+                    if not keep:
+                        ledger.set_fact(u, closed_key, {"why": SC_CLOSED_WHY, "day": day, "numbers": sorted(x[-4:] for x in old),
+                                                        "at": ctx.now.isoformat(timespec="seconds")})   # knowledge, kept in plan mode too
+                        tally[SC_CLOSED] += 1
+                        closed_sc += 1
+                        continue
         else:
             if steps_total in done_steps:
                 ledger.set_fact(u, closed_key, {"day": day, "at": ctx.now.isoformat(timespec="seconds")})
                 tally["finished the follow-up texts"] += 1
                 continue
-            anchor_key = ANCHOR_FACT % lane + (":board" if slot is not None else "")
+            anchor_key = ANCHOR_FACT % lane + (":board" if slot is not None else "") + ((":" + st.id) if first_text else "")
             anchor = ledger.fact(u, anchor_key)
             if not isinstance(anchor, int):
                 anchor = day
@@ -1092,15 +1228,25 @@ def run_textlane(ctx: Ctx) -> None:
             template_set, touch_no = "ftm_urgent", step
         else:
             template_set, touch_no = opening_set, step
+        # A record on a list the stage maps (list_sets) takes that list's opening copy, in groups of its
+        # own: one campaign is one set of templates, so two sets may never share a group.
+        group_label, set_word = label, ""
+        if template_set == opening_set and list_sets:
+            on = _list_names(rec)
+            hit = next((tset for lst, tset in list_sets.items() if lst.lower() in on), "")
+            if hit:
+                template_set, set_word = hit, SET_WORDS.get(hit, hit)
+                group_label = "%s %s" % (label, set_word)
         numbers = []
         for p in placed:
             mine_thread = threads.get(p["number"])
-            base = cohort_name(label, today, audience, p["tz"])
+            base = cohort_name(group_label, today, audience, p["tz"])
             if series == "opening" and step == 1:
                 group, cohort = base, base
             elif series == "opening":
                 cohort = (mine_thread or {}).get("thread", "").split(":", 1)[-1] or base
-                group = "%s T%d" % (cohort, step) + (" Urgent" if template_set == "ftm_urgent" else "")
+                group = "%s T%d" % (cohort, step) + (" Urgent" if template_set == "ftm_urgent" else "") + \
+                    ((" " + set_word) if set_word and set_word not in cohort else "")
                 offs = list(tl.get("opening_texts") or [])
                 due = add_business_days(date.fromisoformat((mine_thread or {}).get("day") or today_s), offs[step - 1] - offs[0])
                 if due != today:
@@ -1113,12 +1259,18 @@ def run_textlane(ctx: Ctx) -> None:
                             "thread": "%s:%s" % (system, cohort), "new_contact": mine_thread is None})
         first, last, values = contact_values(rec)
         street = _street(rec)
-        items.append({"record_uuid": u, "owner_uuid": owner, "street": street, "day": today_s, "lane": lane, "lane_day": day,
-                      "series": series, "step": step, "touch": "%s:%s:%s:%d:%s" % (st.id, owner, series, step, today_s),
-                      "system": system, "campaign": True, "audience": audience, "template_set": template_set,
-                      "template_touch": touch_no, "templates": template_titles(template_set, touch_no, audience),
-                      "first_name": first, "last_name": last, "values": values, "numbers": numbers, "price": price,
-                      "sms_before": int(rec.get("sms_attempts") or 0), "text": ""})
+        item = {"record_uuid": u, "owner_uuid": owner, "street": street, "day": today_s, "lane": lane, "lane_day": day,
+                "series": series, "step": step, "touch": "%s:%s:%s:%d:%s" % (st.id, owner, series, step, today_s),
+                "system": system, "campaign": True, "audience": audience, "template_set": template_set,
+                "template_touch": touch_no, "templates": template_titles(template_set, touch_no, audience),
+                "first_name": first, "last_name": last, "values": values, "numbers": numbers, "price": price,
+                "sms_before": int(rec.get("sms_attempts") or 0), "text": ""}
+        if first_text and (u not in facts[entry_key] or u in reopened):
+            # The series' day 0. It is written when the text is handed over (release), and only for an
+            # owner whose numbers the texting side took: a load Smarter Contact refused, or a batch nobody
+            # released, must not start the series' clock, or the series closes before its texts go.
+            item["anchor"] = {"key": entry_key, "day": entered.isoformat()}
+        items.append(item)
         owners_in.add(owner)
         numbers_in.update(n["number"] for n in numbers)
         usd += price
@@ -1133,19 +1285,75 @@ def run_textlane(ctx: Ctx) -> None:
     if len(plans) > 1:
         per = Counter(it["lane"] for it in items)
         mix += "; " + ", ".join("%d %s" % (per[ln], lanes.name(ln)) for ln in plans if per.get(ln))
+    # The owners this run closed because Smarter Contact had texted every number they could get text 1
+    # on are said in the head, so the run summary carries it whatever else the run did.
+    closed_note = (" Closed the opening texts for %d owner(s): Smarter Contact texted every number they could get text 1 on "
+                   "before, so they no longer take a place in the day's texts." % closed_sc) if closed_sc else ""
     if not items:
-        ctx.out.head = "No owner in the %s lane is due %s today." % (_lane_words(list(plans)), what)
+        ctx.out.head = "No owner in the %s lane is due %s today.%s" % (_lane_words(list(plans)), what, closed_note)
         return
     ctx.out.acted = len(items)
     if not ctx.live:
         ctx.reserve(usd)
-        ctx.out.head = "Would stage %d text(s) to %d owner(s), about $%.2f: %s. Nothing is sent until a person releases the batch." % (
-            messages, len(items), usd, mix)
+        ctx.out.head = "Would stage %d text(s) to %d owner(s), about $%.2f: %s. Nothing is sent until a person releases the batch.%s" % (
+            messages, len(items), usd, mix, closed_note)
         return
     bid = stage_batch(ctx, items, usd)
     ctx.out.batch = bid
+    if auto:
+        release_and_load(ctx, bid, messages, len(items), mix)
+        ctx.out.head += closed_note
+        return
     ctx.out.head = ("Staged batch %d: %d text(s) to %d owner(s), about $%.2f (%s). Nothing is sent until a person releases it: "
-                    "python src/agents/cli.py autopilot release %d --commit" % (bid, messages, len(items), usd, mix, bid))
+                    "python src/agents/cli.py autopilot release %d --commit%s" % (bid, messages, len(items), usd, mix, bid,
+                                                                                   closed_note))
+
+
+def series_start(st) -> str:
+    """lane (default): the series counts from the day the record entered its lane. first_text: from
+    the day this stage first texts it, for a backlog the lane-day stage can no longer reach."""
+    return str(st.get("series_start", "lane") or "lane").strip().lower()
+
+
+def since_day(st) -> date | None:
+    v = st.get("since")
+    if not v:
+        return None
+    try:
+        return date.fromisoformat(str(v)[:10])
+    except ValueError:
+        return None
+
+
+def release_and_load(ctx: Ctx, bid: int, messages: int, owners: int, mix: str, loader=None) -> None:
+    """The stage releases its own batch and the texting app loads it into Smarter Contact (Ty,
+    2026-11-18: the first-to-market texts run with no person releasing them, decision D41 for this
+    lane). The release runs every check again on every owner, and only what Smarter Contact
+    loaded is counted as texted."""
+    from . import scpush
+    loader = loader or scpush.hand_over
+    try:
+        res = release(bid, crm=ctx.crm, pol=ctx.policy, commit=True, now=ctx.now, loader=loader)
+    except SystemExit as exc:
+        ctx.out.problem("batch %d was staged but could not release itself (%s); it waits for a person" % (bid, exc))
+        ctx.out.head = "Staged batch %d: %d text(s) to %d owner(s), and it could not release itself." % (bid, messages, owners)
+        return
+    for p in res.get("problems") or []:
+        ctx.out.problem(p)
+    doc = res.get("loader")
+    if doc is None:
+        held = ", ".join("%d %s" % (n, w) for w, n in (res.get("held") or {}).items())
+        ctx.out.head = "Batch %d: nothing passed the release checks%s." % (bid, (" (%s)" % held) if held else "")
+        return
+    line, problems = scpush.words(doc)
+    for p in problems:
+        ctx.out.problem(p)
+    ctx.out.acted = int(res.get("owners") or 0)
+    ctx.out.head = "Batch %d (%s): %d text(s) to %d owner(s) released. %s" % (
+        bid, mix, int(res.get("texts") or 0), int(res.get("owners") or 0), line)
+    if res.get("sc_texted"):
+        ctx.out.head += (" The %d number(s) Smarter Contact had texted before are remembered, so text 1 is never staged to "
+                         "them again." % int(res["sc_texted"]))
 
 
 # ---------------------------------------------------------------------- release
@@ -1194,13 +1402,19 @@ def build_load(batch: dict, kept: list[dict], held: list[dict], now: datetime, t
             "groups": sorted(groups.values(), key=lambda g: g["name"]), "contacts": contacts, "held": held}
 
 
-def release(batch_id: int, *, crm=None, pol=None, commit: bool = False, now: datetime | None = None, uploaded: bool = False) -> dict:
+def release(batch_id: int, *, crm=None, pol=None, commit: bool = False, now: datetime | None = None, uploaded: bool = False,
+            loader=None) -> dict:
     """A person releases a staged text batch. Every owner is checked again first (the gate, the
     registry rule, the reply mark, the limits and the sending hours): someone who opted out, died,
     sold, became a lead or answered since the batch was staged gets nothing. What passes is written
     to a load file for the texting side, counted in the text ledger, and the record's text counter
     is raised by one. Dry unless commit; a dry release reads and reports and writes nothing to the
-    account. This function hands the load over. It does not send."""
+    account. This function hands the load over. It does not send.
+
+    `loader` (a stage with auto_release, 2026-11-18) is called with the load before anything is
+    counted, and only what it reports loaded is counted: a load Smarter Contact refused (no number
+    able to send, a missing template) leaves nobody marked as texted, so tomorrow's run gives the
+    same owners text 1 again instead of skipping ahead to text 2."""
     from . import policy as policy_mod
     b = ledger.batch(int(batch_id))
     if not b:
@@ -1261,11 +1475,17 @@ def release(batch_id: int, *, crm=None, pol=None, commit: bool = False, now: dat
                 closed += 1
                 continue
             nums.append(dict(n, send_at=limits._iso(when)))
+        old = set()
+        if str(it.get("series") or "") == "opening" and int(it.get("step") or 0) == 1 and nums:
+            # Learned since the batch was staged (another load the same day): text 1 never goes to it.
+            old = limits.sc_texted(n["number"] for n in nums)
+            nums = [n for n in nums if n["number"] not in old]
         if it.get("send_by") and now > datetime.fromisoformat(it["send_by"]):
             hold(it, "past the time the afternoon texts go out by: they are not sent late")
             continue
         if not nums:
-            hold(it, "the sending window has closed for today" if closed else "no number left that a text may use")
+            hold(it, SC_HOLD if old else ("the sending window has closed for today" if closed else
+                                          "no number left that a text may use"))
             continue
         r = limits.room(owner, "text", min(datetime.fromisoformat(n["send_at"]) for n in nums), policy=pol, lim=lim, tz=tz,
                         system=it.get("system") or "", campaign=bool(it.get("campaign", True)), exclude_batch=int(batch_id))
@@ -1289,6 +1509,30 @@ def release(batch_id: int, *, crm=None, pol=None, commit: bool = False, now: dat
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(json.dumps(load, indent=1, default=str), encoding="utf-8")
         path = str(p)
+    loaded_doc = None
+    sc = {"sc_texted": 0, "sc_texted_new": 0}
+    if loader is not None and kept:
+        loaded_doc = loader(load)
+        # Every number Smarter Contact would not give text 1 because it texted it before is remembered
+        # first, whatever else the answer says, so tomorrow's run never stages text 1 to it again.
+        before, sc["sc_texted_new"] = remember_texted_before(load, loaded_doc, batch_id=int(batch_id), stage=st.id, now=now)
+        pre = {gate.digits(n["number"]) for it in kept for n in it["numbers"]}
+        kept, lost = narrow_to_loaded(kept, loaded_doc)
+        post = {gate.digits(n["number"]) for it in kept for n in it["numbers"]}
+        sc["sc_texted"] = len((pre - post) & before)
+        if sc["sc_texted"]:
+            why_count[SC_NOT_LOADED] += sc["sc_texted"]
+        if lost - sc["sc_texted"] > 0:
+            why_count["not loaded into Smarter Contact"] += lost - sc["sc_texted"]
+        if not kept:
+            limits.drop_text(int(batch_id))
+            ledger.batch_set(int(batch_id), "held", dict({"owners": 0, "texts": 0, "held": dict(why_count), "load": path,
+                                                          "loader": loaded_doc, "problems": out.problems}, **sc))
+            return dict({"batch": int(batch_id), "run": ctx.run_id, "owners": 0, "texts": 0, "of": len(items),
+                         "held": dict(why_count), "load": path, "problems": out.problems, "loader": loaded_doc,
+                         "next": "Nothing went out, so nothing was counted: the same owners are tried again on the next run, "
+                                 "except at a number Smarter Contact texted before, which is remembered and left out."}, **sc)
+    texts = sum(len(it["numbers"]) for it in kept)
     state: dict = {}
     bump = bool(st.get("bump_counter", True))
     for it in kept:
@@ -1313,13 +1557,313 @@ def release(batch_id: int, *, crm=None, pol=None, commit: bool = False, now: dat
             if not state.get("broken"):
                 limits.own_bump(u, cur + 1, now)
         limits.release_text(int(batch_id), u, [n["number"] for n in it["numbers"]])
+        a = it.get("anchor") if isinstance(it.get("anchor"), dict) else {}
+        if a.get("key") and a.get("day"):
+            ledger.set_fact(u, a["key"], a["day"])      # a first_text series' day 0, from the text that was handed over
         ledger.event(ctx.run_id, st.id, u, "text", {"series": it["series"], "step": it["step"], "numbers": len(it["numbers"]),
                                                     "system": it.get("system") or "", "est_usd": it.get("price") or 0},
                      now=now, tz=tz)
     limits.drop_text(int(batch_id))          # whatever is still staged in this batch was held back
     ledger.batch_set(int(batch_id), "sent" if kept else "held",
-                     {"owners": len(kept), "texts": texts, "held": dict(why_count), "load": path, "problems": out.problems})
-    said = ("Handed over, not sent: the texting side takes the load file from here." if kept
-            else "Nothing passed the checks, so nothing was handed over.")
-    return {"batch": int(batch_id), "run": ctx.run_id, "owners": len(kept), "texts": texts, "of": len(items),
-            "held": dict(why_count), "load": path, "problems": out.problems, "next": said}
+                     dict({"owners": len(kept), "texts": texts, "held": dict(why_count), "load": path, "problems": out.problems,
+                           "loader": loaded_doc}, **(sc if loaded_doc is not None else {})))
+    if loaded_doc is not None:
+        said = ("Loaded into Smarter Contact: its campaigns send from here." if kept
+                else "Nothing passed the checks, so nothing was handed over.")
+    else:
+        said = ("Handed over, not sent: the texting side takes the load file from here." if kept
+                else "Nothing passed the checks, so nothing was handed over.")
+    return dict({"batch": int(batch_id), "run": ctx.run_id, "owners": len(kept), "texts": texts, "of": len(items),
+                 "held": dict(why_count), "load": path, "problems": out.problems, "next": said, "loader": loaded_doc}, **sc)
+
+
+def narrow_to_loaded(kept: list[dict], doc: dict | None) -> tuple[list[dict], int]:
+    """(the items, each holding only its numbers the texting side loaded; how many numbers were lost).
+    A done load names its numbers; a refused or failed one loaded nothing; one still building when
+    the stage stopped waiting is taken as loaded (the texting side finishes it), because counting a
+    text that went out as not sent would send the same owner text 1 twice. A later run reads that
+    load's final answer and takes out only what it shows never loaded (settle_loads)."""
+    doc = doc or {}
+    total = sum(len(it["numbers"]) for it in kept)
+    if doc.get("status") == "loading":
+        return kept, 0
+    res = doc.get("result") or {}
+    if doc.get("status") != "done" or res.get("refused"):
+        return [], total
+    loaded = {str(n)[-10:] for n in res.get("loaded") or []}
+    out = []
+    for it in kept:
+        nums = [n for n in it["numbers"] if str(n["number"])[-10:] in loaded]
+        if nums:
+            out.append(dict(it, numbers=nums))
+    return out, total - sum(len(it["numbers"]) for it in out)
+
+
+# ---------------------------------------------------------------------- a load still building when the stage stopped waiting
+# A load Smarter Contact was still building when its stage stopped waiting (scpush.WAIT_S) is counted as
+# loaded at release (narrow_to_loaded): counting a text that did go out as not sent would give the owner
+# the same text twice. The texting app finishes the load anyway, so the next live run of any text stage
+# reads its final answer (settle_loads) and takes out of the count only the numbers that answer shows,
+# beyond doubt, never went into a started campaign. Everything else stays counted.
+SETTLE_DAYS = 14          # an answer still not final this many days after its batch is given up on: its texts stay counted
+SETTLE_WAIT = "loads Smarter Contact was still building: the answer is read again next run"
+
+
+def never_loaded(load: dict, doc: dict) -> tuple:
+    """(the ten-digit numbers of this load that the texting app's final answer shows never went into a
+    started campaign, or None when it vouches for no number; how many it leaves in doubt; why, when None).
+    A number in doubt stays counted as texted, so it can never get the same text twice:
+      a group the answer says failed       its campaign may have started before the failure was read
+      a group with a campaign none of whose numbers loaded
+                                           the campaign exists and has not reported starting
+      a group left with nothing to send while the answer skipped a group for having a campaign already
+                                           (a load sent twice): which group that was is not said
+      a contact in no group, or in a group the answer does not list
+    A refusal before anything was written (no number able to send, a missing template) loaded nothing;
+    a loader that crashed may have started a campaign first, so it vouches for nothing."""
+    doc = doc if isinstance(doc, dict) else {}
+    res = doc.get("result") if isinstance(doc.get("result"), dict) else {}
+    contacts = [c for c in (load or {}).get("contacts") or [] if gate.digits(c.get("phone"))]
+    if doc.get("status") not in ("done", "failed"):
+        return None, len(contacts), "the load is not finished"
+    refused = str(res.get("refused") or "")
+    if refused.startswith("the loader crashed"):
+        return None, len(contacts), "the loader stopped part way, so what it loaded is not known"
+    if refused:
+        return {gate.digits(c["phone"]) for c in contacts}, 0, ""
+    if not isinstance(res.get("loaded"), list) or not isinstance(res.get("groups"), list):
+        return None, len(contacts), "the answer does not say what loaded"
+    loaded = {gate.digits(x) for x in res["loaded"]} - {""}
+    rows = {str(g.get("group") or ""): g for g in res["groups"] if isinstance(g, dict)}
+    started = {str(c.get("group") or "") for c in contacts if gate.digits(c["phone"]) in loaded}
+    twice = any(str(w).startswith("the group already has a campaign") for w in (res.get("skipped") or {}))
+    sure, doubt = set(), 0
+    for c in contacts:
+        n, g = gate.digits(c["phone"]), str(c.get("group") or "")
+        if n in loaded:
+            continue
+        row = rows.get(g) if g else None
+        if (row is None or row.get("state") == "failed" or (row.get("campaign") and g not in started)
+                or (twice and row.get("state") == "nothing to send")):
+            doubt += 1
+            continue
+        sure.add(n)
+    return sure, doubt, ""
+
+
+def pending_loads(limit: int = 25) -> list[dict]:
+    """The text batches released while Smarter Contact was still building their load, whose final answer
+    has not been read yet, oldest first: {id, stage, result, items}."""
+    from .. import store
+    out = []
+    with store._LOCK, store._db() as c:
+        rows = c.execute("SELECT id, stage, result, items FROM ap_batches WHERE kind=? AND status='sent' AND result LIKE ? "
+                         "ORDER BY id", (KIND, '%"loading"%')).fetchall()
+    for r in rows:
+        try:
+            res = json.loads(r["result"] or "{}") or {}
+        except ValueError:
+            continue
+        loader = res.get("loader") if isinstance(res, dict) else None
+        if not isinstance(loader, dict) or loader.get("status") != "loading" or res.get("settled"):
+            continue
+        out.append({"id": int(r["id"]), "stage": r["stage"] or "", "result": res, "items": json.loads(r["items"] or "[]")})
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _counter_back(ctx: Ctx, batch_id: int, u: str) -> None:
+    """The release raised this record's text counter for a text that never went: put it back, when it
+    still reads what the release wrote. Anything else moved it since, and a person's count or the other
+    texting system's is never undone."""
+    ch = [c for c in ledger.changes(run_id="release-%d" % int(batch_id), record_uuid=u) if c["what"] == "sms_attempts"]
+    if not ch:
+        return
+    try:
+        before, after = int(ch[-1]["before"]), int(ch[-1]["after"])
+        cur = int((ctx.crm.record(u) or {}).get("sms_attempts") or 0)
+    except Exception as exc:  # noqa: BLE001  (an unread record keeps its counter, and the run says so)
+        ctx.out.problem("could not read a record to put its text counter back (%s)" % str(exc)[:100])
+        return
+    if cur != after:
+        ctx.out.tally["text counters left as they are (moved since the release)"] += 1
+        return
+    ctx.change(u, "sms_attempts", cur, before)
+    try:
+        ctx.write("text counter", ctx.crm.sms_attempts, u, before)
+    except Exception as exc:  # noqa: BLE001
+        ctx.out.problem("could not put a text counter back (%s)" % str(exc)[:100])
+        return
+    limits.own_bump(u, before, ctx.now)
+    ctx.out.tally["text counters put back (a text that never loaded)"] += 1
+
+
+def settle_loads(ctx: Ctx, status_of=None, limit: int = 10) -> None:
+    """Read the final answer of every load a text stage stopped waiting on, whichever stage released it
+    (one owner can be texted by two stages, and tomorrow's text must not rest on a count the answer has
+    since corrected), and take out of the count the numbers it shows never loaded (never_loaded). An
+    owner left with no text from that batch gets its text counter put back, and a first_text series
+    anchored on that text forgets the anchor, so the series starts the day its text really goes. An
+    answer still not final is asked for again on the next run; after SETTLE_DAYS it is given up on and
+    the texts stay counted. Run by a live stage only: it writes."""
+    from . import scpush
+    status_of = status_of or scpush.job_status
+    tz = ctx.policy.tz
+    today = ctx.now.astimezone(ZoneInfo(tz)).date()
+    stamp = ctx.now.isoformat(timespec="seconds")
+    for b in pending_loads(limit):
+        bid, res = b["id"], dict(b["result"])
+        day = next((str(it.get("day"))[:10] for it in b["items"] if it.get("day")), today.isoformat())
+        try:
+            age = (today - date.fromisoformat(day)).days
+        except ValueError:
+            age = 0
+        try:
+            doc = status_of(bid)
+        except Exception as exc:  # noqa: BLE001  (an answer that cannot be read is asked for again)
+            doc = {"status": "loading", "why": str(exc)[:120]}
+        doc = doc if isinstance(doc, dict) else {}
+        p = load_path(bid)
+        try:
+            load = json.loads(p.read_text(encoding="utf-8")) if p.is_file() else None
+        except (OSError, ValueError):
+            load = None
+        if doc.get("status") not in ("done", "failed") or not isinstance(load, dict):
+            if isinstance(load, dict) and age <= SETTLE_DAYS:
+                ctx.out.tally[SETTLE_WAIT] += 1
+                continue
+            why = "its load file is gone" if not isinstance(load, dict) else "no final answer after %d day(s)" % age
+            ledger.batch_result(bid, dict(res, settled={"at": stamp, "kept": "all", "why": why}))
+            ctx.out.line("Batch %d: %s, so its texts stay counted as sent and none can go twice." % (bid, why))
+            continue
+        # The numbers it names as texted before are remembered either way, so text 1 is never staged to them.
+        remember_texted_before(load, doc, batch_id=bid, stage=b["stage"], now=ctx.now)
+        sure, doubt, why = never_loaded(load, doc)
+        if sure is None:
+            ledger.batch_result(bid, dict(res, settled={"at": stamp, "kept": "all", "why": why}, loader_final=doc))
+            ctx.out.line("Batch %d: %s; its texts stay counted as sent, so none can go twice." % (bid, why))
+            continue
+        out = limits.unrelease(bid, sure)
+        back = 0
+        for it in b["items"]:
+            u = it.get("record_uuid") or ""
+            if u not in out or limits.rows(batch_id=bid, record_uuid=u, statuses=("released",)):
+                continue
+            back += 1      # every number of this owner's text in the batch never loaded: the text did not go
+            ledger.event(ctx.run_id, b["stage"], u, "text_not_loaded",
+                         {"batch": bid, "series": it.get("series"), "step": it.get("step")}, now=ctx.now, tz=tz)
+            _counter_back(ctx, bid, u)
+            a = it.get("anchor") if isinstance(it.get("anchor"), dict) else {}
+            if a.get("key") and ledger.fact(u, a["key"]) == a.get("day"):
+                ledger.drop_fact(u, a["key"])
+        n = sum(out.values())
+        ledger.batch_result(bid, dict(res, settled={"at": stamp, "not_loaded": n, "owners_back": back, "in_doubt": doubt},
+                                      loader_final=doc))
+        if n or doubt:
+            ctx.out.line("Batch %d's load has finished: %d number(s) never loaded and no longer count as texted (%d owner(s) "
+                         "can get the text again)%s." % (bid, n, back, ("; %d in a group the answer cannot vouch for stay counted, "
+                                                                         "so none can go twice" % doubt) if doubt else ""))
+
+
+# ---------------------------------------------------------------------- numbers Smarter Contact texted before
+def texted_before(load: dict, doc: dict | None) -> set[str]:
+    """The ten-digit numbers the texting app says Smarter Contact left out of text 1 because their
+    thread already holds a text. Only that reason counts: a number left out for any other reason (its
+    do-not-text list, a failed lookup, a group sent twice) is not one of these.
+
+    The texting app names the numbers (`texted_before`, 2026-11-19), also on a load where one group
+    later failed: the thread was read before any group was made. A texting app from before that names
+    only how many. Then the text 1 numbers it did not load are exactly those when that reason's count
+    equals how many text 1 numbers it did not load: each such number is counted once, none of them is
+    loaded, so equal counts are the same numbers, and any other loss makes the counts differ. Only a
+    load that finished is read that way; anything else gives nothing."""
+    doc = doc if isinstance(doc, dict) else {}
+    res = doc.get("result") if isinstance(doc.get("result"), dict) else {}
+    if res.get("refused") or doc.get("status") not in ("done", "failed"):
+        return set()
+    named = res.get("texted_before")
+    if isinstance(named, list):
+        return {d for d in (gate.digits(x) for x in named) if d}
+    if doc.get("status") != "done":
+        return set()
+    skipped = res.get("skipped") if isinstance(res.get("skipped"), dict) else {}
+    try:
+        k = sum(int(n or 0) for w, n in skipped.items() if str(w).startswith(SC_BEFORE))
+    except (TypeError, ValueError):
+        return set()
+    if k <= 0:
+        return set()
+    firsts = {gate.digits(c.get("phone")) for c in (load or {}).get("contacts") or []
+              if c.get("group") and str(c.get("series") or "opening") == "opening" and int(c.get("step") or 1) == 1} - {""}
+    missing = firsts - {gate.digits(x) for x in res.get("loaded") or []}
+    return missing if len(missing) == k else set()
+
+
+def _who(load: dict) -> dict:
+    """number -> (owner uuid, record uuid), from a load's contacts."""
+    return {gate.digits(c.get("phone")): (c.get("owner") or "", c.get("record") or "")
+            for c in (load or {}).get("contacts") or [] if gate.digits(c.get("phone"))}
+
+
+def remember_texted_before(load: dict, doc: dict | None, *, batch_id: int, stage: str, now: datetime | None = None) -> tuple[set, int]:
+    """(the numbers the load says Smarter Contact texted before, how many of them were new to the memory)."""
+    found = texted_before(load, doc)
+    if not found:
+        return set(), 0
+    who = _who(load)
+    return found, limits.note_sc_texted({n: who.get(n, ("", "")) for n in found}, batch_id=batch_id, stage=stage, now=now)
+
+
+def learn_past_loads(now: datetime | None = None, limit: int = 200) -> int:
+    """Read, once each, the loads the texting app answered before release() remembered these numbers
+    itself (the batches of 2026-11-18 and 11-19 lost 42 and 70 numbers this way): a load file kept under
+    load_path and the answer kept on the batch. The highest batch id read is kept under SC_LEARNED_KEY,
+    so a run reads only batches it has not seen. Returns how many numbers were new."""
+    from .. import store
+    try:
+        last = int(store.kv_get(SC_LEARNED_KEY) or 0)
+    except ValueError:
+        last = 0
+    with store._LOCK, store._db() as c:
+        rows = c.execute("SELECT id, stage, result FROM ap_batches WHERE kind=? AND id>? ORDER BY id LIMIT ?",
+                         (KIND, last, int(limit))).fetchall()
+    new, top = 0, last
+    for r in rows:
+        top = max(top, int(r["id"]))
+        try:
+            res = json.loads(r["result"] or "{}") or {}
+        except ValueError:
+            continue
+        if not isinstance(res, dict) or "sc_texted" in res or not isinstance(res.get("loader"), dict):
+            continue                     # remembered at its release already, or never handed over
+        p = load_path(int(r["id"]))
+        try:
+            load = json.loads(p.read_text(encoding="utf-8")) if p.is_file() else None
+        except (OSError, ValueError):
+            load = None
+        if isinstance(load, dict):
+            new += remember_texted_before(load, res["loader"], batch_id=int(r["id"]), stage=r["stage"] or "", now=now)[1]
+    if top > last:
+        store.kv_set(SC_LEARNED_KEY, str(top))
+    return new
+
+
+def sc_recheck_days(st) -> int:
+    v = st.get("sc_recheck_days", SC_RECHECK_DAYS)
+    return int(v) if isinstance(v, int) and not isinstance(v, bool) else SC_RECHECK_DAYS
+
+
+def sc_reopens(closed, now: datetime, days: int) -> bool:
+    """Is a record whose opening texts were closed only because Smarter Contact had texted every
+    number it could get text 1 on due a fresh look (a trace may have found a number since)? Any other
+    closing is for good, and so is this one when `days` is 0."""
+    if days <= 0 or not (isinstance(closed, dict) and closed.get("why") == SC_CLOSED_WHY):
+        return False
+    try:
+        at = datetime.fromisoformat(str(closed.get("at") or ""))
+    except ValueError:
+        return True
+    if at.tzinfo is None:
+        at = at.replace(tzinfo=timezone.utc)
+    return now - at >= timedelta(days=days)

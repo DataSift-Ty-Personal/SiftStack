@@ -129,14 +129,32 @@ def search_updated(token: str, day_from: str, day_to_excl: str) -> list[dict]:
         out.extend(rows)
         total = r.get("count", len(out))
         offset += limit
-        if offset >= total or not rows or offset > 20000:
+        if offset >= total or not rows:
+            break
+        if offset + limit > 10000:
+            # DataSift serves the first 10,000 rows of a search and refuses the next page.
+            log(f"WARNING: {total} records were updated in the window; only the first 10000 are read")
             break
     return out
 
 
-def get_logs(token: str, uuid: str) -> list[dict]:
-    r = req(token, f"/api/internal/property/{uuid}/logs/", params={"limit": 250, "offset": 0})
-    return r.get("results") or r.get("data") or []
+LOG_PAGE = 100     # the logs endpoint refuses a page over 100 (HTTP 400)
+
+
+def get_logs(token: str, uuid: str, since: str = "", tz=None, pages: int = 30) -> list[dict]:
+    """A record's activity log, newest first, 100 events a page, until it reaches events older than
+    `since` (a local YYYY-MM-DD)."""
+    out = []
+    for page in range(pages):
+        r = req(token, f"/api/internal/property/{uuid}/logs/", params={"limit": LOG_PAGE, "offset": page * LOG_PAGE})
+        rows = r.get("results") or r.get("data") or []
+        out.extend(rows)
+        if len(rows) < LOG_PAGE or not since:
+            break
+        dt = local_dt((rows[-1] or {}).get("timestamp", ""), tz or ZoneInfo("UTC"))
+        if dt and dt.date().isoformat() < since:
+            break
+    return out
 
 
 # ---- event helpers ----
@@ -211,13 +229,16 @@ def pull(token: str, day_from: str, day_to: str, tz, bench: dict) -> dict:
     log(f"{len(cand)} candidate records updated in window; fetching activity logs...")
 
     rec_events, rec_meta = {}, {}
+    failed, why = 0, ""
     for i, r in enumerate(cand, 1):
         uuid = r.get("uuid")
         if not uuid:
             continue
         try:
-            evs = get_logs(token, uuid)
-        except Exception:
+            evs = get_logs(token, uuid, since=day_from, tz=tz)
+        except Exception as exc:
+            failed += 1
+            why = why or str(exc)[:160]
             continue
         keep = []
         for e in evs:
@@ -230,6 +251,11 @@ def pull(token: str, day_from: str, day_to: str, tz, bench: dict) -> dict:
         if i % 50 == 0:
             log(f"  {i}/{len(cand)} scanned...")
     log(f"{len(rec_events)} records had activity in window")
+    if failed:
+        log(f"WARNING: {failed} of {len(cand)} activity log reads failed ({why})")
+    if cand and failed * 2 > len(cand):
+        # A pull that could not read the logs is a failure, never a period of zeros.
+        sys.exit(f"{failed} of {len(cand)} activity log reads failed, so the period cannot be counted: {why}")
 
     all_phone = [e for evs in rec_events.values() for _, e in evs
                  if e.get("event_type") == "owner.phone.status.updated"]

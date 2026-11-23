@@ -256,15 +256,15 @@ footer p { margin:0 0 6px; }
     <p class="lede">Every agent, what triggers it, what it touches, where a human still signs off, and the specific trap each one exists to avoid.</p>
 
     <div class="stats">
-      <div class="stat"><b>96</b><span>agents</span></div>
+      <div class="stat"><b>97</b><span>agents</span></div>
       <div class="stat"><b>9</b><span>divisions</span></div>
-      <div class="stat"><b>81</b><span>live in production</span></div>
-      <div class="stat"><b>69</b><span>with a human gate</span></div>
+      <div class="stat"><b>83</b><span>live in production</span></div>
+      <div class="stat"><b>70</b><span>with a human gate</span></div>
     </div>
 
     <div class="install">
       <h2>Install the skill library</h2>
-      <p>27 Claude skills that drive the agents below. One command, into Claude Code.
+      <p>28 Claude skills that drive the agents below. One command, into Claude Code.
          No clone, no pip, no virtualenv.</p>
       <div class="cmd">
         <code id="cmd">curl -fsSL https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/install.py | python3 -</code>
@@ -849,7 +849,7 @@ footer p { margin:0 0 6px; }
   <header class="dept-head">
     <h3>Deal Analysis</h3>
     <p class="dept-tag">What it is worth, what it costs, what you can pay</p>
-    <span class="dept-count"><b>13</b> agents</span>
+    <span class="dept-count"><b>14</b> agents</span>
   </header>
   <div class="grid"><article class="agent" data-dept="deal" data-status="live" data-phase="1" data-human="yes" data-search="post-walkthrough package the one workbook you build the hour after walking a house. nine sheets, sift-linked. src/post_walkthrough.py exact numbers, not ranges, in the cells. a wide band is not an answer you can take to a seller or a buyer. the lo/hi still drives the math and surfaces as one &#x27;if it moves&#x27; sensitivity line. sift deal room api siftmap zillow openpyxl">
   <details>
@@ -985,6 +985,23 @@ footer p { margin:0 0 6px; }
     <div class="agent-body">
       <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">Post-walkthrough render.</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Scores wholesale assignment, wholetail, flip same-config, flip reconfig, BRRRR</li><li>Only lanes that clear their gate get a suggestion block</li><li>Everything ruled out is named in the headline and explained</li><li>Names the BUYER&#x27;s exit on the outreach sheet, never our hold</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>Reconfig lane gated on walkthrough verification</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Ranked exit lanes with rationale</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">post_walkthrough.py</span></div></div>
       <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>The template&#x27;s six exit slots were placeholders, not a quota. If nothing clears its gate, the two closest misses render under an explicit banner rather than fabricating a recommendation. Novation is not modelled at all, it was removed rather than hidden.</p></div>
+    </div>
+  </details>
+</article><article class="agent" data-dept="deal" data-status="live" data-phase="1" data-human="yes" data-search="mls offer engine every active listing in a market gets a cash offer priced off what investors paid nearby and, where the seller&#x27;s loan allows, a subject-to or seller-finance offer, with the listing agent to call. src/mls_offers.py, src/mls_offers_api.py, src/mortgage_model.py datasift&#x27;s acceptable use allows siftmap detail reads in volume only for records in your own account, so the screen runs on search alone and only the shortlist is read in full. a listing&#x27;s active status also lags: check the listing before an offer goes out. siftmap hmda freddie mac census geocoder zillow (optional) openpyxl">
+  <details>
+    <summary>
+      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="agent-name">MLS Offer Engine</span>
+      <span class="agent-meta">
+        <span class="badge badge-live">Live</span>
+        <span class="badge badge-gate">Human gate</span>
+      </span>
+      <span class="agent-role">Every active listing in a market gets a cash offer priced off what investors paid nearby and, where the seller&#x27;s loan allows, a subject-to or seller-finance offer, with the listing agent to call.</span>
+      <code class="src">src/mls_offers.py, src/mls_offers_api.py, src/mortgage_model.py</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">python src/mls_offers.py --county &quot;Knox, TN&quot; --phase all, or ask Roma in Slack (mls_offers)</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>SiftMap search screens every active single-family listing: days on market, distress flags, equity</li><li>Investor purchases nearby, split into price bands by search, set what our buyers pay</li><li>Shortlists the best, then reads full details only for listings already in the account, or added on the operator&#x27;s yes</li><li>Models each seller&#x27;s loan from public data (HMDA, Freddie Mac) for the subject-to math</li><li>Writes the offer workbook and a draft first text to each listing agent</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>A person sends every offer; the workflow drafts and never sends</li><li>Adding listings to the account uses the record allowance and needs the operator&#x27;s yes</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Offer workbook (Offers, Subject-to, Agents, Price watch), Agent outreach CSV</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">SiftMap</span><span class="chip">HMDA</span><span class="chip">Freddie Mac</span><span class="chip">Census geocoder</span><span class="chip">Zillow (optional)</span><span class="chip">openpyxl</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>DataSift&#x27;s acceptable use allows SiftMap detail reads in volume only for records in your own account, so the screen runs on search alone and only the shortlist is read in full. A listing&#x27;s Active status also lags: check the listing before an offer goes out.</p></div>
     </div>
   </details>
 </article><article class="agent" data-dept="deal" data-status="live" data-phase="1" data-human="yes" data-search="deal analyzer mao, roi, and financing scenarios across multiple loan structures. src/deal_analyzer.py transfer tax defaults are tennessee-specific. the skill ships a state reference table because shipping one state&#x27;s number as universal is how community users get burned. deal_analyzer.py">
@@ -1780,20 +1797,20 @@ footer p { margin:0 0 6px; }
       <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>No Trestle and no do-not-call scrub on purpose: the agency scrubs the registry and litigators itself. The opensearch client refuses to start unless the server runs read-only, because its default configuration allows writes to the production cluster.</p></div>
     </div>
   </details>
-</article><article class="agent" data-dept="market" data-status="gated" data-phase="2" data-human="yes" data-search="buildable lot finder finds every vacant lot of 0.20 to 2.00 acres in a county, screens out what cannot carry a house, prices an offer band and writes the mail plan. src/vacant_land.py the county&#x27;s vacant class lags construction. 2,185 vacant-class sales over 36 months had a median of $590,000 at 7.5 times land value: they were new houses. built-on is read from the dwelling year, the sale price against land value, and recent permits. county gis siftmap usgs 3dep">
+</article><article class="agent" data-dept="market" data-status="live" data-phase="2" data-human="yes" data-search="buildable lot finder finds every vacant lot of 0.20 to 2.00 acres in a county, screens out what cannot carry a house, prices an offer band and writes the mail plan. src/vacant_land.py, src/agents/workflows/buildable_lots.py the county&#x27;s vacant class lags construction. 2,185 vacant-class sales over 36 months had a median of $590,000 at 7.5 times land value: they were new houses. built-on is read from the dwelling year, the sale price against land value, and recent permits. county gis siftmap usgs 3dep datasift api">
   <details>
     <summary>
-      <span class="dot dot-gated" aria-hidden="true"></span>
+      <span class="dot dot-live" aria-hidden="true"></span>
       <span class="agent-name">Buildable Lot Finder</span>
       <span class="agent-meta">
-        <span class="badge badge-gated">Gated</span>
+        <span class="badge badge-live">Live</span>
         <span class="badge badge-gate">Human gate</span>
       </span>
       <span class="agent-role">Finds every vacant lot of 0.20 to 2.00 acres in a county, screens out what cannot carry a house, prices an offer band and writes the mail plan.</span>
-      <code class="src">src/vacant_land.py</code>
+      <code class="src">src/vacant_land.py, src/agents/workflows/buildable_lots.py</code>
     </summary>
     <div class="agent-body">
-      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">python src/vacant_land.py --phase all</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>County GIS is the truth for the parcel, SiftMap for the owner</li><li>Screens built-on, landlocked, floodplain, slivers, steep and non-residential lots</li><li>Reads slope from USGS 3DEP lidar</li><li>Prices off real lot sales in the same township and size band</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>The pull into an account stays dry until an account is chosen</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Buildable lots workbook, Mail list CSV</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">County GIS</span><span class="chip">SiftMap</span><span class="chip">USGS 3DEP</span></div></div>
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">Ask Atlas in Slack (buildable_lots), or python src/vacant_land.py --phase all</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>County GIS is the truth for the parcel, SiftMap for the land rows and distress</li><li>Screens built-on, landlocked, floodplain, slivers, steep and non-residential lots</li><li>Reads slope and low spots from USGS 3DEP lidar</li><li>Owners come from the account&#x27;s own records, never a SiftMap detail pull</li><li>Prices off real lot sales in the same township and size band</li><li>Runs in the background on the box and posts the files to the thread</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>The pull into the account goes through list_pull: quoted first, pulled only on an approved count on a live box</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Buildable lots workbook, Mail list CSV, Pull list CSV</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">County GIS</span><span class="chip">SiftMap</span><span class="chip">USGS 3DEP</span><span class="chip">DataSift API</span></div></div>
       <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>The county&#x27;s vacant class lags construction. 2,185 vacant-class sales over 36 months had a median of $590,000 at 7.5 times land value: they were new houses. Built-on is read from the dwelling year, the sale price against land value, and recent permits.</p></div>
     </div>
   </details>

@@ -341,9 +341,11 @@ def _grade_checks(check, grade) -> None:
           "the owner's note comes back with its criterion, and every quote in the report is in the transcript")
     sys_text = kw["system"][0]["text"]
     check(kw["system"][0].get("cache_control") == {"type": "ephemeral"} and "Cold Calling Call Rubric" in sys_text
-          and kw["output_config"] == {"effort": grade.effort_of()} and kw["betas"] == [grade.FALLBACK_BETA]
-          and kw["extra_body"] == {"fallbacks": "default"} and kw["model"] == grade.model_of(),
-          "the rubric is the cached system prompt, with the brain's refusal fallback and the coaching effort")
+          and kw["output_config"] == {"effort": grade.effort_of()} and kw["model"] == grade.model_of()
+          and (kw.get("betas") == [grade.FALLBACK_BETA] and kw.get("extra_body") == {"fallbacks": "default"})
+          == grade.model_registry.server_fallback(kw["model"]),
+          "the rubric is the cached system prompt with the coaching effort, and the refusal fallback rides only "
+          "on a model that has one (Haiku 5.5 has none)")
     check("example.test" not in json.dumps(kw["messages"]), "the grader is never sent a recording link")
     check(g["usd"] == round(grade.usage_usd({"input_tokens": 1000, "output_tokens": 2000, "cache_creation_input_tokens": 8000},
                                             grade.model_of()), 4) and g["usd"] > 0,
@@ -566,6 +568,30 @@ def _coaching_checks(check, tmp, store, cc, grade) -> None:
     if saved_key is not None:
         os.environ["ANTHROPIC_API_KEY"] = saved_key
     cc.CLAUDE = claude
+
+    # ---- a free box (2026-11-19): the task decides, not the box. On AGENTS_MODE=free config.live() is
+    # always False, so the pack coaching_picks queued was never graded even with the stage named live.
+    saved_live = config.LIVE_STAGES
+    try:
+        config.MODE, config.LIVE_STAGES = "free", frozenset()
+        said.clear()
+        claude.calls.clear()
+        r = cc.run(task(one_call("c12")))
+        check(not r["live"] and r["calls"][0]["status"] == "would_grade" and not said and not claude.calls,
+              "on a free box a pack from a stage AGENTS_LIVE_STAGES does not name runs dry: nothing transcribed or graded")
+        config.LIVE_STAGES = frozenset({"coaching_picks"})
+        r = cc.run(task(one_call("c13")))
+        check(r["live"] and r["calls"][0]["status"] == "graded" and said == ["c13"] and len(claude.calls) == 1,
+              "the pack coaching_picks queued runs live once AGENTS_LIVE_STAGES names the stage: transcribed and graded")
+        said.clear()
+        claude.calls.clear()
+        r = cc.run(task(one_call("c14"), source="slack"))
+        r2 = cc.run(task(one_call("c15"), source="autopilot:another_stage"))
+        check(not r["live"] and not r2["live"] and r["calls"][0]["status"] == r2["calls"][0]["status"] == "would_grade"
+              and not said and not claude.calls,
+              "on the same free box an ask from Slack, and a pack from a stage the setting does not name, stay dry")
+    finally:
+        config.MODE, config.LIVE_STAGES = "live", saved_live
 
     # ---- the worker runs it once it is registered
     from . import workflows, worker
@@ -825,6 +851,15 @@ def _outreach_checks(check, tmp, store, oh) -> None:
     def ask(source="slack"):
         tid, _ = store.enqueue("ops", "outreach_health", "", subject="oh", payload={}, source=source)
         return store.task(tid)
+    import os
+    keep_lines = os.environ.pop("AGENTS_OUTREACH_LINES", None)
+    r0 = oh.run(ask("slack"))
+    body0 = (Path(r0["run_dir"]) / "files" / r0["files"][0]).read_text(encoding="utf-8")
+    check(r0["lines"] == [] and not any("Rest the line" in f for f in r0["findings"])
+          and "line(s) to rest" not in oh.render({}, r0) and "Caller ID lines, last" not in body0
+          and "team's own number tool" in body0,
+          "by default there is no caller ID line table and no 'rest the line' advice (Ty, 2026-11-15)")
+    os.environ["AGENTS_OUTREACH_LINES"] = "1"
     t = ask("schedule")
     r = oh.run(t)
     lines = {x["line"]: x for x in r["lines"]}
@@ -869,6 +904,9 @@ def _outreach_checks(check, tmp, store, oh) -> None:
     check(not r["quiet"] and not r["findings"] and oh.render({}, r).startswith(":satellite_antenna:"),
           "asked in Slack it always answers, even when nothing needs a person")
     oh.NOW = None
+    os.environ.pop("AGENTS_OUTREACH_LINES", None)
+    if keep_lines is not None:
+        os.environ["AGENTS_OUTREACH_LINES"] = keep_lines
 
 
 # ---------------------------------------------------------------------- the registry, the roster, the decision

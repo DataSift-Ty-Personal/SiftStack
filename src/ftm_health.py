@@ -12,8 +12,11 @@ is never the signal.
     python src/ftm_health.py --selftest      # assertions, no network, no writes
 
 WHAT GETS SAID IS NOT WHAT GETS CHECKED. The daily post is deliberately two lines
-(new records per DataSift list) plus one reason line when something is wrong. Every
-check below still runs on every pass; a green day just has nothing worth saying.
+(new records per DataSift list) plus one reason line when something is wrong, and one
+line for each paid subscription that ends within its lead time, with what to do
+(2026-11-19), for example "Register of Deeds subscription ends in 9 days (Dec 11). Renew
+it at paxsub.knoxrod.org, on the Subscription tab."
+Every check below still runs on every pass; a green day just has nothing worth saying.
 The detailed version is `--full`.
 
 WHY THIS EXISTS. `ftm_runner._notify` fires only when a run COMPLETES. If the
@@ -47,9 +50,10 @@ FEED HEALTH (build plan 1.12). A feed that arrives a day or two after its filing
 market, and nothing here used to measure that. Every pass now works out, per feed, from the
 files already on the volume: the LAG of its new records (pull date minus filing date), its new
 records this month and last, the last day it produced one, and the days left on the paid source
-behind it. All of that is in `--full`. None of it is in the daily post, and none of it changes
-the verdict, unless a switch below asks for an alarm: the post stays two lines, and a feed
-finding reaches it only as the reason line of a red day.
+behind it. All of that is in `--full`. None of it changes the verdict, unless a switch below asks
+for an alarm, and only one part reaches the daily post: a paid source ending inside its lead time
+(10 days) gets its own line there. A feed finding reaches the post only as the reason line of a
+red day.
 
 Config:
   FTM_HEALTH_WEBHOOK         Slack incoming webhook; falls back to SLACK_WEBHOOK_URL
@@ -59,7 +63,12 @@ Config:
                              than 2 days behind their filings is a red finding
   FTM_HEALTH_ALARM_FEEDS     off when unset. Comma list of feed keys (knox_liens, knox_condemned)
                              that should also be judged by silence, on their own thresholds
-  FTM_FEED_HEALTH=1          has the runner keep each paid source's expiry in ftm_sources.json
+  FTM_FEED_HEALTH=1          has the runner also keep each paid source's expiry in ftm_sources.json
+                             (every run already records it in its own line of ftm_runs.jsonl)
+  SUBSCRIPTION_WARN_DAYS     days before the tnpublicnotice subscription ends that the run warns and
+                             the post says so (default 10). Also sets the Register of Deeds window
+                             when ROD_SUBSCRIPTION_WARN_DAYS is unset, as it did before that existed
+  ROD_SUBSCRIPTION_WARN_DAYS the same for the Register of Deeds subscription (default 10)
 """
 
 from __future__ import annotations
@@ -225,7 +234,15 @@ def _read_runs() -> list[dict]:
         pass
     except Exception as exc:
         logger.warning("could not read %s: %s", path, exc)
-    return rows
+    return _committed_only(rows)
+
+
+def _committed_only(rows: list[dict]) -> list[dict]:
+    """The runs the check judges. A run started without --commit (a person's dry run on the box) wrote
+    nothing and is left out: found 2026-11-20, when four dry runs of the new county feeds, started by
+    hand at 9:30, became "today's run" and turned the check red for the rest of the day. A row written
+    before the field existed counts."""
+    return [r for r in rows if r.get("committed", True) is not False]
 
 
 def _day_of(run: dict) -> str:
@@ -466,16 +483,38 @@ def _first_run_day(runs: list[dict], stage: str) -> str:
     return min(days) if days else ""
 
 
-def paid_sources(today: str) -> list[dict]:
-    """Days left on each paid source, from what the runner last read (ftm_sources.json).
+def _newest_readings(held: dict, runs: list[dict] | None = None) -> dict:
+    """Per paid source, its newest reading by the day it was TAKEN: the kept file's (FTM_FEED_HEALTH=1)
+    or one in a run's own log line. A source whose stage did not run today keeps its last reading."""
+    out = {k: v for k, v in (held or {}).items() if isinstance(v, dict)}
+    for r in sorted(runs or [], key=lambda x: str(x.get("started", ""))):
+        got = r.get("sources")
+        if not isinstance(got, dict):
+            continue
+        for name, d in got.items():
+            if not isinstance(d, dict):
+                continue
+            if _iso_day(str(d.get("read") or "")) >= _iso_day(str((out.get(name) or {}).get("read") or "")):
+                out[name] = d
+    return out
 
-    Empty when the runner is not keeping the file (FTM_FEED_HEALTH is not set). A reading goes
-    stale: days left are recomputed from the day it was read, and the age is shown."""
+
+def paid_sources(today: str, runs: list[dict] | None = None) -> list[dict]:
+    """Days left on each paid source, from the newest reading the runner kept.
+
+    Every run records what it read in its own line of the run log (`sources`), with no setting; with
+    FTM_FEED_HEALTH=1 the runner also keeps ftm_sources.json. Empty when no run has read either. A
+    reading goes stale: days left are recomputed from the end date when the source prints one, else
+    from the day it was read, and the age is shown."""
     try:
         with open(config.STATE_DIR / "ftm_sources.json", "r", encoding="utf-8") as fh:
             held = json.load(fh)
     except Exception:
-        return []
+        held = {}
+    return _paid_rows(_newest_readings(held if isinstance(held, dict) else {}, runs), today)
+
+
+def _paid_rows(held: dict, today: str) -> list[dict]:
     out = []
     for name, d in sorted((held or {}).items()):
         if not isinstance(d, dict):
@@ -493,6 +532,66 @@ def paid_sources(today: str) -> list[dict]:
         out.append({"source": name, "days_left": left, "expires": d.get("expires") or "",
                     "read": read, "age_days": age, "state": d.get("state") or ""})
     return out
+
+
+# How old a paid source's last reading may be and still be said in the daily post. Its stage reads it
+# on every run, so an older one means the stage has stopped reaching the site, which that day's own
+# red line already says. The full report still shows the reading and its age.
+READING_MAX_AGE_DAYS = 7
+
+
+def _month_day(iso: str) -> str:
+    """'Dec 11'. Built by hand: %-d is not portable to Windows."""
+    d = date.fromisoformat(iso)
+    return "%s %d" % (d.strftime("%b"), d.day)
+
+
+def expiring(data: dict) -> list[str]:
+    """One line per paid subscription that ends inside its lead time, or has ended: what ends, when,
+    and what to do (approved by Ty, 2026-11-19). The daily post carries them under its counts whatever the
+    verdict, so a renewal is asked for days before the run that fails without one. Empty on an
+    ordinary day, which keeps that post at two lines.
+
+    Only a source a requested stage logs in to, and only a reading at most READING_MAX_AGE_DAYS old.
+    The wording never uses the relay's failure words, and the relay recognises the line by its
+    "subscription ends" / "has ended" phrase: an ending subscription is a person's to-do, never
+    breakage (agents/relay.py keeps it out of issues)."""
+    try:
+        import ftm_feeds
+    except Exception:
+        return []
+    today = str(data.get("today") or "")
+    stages = data.get("stages_requested") or []
+    read_by = set(ftm_feeds.paid_sources_read_by(stages)) if stages else None
+    rows: list[tuple[int, str]] = []
+    for p in data.get("paid_sources") or []:
+        src = ftm_feeds.PAID_BY_KEY.get(str(p.get("source") or ""))
+        if src is None or (read_by is not None and src.key not in read_by):
+            continue
+        age = p.get("age_days")
+        if age is not None and age > READING_MAX_AGE_DAYS:
+            continue
+        left = p.get("days_left")
+        ended = str(p.get("state") or "").lower() == "expired" or (left is not None and left < 0)
+        if not ended and (left is None or left > ftm_feeds.warn_days(src.key)):
+            continue
+        ends = str(p.get("expires") or "")
+        try:
+            if not ends and left is not None and today:
+                ends = (date.fromisoformat(today) + timedelta(days=int(left))).isoformat()
+            when = _month_day(ends) if ends else ""
+        except (TypeError, ValueError):
+            when = ""
+        if ended:
+            said = f"{src.label} ended {when}." if when else f"{src.label} has ended."
+        elif left == 0:
+            said = f"{src.label} ends today ({when})." if when else f"{src.label} ends today."
+        elif left == 1:
+            said = f"{src.label} ends tomorrow ({when})." if when else f"{src.label} ends tomorrow."
+        else:
+            said = f"{src.label} ends in {left} days ({when})." if when else f"{src.label} ends in {left} days."
+        rows.append((-1 if ended else int(left), said + " " + src.renew))
+    return [text for _, text in sorted(rows, key=lambda r: r[0])]
 
 
 # ── the ledger: what makes "new" mean new ─────────────────────────────
@@ -751,7 +850,7 @@ def collect(days: int = WINDOW_DAYS, *, update_ledger: bool = True) -> dict:
     data["feeds"] = feeds
     data["stages_requested"] = stages_req
     try:
-        data["paid_sources"] = paid_sources(today)
+        data["paid_sources"] = paid_sources(today, runs)
     except Exception:
         data["paid_sources"] = []
     return data
@@ -807,12 +906,16 @@ def _short_reason(text: str, limit: int = REASON_LIMIT) -> str:
 
 
 def render_short(data: dict) -> str:
-    """The daily post. Two lines when healthy, three when not.
+    """The daily post. Two lines when healthy, three when not, plus one line for each
+    paid subscription that ends inside its lead time (expiring), on any day.
 
     Every check in analyze() still runs; this only decides how much of the result
     is worth saying out loud. On a green day that is a tick and the counts. On a
     red day the top finding is appended, and it is the ONLY detail carried, so it
-    has to be the one that names what broke.
+    has to be the one that names what broke. An ending subscription is not a
+    finding (it changes no verdict): it is a renewal a person has to make before
+    the day it would turn the run red, so it is said under the counts, after the
+    reason line, green, amber or red.
 
     Because this reports new records only, a healthy quiet day prints all zeros
     and looks much like a broken one. The icon is what separates them, which is
@@ -845,6 +948,7 @@ def render_short(data: dict) -> str:
 
     if data["verdict"] == "red" and data["red"]:
         lines.append(_short_reason(data["red"][0]))
+    lines.extend(expiring(data))
     return "\n".join(lines)
 
 
@@ -887,7 +991,7 @@ def _render_feed_health(data: dict) -> list[str]:
     lines.append("")
     lines.append("*Paid sources*")
     if not paid:
-        lines.append("  Days left are not being recorded (set FTM_FEED_HEALTH=1 on the runner).")
+        lines.append("  No run has recorded the days left on a paid source yet.")
     for p in paid:
         left = "not read" if p["days_left"] is None else f"{p['days_left']} days left"
         until = f", expires {p['expires']}" if p.get("expires") else ""
@@ -1041,6 +1145,15 @@ def selftest() -> int:
 
     d = analyze([_mkrun(T, notices=("ok",), capture=("ok",), county=("ok",))], T, **base)
     r.check("all green", d["verdict"] == "green", str(d["red"] + d["amber"]))
+
+    # A dry run someone starts by hand on the box is not "today's run" (2026-11-20).
+    dry = dict(_mkrun(T, appointments=("failed", "no APPT document")), committed=False)
+    kept = _committed_only([_mkrun(T, notices=("ok",), capture=("ok",), county=("ok",)), dry,
+                            {k: v for k, v in _mkrun(T, notices=("ok",)).items() if k != "committed"}])
+    r.check("a dry run is left out; a row from before the field counts",
+            len(kept) == 2 and all(x.get("committed", True) for x in kept))
+    d = analyze(kept[:1], T, **base)
+    r.check("so a failed dry run after a good scheduled run leaves the day green", d["verdict"] == "green")
 
     d = analyze([], T, **base)
     r.check("no run today is red", d["verdict"] == "red")
@@ -1223,6 +1336,88 @@ def selftest() -> int:
     states = {name: state for name, state, _note in sources(stages)}
     r.check("the inventory follows the run", states.get("Liens, Knox") == AUTOMATED
             and states.get("Substitute trustee appointments, Knox") == SWITCHED_OFF)
+
+    # Paid subscriptions ending (2026-11-19): said in the post on any verdict, 10 days out, with what
+    # to do, and never in the relay's failure words. Pure: nothing is read from the volume.
+    keep = {k: os.environ.pop(k, None) for k in ("SUBSCRIPTION_WARN_DAYS", "ROD_SUBSCRIPTION_WARN_DAYS")}
+    try:
+        run_stages = ["notices", "capture", "liens", "county", "estate_ready", "sold"]
+
+        def _sub(source, days, *, age=0, state="active", dated=False):
+            exp = (date.fromisoformat(T) + timedelta(days=days)).isoformat() if dated else ""
+            return {"source": source, "days_left": days, "expires": exp, "read": T, "age_days": age,
+                    "state": state}
+
+        def _said(data, *paid, stages_=None):
+            d = dict(data)
+            d.update(paid_sources=list(paid), stages_requested=run_stages if stages_ is None else stages_)
+            return [ln for ln in render_short(d).split("\n") if ln.strip()]
+
+        rod9 = ("Register of Deeds subscription ends in 9 days (Sep 6). "
+                "Renew it at paxsub.knoxrod.org, on the Subscription tab.")
+        body = _said(amber, _sub("register_of_deeds", 9))
+        r.check("an ending subscription adds its own line to an amber post",
+                len(body) == 3 and body[0].startswith(":white_check_mark:") and body[2] == rod9, repr(body))
+        body = _said(green, _sub("register_of_deeds", 9), _sub("tnpublicnotice", 3, dated=True))
+        r.check("each ending subscription gets a line, soonest first",
+                len(body) == 4 and body[2].startswith("tnpublicnotice subscription ends in 3 days (Aug 31). Renew it")
+                and body[3] == rod9, repr(body))
+        body = _said(redd, _sub("register_of_deeds", 9))
+        r.check("a red post keeps its reason third and says the subscription after it",
+                len(body) == 4 and "returned nothing" in body[2] and body[3] == rod9, repr(body))
+        r.check("ten days out is said, eleven is not",
+                len(_said(green, _sub("register_of_deeds", 10))) == 3
+                and len(_said(green, _sub("register_of_deeds", 11))) == 2)
+        r.check("nothing ending keeps the post at two lines",
+                len(_said(green, _sub("register_of_deeds", 27), _sub("tnpublicnotice", 28, dated=True))) == 2)
+        r.check("the days are said the way a person reads them",
+                _said(green, _sub("register_of_deeds", 1))[2].startswith("Register of Deeds subscription ends tomorrow (Aug 29).")
+                and _said(green, _sub("register_of_deeds", 0))[2].startswith("Register of Deeds subscription ends today (Aug 28)."))
+        r.check("a lapsed subscription says it has ended and what to do",
+                _said(green, _sub("register_of_deeds", None, state="expired"))[2]
+                == "Register of Deeds subscription has ended. Renew it at paxsub.knoxrod.org, on the Subscription tab."
+                and _said(green, _sub("tnpublicnotice", -3, dated=True))[2].startswith("tnpublicnotice subscription ended Aug 25."))
+        r.check("a reading older than a week is left to the full report",
+                len(_said(green, _sub("register_of_deeds", 5, age=READING_MAX_AGE_DAYS + 1))) == 2)
+        r.check("a source no requested stage logs in to is not said",
+                len(_said(green, _sub("register_of_deeds", 5), stages_=["notices", "capture"])) == 2
+                and len(_said(green, _sub("register_of_deeds", 5), stages_=[])) == 3)
+        os.environ["ROD_SUBSCRIPTION_WARN_DAYS"] = "5"
+        r.check("ROD_SUBSCRIPTION_WARN_DAYS sets the recorder's window alone",
+                len(_said(green, _sub("register_of_deeds", 9))) == 2
+                and len(_said(green, _sub("tnpublicnotice", 3, dated=True))) == 3
+                and len(_said(green, _sub("tnpublicnotice", 9, dated=True))) == 2)
+        os.environ.pop("ROD_SUBSCRIPTION_WARN_DAYS")
+        os.environ["SUBSCRIPTION_WARN_DAYS"] = "12"
+        r.check("SUBSCRIPTION_WARN_DAYS still sets both while the recorder's own is unset",
+                len(_said(green, _sub("register_of_deeds", 11))) == 3
+                and len(_said(green, _sub("tnpublicnotice", 11, dated=True))) == 3)
+        os.environ.pop("SUBSCRIPTION_WARN_DAYS")
+        said = expiring({"today": T, "stages_requested": run_stages,
+                         "paid_sources": [_sub("register_of_deeds", 4), _sub("tnpublicnotice", 2, dated=True),
+                                          _sub("register_of_deeds", None, state="expired")]})
+        r.check("an ending line never carries a failure word or a long dash",
+                len(said) == 3 and not any(re.search(r"\bEXPIRED\b|\bRED\b|FAILED|BLOCKED|:rotating_light:", x)
+                                           or _EM in x or _EN in x for x in said), repr(said))
+
+        runs_ = [{"started": "2026-08-26T06:30:00",
+                  "sources": {"register_of_deeds": {"days_left": 12, "state": "active", "read": "2026-08-26"}}},
+                 {"started": "2026-08-27T06:30:00",
+                  "sources": {"tnpublicnotice": {"expires": "2026-09-05", "read": "2026-08-27"}}},
+                 {"started": T + "T06:30:00", "sources": {}}]
+        rows = {p["source"]: p for p in _paid_rows(_newest_readings({}, runs_), T)}
+        r.check("the readings come from the run log, each source's newest",
+                rows.get("register_of_deeds", {}).get("days_left") == 10
+                and rows["register_of_deeds"].get("age_days") == 2
+                and rows.get("tnpublicnotice", {}).get("days_left") == 8, str(rows))
+        newer = _newest_readings({"register_of_deeds": {"days_left": 30, "read": "2026-08-20"}}, runs_)
+        r.check("a newer reading in the run log beats an older kept file",
+                newer["register_of_deeds"]["read"] == "2026-08-26")
+    finally:
+        for k, v in keep.items():
+            os.environ.pop(k, None)
+            if v is not None:
+                os.environ[k] = v
 
     return r.report()
 

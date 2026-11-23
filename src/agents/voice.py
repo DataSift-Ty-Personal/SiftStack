@@ -26,6 +26,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from . import config, store
+import model_registry
 
 log = logging.getLogger(__name__)
 
@@ -33,7 +34,7 @@ log = logging.getLogger(__name__)
 ASK = None
 # Input and output price per million tokens, booked as an estimate (claude-api skill, 2026-11-15).
 # An unknown model is priced as Opus so the books run high rather than low.
-PRICES = {"claude-haiku-5-5": (0.10, 0.50), "claude-sonnet-5-5": (2.0, 10.0), "claude-opus-5-5": (4.0, 20.0)}
+PRICES = {m: p[:2] for m, p in model_registry.PRICES.items()}
 DEFAULT_PRICE = (4.0, 20.0)
 
 
@@ -63,6 +64,8 @@ NAMES = {
     "tax_sale_results": "Tax sale results", "agency_scorecard": "Agency scorecard",
     "attempt_log": "Attempt log", "call_screen": "Call screen", "contact_rate": "Contact rate",
     "kpi_tracker": "KPI tracker", "auction_mail": "Auction mail", "probate_mail": "Probate mail",
+    "cold_email_replies": "Cold email replies", "cold_email_topup": "Cold email top-up",
+    "cold_email_health": "Cold email health", "cold_email_stats": "Cold email week",
 }
 # Never right after or before a digit: "at 7:45: 412 dials" lost ":45:" to this until 2026-11-16.
 EMOJI_RX = re.compile(r"(?<!\d):[a-z0-9_+\-]+:(?!\d)")
@@ -75,6 +78,40 @@ PLURAL_RX = re.compile(r"\b(\d[\d,]*)((?:\s+[A-Za-z][A-Za-z'-]*){0,2}?)\s+([A-Za
 ERROR_CLASS_RX = re.compile(r"\b[A-Z][A-Za-z]*(?:Error|Exception|Exit|Interrupt):\s*")
 NUM_RX = re.compile(r"\d[\d,]*(?:\.\d+)?")
 BANNED = (chr(0x2014), chr(0x2013), chr(0x2026))
+# Checked in code, because the second look is the same small model and passed all three live:
+# the rewrite talking about its own instructions ("The post does not say what happens next or what
+# to do. So I will not add a next step.", 2026-11-17 and 11-18); a finding reported as a broken check
+# ("Check failed: the outreach limit." for a check that ran and found 3 broken limits); and "Nothing
+# for you to do." on a post that never said it would be tried again.
+META_RX = re.compile(r"\b(?:the|this) (?:original )?(?:post|message|rewrite)\b|\bthe original\b|\bnext step\b"
+                     r"|\bI (?:will|would|won't|cannot|can't|do not|don't)\b|\bas (?:instructed|asked)\b", re.I)
+FAILED_RX = re.compile(r"\b(?:fail(?:ed|s|ing|ure)?|crash(?:ed|es)?|broke|broken|error)\b", re.I)
+RAN_BADLY_RX = re.compile(r"fail|crash|could not|couldn't|cannot|can't|error|stopped|broke|refused|unreachable|"
+                          r"timed out|did not (?:run|finish|answer)|not answer", re.I)
+NOTHING_TO_DO = "nothing for you to do"
+RETRIES_RX = re.compile(r"again|retr(?:y|ied|ies)|tried|next (?:run|time|scheduled)|fixes itself|on its own|"
+                        r"nothing for you", re.I)
+
+
+NAME_PREFIX_RX = re.compile(r"^([A-Z][A-Za-z0-9 ,'-]{2,40}?):\s")
+
+
+def says_more_than(source: str, written: str, kind: str = "") -> str:
+    """Why a rewrite claims what its post did not, checked in code ("" when it does not)."""
+    src, low = source or "", (written or "").lower()
+    # An issue names the check it came from: the research queue's crash went out as "The property check
+    # stopped before it finished" (2026-11-17), which sends a reader to the wrong check.
+    m = NAME_PREFIX_RX.match(src)
+    if kind == "issue" and m and m.group(1) != "Morning update" and m.group(1).lower() not in low:
+        return "it does not name the check the post came from (%r)" % m.group(1)
+    for m in META_RX.finditer(written or ""):
+        if m.group(0).lower() not in src.lower():
+            return "it talks about the post or its own instructions (%r)" % m.group(0)
+    if FAILED_RX.search(written or "") and not RAN_BADLY_RX.search(src):
+        return "it says a check failed or broke, and the post only reports what the check found"
+    if NOTHING_TO_DO in low and not RETRIES_RX.search(src):
+        return "it says there is nothing to do, and the post never says it will be tried again"
+    return ""
 
 
 def stage_name(stage_id: str) -> str:
@@ -150,8 +187,9 @@ SHAPES = {
     # to do), and the model filled any line the post did not answer with a guess. Now a line exists only
     # when the post says it.
     "issue": "This post goes to the issues channel. Write it for a third-grade reader. One short sentence per line, at "
-             "most four lines, no labels and no headings. First say which check it was and what broke, in plain words. "
-             "Then, only when the post says it: what "
+             "most four lines, no labels and no headings. First say which check it was and what it found, in plain "
+             "words. Say a check failed, crashed or broke only when the post says the check itself could not run. "
+             "Never write about the post or about what you will or will not write. Then, only when the post says it: what "
              "that means for the team, what happens next, and what a person should do. Never guess a consequence, a "
              "cause or a next step the post does not state. When the post names something a person should do or "
              "watch for, end with that. Only when it names nothing like that and says it will be tried again, runs "
@@ -168,6 +206,8 @@ FAIL as well when the rewrite drops something the original tells a person to do 
 FAIL when it calls a thing by another name that changes what it is (records are not listings, a stage is not a
 person), when it adds "now", "just" or "new" to something the original states as a standing fact (that reads as a
 change that just happened), or when it adds a label the original does not have, such as "Morning update".
+FAIL when it talks about the post itself or about what it will or will not write, and when it says a check failed,
+crashed or broke while the original only reports what the check found.
 PASS when it only says the same things in simpler or fewer words. Dropping other detail is fine. Writing "today"
 for something the post reports as happening now is fine. Turning a stage's name into plain words is fine. Ending
 with "Nothing for you to do." is fine when the original says it will be tried again, runs again or fixes itself,
@@ -201,6 +241,8 @@ def acceptable(source: str, written: str, kind: str) -> bool:
     if any(ch in w for ch in BANNED) or EMOJI_RX.search(w):
         return False
     if kind == "issue" and re.search(r"Exception|Traceback|HTTP|host=|port=|\(\)|_[a-z]+_", w):
+        return False
+    if says_more_than(source, w, kind):
         return False
     return _numbers_hold(source, w)
 
@@ -240,7 +282,8 @@ def rewrite(text: str, kind: str, task_id: int | None = None) -> str:
         return base
     key = "voice:%s" % hashlib.sha256(("%s\n%s" % (kind, base)).encode("utf-8")).hexdigest()[:24]
     kept = store.kv_get(key)
-    if kept:
+    # A kept rewrite passes today's checks too: the cache is how one bad rewrite went out every morning.
+    if kept and acceptable(base, kept, kind):
         return kept
     count_key = "voice:count:%s" % _today()
     n = int(store.kv_get(count_key) or 0)
@@ -296,8 +339,13 @@ def update_text(stage_id: str, head: str, lines: list, task_id=None) -> str:
 
 
 def report_text(stage_id: str, head: str, lines: list, task_id=None) -> str:
-    """A report stage's daily or weekly report: the auction calendar, the day's numbers, the goals."""
-    body = ["%s: %s" % (stage_name(stage_id), head or "")] + [str(x) for x in (lines or [])[:6]]
+    """A report stage's daily or weekly report: the auction calendar, the day's numbers, the goals.
+    Six lines at most; a longer list says how many it left out (a callbacks report once said 10 owners
+    and showed 6, and the reader could not tell where the other 4 went)."""
+    rows = [str(x) for x in (lines or []) if str(x).strip() not in ("", "...")]
+    body = ["%s: %s" % (stage_name(stage_id), head or "")] + rows[:6]
+    if len(rows) > 6:
+        body.append("And %d more, not shown here; ask the team for the full list." % (len(rows) - 6))
     return rewrite("\n".join(body), "report", task_id)
 
 

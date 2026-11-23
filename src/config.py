@@ -10,6 +10,8 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 
+import model_registry
+
 load_dotenv()
 
 # ── Run date / timezone ────────────────────────────────────────────────
@@ -114,15 +116,15 @@ GOOGLE_SERVICE_ACCOUNT_KEY = os.getenv("GOOGLE_SERVICE_ACCOUNT_KEY", "")  # base
 
 # ── LLM Backend ──────────────────────────────────────────────────────
 LLM_BACKEND = os.getenv("LLM_BACKEND", "anthropic")           # "anthropic", "ollama", or "openrouter"
-LLM_MODEL = os.getenv("LLM_MODEL", "claude-haiku-4-5-20251001")  # Anthropic model name (default for all LLM calls)
+LLM_MODEL = model_registry.model("extraction")  # every extraction call; set in src/model_registry.py
 # High-stakes obituary identity + heir/survivor extraction uses a stronger model.
 # Getting the heir/decision-maker chain right is critical: a wrong heir map sends
 # the whole deal down the wrong path, so this defaults to Sonnet rather than Haiku.
-OBITUARY_LLM_MODEL = os.getenv("OBITUARY_LLM_MODEL", "claude-sonnet-4-6")
+OBITUARY_LLM_MODEL = model_registry.model("obituary_reading")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:7b")        # Local Ollama model
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1/")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")       # OpenRouter API key
-OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "qwen/qwen-2.5-72b-instruct")
+OPENROUTER_MODEL = model_registry.model("openrouter_backend")
 OPENROUTER_BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
 
 # ── Site URLs ──────────────────────────────────────────────────────────

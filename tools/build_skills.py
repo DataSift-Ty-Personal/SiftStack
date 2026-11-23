@@ -132,6 +132,14 @@ REQUIRES = {
     "closer-coach": dict(tier="account", accounts=["SmrtPhone", "OpenRouter or Anthropic"],
                          cost="About $0.002 per audio minute to transcribe",
                          fallback="no-api-playbook#coaching-without-a-dialer-api"),
+    # No accounts entry: the Open API key is the whole credential, there is no
+    # sign-in, so with the key set the doctor should say it works.
+    "mls-offer-engine": dict(tier="account", env=["REISIFT_API_KEY"],
+                             cost="Free to screen and price. Adding the shortlist to your account uses "
+                                  "record allowance, quoted first. The Zillow check is optional and metered",
+                             fallback="no-api-playbook#mls-offers-by-hand",
+                             note="Runs on your DataSift Open API key. OPENWEBNINJA_API_KEY is optional and "
+                                  "only powers the Zillow check. Sends nothing: every text is a draft."),
 
     # --- tier api: a metered third-party key --------------------------------
     "comp-package": dict(tier="api", env=["OPENWEBNINJA_API_KEY"],
@@ -189,6 +197,7 @@ CATEGORY = {
     "account-blueprint": "CRM",
     "sift-operations": "CRM",
     "deal-analyzer": "Deal Analysis",
+    "mls-offer-engine": "Deal Analysis",
     "dispo-deal-blast": "Operations",
     "siftstack-core": "Setup",
 }

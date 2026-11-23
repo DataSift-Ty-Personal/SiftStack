@@ -30,6 +30,13 @@ REQUIRED = [
     ("AGENTS_WEBHOOK_SECRET", "the secret path DataSift's webhook posts to"),
 ]
 OPTIONAL = [
+    # 2026-11-18: on a free box, the stages named here act and spend (the first-to-market texts and the
+    # foreclosure research), and the texting app's route that loads a released text batch into Smarter Contact.
+    ("AGENTS_LIVE_STAGES", "stage ids that act live on a free box, comma separated"),
+    # 2026-11-19: research (every deep prospect) has its own day cap; AGENTS_DAILY_CAP_USD is the team's own work.
+    ("AGENTS_RESEARCH_DAILY_CAP_USD", "research's own daily cap, apart from the team's AGENTS_DAILY_CAP_USD (default 25)"),
+    ("AGENTS_SC_LOAD_URL", "the texting app's Smarter Contact load route (https://<app>/hooks/scload)"),
+    ("AGENTS_SC_LOAD_TOKEN", "the bearer token that route checks (the texting app's SMS_AGENT_SC_LOAD_SECRET)"),
     ("SMARTSKIP_EMAIL", "relatives + phones (live mode)"),
     ("SMARTSKIP_PASSWORD", "relatives + phones (live mode)"),
     ("TRESTLE_API_KEY", "phone scoring and Real Contact"),
@@ -64,6 +71,10 @@ OPTIONAL = [
     ("AGENTS_SLACK_CHANNEL", "one Slack channel (its ID, C0...) for the whole team instead of one per employee"),
     ("AGENTS_SLACK_PIPELINE_CHANNEL", "the pipeline channel id: morning digest, live stage results, leads to call now"),
     ("AGENTS_SLACK_ISSUES_CHANNEL", "the issues channel id: anything broken, once a day, in plain words"),
+    ("AGENTS_SLACK_SALES_CHANNEL", "the sales channel id: leads to call now, callbacks, appointments, the sales board"),
+    ("AGENTS_SLACK_MARKETING_CHANNEL", "the marketing channel id: texts, mail, the agency, the marketing board"),
+    ("AGENTS_SLACK_OPS_CHANNEL", "the ops channel id: county data, research, scoring, setup to-dos, the ops board"),
+    ("AGENTS_SLACK_LAYOUT", "boards: one edited message per department a day; classic (default): one post per stage run"),
     ("AGENTS_SLACK_VOICE", "ty (default): posts rewritten in Ty's voice; plain: free cleanup only"),
     ("AGENTS_RELAY_SECRET", "the secret path the first-to-market jobs post to instead of #first-to-market"),
     ("SLACK_APP_TOKEN", "the team's Slack app, Socket Mode (xapp-...): hear replies with no signing secret or URL check"),
@@ -94,6 +105,15 @@ OPTIONAL = [
     ("AGENTS_QUERY_INDEX_TTL_S", "how long list, tag and preset titles are kept between questions (default 600)"),
     # Roma's comps (src/agents/workflows/quick_screen.py, underwrite.py)
     ("OPENWEBNINJA_API_KEY", "the Zillow sold pull for comp asks in Slack (paid, capped by AGENTS_COMPS_DAILY_USD)"),
+    # Roma's MLS offers (src/agents/workflows/mls_offers.py; the engine is src/mls_offers_api.py)
+    ("AGENTS_MLS_ADD_MAX", "MLS offers: most shortlisted listings one ask may add to the account (default 0: never adds)"),
+    ("AGENTS_MLS_SHORTLIST", "MLS offers: listings read in full when the ask names no number (default 60, at most 150)"),
+    ("AGENTS_MLS_ZILLOW_MAX", "MLS offers: Zillow calls an ask with zillow=yes may make (default 60; OPENWEBNINJA_API_KEY)"),
+    ("AGENTS_MLS_RUN_CAP_USD", "MLS offers: dollars of Zillow calls one ask may spend (default 2.00)"),
+    ("AGENTS_MLS_MONTHS", "MLS offers: how far back investor purchases price the cash offer (default 24)"),
+    ("AGENTS_MLS_LIST", "MLS offers: the DataSift list added listings go on (default MLS Offers)"),
+    ("AGENTS_MLS_TAG", "MLS offers: the tag added listings get (default MLS Listing)"),
+    ("MLS_OFFERS_SENDER", "MLS offers: the name the listing-agent drafts are signed with (default none named)"),
     # Quinn's call coaching and batch QA (src/agents/workflows/call_coaching.py, qa_batch.py)
     ("AGENTS_COACH_RUN_CAP_USD", "call coaching: spend cap for one review pack (default 4.00)"),
     ("AGENTS_COACH_MAX_CALLS", "call coaching: calls graded in one pack (default 16)"),
@@ -117,6 +137,24 @@ OPTIONAL = [
     ("AGENTS_GOOGLE_CLIENT_ID", "KPI tracker, optional Google Sheet: OAuth client id"),
     ("AGENTS_GOOGLE_CLIENT_SECRET", "KPI tracker, optional Google Sheet: OAuth client secret"),
     ("AGENTS_GOOGLE_REFRESH_TOKEN", "KPI tracker, optional Google Sheet: OAuth refresh token (kpisinks oauth prints it)"),
+    ("AGENTS_DEALS_GOOGLE_CLIENT_ID", "deal sheets (publish_sheet): OAuth client id, its own so the KPI Sheet stays off"),
+    ("AGENTS_DEALS_GOOGLE_CLIENT_SECRET", "deal sheets (publish_sheet): OAuth client secret"),
+    ("AGENTS_DEALS_GOOGLE_REFRESH_TOKEN", "deal sheets (publish_sheet): OAuth refresh token, spreadsheets + drive.file"),
+    ("AGENTS_DEALS_SHEET_SHARE", "deal sheets: emails each new Sheet is shared with (email=writer for an editor)"),
+    ("AGENTS_DEALS_SHEET_FOLDER", "deal sheets: the Drive folder name (default SiftStack Deals)"),
+    # Cold email (src/cold_email), run by the brain's cold_email_* stages since 2026-11-20. Its hand raises go to
+    # the TEXT LEADS channel, the same one the texting app's use (Ty, 2026-11-16), never the brain's channels.
+    ("INSTANTLY_API_KEY", "cold email: the Instantly workspace (replies, the campaign, the inboxes)"),
+    ("ZEROBOUNCE_API_KEY", "cold email: checks every address before it is loaded (Verify+), prepaid credits"),
+    ("SMS_AGENT_SLACK_WEBHOOK", "cold email: the text leads channel a hand raise is posted to"),
+    ("SMS_AGENT_HANDOFF_NAME", "cold email: who a hand raise is handed to (default Emerson)"),
+    ("SMS_AGENT_HAND_RAISE_NEW_LEAD", "cold email: 1 sets New Lead on an interested reply, as the texting side does (default off)"),
+    ("COLD_EMAIL_SLACK_WEBHOOK", "cold email: a channel of its own for hand raises instead of the text leads one"),
+    ("COLD_EMAIL_HANDOFF_NAME", "cold email: who its hand raises go to, if not the texting side's person"),
+    ("COLD_EMAIL_HAND_RAISE_NEW_LEAD", "cold email: its own New Lead switch, if not the texting side's"),
+    ("COLD_EMAIL_ADDRESS", "cold email: the postal address line under the signature (a PO box)"),
+    ("COLD_EMAIL_STATE_DIR", "cold email: its state folder (default /data/cold_email on the box)"),
+    ("COLD_EMAIL_INSTALL", "cold email: this install's name in home.json (default the Fly app's name)"),
     ("SLACK_WEBHOOK_URL", "fallback Slack channel"),
 ]
 

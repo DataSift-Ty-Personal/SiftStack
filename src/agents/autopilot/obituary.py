@@ -70,6 +70,11 @@ DEFAULTS = {
     "monthly_copy": None,           # optional list of bodies for the monthly pieces
     "no_probate_days": 180,
     "no_probate_tag": "Obituary, No Probate",
+    # A tag put on a record once its death is hold_days old (Ty, 2026-11-17: the estate call flow holds
+    # probates and obituaries until 30 days past the date of death). The app cannot say "a probate, or
+    # an obituary 30 days past death" in one preset (its keys AND, and it reads a date window only on
+    # the include side), so the estate presets read the probate tag OR this one. Empty switches it off.
+    "ready_tag": "",
     "probate_filed_tag": "Probate Filed",
     "calls": "after_research",      # after_research | after_hold | off
     "call_presets": [],             # the stage's presets whose records may be handed to a caller
@@ -156,6 +161,7 @@ def facts_of(rec: dict, custom: dict | None, o: dict, gate_cfg, now: datetime) -
             "probate": bool(marks & {m.lower() for m in gate_cfg.probate_marks}),
             "probate_filed": str(o["probate_filed_tag"]).lower() in tags,
             "no_probate_tag": str(o["no_probate_tag"]).lower() in tags,
+            "ready_tag": bool(o.get("ready_tag")) and str(o.get("ready_tag")).lower() in tags,
             "researched": bool(tags & {t.lower() for t in o["researched_tags"]}),
             "lead": lanes.status_of(rec) in lanes.LEAD_STATUSES,
             "owner_uuid": (rec.get("owner") or {}).get("uuid") or ""}
@@ -393,7 +399,7 @@ def run_obituary(ctx: Ctx) -> None:
 
     # ---- sort every known record into its window
     by_window: Counter = Counter()
-    hold, soft_due, monthly_due, tag_due, untag_due = [], [], [], [], []
+    hold, soft_due, monthly_due, tag_due, untag_due, ready_due = [], [], [], [], [], []
     research = researchqueue.research_index(str(o["research_workflow"]))      # one read for the whole list
     for row in rows:
         u = row["uuid"]
@@ -420,6 +426,8 @@ def run_obituary(ctx: Ctx) -> None:
         if w == "hold":
             hold.append((row, f))
             continue
+        if o["ready_tag"] and not f.get("ready_tag"):
+            ready_due.append(row)             # thirty days past the death: the estate call presets may show it
         # Six months with no filing is a fact about the house, whether or not research has run.
         if age >= int(o["no_probate_days"]) and not f["no_probate_tag"]:
             tag_due.append(row)
@@ -528,6 +536,27 @@ def run_obituary(ctx: Ctx) -> None:
         if ctx.live:
             known[u] = dict(known[u], no_probate_tag=False)
             ledger.set_fact(u, FACT, known[u])
+
+    # ---- thirty days past the death: the tag the estate call presets read
+    ready = str(o["ready_tag"] or "")
+    for row in ready_due[: int(o["max_tag_writes"])]:
+        u = row["uuid"]
+        rec = fresh.get(u)
+        if rec is None and ctx.live:
+            rec = ctx.crm.record(u)           # what is remembered can be two weeks old: look before writing
+        if rec is not None and rec.get("uuid"):
+            now_f = facts_of(rec, None, o, gate_cfg, ctx.now)
+            age = _days_since(now_f["obit_date"] or (known.get(u) or {}).get("obit_date"), today)
+            if now_f["ready_tag"] or now_f["probate"] or now_f["lead"] or age is None or age < int(o["hold_days"]):
+                continue
+        ctx.change(u, "add_tags", None, [ready])
+        ctx.write("thirty days past the death", ctx.crm.add_tags, u, [ready], rec)
+        ctx.out.tally["tagged %s: thirty days past the death" % ready] += 1
+        if ctx.live:
+            known[u] = dict(known[u], ready_tag=True)
+            ledger.set_fact(u, FACT, known[u])
+    if len(ready_due) > int(o["max_tag_writes"]):
+        ctx.out.tally["thirty-day tags left for the next run"] = len(ready_due) - int(o["max_tag_writes"])
 
     # ---- calls: only after the hold, and by default only once research found the owner living
     handed = _assign_calls(ctx, o, known, today) if o["calls"] != "off" and o["call_presets"] else 0

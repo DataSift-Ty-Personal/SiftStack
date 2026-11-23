@@ -2,21 +2,22 @@
 
 # Org chart coverage
 
-Every agent on docs/agents.json (the public org chart), the team workflow that runs it, and the employee who owns that workflow. 90 agents: 81 run by a workflow, 3 platform, 6 retired, 0 not yet assigned.
+Every agent on docs/agents.json (the public org chart), the team workflow that runs it, and the employee who owns that workflow. 91 agents: 82 run by a workflow, 3 platform, 6 retired, 0 not yet assigned.
 
 ## Atlas (Analysis)
 
 | Workflow | Status | Org-chart agents it runs |
 |---|---|---|
-| ftm_pull | by hand today | Scheduled FTM Runner (ftmrun), FTM Scheduler (ftmsched), Egress Proxy Resolver (proxy), Notice Scraper (scraper), Turnstile Gate Runner (gate), Notice Parser (parser), Foreclosure Filter (fcfilter), Address Standardizer (addr), Property Enricher (prop), Tax Enricher (tax), Obituary Enricher (obit), API Uploader (apiupload) |
-| county_pull | by hand today | Knox FTM Puller (knoxftm), Lien Resolver (lien), Foreclosure Consolidator (consolidate), API Uploader (apiupload) |
+| ftm_pull | own box, daily | Scheduled FTM Runner (ftmrun), FTM Scheduler (ftmsched), Egress Proxy Resolver (proxy), Notice Scraper (scraper), Turnstile Gate Runner (gate), Notice Parser (parser), Foreclosure Filter (fcfilter), Address Standardizer (addr), Property Enricher (prop), Tax Enricher (tax), Obituary Enricher (obit), API Uploader (apiupload) |
+| county_pull | own box, daily | Knox FTM Puller (knoxftm), Lien Resolver (lien), Foreclosure Consolidator (consolidate), API Uploader (apiupload) |
 | courthouse_import | by hand today | Courthouse Photo Importer (photo), PDF Importer (pdfimp), Dropbox Watcher (dropbox) |
 | market_report | live | Market Finder Extractor (finder), County Market Report Generator (report) |
 | list_pull | live | Doors Per Deal Ladder Pull (ladderpull), Agency Test Pools (aipools) |
 | idle_records | live | Obituary Opportunity Ranker (obitrank), Dream 100 Ranker (dream100), D4D Call List (d4dcalls) |
-| sold_cleanup | by hand today | SiftMap Sold Tagger (siftmap) |
+| sold_cleanup | own box, daily | SiftMap Sold Tagger (siftmap) |
 | account_setup | live | Schema Setup (schema), Preset Manager (presets), Sequence Builder (sequences), Account Blueprint Export (bpexport), Account Blueprint Apply (bpapply), Upload Wizard Driver (wizard) |
-| land_desk | live | Builder Land Desk (builderland), Buildable Lot Finder (vacantland) |
+| land_desk | live | Builder Land Desk (builderland) |
+| buildable_lots | live | Buildable Lot Finder (vacantland) |
 | doorknock_route | live | none: not on the org chart yet |
 | ftm_assign | autopilot stage | none: not on the org chart yet |
 | top1000_assign | autopilot stage | none: not on the org chart yet |
@@ -34,6 +35,7 @@ Every agent on docs/agents.json (the public org chart), the team workflow that r
 | business_audit | autopilot stage | none: not on the org chart yet |
 | tax_sale_results | autopilot stage | none: not on the org chart yet |
 | top1000_refresh | autopilot stage | none: not on the org chart yet |
+| top1000_feeds | autopilot stage | none: not on the org chart yet |
 
 ## Diggs (Research)
 
@@ -83,6 +85,7 @@ Every agent on docs/agents.json (the public org chart), the team workflow that r
 | deal_buyers | live | Deal Buyer Match (dealmatch) |
 | dispo_blast | by hand today | Dispo Deal Blast (dispoblast), Dispo Buyer Phonebook (dispobook), Dispo Sequential Flow (dispoflow) |
 | lender_package | live | Lender Analysis (lender), Lender Package Builder (lenderpkg), Lender Document Set (lenderdocs) |
+| mls_offers | live | MLS Offer Engine (mlsoffers) |
 | sms_replies | by hand today | Reply Classifier (classifier), Reply Drafter (responder), Smarter Contact Reply Agent (scinbound), Sender Pool Manager (sender), MMS Screenshot Sender (mms) |
 | revocation | autopilot stage | none: not on the org chart yet |
 | full_attempt | autopilot stage | none: not on the org chart yet |
@@ -96,6 +99,7 @@ Every agent on docs/agents.json (the public org chart), the team workflow that r
 | closer_handoff | autopilot stage | none: not on the org chart yet |
 | primary_phone | autopilot stage | none: not on the org chart yet |
 | attempt_log | autopilot stage | none: not on the org chart yet |
+| cold_email_replies | autopilot stage | none: not on the org chart yet |
 
 ## Quinn (Operations)
 
@@ -128,6 +132,7 @@ Every agent on docs/agents.json (the public org chart), the team workflow that r
 | ftm_registry_scrub | autopilot stage | none: not on the org chart yet |
 | top1000_registry_scrub | autopilot stage | none: not on the org chart yet |
 | ftm_texts | autopilot stage | Smarter Contact Campaign Builder (sccampaign), Text Touch Builder (texttouch) |
+| ftm_backlog_texts | autopilot stage | Smarter Contact Campaign Builder (sccampaign), Text Touch Builder (texttouch) |
 | top1000_texts | autopilot stage | Smarter Contact Campaign Builder (sccampaign), Text Touch Builder (texttouch) |
 | ftm_followup_texts | autopilot stage | Pre-Send Audit (scaudit) |
 | top1000_followup_texts | autopilot stage | Pre-Send Audit (scaudit) |
@@ -152,6 +157,9 @@ Every agent on docs/agents.json (the public org chart), the team workflow that r
 | probate_mail | autopilot stage | none: not on the org chart yet |
 | call_screen | autopilot stage | none: not on the org chart yet |
 | agency_export | autopilot stage | none: not on the org chart yet |
+| cold_email_topup | autopilot stage | none: not on the org chart yet |
+| cold_email_health | autopilot stage | none: not on the org chart yet |
+| cold_email_stats | autopilot stage | none: not on the org chart yet |
 
 ## Not workflows
 

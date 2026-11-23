@@ -77,7 +77,11 @@ def test_the_open_engine_is_an_explicit_switch(monkeypatch):
     assert e.name == "open" and e.research is o.research and e.analyze is o.analyze
     assert e.cap < 1.0
     s = o.settings()
-    assert s["primary"] == o.DEFAULT_PRIMARY and s["second"] == o.DEFAULT_SECOND and s["analysis"] == ""
+    import model_registry   # the lineup moved the analysis passes off Claude on 2026-11-17
+    assert s["primary"] == o.DEFAULT_PRIMARY and s["second"] == o.DEFAULT_SECOND
+    assert s["analysis"] == model_registry.default("who_signs")
+    monkeypatch.setenv("AGENTS_ANALYSIS_MODEL", "off")
+    assert o.settings()["analysis"] == ""
 
 
 def test_off_switches_the_second_opinion_and_the_referee_off(monkeypatch):
@@ -550,3 +554,139 @@ def test_the_analysis_runs_on_the_named_model_with_the_production_prompt_and_gua
 def test_the_module_holds_no_long_dash_or_backspace_byte():
     text = (SRC / "agents" / "research" / "open_research.py").read_text(encoding="utf-8")
     assert chr(8212) not in text and chr(8211) not in text and chr(8) not in text
+
+
+# ------------------------------------------- a skip trace deceased flag (2026-11-19) --
+def flagged_run(tmp_path, flagged=True, age=90):
+    """An owner of record the skip trace flags deceased, beside a co-owner it does not (invented names)."""
+    run = FakeRun(tmp_path)
+    run.save("records.json", [{"slug": "8-sample-pike", "record": {"owner": {"first_name": "Rowan D",
+                                                                            "last_name": "Testerly"}}}])
+    run.save("people.json", [{"slug": "8-sample-pike", "people": [
+        {"key": "p1", "first": "Rowan", "middle": "D", "last": "Testerly", "age": age, "is_subject": True,
+         "ss_deceased": flagged},
+        {"key": "p2", "first": "Dana", "middle": "", "last": "M Testerly", "is_subject": True, "ss_deceased": False}]}])
+    return run
+
+
+def survivor_only_research():
+    """What the Nov 13 referee wrote: the husband Living on his wife's obituary alone."""
+    return {"owner_status": "Living", "owner_status_confidence": "High as of February 2026",
+            "people": [{"name": "Rowan D. Testerly", "relationship_to_owner": "Owner of record; widower", "living": True},
+                       {"name": "Vera L. Sampleton", "relationship_to_owner": "Daughter", "living": True}],
+            "decedents": [{"name": "Dana Marie Testerly", "dod": "2026-02-03"}], "red_flags": []}
+
+
+def test_a_flagged_owner_ships_as_deceased(tmp_path):
+    """Ty, 2026-11-19: SmartSkip is the starting point, no need to recheck. The memo said Living; the code
+    says Deceased, keeps what pointed the other way visible, and leaves the unflagged daughter alone."""
+    r = researcher.guard_flagged_owners(survivor_only_research(), flagged_run(tmp_path))
+    owner = r["people"][0]
+    assert r["owner_status"] == "Deceased" and "flags Rowan D Testerly as deceased" in r["owner_status_confidence"]
+    assert owner["living"] is False and owner["relationship_to_owner"].startswith("DECEASED per the skip trace")
+    assert r["red_flags"][0].startswith("DECEASED PER SKIP TRACE") and "Rowan D Testerly" in r["red_flags"][0]
+    assert any("The research called Rowan D Testerly living" in f for f in r["red_flags"])
+    dead = [d for d in r["decedents"] if d["name"] == "Rowan D Testerly"]
+    assert dead and dead[0]["source"].startswith("skip trace") and dead[0]["relationship_to_owner"] == "Owner of record"
+    assert dead[0]["age_at_death"] == 90
+    assert r["people"][1]["living"] is True, "the daughter, with no flag, is left as she was"
+
+
+def test_no_flag_changes_nothing_and_a_death_already_found_is_not_doubled(tmp_path):
+    clean = researcher.guard_flagged_owners(survivor_only_research(), flagged_run(tmp_path, flagged=False))
+    assert clean["owner_status"] == "Living" and clean["people"][0]["living"] is True and not clean["red_flags"]
+    dead = survivor_only_research()
+    dead.update({"owner_status": "Deceased"})
+    dead["people"][0]["living"] = False
+    dead["decedents"].append({"name": "Rowan D. Testerly", "dod": "2026-04-10"})
+    out = researcher.guard_flagged_owners(dead, flagged_run(tmp_path / "b"))
+    assert out["owner_status"] == "Deceased"
+    assert [d["name"] for d in out["decedents"]].count("Rowan D. Testerly") == 1
+    assert not any(d["name"] == "Rowan D Testerly" for d in out["decedents"]), "one death, listed once"
+    assert not any("The research called" in f for f in out["red_flags"]), "nothing pointed the other way"
+
+
+def test_a_file_written_under_the_old_guard_loses_its_verify_note(tmp_path):
+    r = survivor_only_research()
+    r["owner_status"] = "Unknown"
+    r["people"][0].update(living=False, relationship_to_owner=(
+        "STATUS UNVERIFIED: the skip trace flags this person as deceased and nothing in the research rules it out. "
+        "Owner of record; widower"))
+    r["red_flags"] = ["VERIFY BEFORE CALLING: the skip trace flags Rowan D Testerly as deceased. Ask the family."]
+    out = researcher.guard_flagged_owners(r, flagged_run(tmp_path))
+    assert out["owner_status"] == "Deceased"
+    assert not any(f.startswith("VERIFY BEFORE CALLING") for f in out["red_flags"])
+    assert out["people"][0]["relationship_to_owner"] == (
+        "DECEASED per the skip trace (the team's starting point; confirm gently with the family). Owner of record; widower")
+
+
+def test_a_flagged_co_owner_is_a_decedent_but_does_not_decide_the_owner_status(tmp_path):
+    run = FakeRun(tmp_path)
+    run.save("records.json", [{"slug": "8-sample-pike", "record": {"owner": {"first_name": "Rowan D",
+                                                                            "last_name": "Testerly"}}}])
+    run.save("people.json", [{"slug": "8-sample-pike", "people": [
+        {"key": "p1", "first": "Rowan", "middle": "D", "last": "Testerly", "is_subject": True, "ss_deceased": False},
+        {"key": "p2", "first": "Dana", "middle": "", "last": "M Testerly", "is_subject": True, "ss_deceased": True}]}])
+    r = {"owner_status": "Living", "people": [{"name": "Dana M. Testerly", "living": True}], "decedents": [],
+         "red_flags": []}
+    out = researcher.guard_flagged_owners(r, run)
+    assert out["owner_status"] == "Living", "the owner of record is not the one flagged"
+    assert out["people"][0]["living"] is False
+    assert out["decedents"][0]["relationship_to_owner"] == "Co-owner on title"
+
+
+def test_the_brief_tells_every_researcher_what_the_skip_trace_says(tmp_path):
+    run = flagged_run(tmp_path)
+    said = researcher.record_brief(run, {"street": "8 Sample Pike"})["skip_trace_says"]
+    assert said["title_holders_flagged_deceased"] == ["Rowan D Testerly (age 90)"]
+    assert "do not spend searches proving or disproving the death" in said["how_to_use"]
+    assert "who inherits" in said["how_to_use"]
+    quiet = researcher.record_brief(flagged_run(tmp_path / "q", flagged=False), {"street": "8 Sample Pike"})
+    assert "skip_trace_says" not in quiet
+
+
+def test_the_rules_take_a_skip_trace_flag_as_a_death():
+    assert "the skip trace flagging them deceased" in o.TOOL_RULES
+    assert "never set it aside by guessing it sits on the wrong person" in o.TOOL_RULES
+    assert "spend your searches on the heirs" in o.TOOL_RULES
+    assert "(1) the skip trace does not flag them deceased" in o.TOOL_RULES
+    assert "only; for anyone past 75" in o.TOOL_RULES
+    assert "a person the skip trace flags deceased is Deceased" in o.REFEREE_ASK
+    assert "never re-proves" in researcher.RULES and "advisory and often wrong" not in researcher.RULES
+
+
+def test_a_split_about_a_flagged_owner_is_a_note_not_a_referee_call():
+    a = {"owner_status": "Living", "must_sign": ["Rowan D. Testerly"], "decedents": []}
+    b = {"owner_status": "Deceased", "must_sign": ["Vera L. Sampleton"],
+         "decedents": [{"name": "Rowan D. Testerly", "dod": ""}]}
+    plain = o.compare(a, b)
+    assert any(x.startswith("Owner status") for x in plain["hard"])
+    settled = o.compare(a, b, settled=["Rowan D Testerly"], owner_settled=True)
+    assert not any(x.startswith("Owner status") for x in settled["hard"])
+    assert not any("Rowan D. Testerly: one researcher lists" in x for x in settled["hard"])
+    assert any("which settles it" in x for x in settled["soft"])
+
+
+def test_the_analysis_marks_a_flagged_owner_dead_and_drops_flagged_signers(tmp_path):
+    run = flagged_run(tmp_path)
+    run.save("people.json", [{"slug": "8-sample-pike", "people": [
+        {"key": "p1", "first": "Rowan", "middle": "D", "last": "Testerly", "age": 90, "is_subject": True,
+         "ss_deceased": True},
+        {"key": "p3", "first": "Otto", "last": "Testerly", "is_subject": False, "ss_deceased": True},
+        {"key": "p4", "first": "Vera", "last": "Sampleton", "is_subject": False, "ss_deceased": False}]}])
+    a = {"slug": "8-sample-pike", "owner_status": "Unknown", "decision_maker": "Rowan D. Testerly",
+         "people": [{"ss_key": "p1", "name": "Rowan D. Testerly", "living": "Unknown", "role": "owner"},
+                    {"ss_key": "p3", "name": "Otto Testerly", "living": "Living", "role": "signer", "trace": True},
+                    {"ss_key": "p4", "name": "Vera L. Sampleton", "living": "Living", "role": "signer"}],
+         "must_sign": [{"who": "Otto Testerly"}, {"who": "Vera L. Sampleton"}],
+         "death": {"decedent": "Dana Marie Testerly", "owner_deceased": False}, "crm_fields": {}}
+    out = researcher.enforce_analysis(a, run, {"owner_of_record": "TESTERLY ROWAN D & DANA M"})
+    assert out["owner_status"] == "Deceased"
+    assert out["death"]["owner_deceased"] is True and out["death"]["decedent"] == "Rowan D Testerly"
+    assert out["death"]["source"].startswith("skip trace")
+    assert out["crm_fields"]["Owner Deceased"] == "yes"
+    otto = out["people"][1]
+    assert otto["living"] == "Deceased" and otto["role"] == "none" and otto["trace"] is False
+    assert [m["who"] for m in out["must_sign"]] == ["Vera L. Sampleton"]
+    assert out["decision_maker"] == "", "a flagged owner is never the decision maker"
+    assert any("Otto Testerly is flagged deceased" in f for f in out["signing_flags"])

@@ -28,6 +28,13 @@ The rules, each one from a way this goes wrong:
   * IT CREATES A TASK AND NOTHING ELSE. It does not call, text or mail anyone, it does not change
     the record's status and it does not move the record to another caller.
 
+WHICH OWNERS. Every Not Interested record, unless the block names the lanes our own callers work
+(`lanes: [ftm, top1000]`, or one `lane`). Then only the records a lane's marker tag holds are read
+(the playbook's lanes block: FTM, Top 1000), one search a lane as stages.lane_rows narrows any
+stage to its lanes, so an owner on the agency track, whom the outside calling agency works, is never
+read and never becomes a task for our callers. A lane no tag marks (the agency lane is every record
+no other lane claims) cannot be read this way and is said. With neither set, nothing changes.
+
 What it remembers is the autopilot's own (one fact per record: the open task, the last completed
 re-call, the record's class), so a plan run can work out the whole schedule without writing a
 thing to the account.
@@ -42,9 +49,10 @@ import logging
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
-from . import activity, laneroutes, ledger
+from . import activity, laneroutes, lanes, ledger
 from .sources import digits
-from .stages import Ctx, _list, addr, assignee_of, marks_of, mask, resolve_callers, stage_rows
+from .stages import (Ctx, _list, addr, assignee_of, lane_rows, marks_of, mask, resolve_callers, stage_lanes,
+                     stage_rows)
 
 log = logging.getLogger(__name__)
 
@@ -62,6 +70,27 @@ DEFAULT_CLASSES = (
 OTHER = ("everything else", 90)
 STATE = "second_chance"
 CLASS_TTL = timedelta(days=30)        # how long a record's class is trusted before it is read again
+
+
+def block_problems(st) -> list[str]:
+    """What is wrong with a second-chance block, for the playbook checker: every lane it names under
+    `lanes` must be a lane (`lane` is checked for every stage by the policy itself)."""
+    many = st.get("lanes")
+    if many is None:
+        return []
+    if not isinstance(many, list):
+        return ["stage %s: lanes must be a list of lanes (%s), not %r" % (st.id, ", ".join(lanes.ORDER), many)]
+    bad = [x for x in many if str(x) not in lanes.ORDER]
+    if bad:
+        return ["stage %s: lanes must list lanes (%s); %s is not one" % (st.id, ", ".join(lanes.ORDER), bad)]
+    return []
+
+
+def _where(many: list[str]) -> str:
+    """What a scoped run read, for its head: ' in the first-to-market and Top 1,000 lanes'."""
+    if not many:
+        return ""
+    return " in the %s lane%s" % (" and ".join(lanes.name(x) for x in many), "s" if len(many) > 1 else "")
 
 
 def _when(text) -> datetime | None:
@@ -155,14 +184,18 @@ def run_secondchance(ctx: Ctx) -> None:
     st = ctx.stage
     zone = ZoneInfo(ctx.policy.tz)
     statuses = {str(s).strip().lower() for s in (_list(st.get("statuses")) or ["not_interested"])}
+    stored = [str(s) for s in (_list(st.get("statuses")) or ["not_interested"])]
+    many = [] if st.presets else stage_lanes(st)      # presets already say which records; stage_rows reads them
     if st.presets:
         rows = stage_rows(ctx)
+    elif many:
+        # Only the lanes our callers work: one search a lane, narrowed to the lane's marker tag.
+        rows = lane_rows(ctx, [], many, cap=int(st.get("max_scan", 2000)), search={"any_property_status": stored})
     else:
-        stored = [str(s) for s in (_list(st.get("statuses")) or ["not_interested"])]
         rows = [("", r) for r in ctx.crm.rows({"any_property_status": stored}, cap=int(st.get("max_scan", 2000)))]
     ctx.out.found = len(rows)
     if not rows:
-        ctx.out.head = "No record is Not Interested."
+        ctx.out.head = "No record is Not Interested%s." % _where(many)
         return
     try:
         sync = activity.sync(ctx.crm, "state", now=ctx.now, floor_days=int(st.get("floor_days", 45)),
@@ -280,6 +313,6 @@ def run_secondchance(ctx: Ctx) -> None:
             addr(rec), age, name, days, last4, who["name"]))
     ctx.out.acted = made
     mix = ", ".join("%s %d" % kv for kv in sorted(by_class.items(), key=lambda kv: -kv[1]))
-    ctx.out.head = "%d Not Interested record(s): %s %d re-call task(s)%s; %d not due yet." % (
-        len(rows), "created" if ctx.live else "would create", made, (" (%s)" % mix) if mix else "",
+    ctx.out.head = "%d Not Interested record(s)%s: %s %d re-call task(s)%s; %d not due yet." % (
+        len(rows), _where(many), "created" if ctx.live else "would create", made, (" (%s)" % mix) if mix else "",
         ctx.out.tally.get("not due yet", 0))

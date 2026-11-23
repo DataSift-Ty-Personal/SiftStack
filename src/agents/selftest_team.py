@@ -48,6 +48,7 @@ class _Resp:
 
 class FakeSlack:
     names = {"CROMA": "roma-sales", "CTEAM": "ai-team", "CDIGGS": "diggs-research"}
+    history: dict = {}          # channel -> messages, newest first, as conversations.history returns them
 
     def __init__(self):
         self.calls, self.n = [], 0
@@ -73,6 +74,8 @@ class FakeSlack:
 
     def get(self, url, params=None, timeout=None, headers=None):
         cid = (params or {}).get("channel", "")
+        if url.endswith("/conversations.history"):
+            return _Resp({"ok": cid in self.names, "messages": list(self.history.get(cid, []))})
         return _Resp({"ok": cid in self.names, "channel": {"name": self.names.get(cid, "")}})
 
     def posts(self):
@@ -362,6 +365,17 @@ def run(check, tmp: Path) -> None:
         pl = asyncio.run(by["sms_replies"].handler({"details": "x"}))
         check(pl.get("is_error") and "not wired" in _text_of(pl) and "sms_agent" in _text_of(pl),
               "a planned workflow says so and how it runs by hand")
+        # 2026-11-18: Atlas told Ty the first-to-market pull "is still by hand, so nothing ran" on a
+        # morning the box had uploaded 29 notices, because its roster entry read "planned".
+        ctx_a = tools.RunContext(task=ta, roster=roster, employee=roster.employees["analysis"])
+        fp = asyncio.run({t.name: t for t in tools.build(ctx_a)}["ftm_pull"].handler({"details": "x"}))
+        check(roster.workflows["ftm_pull"].on_box and not fp.get("is_error") and "runs on its own every day" in _text_of(fp)
+              and "nothing ran" not in _text_of(fp) and "by hand:" not in _text_of(fp),
+              "a workflow on the first-to-market box says it runs on its own and reads that box's reports, never 'nothing ran'")
+        tmd = team.render_team_md(roster)
+        check("own box, daily" in tmd.split("| ftm_pull |", 1)[1].split("\n", 1)[0] and "team_query about=ftm" in tmd
+              and "Never invent a person" in tmd,
+              "TEAM.md marks the box's workflows 'own box, daily', points at its reports and forbids an invented person")
         ctx_r = tools.RunContext(task=th, roster=roster, employee=roster.employees["research"])
         dp = {t.name: t for t in tools.build(ctx_r)}["deep_prospect"]
         q1 = _text_of(asyncio.run(dp.handler({"record": "123 Main St"})))
@@ -405,7 +419,7 @@ def run(check, tmp: Path) -> None:
               "anything not pre-approved is denied and only the workspace's own settings load")
         check("mcp__team__quick_screen" in o.allowed_tools and "mcp__team__deep_prospect" not in o.allowed_tools,
               "Roma's approvals cover her tools, not Diggs'")
-        check(o.cwd == str(ws) and o.model == "claude-opus-5-5" and 0 < o.max_budget_usd <= config.AGENT_BUDGET_USD,
+        check(o.cwd == str(ws) and o.model == config.MODEL and 0 < o.max_budget_usd <= config.AGENT_BUDGET_USD,
               "runs in her workspace, on her model, under the turn budget")
         check(FakeSDK.denied == ["deep_prospect"], "the guard blocks a teammate's workflow even if the model asks for it")
         check(res and res["handoffs"] and res["handoffs"][0]["to"] == "Diggs", "Roma's handoff to Diggs is recorded")
@@ -416,6 +430,21 @@ def run(check, tmp: Path) -> None:
         check(abs(store.spent(task_id=s1) - 0.11) < 1e-9, "the turn's Claude cost lands in the spend ledger")
         check("The operator wrote in #roma-sales" in FakeSDK.prompts[-1] and "Mode: dry" in FakeSDK.prompts[-1],
               "the prompt carries the ask, the thread and the live mode")
+        check("Just before that message" not in FakeSDK.prompts[-1], "an ask with no top-level mark reads no channel history")
+        fake_slack.history = {"CROMA": [
+            {"ts": "1700.29", "username": "Roma", "bot_id": "B1", "text": "Call back first: 2 owners\n- 1 Sample St, Knoxville: missed call"},
+            {"ts": "1700.28", "subtype": "channel_join", "user": "U2", "text": "joined"},
+            {"ts": "1700.27", "user": "U1", "text": "earlier chatter"}]}
+        s_top, _ = store.enqueue("sales", "ask", "", subject="links to these",
+                                 payload={"text": "give me the links to these", "channel_name": "roma-sales", "top_level": True},
+                                 mode="agent", source="slack", slack_channel="CROMA", slack_thread="1700.30")
+        FakeSDK.script.insert(0, {"text": "Here are the links."})
+        run_id(s_top)
+        pr = FakeSDK.prompts[-1]
+        check("Just before that message" in pr and "- Roma: Call back first" in pr and "1 Sample St" in pr
+              and "joined" not in pr and pr.index("earlier chatter") < pr.index("1 Sample St"),
+              "an ask written at the top of the channel carries the posts just above it, oldest first, joins left out")
+        fake_slack.history = {}
         guard = o.hooks["PreToolUse"][0].hooks[0]
         deny = lambda n, a: asyncio.run(guard({"tool_name": n, "tool_input": a}, None, {}))  # noqa: E731
         check(deny("Bash", {"command": "env"}), "the guard denies Bash")

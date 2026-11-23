@@ -17,13 +17,21 @@ Where the data comes from (verified 2026-11-15 on Knox, 1,318 active single-fami
     the agent's license number, Zillow's own days on market and bank-owned / new-build flags. The East
     Tennessee feed carries NO agent email, so email is the one contact gap.
 
-Phases (state in output/mls_offers/<market>/):
-    python src/mls_offers.py --phase pull              # listings from the SiftMap index
-    python src/mls_offers.py --phase history           # mls-history: cuts, relists, days on market
-    python src/mls_offers.py --phase zillow --limit 50 # remarks + broker phone on the top rows (paid)
-    python src/mls_offers.py --phase offers            # screen, score, cash + creative offers
-    python src/mls_offers.py --phase export            # workbook + agent call list + outreach drafts
-    python src/mls_offers.py --phase all               # pull history offers export (no paid calls)
+TWO SOURCES feed the same offer math:
+  * api (the default, and the only one a DataSift user has): the published SiftMap search and detail on
+    the account's own Open API key, inside DataSift's acceptable use. See mls_offers_api.py.
+        python src/mls_offers.py --county "Knox, TN" --phase all                 # screen, price, read what is in the account
+        python src/mls_offers.py --county "Knox, TN" --phase all --add --commit  # also add the shortlist first
+        python src/mls_offers.py --zips 37914,37917 --phase all --zillow --limit 50
+  * cluster (staff only): the read-only OpenSearch MCP into SiftMap's own index.
+        python src/mls_offers.py --source cluster --market knox --phase all
+
+Cluster phases (state in output/mls_offers/<market>/):
+    python src/mls_offers.py --source cluster --phase pull     # listings from the SiftMap index
+    python src/mls_offers.py --source cluster --phase history  # mls-history: cuts, relists, days on market
+    python src/mls_offers.py --phase zillow --limit 50         # remarks + broker phone on the top rows (paid)
+    python src/mls_offers.py --phase offers                    # screen, score, cash + creative offers
+    python src/mls_offers.py --phase export                    # workbook + agent call list + outreach drafts
 """
 from __future__ import annotations
 
@@ -32,6 +40,7 @@ import csv
 import json
 import logging
 import math
+import os
 import re
 import sys
 import time
@@ -42,7 +51,10 @@ from pathlib import Path
 from typing import Iterable, Optional
 
 ROOT = Path(__file__).resolve().parent.parent
-OUT = ROOT / "output" / "mls_offers"
+# Output goes to output/ in a SiftStack checkout. An installed skill writes to ~/SiftStack instead: its own
+# folder is replaced on every plugin update and can be read-only. MLS_OFFERS_OUT overrides both.
+_DATA_HOME = ROOT / "output" if (ROOT / "src").is_dir() else Path.home() / "SiftStack"
+OUT = Path(os.environ.get("MLS_OFFERS_OUT") or (_DATA_HOME / "mls_offers"))
 logger = logging.getLogger("mls_offers")
 
 MARKETS = {"knox": ["47093"], "blount": ["47009"], "knox_blount": ["47093", "47009"]}
@@ -91,7 +103,7 @@ def owner_type(row: dict) -> str:
 # Investor purchases near a listing are what our end buyer will pay for it. The label is on the LAST sale:
 # Pending / Rental / Wholetail / Wholesale mean an investor bought and still holds (the price is an as-is
 # investor buy, the current owner is the investor); Flip means the last sale was the renovated exit (an ARV).
-ACQ_TYPES = ("Pending", "Rental", "Wholetail", "Wholesale")
+ACQ_TYPES = ("Pending", "Rental", "Wholetail", "Wholesale", "Investor")   # "Investor": the API source's union
 EVIDENCE_FIELDS = [
     "dataflik_id", "location", "last_sale_price", "last_sale_date", "last_sale_investor_transaction_type",
     "living_area_sqft", "bedroom_count", "year_built", "property_value", "is_cash_buyer", "first_name",
@@ -399,9 +411,16 @@ def slim_evidence(src: dict) -> Optional[dict]:
 def registry_index(path: Path = ROOT / "output" / "dispo_buyers") -> dict:
     """Our dispo buyer registry, keyed two ways so an investor sale near a listing can be tied to a buyer we
     know: by the address they bought (exact) and by normalized name (aliases included). `reach` holds the
-    buyer keys with a phone on file."""
-    from mls_listings import address_key
+    buyer keys with a phone on file. An install without the registry (or its address helper) gets an empty
+    index: the offers still price, they just name no reachable buyer."""
+    empty = {"by_addr": {}, "by_name": {}, "reach": set(), "buyers": 0}
+    try:
+        from mls_listings import address_key
+    except Exception:  # noqa: BLE001 - a skill install carries no mls_listings or config
+        return empty
     reg = load_json(path / "registry.json", []) or []
+    if not reg:
+        return empty
     phones = load_json(path / "phones.json", {}) or {}
     by_addr, by_name = {}, {}
     for b in reg:
@@ -675,24 +694,38 @@ def zillow_details(row: dict, api_key: str) -> dict:
             "agent": a.get("agentName") or "", "agent_phone": fmt_phone(a.get("agentPhoneNumber")),
             "agent_email": a.get("agentEmail") or "", "agent_license": a.get("agentLicenseNumber") or lic or "",
             "broker": a.get("brokerName") or "", "broker_phone": fmt_phone(a.get("brokerPhoneNumber")),
-            "price": d.get("price"), "zestimate": d.get("zestimate"), "url": d.get("hdpUrl") or "",
+            "price": d.get("price"), "zestimate": d.get("zestimate"), "rent": d.get("rentZestimate"),
+            "url": d.get("hdpUrl") or "",
             "bank_owned": bool(sub.get("isBankOwned")), "foreclosure": bool(sub.get("isForeclosure")),
             "new_home": bool(sub.get("isNewHome")), "auction": bool(sub.get("isForAuction")),
         }
     return {"error": "retries exhausted"}
 
 
+ZILLOW_READS = {"last": 0}      # paid Zillow calls the last phase_zillow made
+
+
 def phase_zillow(market: str, limit: int) -> dict:
     """Details for the top `limit` offer rows not already cached. Paid, so it reads the ranked offers."""
-    import config
+    key = (os.environ.get("OPENWEBNINJA_API_KEY") or "").strip()
+    if not key:
+        try:
+            import config
+            key = getattr(config, "OPENWEBNINJA_API_KEY", "") or ""
+        except Exception:  # noqa: BLE001 - a skill install carries no config module
+            key = ""
+    if not key:
+        raise RuntimeError("OPENWEBNINJA_API_KEY is not set; the Zillow check needs it (it is optional, skip --zillow)")
     offers = load_json(OUT / market / "offers.json")
     if not offers:
-        raise SystemExit("run --phase offers first (zillow reads the ranked list)")
+        raise RuntimeError("run --phase offers first (zillow reads the ranked list)")
     cache_p = OUT / market / "zillow.json"
     cache = load_json(cache_p, {})
     todo = [o for o in offers["rows"] if str(o["id"]) not in cache][:limit]
+    ZILLOW_READS["last"] = 0
     for n, o in enumerate(todo, 1):
-        cache[str(o["id"])] = {"read": str(date.today()), **zillow_details(o, config.OPENWEBNINJA_API_KEY)}
+        ZILLOW_READS["last"] = n           # paid calls this run, for a caller that books the spend
+        cache[str(o["id"])] = {"read": str(date.today()), **zillow_details(o, key)}
         if n % 10 == 0:
             save_json(cache_p, cache)
             logger.info("zillow %d/%d", n, len(todo))
@@ -1040,9 +1073,13 @@ def phase_offers(market: str, pol: Policy, today: Optional[date] = None) -> dict
         if modeled.get(str(r["id"])):
             r = overlay_model(r, modeled[str(r["id"])])
         z = zc.get(str(r["id"]))
+        if z and not z.get("error") and not r.get("rent") and z.get("rent"):
+            r = {**r, "rent": z["rent"]}          # the API source has no rent estimate; Zillow's fills it
         h = hist.get(str(r["id"])) or summarize_history([], r.get("list_price"), today)
         if h.get("dom") is None and r.get("listed_since"):
             h["dom"] = ((today or date.today()) - date.fromisoformat(r["listed_since"])).days
+        if h.get("dom") is None and r.get("dom") is not None:
+            h["dom"] = r["dom"]                    # the API screen's days-on-market bucket, until a detail is read
         why = screen(r, pol, z, today)
         if why:
             excluded.append({**r, "reason": why, "owner_type": owner_type(r)})
@@ -1051,6 +1088,12 @@ def phase_offers(market: str, pol: Policy, today: Optional[date] = None) -> dict
         bm = buyer_market(r, ev, reach) if ev else {}
         row = {**r, **h, **bm, **mortgage_summary(r, pol), "owner_type": owner_type(r), "score": score, "why": "; ".join(reasons),
                **cash_offer(r, score, pol, bm), **creative_offer(r, pol)}
+        if r.get("detailed") is False:
+            # API source: screened from search alone (not shortlisted, or not in the account), so there is no
+            # agent, no listing history and no loan. Its preliminary cash number goes on the More listings sheet.
+            excluded.append({**row, "reason": "screened only: no details read (not shortlisted, or not in your account)",
+                             "reason_group": "screened only (no details read)"})
+            continue
         if row["cash_offer"] is None and not row["lane"]:
             if row.get("watch_offer"):
                 excluded.append({**row, "reason": row["cash_basis"], "reason_group": "price watch: cash under half of list"})
@@ -1071,7 +1114,7 @@ def phase_offers(market: str, pol: Policy, today: Optional[date] = None) -> dict
     for i, row in enumerate(rows, 1):
         row["rank"] = i
     out = {"built": str(today or date.today()), "policy": asdict(pol), "listings": len(data["rows"]),
-           "rows": rows, "excluded": excluded}
+           "source": data.get("source") or "cluster", "rows": rows, "excluded": excluded}
     save_json(OUT / market / "offers.json", out)
     logger.info("offers: %d listings, %d with offers, %d excluded", len(data["rows"]), len(rows), len(excluded))
     return out
@@ -1107,7 +1150,12 @@ def agents_roster(rows: list[dict]) -> list[dict]:
     return out
 
 
-def offer_text(row: dict, sender: str = "Ty") -> str:
+def default_sender() -> str:
+    """Who the drafts are from: MLS_OFFERS_SENDER, else nobody named ("I'm a local investor")."""
+    return (os.environ.get("MLS_OFFERS_SENDER") or "").strip()
+
+
+def offer_text(row: dict, sender: str = "") -> str:
     """The first message to the listing agent: both offers in one short text, no dash, one question.
     It says plainly what we are (a local investor) and never claims a lender pre-approval: his script does,
     and an agent who later learns the contract is being assigned has a fair complaint."""
@@ -1132,10 +1180,11 @@ def offer_text(row: dict, sender: str = "Ty") -> str:
                      "would carry the rest, and cover your commission")
     body = parts[0] + (". Or " + parts[1] if len(parts) > 1 else "")
     ask = "Would your seller look at either one?" if len(parts) > 1 else "Would your seller consider it?"
-    return f"Hi {hi}, this is {sender}, a local investor. I'd like to make an offer on {street}. {body}. {ask}"
+    who = f"this is {sender}, a local investor" if sender else "I'm a local investor"
+    return f"Hi {hi}, {who}. I'd like to make an offer on {street}. {body}. {ask}"
 
 
-def phase_export(market: str, sender: str = "Ty") -> Path:
+def phase_export(market: str, sender: str = "") -> Path:
     offers = load_json(OUT / market / "offers.json")
     if not offers:
         raise SystemExit("run --phase offers first")
@@ -1359,16 +1408,48 @@ def write_workbook(path: Path, offers: dict, roster: list[dict], sender: str) ->
     for c in wb["Price watch"]["L"][1:]:
         c.number_format = "0.00%"
 
+    is_more = lambda r: (r.get("reason_group") or "").startswith("screened only")
+    more = sorted((r for r in excluded if is_more(r)), key=lambda r: -(r.get("score") or 0))
+    if more:
+        table(wb.create_sheet("More listings"),
+              ["Score", "Address", "City", "Zip", "List", "Value", "Equity", "Days on market (est)", "Why",
+               "Buyers pay (nearby)", "Cash offer (preliminary)", "Cash % list", "In your account"],
+              [[r.get("score"), r["address"], r["city"], r.get("zip"), r.get("list_price"), r.get("value"),
+                (r["equity_pct"] / 100) if r.get("equity_pct") is not None else None, r.get("dom_bucket") or r.get("dom"),
+                r.get("why"), r.get("investor_price"), r.get("cash_offer") or r.get("watch_offer"),
+                r.get("cash_pct_of_list"), "yes" if r.get("saved") else ""] for r in more],
+              [6, 24, 12, 7, 11, 11, 7, 10, 44, 12, 12, 8, 9], money_cols=(5, 6, 10, 11), pct_cols=(7, 12), wrap_cols=(9,))
+
     table(wb.create_sheet("Not offered"),
           ["Reason", "Address", "City", "List", "Built", "Owner", "Agent"],
           [[r["reason"], r["address"], r["city"], r.get("list_price"), r.get("year"), r.get("owner"), r.get("agent")]
-           for r in excluded if not r.get("watch_offer")], [60, 26, 14, 11, 7, 30, 22], money_cols=(4,), wrap_cols=(1,))
+           for r in excluded if not r.get("watch_offer") and not is_more(r)],
+          [60, 26, 14, 11, 7, 30, 22], money_cols=(4,), wrap_cols=(1,))
 
     src = wb.create_sheet("Sources and caveats")
-    notes = [
-        "Listings, agents and loans come from the SiftMap property index (read-only). Loan balances, rates and "
-        "payments are ESTIMATES: the rate is the market average in the month the loan recorded, the balance is "
-        "amortized from the original amount. Confirm the payoff and the rate with the agent before any number is binding.",
+    if offers.get("source") == "api":
+        source_notes = [
+            "Listings come from SiftMap search on your DataSift Open API key (allowed in volume). Days on market "
+            "on the More listings sheet is the search's window (within 30, 90 or 365 days) until a detail is read.",
+            "Agents, listing history and loans come from the SiftMap property detail, read only for listings in your "
+            "own DataSift account, as DataSift's acceptable use requires. A listing not in the account is screened "
+            "from search alone and sits on More listings; add it (--add --commit) to read it.",
+            "Loan rates, balances and payments are MODELED from the recorded loan: the actual rate from HMDA (the "
+            "federal mortgage disclosure) where one loan matches the year, census tract, type, amount and term, "
+            "otherwise Freddie Mac's rate in the lock week plus a spread measured on those matches; the balance is "
+            "amortized from the original amount over the real term, plus FHA, USDA or private mortgage insurance. "
+            "Confirm the payoff and the rate with the agent before any number is binding.",
+            "What investors paid nearby comes from search split into last-sale price bands, so each sale is priced "
+            "at its band's midpoint ($10,000 bands under $300,000, $25,000 above). The buyers themselves are not "
+            "named by search.",
+        ]
+    else:
+        source_notes = [
+            "Listings, agents and loans come from the SiftMap property index (read-only). Loan balances, rates and "
+            "payments are ESTIMATES: the rate is the market average in the month the loan recorded, the balance is "
+            "amortized from the original amount. Confirm the payoff and the rate with the agent before any number is binding.",
+        ]
+    notes = source_notes + [
         "A 'Credit Line' loan is a home equity line. Its balance estimate is a limit, not a payoff, so it never "
         "qualifies a subject-to offer on its own.",
         "Days on market and price cuts come from the MLS event log and count the whole marketing run since the last "
@@ -1379,17 +1460,17 @@ def write_workbook(path: Path, offers: dict, roster: list[dict], sender: str) ->
         "house. Deeds at twice the parcel's value or more are portfolio deeds and are dropped. 'ARV x 60% check' "
         "is his formula on flip resales nearby; an offer above it is flagged for a condition read.",
         "Investor labels come from the deed (pending, rental, wholetail, wholesale = an investor bought and still "
-        "holds; flip = the renovated resale). Buyers are tied to our dispo registry by the address they bought, "
-        "then by name. 'Reachable' means a phone is on file in the registry.",
+        "holds; flip = the renovated resale). Where a dispo buyer registry is installed, buyers are tied to it by "
+        "the address they bought, then by name, and 'Reachable' means a phone is on file in the registry.",
         "Repairs are a flat placeholder per square foot until someone reads the photos or walks the house.",
         "Subject-to: the loan stays in the seller's name and the lender can call it due on a transfer. Every "
         "subject-to and seller-carry offer needs a closing attorney who does them.",
-        "Write every contract 'and/or assigns' and tell the agent up front that you may assign it. Check "
-        "Tennessee's current wholesaling rules with the closing attorney before marketing any contract.",
-        "His script tells agents he is 'pre-approved by my lender'. The drafts here never say that: an agent who "
-        "later learns the contract is being assigned has a fair complaint, and he reports agents filing them.",
-        "The agent's email is not in the East Tennessee MLS feed this pulls from. Phone is the primary channel.",
-        "MLS data here is for identifying properties we may buy, which is the use the feed allows.",
+        "Write every contract 'and/or assigns' and tell the agent up front that you may assign it. Check your "
+        "state's current wholesaling rules with a closing attorney before marketing any contract.",
+        "The drafts never claim a lender pre-approval: an agent who later learns the contract is being assigned "
+        "has a fair complaint. The listing agent is the contact; never go around the agent to the homeowner.",
+        "The agent's email is not in every MLS feed (it is absent in East Tennessee's). Phone is the primary channel.",
+        "MLS data here is for identifying properties you may buy, which is the use the feed allows.",
     ]
     src.column_dimensions["A"].width = 140
     for n in notes:
@@ -1410,26 +1491,122 @@ def write_workbook(path: Path, offers: dict, roster: list[dict], sender: str) ->
 
 # --------------------------------------------------------------------------------------------- cli
 
+API_PHASES = ["screen", "buyers", "shortlist", "add", "detail", "mortgage", "zillow", "offers", "export", "all"]
+CLUSTER_PHASES = ["pull", "history", "mortgage", "buyers", "zillow", "offers", "export", "all"]
+
+
+def _load_env() -> None:
+    """Read a .env next to the repo (or the current folder) when python-dotenv is installed."""
+    try:
+        from dotenv import load_dotenv
+    except ImportError:
+        return
+    for p in (ROOT / ".env", Path.cwd() / ".env"):
+        if p.exists():
+            load_dotenv(p, override=False)
+
+
+def main_api(a, pol: Policy) -> int:
+    """The published-API run: one phase, or `all` (the whole run, mls_offers_api.run)."""
+    global OUT
+    import mls_offers_api as api
+    try:
+        market = api.resolve_market(a.county or "", a.fips or "", a.zips or "", a.name or "")
+    except ValueError as exc:
+        print(str(exc))
+        return 2
+    out = Path(a.out) if a.out else OUT / market["name"]
+    sender = a.sender if a.sender is not None else default_sender()
+    if a.phase == "all":
+        res = api.run(market, out=out, shortlist=a.shortlist, add=a.add, commit=a.commit, zillow=a.zillow,
+                      zillow_limit=a.limit if a.zillow else 0, months=a.months, policy=asdict(pol),
+                      list_name=a.list_name, tag=a.tag, sender=sender, expect_email=a.expect_email or "")
+        print(json.dumps({k: res[k] for k in ("market", "workbook", "csv", "counts")}, indent=1))
+        for n in res["notes"]:
+            print("NOTE:", n)
+        if res.get("quote") and not (a.add and a.commit):
+            q = res["quote"]
+            print("Adding the %s shortlisted listings not in your account would use %s records (cost %s). "
+                  "Re-run with --add --commit to add them." % (q.get("total"), q.get("billable"), q.get("cost")))
+        return 0
+    out.mkdir(parents=True, exist_ok=True)
+    OUT, key = out.parent, out.name
+    notes: list = []
+    client = None if a.phase in ("shortlist", "offers", "export", "mortgage") else api.make_client()
+    if a.phase == "screen":
+        api.phase_screen(market, pol, client, out, notes)
+    elif a.phase == "buyers":
+        api.phase_buyers(market, client, out, a.months)
+    elif a.phase == "shortlist":
+        api.phase_shortlist(pol, out, a.shortlist)
+    elif a.phase == "add":
+        res = api.phase_add(client, out, commit=bool(a.add and a.commit), list_name=a.list_name, tag=a.tag,
+                            expect_email=a.expect_email or "", notes=notes)
+        print(json.dumps({k: v for k, v in res.items() if k != "quote"}), json.dumps(res.get("quote"))[:600])
+    elif a.phase == "detail":
+        print(api.phase_detail(client, out, notes=notes))
+        api.phase_rent(client, out, (load_json(out / "shortlist.json") or {}).get("ids") or [])
+    elif a.phase == "mortgage":
+        print(api.phase_mortgage(market, out).get("stats"))
+    elif a.phase == "zillow":
+        phase_zillow(key, a.limit)
+    elif a.phase == "offers":
+        phase_offers(key, pol)
+    elif a.phase == "export":
+        print(phase_export(key, sender))
+    for n in notes:
+        print("NOTE:", n)
+    return 0
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("--phase", required=True,
-                    choices=["pull", "history", "mortgage", "buyers", "zillow", "offers", "export", "all"])
+    # --source cluster and --market are staff-only (an internal read-only index), so the help leaves them out.
+    ap.add_argument("--source", default="api", choices=["api", "cluster"], help=argparse.SUPPRESS)
+    ap.add_argument("--phase", required=True, choices=sorted(set(API_PHASES) | set(CLUSTER_PHASES)),
+                    metavar="{" + ",".join(API_PHASES) + "}",
+                    help="one step of the run, or all of it (all)")
+    ap.add_argument("--county", help='county and state, like "Knox, TN" (several separated by ";")')
+    ap.add_argument("--fips", help="county FIPS codes, like 47093,47009")
+    ap.add_argument("--zips", help="ZIP codes, like 37914,37917")
+    ap.add_argument("--name", help="a short name for the market's output folder")
+    ap.add_argument("--out", help="the folder every file is written to (default output/mls_offers/<market> in a SiftStack checkout, ~/SiftStack/mls_offers/<market> for an installed skill)")
+    ap.add_argument("--shortlist", type=int, default=60, help="how many listings to read in full")
+    ap.add_argument("--add", action="store_true", help="add the shortlisted listings not yet in your account")
+    ap.add_argument("--commit", action="store_true", help="with --add, actually add (uses record allowance)")
+    ap.add_argument("--zillow", action="store_true", help="all: check the offers on Zillow (paid, OPENWEBNINJA_API_KEY)")
+    ap.add_argument("--list-name", default="MLS Offers", help="the DataSift list added listings go on")
+    ap.add_argument("--tag", default="MLS Listing", help="the tag added listings get")
+    ap.add_argument("--expect-email", help="refuse to add unless the key belongs to this user")
     ap.add_argument("--months", type=int, default=24, help="buyers: how far back investor purchases count")
-    ap.add_argument("--market", default="knox", choices=sorted(MARKETS))
+    ap.add_argument("--market", default="knox", choices=sorted(MARKETS), help=argparse.SUPPRESS)
     ap.add_argument("--limit", type=int, default=50, help="zillow: how many top rows to read (paid)")
     ap.add_argument("--policy", help="JSON file of Policy overrides")
-    ap.add_argument("--sender", default="Ty")
+    ap.add_argument("--sender", default=None, help="who the drafts are from (default MLS_OFFERS_SENDER, else unnamed)")
     ap.add_argument("-v", "--verbose", action="store_true")
     for f in Policy.__dataclass_fields__.values():
         typ = (lambda s: s.strip().lower() in ("1", "true", "yes", "on")) if isinstance(f.default, bool) else type(f.default)
         ap.add_argument("--" + f.name.replace("_", "-"), type=typ, default=None)
     a = ap.parse_args(argv)
     logging.basicConfig(level=logging.DEBUG if a.verbose else logging.INFO, format="%(asctime)s %(message)s")
+    _load_env()
     pol = Policy(**(load_json(Path(a.policy)) if a.policy else {}))
     for f in Policy.__dataclass_fields__:
         v = getattr(a, f)
         if v is not None:
             setattr(pol, f, v)
+    if a.source == "api":
+        if a.phase not in API_PHASES:
+            ap.error(f"--phase {a.phase} is a cluster phase; the api phases are {', '.join(API_PHASES)}")
+        try:
+            return main_api(a, pol)
+        except RuntimeError as exc:      # no key, the wrong account, a failed download: a sentence, no trace
+            print("Stopped: %s" % exc)
+            return 1
+    if a.phase not in CLUSTER_PHASES:
+        ap.error(f"--phase {a.phase} is an api phase; add --source api")
+    if a.sender is None:
+        a.sender = default_sender()
     fips = MARKETS[a.market]
     if a.phase in ("pull", "all"):
         phase_pull(a.market, fips)

@@ -197,13 +197,22 @@ def _fields(api, uuid: str) -> dict:
     return {((x.get("custom_field") or {}).get("label") or ""): x.get("value") for x in rows or []}
 
 
+def _said(api, uuid: str, rec: dict) -> str:
+    """Everything a record says about its liens: the old notes field plus the message board, where
+    notes go since the add-notes route was retired (2026-11-18). The debtor guard reads both."""
+    got = _crm(api, "/api/internal/property/%s/message/?limit=100" % uuid)
+    rows = got.get("results", got) if isinstance(got, dict) else got
+    board = [str(m.get("message") or "") for m in rows or [] if isinstance(m, dict)]
+    return "\n".join([str(rec.get("notes") or "")] + board)
+
+
 def apply_change(api, idx: dict, change: dict, today: str) -> dict:
     """Rewrite one record's lien figures and read them back. Returns a result row."""
     import datasift_api_upload as up
 
     uuid = change["uuid"]
     rec = _crm(api, "/api/internal/property/%s/" % uuid)
-    named = debtors_from_notes(str(rec.get("notes") or ""))
+    named = debtors_from_notes(_said(api, uuid, rec))
     # The ledger was joined to records by street. Before writing a dollar figure,
     # require the record itself to name one of these debtors.
     if not any(d in named for d in change["debtors"]):
@@ -247,8 +256,8 @@ def apply_change(api, idx: dict, change: dict, today: str) -> dict:
         _crm(api, "/api/internal/property/%s/" % uuid, "PATCH",
              {"tags": [t for t in current if t not in drop] + add})
     try:
-        _crm(api, "/api/internal/property/%s/add-notes/" % uuid, "POST",
-             {"notes": note_for(change, today)})
+        _crm(api, "/api/internal/property/%s/message/" % uuid, "POST",
+             {"message": note_for(change, today)})
     except Exception as exc:   # the figures are what matter; the note is the audit trail
         warn.add("note not added: %s" % str(exc)[:80])
 
@@ -304,7 +313,7 @@ def unlist_released(scratch: str, api=None, commit: bool = False, limit: int = 0
     for n, uuid in enumerate(todo, 1):
         try:
             rec = _crm(api, "/api/internal/property/%s/" % uuid)
-            named = debtors_from_notes(str(rec.get("notes") or ""))
+            named = debtors_from_notes(_said(api, uuid, rec))
             if not any(d in named for d in ledger[uuid]["debtors"]):
                 stats["skipped"] += 1
                 done.add(uuid)                      # not ours to change; do not ask again

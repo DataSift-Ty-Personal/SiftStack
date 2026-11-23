@@ -18,7 +18,18 @@ The templates are rewrites of the proven structures, not anyone's copy pasted ve
 
 Postcards carry 93% of the volume, but letters do a quarter of the campaigns. The operators who run the most campaigns rotate five or more templates. This comes from the DataSift template export: 798 templates and 238 customer accounts, with staff and vendor accounts removed (167,000 test pieces) and every template's front and back read with OCR.
 
-One limit up front: the export counts pieces and campaigns, not responses. A template that's still running after 100+ campaigns is the closest proxy for "it works" here. Snap packs aren't in it, because they aren't live in the DataSift integration yet. Real Penned and printed personal letters share a size, so they can't be separated.
+One limit up front: the export counts pieces and campaigns, not responses. A template that's still running after 100+ campaigns is the closest proxy for "it works" here. Snap packs aren't in it, because they weren't live in the DataSift integration until November 20, 2026. Real Penned and printed personal letters share a size, so they can't be separated.
+
+### What Open Letter sees working now (November 2026)
+
+Open Letter, the print partner behind DataSift's mail, answered our question about its current top performers:
+
+- **Bigger postcards.** Operators are moving from 4x6 to 6x9.
+- **Personal and handwritten pieces** are the other strong trend.
+- **Check letters still work, with a tradeoff.** They bring fewer responses than they used to, but the deals they bring are better.
+- **The snap pack is its top choice,** especially going into tax season, when people are watching the mail for refund checks that arrive in exactly that form.
+
+One way to act on it: run every sequence on just three formats, the 6x9 postcard, the Real Penned letter and the snap pack, and put anything private (a sale date, an estate) inside a sealed piece rather than on a postcard.
 
 | Format | Accounts | Pieces mailed | Share of pieces | Campaigns | Share of campaigns | Median pieces per campaign |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -465,7 +476,7 @@ PC4 and PC5 are the least-tested here (one operator each), so A/B test them agai
 
 The check is a pattern interrupt: it follows the personal pieces, it never opens a sequence and it's never sent twice in a row. The spec: an offer around 70-80% of the online estimate, written as an odd, specific number like $80,230, with the owner's name in the "pay to the order of" window.
 
-Open Letter calls it the Snap Pack Check Mailer (ROS): a pressure-sealed, tear-open self-mailer at $0.73-$1.01 Standard Class depending on volume, plus $0.27 for First Class, with a 200-piece minimum. It isn't live in the DataSift integration yet, so order it in Open Letter Connect directly.
+Open Letter calls it the Snap Pack Check Mailer (ROS): a pressure-sealed, tear-open self-mailer. Ordered from Open Letter directly it runs $0.73-$1.01 Standard Class depending on volume, plus $0.27 for First Class, with a 200-piece minimum. Since November 20, 2026 it's also in DataSift's Mail Design as "Snap Pack Mailers": $1.15 a piece on the Business tier, First-Class postage, no minimum, and one starting template, "REISift - Snap Pack Mailer" (a letter on top, a checkmark panel in the middle and the check at the bottom).
 
 **K1. The check face**
 
@@ -503,7 +514,7 @@ Required legal language (have counsel confirm for each state):
 - **New York:** "THIS IS NOT A CHECK" must be printed diagonally across the face.
 - **California:** simulated checks are banned outright, and the Attorney General can seek up to $100 per violation. The only marking exception covers sample checks used to sell checks, which doesn't fit this use. Don't mail check pieces into California unless counsel signs off.
 
-What you can send from DataSift today: the closest piece is a Professional Letter in a windowed envelope built on DataSift's check letter template, and it can't merge an offer amount yet. One way to use it is a check with no amount that invites the owner to call for a written offer. The template export does show a written-offer field in 10 templates from 7 accounts; confirm that the field fills on a proof before you build on it.
+What you can send from DataSift today: the Snap Pack itself (Direct Mail > Custom Designs > New Design > Snap Pack Mailers > the REISift template). It can't merge an offer amount, so the version that works is a check with no amount: the check line reads "Call us to discuss our offer for your property," and the letter above it says why there's no number (a number from public records would only be a guess). Before you save it, swap the template's security banner wording for the not-negotiable statement, call a local number "local" rather than "toll free," and take off anything that suggests a bank or a government office (the check back reads "Federal Reserve" in the stock template). The template export does show a written-offer field in 10 templates from 7 accounts; confirm that the field fills on a proof before you build on it.
 
 ## Sequences
 
@@ -529,7 +540,7 @@ Each list type gets its own rhythm. Pre-foreclosure gets a touch every week unti
 
 1. Day 0: PC1 yellow note card (4x6, $0.67)
 2. Day 30: PC2 branded card (6x9, $0.76)
-3. Day 60: K1/K2 snap pack check (Open Letter Connect, $0.73-$1.01 by volume)
+3. Day 60: K1/K2 snap pack check (DataSift Mail Design, $1.15; or Open Letter Connect, $0.73-$1.01 by volume)
 4. Day 90: PC5 situation checklist (4x6, $0.67)
 5. Day 120: A1, L1 or V1 letter to top-scored records only (Real Penned, $1.89)
 
@@ -555,7 +566,7 @@ Checked in DataSift Mail Design in November 2026.
 - **The first-name field prints the company name** when the owner has no first name (an LLC or a trust). Make a "Hi there," twin of every named piece and send company owners that one.
 - **Real Penned has a fixed font**, a page fits about 12 lines, and the builder strips non-ASCII characters (curly quotes, long dashes) and braces when it saves. Write those pieces in plain text.
 - **Street View postcards** print each recipient's own house photo at print time. Check it with the builder's "Download proof" before a launch.
-- **Snap pack check mailers aren't in DataSift's builder yet.** DataSift's check letter template on a windowed professional letter is the in-app version, and any check-style piece must say on its face that it isn't a negotiable instrument and has no cash value.
+- **Snap Pack Mailers are in DataSift's builder** (since November 20, 2026). The sheet folds in thirds: keep the letter on the top panel, leave the address window on the middle panel's left empty (it prints white), and keep every line clear of the two folds and the perforation above the check. Any check-style piece must say on its face that it isn't a negotiable instrument and has no cash value.
 - **Never edit a design a live campaign uses.** The change applies to every order already placed with it. Save a new version instead.
 - **Proven templates worth starting from** in DataSift's template library: the Absentee Doodle Streetview, Streetview, Family Streetview, Stickman Streetview and Handwritten postcards, and the Easy Process, Seller Comparison, Probate and Personal Picture letters.
 - **Prices** in this file are DataSift's Business tier in November 2026. Check your own account's price table before you budget.

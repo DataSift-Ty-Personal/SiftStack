@@ -14,9 +14,15 @@ name: Agents heartbeat
 # watchdog fails a test first.
 #
 # Scheduled workflows run only from the default branch, so this is inert until it is on main.
-# Repo secrets: AGENTS_HEALTH_WEBHOOK (falls back to FTM_HEALTH_WEBHOOK) is where a failure is
-# posted. No Fly token is needed: the health page is public and carries counts only, never a
-# record, a street or a name.
+# No Fly token is needed: the health page is public and carries counts only, never a record, a
+# street or a name.
+#
+# A LATE BACKUP since 2026-11-20. GitHub throttles a public repo's schedules (this ran about 8
+# hours late), so the same check now runs on time, every 15 minutes, on the issue fixer's box
+# (tools/issue_fixer/watch.py). A failure is posted ONLY through the brain's relay (the repo
+# secret FTM_HEALTH_WEBHOOK is the relay URL), which keeps one post per watchdog a day whoever
+# sends it and looks at the channel for the box's own post: the pair never says the same red
+# twice. A plain Slack webhook here would bypass that, so none is read.
 
 on:
   schedule:
@@ -53,7 +59,7 @@ jobs:
         # always(): a probe that crashed is itself a reason to speak up, not a reason to stay quiet.
         if: always() && steps.probe.outputs.status != 'ok'
         env:
-          SLACK_WEBHOOK: ${{ secrets.AGENTS_HEALTH_WEBHOOK || secrets.FTM_HEALTH_WEBHOOK }}
+          SLACK_WEBHOOK: ${{ secrets.FTM_HEALTH_WEBHOOK }}
           STATUS: ${{ steps.probe.outputs.status }}
           DETAIL: ${{ steps.probe.outputs.detail }}
         run: |

@@ -24,6 +24,14 @@ Lifting a rule is explicit. A stage names what it may touch (`gate_allow` in the
 second-chance stage may touch a Not Interested record, the heir lane may touch a record whose
 research named a verified heir, a lead-management stage may touch a lead. Nothing lifts Do Not
 Market, a litigator, an opt-out or a sold house.
+
+A RESEARCH TAG (research_tags, empty by default) holds a record for research exactly as the Deep
+Prospecting status does: out of every outreach and paid channel, open to research. The account names
+Tax Sale Redemption there (2026-11-20): a former owner who can still redeem a tax sale house is never
+texted, called or mailed by a stage until a lawyer okays it, which in practice is a person taking the
+tag off. The word that lifts the status hold (`in_research`, which the heir lane uses because its
+records often still read Deep Prospecting) does NOT lift a research tag: only `research_tag` does,
+and only a person's own action names it (booking a walkthrough the owner agreed to).
 """
 from __future__ import annotations
 
@@ -32,9 +40,13 @@ from dataclasses import dataclass, field
 
 from . import lanes as lanes_mod
 
-CHANNELS = ("assign", "call", "text", "mail", "trace", "score", "research", "task")
+# "email" (2026-11-20) is the cold email program's own channel. It borrowed "mail" until then, and
+# dropped the one rule that is about paper: mail that came back from the house says nothing about an
+# email address. Everything else that holds mail holds an email (Do Not Market, an opt-out, a death,
+# a lead, the owner's other lane, Do Not Mail).
+CHANNELS = ("assign", "call", "text", "mail", "email", "trace", "score", "research", "task")
 ALL = frozenset(CHANNELS)
-OUTREACH = frozenset({"assign", "call", "text", "mail", "task"})
+OUTREACH = frozenset({"assign", "call", "text", "mail", "email", "task"})
 PAID = frozenset({"trace", "score"})
 
 TIER_NAMES = ("Dial First", "Dial Second", "Dial Third", "Dial Fourth", "Drop")
@@ -52,7 +64,7 @@ RULES = {
     "opted_out": (ALL, ""),
     "sold": (ALL, ""),
     "deceased": (OUTREACH | PAID, ""),              # lifted only as written in check(): "deceased", or "heir" with the heir tag
-    "in_research": (OUTREACH | PAID, "in_research"),
+    "in_research": (OUTREACH | PAID, "in_research"),     # a research TAG (research_tags) is lifted only by "research_tag", see check()
     "lead": (OUTREACH | PAID, "lead"),
     "finished": (ALL, ""),                       # not_interested alone can be lifted, see _status_rule
     "unknown_status": (OUTREACH | PAID, "unknown_status"),
@@ -61,7 +73,7 @@ RULES = {
     "mail_only": (frozenset({"assign", "call", "text", "task"}), "mail_only"),
     "exhausted": (frozenset({"assign", "call"}), "exhausted"),
     "return_mail": (frozenset({"mail"}), "heir"),    # a heir letter goes to the heir's own address, not the one that bounced
-    "do_not_mail": (frozenset({"mail"}), ""),
+    "do_not_mail": (frozenset({"mail", "email"}), ""),   # an owner who asked for no mail gets no marketing email either
     "owner_lane": (OUTREACH, ""),
     "no_number": (frozenset({"call", "text"}), ""),
 }
@@ -87,6 +99,9 @@ class GateConfig:
     listed_values: list = field(default_factory=lambda: ["listed", "pending"])
     callable_tiers: list = field(default_factory=lambda: ["Dial First", "Dial Second"])
     working_statuses: list = field(default_factory=list)      # an install's own statuses that mean "still prospecting"
+    # Tags that hold a record for research the way the Deep Prospecting status does: out of every outreach
+    # and paid channel, open to research. Lifted only by the allow word "research_tag" (see check()).
+    research_tags: list = field(default_factory=list)
     read_fields: bool = False                                  # read the record's custom fields (one more call a record)
     # The national do-not-call registry flag DataSift puts on skip-traced numbers (decision D32: never
     # texted, held from calls). One switch for the whole rule: the gate, the text and call stages, the
@@ -96,7 +111,7 @@ class GateConfig:
 
     KEYS = ("do_not_market_tags", "litigator_tags", "suppress_lists", "deceased_tags", "deceased_lists",
             "deceased_fields", "probate_marks", "heir_tags", "sold_tags", "mail_only_tags", "not_sfr_tags",
-            "return_mail_tags", "listed_values", "callable_tiers", "working_statuses")
+            "return_mail_tags", "listed_values", "callable_tiers", "working_statuses", "research_tags")
 
 
 def parse(block: dict | None, problems: list[str]) -> GateConfig:
@@ -136,11 +151,10 @@ class Verdict:
         """The first reason, in words a person reading the digest understands."""
         if not self.reasons:
             return ""
-        code, detail = self.reasons[0]
-        return TEXT[code] % detail if "%s" in TEXT[code] else TEXT[code]
+        return words(*self.reasons[0])
 
     def all_reasons(self) -> list[str]:
-        return [(TEXT[c] % d if "%s" in TEXT[c] else TEXT[c]) for c, d in self.reasons]
+        return [words(c, d) for c, d in self.reasons]
 
 
 TEXT = {
@@ -163,6 +177,24 @@ TEXT = {
     "owner_lane": "the owner is in the %s lane on another record",
     "no_number": "no usable number for a %s",
 }
+
+
+def words(code: str, detail: str = "") -> str:
+    """One (code, detail) pair as a plain sentence fragment. A detail the words have no place for (the
+    research tag that holds a record) follows them in brackets: "held out for research (tag ...)"."""
+    text = TEXT[code]
+    if "%s" in text:
+        return text % detail
+    return "%s (%s)" % (text, detail) if detail else text
+
+
+def research_tag(tags: set, cfg) -> str:
+    """The first research tag (research_tags) among these lower-case tag titles, as the settings spell
+    it, or ''."""
+    for t in getattr(cfg, "research_tags", None) or []:
+        if str(t).strip().lower() in tags:
+            return str(t).strip()
+    return ""
 
 
 def digits(n) -> str:
@@ -308,6 +340,9 @@ def check(rec: dict, channel: str, *, cfg: GateConfig | None = None, lane: str =
     code, detail = _status_rule(status, cfg)
     if code and code not in found:
         found[code] = detail
+    held_by = research_tag(tags, cfg)
+    if held_by:
+        found["in_research"] = "tag %s" % held_by     # the tag holds whatever the status says, and says so
     if str(rec.get("mls") or "").strip().lower() in _lowset(cfg.listed_values):
         found.setdefault("listed", "")
     if tags & _lowset(cfg.not_sfr_tags):
@@ -340,6 +375,12 @@ def check(rec: dict, channel: str, *, cfg: GateConfig | None = None, lane: str =
             continue
         if code == "deceased" and ("deceased" in allow or ("heir" in allow and tags & _lowset(cfg.heir_tags))):
             continue
+        if code == "in_research" and found[code]:
+            # A research TAG. "in_research" lets a stage touch a record whose status reads Deep Prospecting;
+            # a tag such as Tax Sale Redemption holds the owner for a reason no research run settles.
+            if "research_tag" not in allow:
+                reasons.append((code, found[code]))
+            continue
         if lift and lift in allow:
             continue
         reasons.append((code, found[code]))
@@ -362,7 +403,7 @@ def check_row(row: dict, channel: str, *, cfg: GateConfig | None = None, allow=(
         lifted = (lift and lift in allow) or (code == "finished" and detail == "not_interested" and "not_interested" in allow)
         if channel in blocked and not lifted:
             reasons.append((code, detail))
-    if channel == "mail" and (row.get("do_not_mail_ever") or row.get("owner_do_not_mail_ever")):
+    if channel in RULES["do_not_mail"][0] and (row.get("do_not_mail_ever") or row.get("owner_do_not_mail_ever")):
         reasons.append(("do_not_mail", ""))
     return Verdict(not reasons, reasons)
 

@@ -20,6 +20,10 @@ Three contract details, each of which fails SILENTLY or cryptically:
   * a select field's value must be the OPTION'S UUID, not its label. Sending
     "LEN" returns {"non_field_errors": ["'LEN' is not a valid UUID."]}.
   * `notes` on the property payload is accepted with 200 and then discarded.
+    Notes go on the record's message board (add_note). The old add-notes route
+    answers DataSift's HTML Not Found page since 2026-11-18, and this file used
+    to swallow that, so every upload from the 11-19 run lost its Notes while
+    the run read OK.
 
     python src/datasift_api_upload.py --limit 1            # dry run
     python src/datasift_api_upload.py --limit 1 --commit   # one record, verified
@@ -373,6 +377,37 @@ def _owner_label(o: dict) -> str:
     return " ".join(str(o.get(k) or "").strip() for k in ("first_name", "last_name")).strip() or str(o.get("company") or "").strip()
 
 
+def record_notes(api: "Api", uuid: str, rec: dict | None = None) -> str:
+    """Everything already said on a record: its old notes field plus its message board, where
+    notes go now. Used to say a note once. A board that cannot be read counts as empty, so the
+    caller posts: a repeated note beats a lost one."""
+    said = [str((rec or {}).get("notes") or "")]
+    try:
+        got = api.call("/api/internal/property/%s/message/?limit=100" % uuid) or []
+        rows = got.get("results") if isinstance(got, dict) else got
+        said += [str(m.get("message") or "") for m in rows or [] if isinstance(m, dict)]
+    except Exception:  # noqa: BLE001
+        pass
+    return "\n".join(said)
+
+
+def add_note(api: "Api", uuid: str, text: str, have: str | None = None) -> bool:
+    """Post a note on the record's message board, once.
+
+    `have` is what the record already says (record_notes); None reads it. Returns False when the
+    same note is already there. Raises when DataSift refuses the post, so the caller can count it
+    and say so (the old route's failures were swallowed)."""
+    text = str(text or "").strip()
+    if not text:
+        return False
+    if have is None:
+        have = record_notes(api, uuid)
+    if text[:200] in have:
+        return False
+    api.call("/api/internal/property/%s/message/" % uuid, "POST", {"message": text[:4000]})
+    return True
+
+
 def attach_to_record(api: "Api", uuid: str, body: dict) -> None:
     """Apply a create payload to a record that already exists.
 
@@ -423,9 +458,13 @@ def attach_to_record(api: "Api", uuid: str, body: dict) -> None:
     if patch:
         api.call("/api/internal/property/%s/" % uuid, "PATCH", patch)
     # The county stage re-sends the same rows every morning, so the same sentence would otherwise be
-    # added to the record's notes every day. Said once is enough.
-    if note and note not in str(rec.get("notes") or ""):
-        api.call("/api/internal/property/%s/add-notes/" % uuid, "POST", {"notes": note})
+    # added to the record every day. Said once is enough. A refused note must not fail the row: the
+    # owner, lists and tags already landed, and the caller writes the custom fields after this.
+    if note:
+        try:
+            add_note(api, uuid, note, have=record_notes(api, uuid, rec))
+        except Exception as e:  # noqa: BLE001
+            print("  owner note not posted on %s: %s" % (uuid, str(e)[:120]))
 
 
 _attach_existing = attach_to_record  # older name
@@ -545,11 +584,12 @@ def _notice_text_note(api, uuid: str, row: dict, was_existing: bool, warn: set) 
     if not text or (os.environ.get("FTM_NOTICE_TEXT") or "").strip().lower() != "notes":
         return
     try:
+        have = ""
         if was_existing:
-            have = str((api.call("/api/internal/property/%s/" % uuid) or {}).get("notes") or "")
+            have = record_notes(api, uuid, api.call("/api/internal/property/%s/" % uuid) or {})
             if text[:80] in have:
                 return
-        api.call("/api/internal/property/%s/add-notes/" % uuid, "POST", {"notes": "Notice text: " + text})
+        add_note(api, uuid, "Notice text: " + text, have=have)
     except Exception as e:  # noqa: BLE001
         warn.add("notice text note not added (%s)" % type(e).__name__)
 
@@ -572,6 +612,8 @@ def upload_rows(rows: list[dict], *, commit: bool = False,
 
     warn: set = set()
     created = fielded = failed = existing = again = 0
+    notes_tried = notes_failed = 0
+    notes_error = ""
     errors: list[str] = []
     ledger, again_tag = _appeared_ledger(warn) if (commit and new_filing) else (None, "")
     stopped = ""
@@ -598,12 +640,17 @@ def upload_rows(rows: list[dict], *, commit: bool = False,
                 if write_fields(api, uuid, pairs, warn):
                     fielded += 1
             if uuid and row.get("Notes"):
-                # notes are dropped from the property payload; post separately
+                # Notes are dropped from the property payload, so they go on the message board. A
+                # new record has nothing to repeat; an existing one is read first, because the
+                # county stage re-sends the same rows every morning.
+                notes_tried += 1
                 try:
-                    api.call("/api/internal/property/%s/add-notes/" % uuid,
-                             "POST", {"notes": row["Notes"][:2000]})
-                except Exception:
-                    pass
+                    add_note(api, uuid, row["Notes"][:2000], have=None if was_existing else "")
+                except Exception as e:  # noqa: BLE001
+                    notes_failed += 1
+                    notes_error = notes_error or (str(e)[:120] or type(e).__name__)
+                    if notes_failed <= 3:
+                        print("  NOTE NOT POSTED", str(row.get("Property Street Address", ""))[:30], str(e)[:120])
             if uuid and row.get("Notice Text"):
                 _notice_text_note(api, uuid, row, was_existing, warn)
             if uuid and ledger is not None:
@@ -642,6 +689,8 @@ def upload_rows(rows: list[dict], *, commit: bool = False,
             warn.add("Appeared Again ledger not saved (%s)" % type(e).__name__)
     if stopped:
         warn.add("upload stopped early: %s" % stopped[:120])
+    if notes_failed:
+        warn.add("notes not posted on %d of %d records (%s)" % (notes_failed, notes_tried, notes_error))
     if warn:
         print("\nWARNINGS (values skipped, never guessed):")
         for w in sorted(warn):
@@ -666,6 +715,7 @@ def upload_rows(rows: list[dict], *, commit: bool = False,
         "submitted": len(rows), "created": created, "existing": existing,
         "fielded": fielded, "failed": failed, "warnings": sorted(warn), "errors": errors,
         "error_file": err_path, "committed": commit, "appeared_again": again,
+        "notes_tried": notes_tried, "notes_failed": notes_failed, "notes_error": notes_error,
         "seconds": round(time.time() - t0, 1),
     }
 

@@ -16,6 +16,12 @@ from __future__ import annotations
 import argparse
 import concurrent.futures
 import json
+import sys as _sys
+from pathlib import Path as _Path
+
+if str(_Path(__file__).resolve().parents[1]) not in _sys.path:   # src/, for model_registry
+    _sys.path.insert(0, str(_Path(__file__).resolve().parents[1]))
+import model_registry  # noqa: E402
 import re
 import sys
 import urllib.request
@@ -27,7 +33,7 @@ OUT = ROOT / "output" / "call_coaching"
 TR_DIR = OUT / "transcripts"
 REPORTS = OUT / "reports"
 MAP_FILE = OUT / "record_map.json"
-MODEL = "google/gemini-2.5-flash"
+MODEL = model_registry.model("audio_to_text")
 WORKERS = 6
 
 PROMPT = """From this real estate cold-call transcript, extract the PROPERTY ADDRESS the agent is calling about. Return STRICT JSON only, no fences:

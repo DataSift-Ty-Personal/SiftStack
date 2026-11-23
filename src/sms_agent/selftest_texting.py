@@ -757,7 +757,8 @@ def _table(r, kit) -> None:
             and ("set_status", ("bp-t-sm-not_now", "not_interested")) not in stub.crm_writes)
     r.check("a relative's number is kept and tagged, never marked wrong, and a person is told once",
             any(w[0] == "add_phone_tag" and w[1][0] == "bp-t-sm-relative" for w in stub.crm_writes)
-            and sum("a relative of the owner replied" in s for s in stub.slack) == 2, str(stub.slack[-2:])[:200])
+            and sum("a relative of the owner replied" in s and "dad's house" in s for s in stub.slack) == 2,
+            str(stub.slack[-2:])[:200])
     r.check("a family that says leave us alone gets the phone marked do-not-call and the DNC list, like any stop",
             any(w[0] == "set_phone_status" and w[1][0] == "bp-t-sm-leave_alone" and "DNC" in w[1][2] for w in stub.crm_writes)
             and ("add_list", ("bp-t-sm-leave_alone", "DNC")) in stub.crm_writes)

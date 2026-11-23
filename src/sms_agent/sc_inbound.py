@@ -290,6 +290,16 @@ def handle(payload: dict) -> dict:
         outcome["actions"] += _label(phone, contact_id, intent) + _sc_dnc(phone, contact_id, intent)
         store.sc_cancel(phone, "opted out")
         outcome["action"] = "opted_out"
+    elif intent in ("WRONG_NUMBER", "ESCALATE") and dispositions.is_family(body):
+        # A relative or an heir is a contact on the estate: never the wrong-number apology and a
+        # do-not-contact, never the silent Mail Only (2026-11-19: "My parents were and when they passed
+        # there was no will" was apologized to and put on do-not-contact). The table's relative row,
+        # run here too because the table itself is still off on this path.
+        env = dispositions.Env(phone=phone, record_uuid=record_uuid, body=body, result=result,
+                               context=context, matches=matches, inbox=REPLY_IN)
+        outcome["actions"] += dispositions._relative(env).actions
+        store.sc_cancel(phone, "a relative of the owner replied")
+        outcome["action"] = "relative"
     elif intent != "ESCALATE" and BARE_NO.match(body):
         # A bare "No" is Not Interested however sure the model is: no apology,
         # no DNC, and the phone stays unverified, because it can as well mean
@@ -412,14 +422,24 @@ BARE_NO = dispositions.BARE_NO
 _MONEY = re.compile(r"(?<![\d.,])(\$\s*)?(\d{1,3}(?:,\d{3})+|\d+(?:\.\d+)?)\s*"
                     r"(million|mill|mil|thousand|grand|k|m)?\b", re.I)
 _SCALE = {"million": 1e6, "mill": 1e6, "mil": 1e6, "m": 1e6, "thousand": 1e3, "grand": 1e3, "k": 1e3}
+# What the owner OWES is not what they ask. "Yes - but my HOA has filed $248,119.21 in liens on my
+# $200,000 condo" (2026-11-19) would have read as an ask of $248,119 and could be dropped as over value.
+_DEBT_NEAR = re.compile(r"\b(?:liens?|owe[sd]?|owing|behind|mortgage|hoa|tax(?:es)?|balance|payoff|pay\s+off|"
+                        r"filed|judge?ments?|debts?|loans?|arrears|fees|fines?)\b", re.I)
+_DEBT_WINDOW = 45
 
 
 def asking_price(text: str) -> int:
     """The largest dollar figure named in a reply, 0 if none. A bare number
     under 10,000 is not money ("10 acres", "Fri 2"), and a run of 9 or more
-    digits is a phone number."""
+    digits is a phone number. A figure with a debt word close by (liens, owe,
+    behind, mortgage, HOA, taxes) is what they owe, not an ask, and is passed
+    over: with no ask left the lead is pushed, never dropped."""
     best = 0.0
     for m in _MONEY.finditer(text or ""):
+        near = (text or "")[max(0, m.start() - _DEBT_WINDOW): m.end() + _DEBT_WINDOW]
+        if _DEBT_NEAR.search(near):
+            continue
         dollar, raw, unit = m.group(1), m.group(2), (m.group(3) or "").lower()
         digits = raw.replace(",", "")
         if "," not in raw and "." not in raw and len(digits) >= 9:

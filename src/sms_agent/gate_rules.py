@@ -26,7 +26,9 @@ record is the exception: the court named a living personal representative, and t
 owner of record here.
 
 Lifting a rule is explicit (`allow`). Nothing lifts Do Not Market, a litigator, an opt-out or a
-sold house.
+sold house. A research tag (research_tags, empty by default; the brain's playbook names Tax Sale
+Redemption) holds a record for research like the Deep Prospecting status, and only the word
+`research_tag` lifts it, never `in_research`. This app reads the list from SMS_AGENT_GATE_SETTINGS.
 
 Beyond the port, this file holds the one rule for the do-not-call registry flag (decision D32,
 made 2026-11-13: a flagged number is never texted). The seeder and the Smarter Contact loaders
@@ -43,9 +45,11 @@ CHANNELS = ("text", "call")
 
 # The brain's channel sets, kept whole so the rule table below reads the same in both files and
 # the parity test can compare the tables themselves.
-_GATE_CHANNELS = ("assign", "call", "text", "mail", "trace", "score", "research", "task")
+# "email" joined the brain's gate on 2026-11-20 (the cold email program's own channel); it is listed
+# here only so the rule table below stays the brain's exactly. This app still answers for a text and a call.
+_GATE_CHANNELS = ("assign", "call", "text", "mail", "email", "trace", "score", "research", "task")
 _ALL = frozenset(_GATE_CHANNELS)
-_OUTREACH = frozenset({"assign", "call", "text", "mail", "task"})
+_OUTREACH = frozenset({"assign", "call", "text", "mail", "email", "task"})
 _PAID = frozenset({"trace", "score"})
 
 TIER_NAMES = ("Dial First", "Dial Second", "Dial Third", "Dial Fourth", "Drop")
@@ -63,7 +67,7 @@ RULES = {
     "opted_out": (_ALL, ""),
     "sold": (_ALL, ""),
     "deceased": (_OUTREACH | _PAID, ""),          # lifted only as written in check(): "deceased", or "heir" with the heir tag
-    "in_research": (_OUTREACH | _PAID, "in_research"),
+    "in_research": (_OUTREACH | _PAID, "in_research"),     # a research TAG (research_tags) is lifted only by "research_tag", see check()
     "lead": (_OUTREACH | _PAID, "lead"),
     "finished": (_ALL, ""),                       # not_interested alone can be lifted, see check()
     "unknown_status": (_OUTREACH | _PAID, "unknown_status"),
@@ -72,7 +76,7 @@ RULES = {
     "mail_only": (frozenset({"assign", "call", "text", "task"}), "mail_only"),
     "exhausted": (frozenset({"assign", "call"}), "exhausted"),
     "return_mail": (frozenset({"mail"}), "heir"),    # a heir letter goes to the heir's own address, not the one that bounced
-    "do_not_mail": (frozenset({"mail"}), ""),
+    "do_not_mail": (frozenset({"mail", "email"}), ""),   # an owner who asked for no mail gets no marketing email either
     "owner_lane": (_OUTREACH, ""),
     "no_number": (frozenset({"call", "text"}), ""),
 }
@@ -118,6 +122,9 @@ class GateConfig:
     listed_values: list = field(default_factory=lambda: ["listed", "pending"])
     callable_tiers: list = field(default_factory=lambda: ["Dial First", "Dial Second"])
     working_statuses: list = field(default_factory=list)      # an install's own statuses that mean "still prospecting"
+    # Tags that hold a record for research the way the Deep Prospecting status does (the brain's
+    # gate.research_tags). Lifted only by the allow word "research_tag".
+    research_tags: list = field(default_factory=list)
     read_fields: bool = False                                  # read the record's custom fields (one more call a record)
     # The national do-not-call registry flag (the brain's gate.registry_flag): False lifts the rule.
     # An opt-out is not this switch: the DNC list, Do Not Market and a phone marked DNC always hold.
@@ -125,7 +132,7 @@ class GateConfig:
 
     KEYS = ("do_not_market_tags", "litigator_tags", "suppress_lists", "deceased_tags", "deceased_lists",
             "deceased_fields", "probate_marks", "heir_tags", "sold_tags", "mail_only_tags", "not_sfr_tags",
-            "return_mail_tags", "listed_values", "callable_tiers", "working_statuses")
+            "return_mail_tags", "listed_values", "callable_tiers", "working_statuses", "research_tags")
 
 
 def parse(block: dict | None, problems: list[str]) -> GateConfig:
@@ -195,9 +202,21 @@ TEXT = {
 
 
 def words(code: str, detail: str = "") -> str:
-    """One (code, detail) pair as a plain sentence fragment."""
+    """One (code, detail) pair as a plain sentence fragment. A detail the words have no place for (the
+    research tag that holds a record) follows them in brackets: "held out for research (tag ...)"."""
     text = TEXT[code]
-    return text % detail if "%s" in text else text
+    if "%s" in text:
+        return text % detail
+    return "%s (%s)" % (text, detail) if detail else text
+
+
+def research_tag(tags: set, cfg) -> str:
+    """The first research tag (research_tags) among these lower-case tag titles, as the settings spell
+    it, or ''."""
+    for t in getattr(cfg, "research_tags", None) or []:
+        if str(t).strip().lower() in tags:
+            return str(t).strip()
+    return ""
 
 
 def digits(n) -> str:
@@ -375,6 +394,9 @@ def check(rec: dict, channel: str, *, cfg: GateConfig | None = None, lane: str =
     code, detail = _status_rule(status, cfg)
     if code and code not in found:
         found[code] = detail
+    held_by = research_tag(tags, cfg)
+    if held_by:
+        found["in_research"] = "tag %s" % held_by     # the tag holds whatever the status says, and says so
     if str(rec.get("mls") or "").strip().lower() in _lowset(cfg.listed_values):
         found.setdefault("listed", "")
     if tags & _lowset(cfg.not_sfr_tags):
@@ -404,6 +426,12 @@ def check(rec: dict, channel: str, *, cfg: GateConfig | None = None, lane: str =
         if code == "finished" and found[code] == "not_interested" and "not_interested" in allow:
             continue
         if code == "deceased" and ("deceased" in allow or ("heir" in allow and tags & _lowset(cfg.heir_tags))):
+            continue
+        if code == "in_research" and found[code]:
+            # A research TAG. "in_research" lets a caller touch a record whose status reads Deep Prospecting;
+            # a tag such as Tax Sale Redemption holds the owner for a reason no research run settles.
+            if "research_tag" not in allow:
+                reasons.append((code, found[code]))
             continue
         if lift and lift in allow:
             continue

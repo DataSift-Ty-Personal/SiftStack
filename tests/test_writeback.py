@@ -123,3 +123,42 @@ def test_the_new_modules_hold_no_long_dash_or_backspace_byte():
                 "agents/research/deep_prospect.py", "dream100_dp.py", "deep_prospect_record.py"):
         text = (SRC / rel).read_text(encoding="utf-8")
         assert chr(8212) not in text and chr(8211) not in text and chr(8) not in text, rel
+
+
+# ------------------------------------------------- what a settled death corrects (2026-11-19) --
+def test_a_settled_death_swaps_living_and_verify_for_deceased():
+    add, drop = wb.death_tags([{"title": "living"}, {"title": "Verify Deceased"}, {"title": "FTM"}])
+    assert add == ["deceased"] and drop == ["living", "Verify Deceased"]
+    add, drop = wb.death_tags(["Deceased", "foreclosure"])
+    assert add == [] and drop == [], "a record that already reads deceased gets nothing new"
+    assert wb.settings({})["death_tags"] is True and wb.settings({"AGENTS_DP_DEATH_TAGS": "0"})["death_tags"] is False
+
+
+def test_a_decision_maker_field_naming_a_dead_owner_is_replaced():
+    an = {"decision_maker": "Vera L. Sampleton",
+          "death": {"decedent": "Rowan D Testerly", "owner_deceased": True},
+          "people": [{"name": "Rowan D. Testerly", "living": "Deceased", "role": "owner"},
+                     {"name": "Vera L. Sampleton", "living": "Living", "role": "decision maker",
+                      "relationship": "Daughter, heir"}]}
+    current = {"Decision Maker": "Rowan D. Testerly / Owner, surviving husband"}
+    fields, held = wb.stale_dm({}, [], an, current, "2026-11-19")
+    assert fields == {"Decision Maker": "Vera L. Sampleton", "DM Relationship": "Daughter, heir"}
+    assert held and "Rowan D Testerly" in held[0]
+
+
+def test_with_nobody_named_the_dead_owner_gives_way_to_undetermined():
+    an = {"decision_maker": "", "death": {"decedent": "Rowan D Testerly", "owner_deceased": True}, "people": []}
+    fields, _ = wb.stale_dm({}, [], an, {"Decision Maker": "Rowan D. Testerly"}, "2026-11-19")
+    assert fields["Decision Maker"].startswith("Undetermined: Rowan D Testerly has died")
+    assert "(research 2026-11-19)" in fields["Decision Maker"]
+
+
+def test_a_living_decision_maker_and_this_runs_own_field_are_left_alone():
+    an = {"decision_maker": "", "death": {"decedent": "Rowan D Testerly", "owner_deceased": True}, "people": []}
+    kept, held = wb.stale_dm({}, [], an, {"Decision Maker": "Vera L. Sampleton"})
+    assert kept == {} and held == [], "a field that names a living person is a person's call"
+    own, _ = wb.stale_dm({"Decision Maker": "Otto Sampleton"}, [], an, {"Decision Maker": "Rowan D. Testerly"})
+    assert own == {"Decision Maker": "Otto Sampleton"}, "this run's own field always wins"
+    junior = {"decision_maker": "", "death": {"decedent": "Rowan Testerly Sr", "owner_deceased": True}, "people": []}
+    son, _ = wb.stale_dm({}, [], junior, {"Decision Maker": "Rowan Testerly Jr"})
+    assert son == {}, "a Sr. who died is never his Jr."

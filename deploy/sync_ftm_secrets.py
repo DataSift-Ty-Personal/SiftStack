@@ -48,6 +48,8 @@ OPTIONAL = [
     ("REISIFT_API_KEY", "SiftMap detail lookups for the county buy-box enrichment"),
     ("PAXSUB_USERNAME", "Knox Register of Deeds login; the liens stage skips without it"),
     ("PAXSUB_PASSWORD", "Knox Register of Deeds login (a PAID subscription that can lapse)"),
+    ("SUBSCRIPTION_WARN_DAYS", "days before a paid subscription ends that the 8am digest says so (default 10)"),
+    ("ROD_SUBSCRIPTION_WARN_DAYS", "the same for the Register of Deeds alone (default: SUBSCRIPTION_WARN_DAYS, else 10)"),
 ]
 
 

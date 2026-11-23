@@ -1165,13 +1165,16 @@ def slack_text(snapshot: dict, page_url: str = "") -> str:
 
 
 def post_daily(snapshot: dict, opts: dict, page_url: str, day: str, owner: str = "ops") -> tuple[str, list[str]]:
-    """One message a day in the pipeline channel: the first run posts it, later runs edit it in place."""
+    """One message a day in the pipeline channel: the first run posts it, later runs edit it in place.
+    In the boards layout (2026-11-19) it is the team channel's daily scoreboard instead: the department
+    channels carry the work, this one message carries the numbers across all of it."""
     mode = opts.get("slack", "edit")
     if mode == "off":
         return "off", []
     if not config.SLACK_BOT_TOKEN:
         return "not sent: the Slack app is not set up", []
-    channel = slack_app.channel_for("pipeline")
+    boards = (getattr(config, "SLACK_LAYOUT", "") or "classic").strip().lower() == "boards"
+    channel = slack_app.channel_for("chat" if boards else "pipeline")
     if not channel:
         return "not sent: no Slack channel is set", []
     text = slack_text(snapshot, page_url)

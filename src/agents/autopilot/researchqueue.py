@@ -36,7 +36,10 @@ low-cost engine, 2026-11-12). The queue prices each handoff at `rate_usd`, stops
 research budget, and says how many are waiting and what the backlog would cost at that rate.
 Research has its own daily budget, apart from data spend and mail, so the dollars are counted from
 the brain's research spend and the day's handoffs, never through the data cap or the per-record
-trace cap (a $1.21 handoff would fail a $1.00 trace cap on every record).
+trace cap (a $1.21 handoff would fail a $1.00 trace cap on every record). A small feed that ranks
+high can also be held to a few handoffs a day of its own (`class_daily`, by rank class): the Knox
+tax sale redemptions rank just under a sale still ahead, and two a day keeps them from taking a
+whole day's budget the morning the tag lands on them.
 
 THE MARK (3.2). A queued record gets the tag Research Queued and ONE card in the research column,
 and stays in its lane. A status would take the record out of its lane's presets, which is how a hot
@@ -98,6 +101,15 @@ WAIT_FACT = "research_wait"       # why research may not take a record yet (the 
 THIN_FACT = "research_thin"       # the verdict on a record's newest finished research (knowledge, kept in plan mode)
 DUE_FACT = "research_deeper_due"  # a live run judged the research thin and the deeper pass is still to be sent
 PERSON_FACT = "research_person"   # the record got the person tag after its deeper pass (live runs only)
+GONE_FACT = "research_gone"       # the record route answered 404 (deleted or merged away): skipped, looked at again after 30 days
+REOPEN_FACT = "research_reopened" # a researched record sent back because a death was reported after it (live runs only)
+GONE_RECHECK = timedelta(days=30)
+
+
+def _is_gone(exc: Exception) -> bool:
+    """A read that failed because the record is no longer in the account (HTTP 404), not because DataSift
+    is down: that one is remembered and skipped instead of failing the run every half hour."""
+    return getattr(exc, "code", None) == 404
 DEPTH_KEY = "research_depth"      # the task payload key the research reads its depth from (open_research.depth_of)
 KV_LAST = "autopilot:research_queue:last"
 WORKING = {"", "prospecting"}     # the statuses a queue mark may replace with the hold status
@@ -145,6 +157,9 @@ DEFAULTS = {
     "daily_usd": None,              # the queue's own day budget; never above the brain's research cap
     "max_open": 5,                  # research tasks open at once
     "max_per_run": 5,
+    # Handoffs a business day for one rank class, inside the budget above: {tax_redemption: 2} lets a small
+    # paid feed through a couple a day however high it ranks. A class not named here has no cap of its own.
+    "class_daily": {},
     "max_reads": 100,               # records opened in one run to rank them (two requests each)
     "max_scan": 3000,               # rows read from one preset, tag, list or status
     "refresh_days": 7,              # how long a record's rank inputs are trusted; a new source re-reads at once
@@ -181,7 +196,17 @@ DEFAULTS = {
     "hints": {},                    # preset title -> exhausted | returned_mail | vacant_mailing | no_number
     "statuses": ["Deep Prospecting"],       # a person set this by hand: those records go first
     "scope_tags": [], "scope_lists": [], "scope_statuses": [],
-    "redo_after_days": 0,           # 0: a researched record is never researched again by the queue
+    "redo_after_days": 0,           # 0: a researched record is never researched again by the queue...
+    # ...unless a death is reported AFTER its research (2026-11-19, 8026 Example Pike: the owners'
+    # daughter texted that both parents had died, six days after the research called the owner living, and
+    # nothing looked at the record again). A tag that says a death still needs settling, put on after the
+    # newest research and still on the record, sends it back once. The log copy dates both, so no record is
+    # opened to find out. Our own write-back takes Verify Deceased off when it settles the death.
+    "reopen_on_death": True,
+    "reopen_tags": ["Verify Deceased", "Death Reported"],
+    "researched_tag": "Deep Prospected",
+    "reopen_max": 2,                # re-opens per record inside reopen_window_days
+    "reopen_window_days": 60,
     "max_attempts": 2, "retry_days": 1,
     "max_finish": 25,
     # The one deeper pass on research that came back thin (missed workflow 8). Its own price and caps.
@@ -280,12 +305,38 @@ def options(st) -> dict:
         o[k] = v if got is None else got
     for k in ("skip_tags", "sale_date_fields", "sale_record_fields", "courthouse_tags", "tax_fields", "obituary_date_fields",
               "probate_date_fields", "condemned_marks", "return_tags", "vacant_mail_tags", "park_lanes", "statuses",
-              "scope_tags", "scope_lists", "scope_statuses", "thin_rules"):
+              "scope_tags", "scope_lists", "scope_statuses", "thin_rules", "reopen_tags"):
         o[k] = [str(x) for x in _list(o[k])]
     o["distress_marks"] = {str(k).strip().lower(): str(v) for k, v in dict(o["distress_marks"] or {}).items()}
     o["hints"] = {str(k): str(v) for k, v in dict(o["hints"] or {}).items()}
     o["leads"] = str(o["leads"]).strip().lower()
+    o["class_daily"] = {str(k).strip().lower(): int(v) for k, v in dict(o["class_daily"] or {}).items()
+                        if isinstance(v, int) and not isinstance(v, bool) and v >= 0}
     return o
+
+
+def block_problems(st) -> list[str]:
+    """A typo in the queue's per-class cap is refused when the playbook loads, never read as no cap."""
+    p, raw = [], st.get("class_daily")
+    if raw is None:
+        return p
+    if not isinstance(raw, dict):
+        return ["stage %s: class_daily must map a rank class to a number of handoffs a day" % st.id]
+    for k, v in raw.items():
+        if str(k).strip().lower() not in BASE:
+            p.append("stage %s: class_daily names %r, which is not a rank class (%s)" % (st.id, k, ", ".join(BASE)))
+        if not isinstance(v, int) or isinstance(v, bool) or v < 0:
+            p.append("stage %s: class_daily[%r] must be a whole number, 0 or more" % (st.id, k))
+    return p
+
+
+def class_handed_today(ctx: Ctx, o: dict) -> Counter:
+    """Today's live handoffs to this queue's workflow, by rank class (the class send() writes on the event).
+    A plan run writes no event, so in plan mode the cap counts this run's handoffs only."""
+    day = ledger.day(ctx.now, ctx.policy.tz)
+    return Counter(str(e["detail"].get("class") or "")
+                   for e in ledger.events(action="handoff", since=ctx.now - timedelta(days=2))
+                   if e["day"] == day and e["detail"].get("to") == o["workflow"])
 
 
 def batch_rules():
@@ -728,6 +779,84 @@ def eligible(info: dict | None, now: datetime, o: dict) -> tuple[bool, str, bool
             return True, "", True
         return False, "already researched", False
     return True, "", False
+
+
+def _when(stamp) -> datetime | None:
+    """A stored time as an aware datetime: the log copy, the task table and the ledger write it differently."""
+    s = str(stamp or "").strip().replace("Z", "+00:00")
+    if not s:
+        return None
+    try:
+        at = datetime.fromisoformat(s.replace(" ", "T", 1) if "T" not in s else s)
+    except ValueError:
+        return None
+    return at if at.tzinfo else at.replace(tzinfo=timezone.utc)
+
+
+def death_signal_index(reopen_tags, researched_tag: str = "") -> dict:
+    """record uuid -> {"signal": (tag title, when) or None, "researched": when or None}, from the shared copy
+    of the account log, in ONE query. `signal` is the newest of `reopen_tags` that went on the record and has
+    not come off since; `researched` is the newest time the researched tag went on (research done on
+    another box leaves only that behind). Titles match the way the app matches them, ignoring case."""
+    watch = {str(t).strip().lower(): str(t).strip() for t in reopen_tags or [] if str(t).strip()}
+    rtag = str(researched_tag or "").strip().lower()
+    if not watch:
+        return {}
+    titles = list(watch.values()) + ([str(researched_tag).strip()] if rtag else [])
+    q = ("SELECT resource, at, event_type, data FROM ap_log WHERE event_type IN ('property.tags.added', "
+         "'property.tags.removed') AND (%s) ORDER BY at, id" % " OR ".join("data LIKE ?" for _ in titles))
+    with store._LOCK, store._db() as c:
+        rows = c.execute(q, ["%" + json.dumps(t) + "%" for t in titles]).fetchall()
+    per: dict[str, dict] = {}
+    for r in rows:
+        try:
+            tags = [str(t).strip().lower() for t in (json.loads(r["data"] or "{}").get("tags") or [])]
+        except (TypeError, ValueError):
+            continue
+        at = _when(r["at"])
+        if at is None or not r["resource"]:
+            continue
+        s = per.setdefault(r["resource"], {"add": {}, "off": {}, "researched": None})
+        added = r["event_type"] == "property.tags.added"
+        for t in tags:
+            if t in watch:
+                (s["add"] if added else s["off"])[t] = at
+            elif added and t == rtag:
+                s["researched"] = at
+    out = {}
+    for u, s in per.items():
+        on = [(at, watch[t]) for t, at in s["add"].items() if s["off"].get(t) is None or at > s["off"][t]]
+        newest = max(on) if on else None
+        out[u] = {"signal": (newest[1], newest[0]) if newest else None, "researched": s["researched"]}
+    return out
+
+
+def reopen_why(u: str, info: dict | None, index: dict, reopened: dict, o: dict, now: datetime) -> tuple[str, str]:
+    """(why this researched record goes back to research, the signal's time), or ("", "") when it does not.
+    Only a record that WAS researched (here, or on another box, which leaves the researched tag) and only
+    for a death tag put on after the newest research and still on it. Each signal sends it back once, and
+    no record goes back more than reopen_max times in reopen_window_days, so a death the research cannot
+    settle never turns into a bill every half hour."""
+    s = index.get(u) or {}
+    if not s.get("signal"):
+        return "", ""
+    title, at = s["signal"]
+    if not ((info and (info.get("done") or info.get("failed"))) or s.get("researched")):
+        return "", ""                    # never researched: the first pass is the queue's ordinary work
+    if info and info.get("open"):
+        return "", ""                    # in research now
+    f = reopened.get(u) if isinstance(reopened.get(u), dict) else {}
+    times = [x for x in (_when(info.get("finished")) if info else None, _when(info.get("last_handoff")) if info else None,
+                         s.get("researched"), _when(f.get("at"))) if x is not None]
+    if times and at <= max(times):
+        return "", ""
+    stamp = at.isoformat(timespec="seconds")
+    if str(f.get("signal_at") or "") == stamp:
+        return "", ""
+    recent = [x for x in f.get("times") or [] if _age_days(x, now) < float(o["reopen_window_days"])]
+    if len(recent) >= int(o["reopen_max"]):
+        return "", ""
+    return "%s went on %s, after its research" % (title, at.date().isoformat()), stamp
 
 
 def open_tasks(workflow: str = "deep_prospect") -> int:
@@ -1240,10 +1369,11 @@ def dead_hold(rec: dict, custom: dict | None, gate_cfg) -> list[str]:
 
 
 def send(ctx: Ctx, o: dict, state: dict, rec: dict, custom: dict | None, r: Rank, via: list[str],
-         deeper: dict | None = None) -> None:
+         deeper: dict | None = None, reopen: tuple[str, str] = ("", "")) -> None:
     """Mark one record as queued and hand it to research: the tag, the status when a dead owner
     holds the record out, one card, then the task. `deeper` is the verdict that sends a thin record
-    back for its one deeper pass."""
+    back for its one deeper pass; `reopen` is (why, the death signal's time) for a researched record
+    a death reported after its research sends back."""
     st = ctx.stage
     gate_cfg = getattr(ctx.policy, "gate", None) or gate.GateConfig()
     u = rec["uuid"]
@@ -1272,8 +1402,15 @@ def send(ctx: Ctx, o: dict, state: dict, rec: dict, custom: dict | None, r: Rank
         # queue's own rules (eligible, the deeper path in the run) allow exactly one.
         tid = ctx.write("handoff", enqueue, o["agent"], o["workflow"], u, addr(rec), source="autopilot:%s" % st.id,
                         payload=depth_payload(o, deeper), force=True)
+    elif reopen[0]:
+        # Forced past the 24-hour repeat guard for the same reason as the deeper pass: the death can be
+        # reported the same day the research finished, and the guard would hand back the old task.
+        tid = ctx.write("handoff", enqueue, o["agent"], o["workflow"], u, addr(rec), source="autopilot:%s" % st.id,
+                        force=True)
     else:
         tid = ctx.write("handoff", enqueue, o["agent"], o["workflow"], u, addr(rec), source="autopilot:%s" % st.id)
+    if reopen[0]:
+        ctx.out.line("%s: back to research, %s" % (addr(rec), reopen[0]))
     if ctx.live:
         task = tid[0] if tid else 0
         detail = {"to": o["workflow"], "task": task, "why": r.reason, "class": r.cls, "score": round(r.score, 1),
@@ -1281,6 +1418,13 @@ def send(ctx: Ctx, o: dict, state: dict, rec: dict, custom: dict | None, r: Rank
         if deeper:
             detail.update(depth="deeper", thin=list(deeper.get("reasons") or [])[:5],
                           price=float(o["deeper_rate_usd"]), after_task=int(deeper.get("task") or 0))
+        if reopen[0]:
+            detail.update(reopen=reopen[0])
+            prior = ledger.fact(u, REOPEN_FACT)
+            prior = prior if isinstance(prior, dict) else {}
+            stamp = ctx.now.isoformat(timespec="seconds")
+            ledger.set_fact(u, REOPEN_FACT, {"at": stamp, "signal_at": reopen[1],
+                                             "times": (list(prior.get("times") or []) + [stamp])[-10:]})
         ledger.event(ctx.run_id, st.id, u, "handoff", detail, now=ctx.now, tz=ctx.policy.tz)
         # What this queue itself put on the record, kept across a repeat run: a retry finds the tag
         # already there, and must still know the tag is the queue's to take off when research ends.
@@ -1427,6 +1571,9 @@ def run_researchqueue(ctx: Ctx) -> None:
     engine: tuple[bool, str] | None = None
     for_person: list[tuple[str, dict, dict]] = []
     waiting: dict[str, dict] = {}
+    reopen_on = bool(o["reopen_on_death"])
+    death_index = death_signal_index(o["reopen_tags"], o["researched_tag"]) if reopen_on else {}
+    reopened = facts_by_key(REOPEN_FACT) if reopen_on else {}
     for u, c in cands.items():
         row = c["row"]
         if lanes.status_of(row) in lanes.LEAD_STATUSES and o["leads"] != "research":
@@ -1437,6 +1584,16 @@ def run_researchqueue(ctx: Ctx) -> None:
             ctx.out.tally["held back: %s" % v.reason()] += 1
             continue
         info = index.get(u)
+        why_back, signal_at = reopen_why(u, info, death_index, reopened, o, ctx.now) if reopen_on else ("", "")
+        if why_back:
+            # A death reported after the research outranks every rule that says the record is done: the
+            # research may be telling callers to ask for a person who has died.
+            mark = marks.get(u) if isinstance(marks.get(u), dict) else {}
+            c["asked"] = bool(c["asked"]) and not mark.get("status")
+            c.update(again=True, reopen=why_back, reopen_at=signal_at)
+            waiting[u] = c
+            ctx.out.tally["going back to research: a death was reported after it"] += 1
+            continue
         if deeper_on and info and not info["open"] and (info["deeper_handoffs"] or info["deeper_tasks"]):
             # The deeper pass was sent. Whatever came of it, the record is never sent a third time:
             # enough settles it, and anything else goes to a person.
@@ -1499,9 +1656,10 @@ def run_researchqueue(ctx: Ctx) -> None:
         return seen is not None and bool(set(waiting[u]["via"]) - set(seen))
 
     def first(c: dict) -> int:
-        # When there are more records than one run may open: the ones a person asked for, then the
-        # ones a tag sent (a sale date ahead), then lists and statuses, then the big presets.
-        if c["asked"]:
+        # When there are more records than one run may open: the ones a person asked for or a death
+        # reported after their research sent back, then the ones a tag sent (a sale date ahead), then
+        # lists and statuses, then the big presets.
+        if c["asked"] or c.get("reopen"):
             return 0
         if any(str(v).startswith("tag ") for v in c["via"]):
             return 1
@@ -1513,14 +1671,24 @@ def run_researchqueue(ctx: Ctx) -> None:
         reads = 0
         for u in order:
             sig = known[u]
-            if sig is not None and not new_source(u):
+            if sig is not None and not new_source(u) and not waiting[u].get("reopen"):
                 keep = refresh * (10 if sig.get("final") else 1)
                 if _age_days(str(sig.get("at") or ""), ctx.now) < keep.total_seconds() / 86400.0:
                     continue
+            if ledger.fact(u, GONE_FACT, max_age=GONE_RECHECK) is not None:
+                continue
             if reads >= int(o["max_reads"]):
                 break
             reads += 1
-            rec = ctx.crm.record(u)
+            try:
+                rec = ctx.crm.record(u)
+            except Exception as exc:  # noqa: BLE001  (one record must never stop the run)
+                if _is_gone(exc):
+                    ledger.set_fact(u, GONE_FACT, {"at": ctx.now.isoformat(timespec="seconds")})
+                    ctx.out.tally["records no longer in the account (skipped for 30 days)"] += 1
+                else:
+                    ctx.out.problem("could not read a record (%s); it is tried again next run" % str(exc)[:80])
+                continue
             if not rec.get("uuid"):
                 continue
             custom = custom_of(ctx, u, fresh=True)
@@ -1563,11 +1731,17 @@ def run_researchqueue(ctx: Ctx) -> None:
     # budget may hold fewer first passes than `room` says. Every first pass alone always fits.
     left, deep_left = float(budget["left"]), float(deep_budget["left"])
     deep_rate, deep_n = max(0.0, float(o["deeper_rate_usd"])), 0
+    class_used = class_handed_today(ctx, o) if o["class_daily"] else Counter()
     for r, u, _seen in ranked:
         if len(handed) >= room:
             break
         c = waiting[u]
         deep = c.get("deeper")
+        cap = o["class_daily"].get(r.cls)
+        if cap is not None and not deep and class_used[r.cls] >= cap:
+            # The class's own day is used; the rest of the queue still runs, so this does not stop the loop.
+            ctx.out.tally["held to tomorrow: %s takes %d a day" % (CLASS_WORDS.get(r.cls, r.cls), cap)] += 1
+            continue
         price = deep_rate if deep else budget["rate"]
         if deep:
             held = ("this run's deeper passes are used" if deep_n >= int(o["deeper_max_per_run"])
@@ -1578,7 +1752,7 @@ def run_researchqueue(ctx: Ctx) -> None:
                 continue
         elif price > left + 1e-9:
             break                     # a deeper pass took the dollars this first pass needed
-        if not c["asked"] and ledger.fact(u, WAIT_FACT, max_age=timedelta(hours=20)) is not None:
+        if not c["asked"] and not c.get("reopen") and ledger.fact(u, WAIT_FACT, max_age=timedelta(hours=20)) is not None:
             ctx.out.tally["research waits (checked earlier today)"] += 1
             continue
         try:
@@ -1608,13 +1782,21 @@ def run_researchqueue(ctx: Ctx) -> None:
                 ledger.set_fact(u, WAIT_FACT, why)
                 ctx.out.tally["research waits: %s" % why] += 1
                 continue
-            send(ctx, o, state, rec, custom, r2, c["via"], deeper=deep)
+            send(ctx, o, state, rec, custom, r2, c["via"], deeper=deep,
+                 reopen=(c.get("reopen") or "", c.get("reopen_at") or ""))
         except Exception as exc:  # noqa: BLE001  (say which record and stop: the next one would fail the same way)
+            if _is_gone(exc):            # this one record left the account; the next one will not fail the same way
+                ledger.set_fact(u, GONE_FACT, {"at": ctx.now.isoformat(timespec="seconds")})
+                ctx.out.tally["records no longer in the account (skipped for 30 days)"] += 1
+                dropped.add(u)
+                continue
             ctx.out.problem("could not hand %s to research (%s); stopped, the rest wait for the next run" % (
                 addr(c["row"]), str(exc)[:160]))
             break
         handed.append((r2, u))
         left -= price
+        if not deep:
+            class_used[r2.cls] += 1
         if deep:
             deep_n += 1
             deep_left -= price

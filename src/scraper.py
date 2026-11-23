@@ -67,7 +67,8 @@ class SubscriptionExpired(RuntimeError):
 
 
 # The last reading of the account's subscription block, for callers that want
-# to warn before it lapses. {"expires": "YYYY-MM-DD", "expired": bool, "product": str}
+# to warn before it lapses. {"expires": "YYYY-MM-DD", "expired": bool, "product": str,
+# "read": "YYYY-MM-DD", the day it was read}
 SUBSCRIPTION: dict = {}
 
 # What the last scrape_all saw of each saved search, keyed by its dropdown label:
@@ -347,10 +348,12 @@ async def _apply_date_window(page: Page, date_from: str, date_to: str) -> bool:
     date control to the explicit range and re-submits, keeping every other
     criterion intact.
 
-    THIS IS THE ONLY WAY TO REACH OLDER NOTICES. The site truncates any result
-    set at 20 pages / 1000 rows, newest first, so a 12-month search simply loses
-    its tail: Knox probate and Knox foreclosure both hit that ceiling. Slicing
-    the window month by month keeps every slice under the cap.
+    THIS IS THE ONLY WAY TO READ A COMPLETE RESULT SET. The site truncates any
+    result set at 20 pages / 1000 rows, and since late 2026 the cut is not the
+    tail: on 2026-11-18 the 12-month Knox probate search kept 1000 rows spread
+    over the year and dropped the newest weeks. Daily runs use a short window
+    (daily_window) and backfills a month at a time, so every slice stays under
+    the cap.
 
     Dates are M/D/YYYY, the format the form itself uses.
     """
@@ -472,6 +475,8 @@ async def run_saved_search(
     # Re-submit the same criteria over an explicit date window (backfill).
     if date_from and date_to:
         if not await _apply_date_window(page, date_from, date_to):
+            # Said, not swallowed: a search that never ran reads exactly like a quiet day.
+            _stat(search.saved_search_name, "window_failed", True)
             return []
 
     # Verify we're on search results
@@ -548,7 +553,7 @@ async def run_saved_search(
                     current_page, total_pages,
                 )
                 recovered = await _recover_to_search_page(
-                    page, search, current_page + 1,
+                    page, search, current_page + 1, date_from=date_from, date_to=date_to,
                 )
                 if recovered:
                     current_page, total_pages = await _get_page_info(page)
@@ -904,8 +909,12 @@ async def _try_relogin(page: Page) -> bool:
 
 async def _recover_to_search_page(
     page: Page, search: SavedSearch, target_page: int,
+    date_from: str | None = None, date_to: str | None = None,
 ) -> bool:
-    """Recover from a lost results grid by re-logging in and navigating to target_page."""
+    """Recover from a lost results grid by re-logging in and navigating to target_page.
+
+    A windowed search is re-windowed after the re-select: without it, page N of the saved search's
+    own 12 months is a different result set from page N of the window."""
     logger.warning("Attempting to recover search session (target page %d)", target_page)
 
     # Re-login if session expired
@@ -916,18 +925,24 @@ async def _recover_to_search_page(
         if not await _navigate_to_dashboard(page):
             return False
 
-    # Re-select the saved search
+    # Re-select the saved search. domcontentloaded, as in run_saved_search: through a proxy
+    # networkidle regularly never settles, and recovery is exactly when the connection is shaky.
     try:
-        async with page.expect_navigation(wait_until="networkidle", timeout=30000):
+        async with page.expect_navigation(wait_until="domcontentloaded", timeout=45000):
             await page.select_option(
                 SEL_SAVED_SEARCHES_DROPDOWN,
                 label=search.saved_search_name,
             )
     except Exception:
-        logger.error("Could not re-select '%s' during recovery", search.saved_search_name)
-        return False
+        if "search" not in page.url.lower():
+            logger.error("Could not re-select '%s' during recovery", search.saved_search_name)
+            return False
 
     await delay()
+
+    if date_from and date_to and not await _apply_date_window(page, date_from, date_to):
+        logger.error("Could not re-apply the date window %s .. %s during recovery", date_from, date_to)
+        return False
 
     if "search" not in page.url.lower():
         return False
@@ -1240,14 +1255,70 @@ async def list_saved_searches(proxy_url: str | None = None) -> list[str]:
     return labels
 
 
+# A DAILY RUN SEARCHES AN EXPLICIT DATE WINDOW, NEVER THE SAVED SEARCH'S OWN 12 MONTHS.
+# Measured 2026-11-18: the default Knox probate search returned its 1000-row cap spread across the
+# whole year (2025-11-24 .. 2026-11-09, 5 rows in November, 0 in October) while a November window
+# on the same search returned 53, 33 of them published 11-16. The cap was dropping the NEWEST
+# notices, so the feed produced nothing for a week while every page "read fine". Any search whose
+# 12-month total passes 1000 rows goes blind this way, so every daily search is windowed.
+# The window reaches back at least DAILY_WINDOW_DAYS (a notice can appear on the site days after its
+# publication date, and the old since-last-run cutoff skipped those for good); the seen-ID cache
+# keeps the overlap free. DAILY_WINDOW_MAX_DAYS bounds it after a long gap, because the site blocks
+# an egress IP by volume: close a longer gap with the monthly backfill.
+DAILY_WINDOW_DAYS = 14
+DAILY_WINDOW_MAX_DAYS = 31
+
+# Set by scrape_all for the caller to report: why a daily window was cut short ("" when it was not).
+DAILY_WINDOW_NOTE: list[str] = []
+
+
+def _mdy(d) -> str:
+    """M/D/YYYY, the form's own format (no zero padding)."""
+    return f"{d.month}/{d.day}/{d.year}"
+
+
+def daily_window(last_run: str | None, now: datetime | None = None, explicit: bool = False,
+                 lookback: int | None = None, max_days: int | None = None) -> tuple[str, str, str]:
+    """The (from, to, note) date window for a daily run, M/D/YYYY.
+
+    last_run is the YYYY-MM-DD of the last good run (or an explicit --since). The window starts at
+    the earlier of (last_run - 1 day) and (today - lookback). An explicit since date is the
+    caller's choice and is used as given; an implicit one is floored at today - max_days, and the
+    note says so, because a longer reach trips the site's per-IP volume block.
+    """
+    import os
+    lookback = int(os.environ.get("FTM_DAILY_WINDOW_DAYS") or 0) or (lookback or DAILY_WINDOW_DAYS)
+    max_days = int(os.environ.get("FTM_DAILY_WINDOW_MAX_DAYS") or 0) or (max_days or DAILY_WINDOW_MAX_DAYS)
+    today = (now or datetime.now()).date()
+    start = today - timedelta(days=lookback)
+    last = None
+    if last_run:
+        try:
+            last = datetime.strptime(str(last_run)[:10], "%Y-%m-%d").date()
+        except ValueError:
+            last = None
+    if last is not None:
+        start = last if explicit else min(start, last - timedelta(days=1))
+    note = ""
+    floor = today - timedelta(days=max_days)
+    if not explicit and start < floor:
+        note = (f"the last good run was {last_run}, more than {max_days} days ago, so this run reaches "
+                f"back to {floor.isoformat()} only; run the monthly backfill for anything older")
+        start = floor
+    if start > today:
+        start = today
+    return _mdy(start), _mdy(today), note
+
+
 def month_windows(months: int, end: datetime | None = None,
                   offset: int = 0) -> list[tuple[str, str]]:
     """Calendar-month (from, to) pairs in M/D/YYYY, oldest first.
 
-    The site caps any result set at 20 pages / 1000 rows newest-first, so a
-    12-month search silently loses its tail. Month slices keep every request
-    well under that ceiling: Knox probate runs about 150 notices a month and
-    Knox foreclosure about 100, against a 1000-row cap.
+    The site caps any result set at 20 pages / 1000 rows (and, measured
+    2026-11-18, the cut can fall on the newest notices), so a 12-month search
+    silently loses part of the year. Month slices keep every request well under
+    that ceiling: Knox probate runs about 150 notices a month and Knox
+    foreclosure about 100, against a 1000-row cap.
 
     Oldest first on purpose. The newest month is the one the daily run already
     covers, so if a long backfill is interrupted the part still missing is the
@@ -1296,6 +1367,7 @@ async def scrape_all(
     backfill_months: int = 0,
     backfill_offset: int = 0,
     raise_on_login_failure: bool = False,
+    since_explicit: bool | None = None,
 ) -> list[NoticeData]:
     """Main entry point for scraping.
 
@@ -1314,6 +1386,11 @@ async def scrape_all(
         proxy_url: Optional proxy URL (e.g. Apify residential proxy).
         on_batch: Optional async callback(list[NoticeData]) called after each search.
         since_date_override: If set (YYYY-MM-DD), overrides the mode-based date logic.
+        since_explicit: In daily mode, whether since_date_override is a person's exact
+                  choice (the window starts there) or a stored last-run date (the window
+                  still reaches DAILY_WINDOW_DAYS back, since a notice can appear on the
+                  site days after its publication date). None means "explicit when an
+                  override is given", the old behavior.
         start_page: Start scraping from this page number (default 1).
         seen_ids: Cross-run dict of already-processed notice IDs. If None, loads from
                   SEEN_IDS_FILE. Caller (e.g. Apify) can pass its own dict loaded
@@ -1347,6 +1424,8 @@ async def scrape_all(
 
     # Determine date cutoff
     since_date: str | None = None
+    daily_win: tuple[str, str] | None = None
+    DAILY_WINDOW_NOTE.clear()
     if backfill_months:
         # The date window IS the cutoff in backfill mode. Applying a since_date
         # on top would discard exactly the older notices the backfill exists to
@@ -1355,16 +1434,20 @@ async def scrape_all(
         logger.info(
             "Backfill mode: date windows drive the cutoff, since_date not applied"
         )
+    elif mode == "daily":
+        # The window is the cutoff (see DAILY_WINDOW_DAYS): the site filters by publication date
+        # and the seen-ID cache drops what an earlier run already handled.
+        last = since_date_override or load_last_run_date()
+        explicit = bool(since_date_override) if since_explicit is None else bool(since_explicit and since_date_override)
+        d_from, d_to, note = daily_window(last, explicit=explicit)
+        daily_win = (d_from, d_to)
+        logger.info("Daily mode: date window %s .. %s (last run %s)", d_from, d_to, last or "none")
+        if note:
+            logger.warning("Daily window cut short: %s", note)
+            DAILY_WINDOW_NOTE.append(note)
     elif since_date_override:
         since_date = since_date_override
         logger.info("Using since_date override: %s", since_date)
-    elif mode == "daily":
-        since_date = load_last_run_date()
-        if since_date:
-            logger.info("Daily mode: pulling notices since %s", since_date)
-        else:
-            logger.info("Daily mode: no previous run found, pulling last 7 days")
-            since_date = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
     elif mode == "historical":
         since_date = (datetime.now() - timedelta(days=365)).strftime("%Y-%m-%d")
         logger.info("Historical mode: pulling notices since %s", since_date)
@@ -1421,6 +1504,8 @@ async def scrape_all(
         sub = await read_subscription(page)
         SUBSCRIPTION.clear()
         SUBSCRIPTION.update(sub)
+        if sub:
+            SUBSCRIPTION["read"] = config.run_date()   # the day it was read, for the 8am digest
         if sub.get("expires"):
             logger.info("Smart Search subscription: %s, expires %s",
                         sub.get("product") or "unknown product", sub["expires"])
@@ -1437,9 +1522,11 @@ async def scrape_all(
 
         # Backfill runs each search once per calendar month; a normal run is
         # modelled as the single "no window" job so the loop below is identical.
+        # A daily run is the single job over its date window; historical keeps the saved search's
+        # own 12 months (capped at 1000 rows, so use the monthly backfill to reach a whole year).
         windows: list[tuple[str, str] | None] = (
             list(month_windows(backfill_months, offset=backfill_offset))
-            if backfill_months else [None]
+            if backfill_months else [daily_win]
         )
         jobs = [(s, w) for s in searches for w in windows]
         if backfill_months:

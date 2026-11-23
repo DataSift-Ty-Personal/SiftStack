@@ -14,6 +14,14 @@ name: FTM heartbeat
 # Unlike the SMS agent, this app has no HTTP service to curl (fly.ftm.toml has no
 # [http_service] and no healthcheck, deliberately: it is a batch job, not a
 # server). So the probe runs the health check over SSH and reads its verdict.
+#
+# A LATE BACKUP since 2026-11-20. GitHub throttles a public repo's schedules (this
+# ran about 8 hours late), so the same check now runs on time on the issue fixer's
+# box (tools/issue_fixer/watch.py). This one stays for the day that box is down.
+# It posts ONLY through the brain's relay (FTM_HEALTH_WEBHOOK is the relay URL),
+# which keeps one first-to-market problem a day whoever says it, so the pair never
+# says the same red twice. --no-ledger-update: a check never records the day's
+# records as seen, so one that runs before the 8:00 digest cannot zero its count.
 
 on:
   schedule:
@@ -50,7 +58,7 @@ jobs:
 
           set +e
           OUT=$(flyctl ssh console -a siftstack-ftm \
-                  -C "python /app/src/ftm_health.py --check" 2>&1)
+                  -C "python /app/src/ftm_health.py --check --no-ledger-update" 2>&1)
           RC=$?
           set -e
           echo "$OUT"

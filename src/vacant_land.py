@@ -22,6 +22,23 @@ the marketing plan. Two sources, each used for what it is right about:
     python src/vacant_land.py --phase pull           # DataSift pull plan by tier (dry)
     python src/vacant_land.py --phase pull --commit --key-env TARGET_REISIFT_API_KEY
 
+In SiftStack this is Atlas's `buildable_lots` workflow (src/agents/workflows/buildable_lots.py):
+ask in Slack and the box runs these phases, posts the workbook, and hands the lots it cannot see
+an owner for to `list_pull`, which quotes the add and pulls only on an approved count.
+
+Where the owner comes from (--owners, 2026-11-23). DataSift's acceptable use forbids SiftMap
+detail pulls in volume without adding the records, so the default (`account`) never makes one:
+  * a lot that is already a record in the account is read from that record (the documented
+    records route, Open API key), cached for --record-days;
+  * a lot with a SiftMap detail already cached from an earlier run uses that cache;
+  * any other lot is a pull candidate: add it to the account (pull_list.csv carries it, beside
+    the mailable lots that are not records yet), then run hydrate again and its owner comes from
+    the record. Until then it is not mailable.
+`--owners siftmap` is the 2026-11-05 path (a detail read per lot, capped by --limit) for an
+operator who decides to make it. VACANT_LAND_DIR moves the whole output folder (the box keeps
+it on its volume); VACANT_LAND_BUDGET=agents counts every DataSift and SiftMap request against
+the box's shared request budget.
+
 Contracts verified live 2026-11-05, every one of which fails silently:
   * `type_land: true` is the land filter (Union 40,017 rows -> 4,379).
     type_land_residential, type_vacant_land, type_lot, type_vacant,
@@ -151,7 +168,10 @@ MARKETABLE = ("BUILDABLE", "LIKELY BUILDABLE", "VERIFY")
 PAGE = 250
 SPLIT_AT = 9000             # SiftMap reorders past a 10,000 row offset
 
-OUT_ROOT = os.path.join(os.environ.get("SIFTSTACK_OUTPUT_DIR", "output"), "vacant_land")
+OUT_ROOT = (os.environ.get("VACANT_LAND_DIR")
+            or os.path.join(os.environ.get("SIFTSTACK_OUTPUT_DIR", "output"), "vacant_land"))
+RECORD_DAYS = 7             # a record read for its owner is read again after this many days
+DEAD_STATUSES = {"sold", "not_interested", "dead", "dead_lead", "dnc", "do_not_contact"}
 
 
 # ----------------------------------------------------------------- plumbing
@@ -789,10 +809,46 @@ def probe_failures(counts: dict, rows: list) -> tuple[list[str], list[str]]:
     return fails, notes
 
 
+def _pace() -> None:
+    """On the agents box (VACANT_LAND_BUDGET=agents), count one request against the box's shared
+    DataSift request budget before it is sent, so a county screen never takes the account past its
+    shared limit while the brain's own stages work. Elsewhere the client's own spacing is all."""
+    if os.environ.get("VACANT_LAND_BUDGET", "").strip().lower() != "agents":
+        return
+    from agents.autopilot import budget   # noqa: PLC0415  (only on the box, where src/ is the path)
+    budget.acquire()
+
+
+class _Paced:
+    """A SiftMap or DataSift client whose every request goes through _pace first."""
+
+    def __init__(self, client):
+        self.client = client
+
+    def _request(self, *a, **kw):
+        _pace()
+        return self.client._request(*a, **kw)
+
+    def get_detail(self, *a, **kw):
+        _pace()
+        return self.client.get_detail(*a, **kw)
+
+    def get_record(self, *a, **kw):
+        _pace()
+        return self.client.get_record(*a, **kw)
+
+
 def _sm():
     _load_env()
     from siftmap_standalone import SiftMapClient
-    return SiftMapClient(min_interval=0.3, max_retries=6)
+    return _Paced(SiftMapClient(min_interval=0.3, max_retries=6))
+
+
+def _crm():
+    """DataSift records on the Open API key alone (crm_key_client), paced like _sm()."""
+    _load_env()
+    from crm_key_client import from_env
+    return _Paced(from_env())
 
 
 def phase_probe(c: dict, args) -> int:
@@ -1142,6 +1198,7 @@ def phase_screen(c: dict, args) -> int:
             f["presets"] = sorted(k for k, v in (best.get("presets") or {}).items() if v)
             f["distress"] = active_distressors(best.get("distressors"))
             f["saved"] = bool(best.get("saved"))
+            f["saved_uuid"] = best.get("saved_uuid") or ""
         v, score, hard, flags = buildability(f)
         f.update(verdict=v, build_score=score, hard=hard, flags=flags)
         out.append(f)
@@ -1211,6 +1268,52 @@ def flatten_detail(d: dict) -> dict:
     }
 
 
+def _titles(items) -> list[str]:
+    return [str((x.get("title") if isinstance(x, dict) else x) or "").strip() for x in items or []]
+
+
+def _person(o) -> str:
+    if isinstance(o, dict):
+        return (" ".join(" ".join(str(o.get(k) or "").split()) for k in ("first_name", "last_name")).strip()
+                or " ".join(str(o.get("company") or o.get("name") or "").split()))
+    return " ".join(str(o or "").split())
+
+
+def flatten_record(rec: dict) -> dict:
+    """A DataSift record (GET /api/internal/property/<uuid>/ on the Open API key) in the shape
+    flatten_detail gives a SiftMap detail, so score reads either one the same way. Once a lot is a
+    record, the record is the owner of record; distress and presets stay the SiftMap search row's
+    (empty here, so score falls back to the row's own)."""
+    ow = rec.get("owner") or {}
+    ma = ow.get("address") or {}
+    state = str(ma.get("state") or "").strip().upper()
+    tail = " ".join(x for x in (state, str(ma.get("postal_code") or "")[:5]) if x)
+    mail = ", ".join(x for x in (" ".join(str(ma.get("street") or "").split()),
+                                 " ".join(str(ma.get("city") or "").split()), tail) if x)
+    tags = {t.casefold() for t in _titles(rec.get("tags"))}
+    try:
+        owed = float(rec.get("tax_delinquent_value") or 0)
+    except (TypeError, ValueError):
+        owed = 0.0
+    return {
+        "apn": rec.get("apn") or rec.get("parcel_id"), "owner_name": _person(ow),
+        "co_owners": [p for p in (_person(x) for x in rec.get("secondary_owners") or []) if p],
+        "mail": mail if " ".join(str(ma.get("street") or "").split()) else "", "owner_props": None,
+        "tax_delinquent": owed > 0, "tax_delinquent_year": rec.get("tax_delinquent_year"),
+        "tax_amount": owed or None, "tax_lien": None, "assessed_land": None,
+        "lot_type": rec.get("lot_type"), "lot_frontage_feet": rec.get("lot_frontage_feet"),
+        "zoning": rec.get("land_zoning"), "flood_zone_type": None, "legal": rec.get("legal_description"),
+        "sale_date": rec.get("last_sold"), "sale_price": rec.get("last_sale_price"), "seller": None,
+        "obituaries": 1 if (ow.get("deceased") or rec.get("last_obituary_date")) else 0,
+        "distress": [], "presets": [],
+        "do_not_mail": bool(rec.get("do_not_mail_ever") or ow.get("do_not_mail_ever")
+                            or "do not market" in tags),
+        "dead_status": str(rec.get("status") or "").strip().lower() in DEAD_STATUSES,
+        "status": rec.get("status") or "", "record_uuid": rec.get("uuid") or "",
+        "lists": _titles(rec.get("lists")),
+    }
+
+
 def viewport_find(sm, c: dict, geom_ll) -> dict | None:
     """The SiftMap row whose point falls inside this parcel, found by handing
     the parcel's own bounds in as the map viewport. This is how a lot that
@@ -1257,7 +1360,8 @@ def phase_hydrate(c: dict, args) -> int:
                 "absentee": bool(row.get("absenteeOwner")), "corporate": bool(row.get("corporateOwned")),
                 "mls_active": bool(row.get("mlsActive") or row.get("mlsPending")),
                 "presets": sorted(k for k, x in (row.get("presets") or {}).items() if x),
-                "distress": active_distressors(row.get("distressors")), "saved": bool(row.get("saved"))}
+                "distress": active_distressors(row.get("distressors")), "saved": bool(row.get("saved")),
+                "saved_uuid": row.get("saved_uuid") or ""}
             if n % 50 == 0:
                 _save(rpath, rescued)
         _save(rpath, rescued)
@@ -1265,9 +1369,20 @@ def phase_hydrate(c: dict, args) -> int:
 
     sids = [f["sid"] for f in screen if f.get("sid") and f["verdict"] in MARKETABLE]
     sids += [r["sid"] for r in rescued.values() if r]
-    todo = [s for s in dict.fromkeys(sids) if s not in cache]
+    sids = list(dict.fromkeys(sids))
+    if getattr(args, "owners", "account") == "siftmap":
+        return _hydrate_siftmap(c, args, sm, sids, path, cache)
+    return _hydrate_account(c, args, sm, sids)
+
+
+def _hydrate_siftmap(c: dict, args, sm, sids: list, path: str, cache: dict) -> int:
+    """The 2026-11-05 path: one SiftMap detail read per lot. DataSift's acceptable use forbids
+    these in volume without adding the records, so it runs only when an operator asks for it."""
+    todo = [s for s in sids if s not in cache]
     if args.limit:
         todo = todo[:args.limit]
+    print("hydrate: SiftMap detail reads (--owners siftmap). DataSift's acceptable use forbids these in "
+          "volume without adding the records; the default, --owners account, makes none.")
     print("hydrate: %d to fetch, %d cached" % (len(todo), len(cache)))
     errs = 0
     for n, sid in enumerate(todo, 1):
@@ -1284,6 +1399,86 @@ def phase_hydrate(c: dict, args) -> int:
             print("  %d / %d" % (n, len(todo)), flush=True)
     _save(path, cache)
     print("hydrate: %d details cached, %d errors" % (len(cache), errs))
+    return 0
+
+
+def _record_age_days(row: dict, now: dt.datetime) -> float | None:
+    try:
+        return (now - dt.datetime.fromisoformat(str(row.get("read_at") or ""))).total_seconds() / 86400.0
+    except ValueError:
+        return None
+
+
+def saved_now(sm, ids: list) -> tuple[dict, list]:
+    """(dataflik id -> record uuid for the lots that are DataSift records now, ids SiftMap does not know).
+    One ids-typed SiftMap search per 100 ids reads each row's live `saved`/`saved_uuid`: the same lookup
+    list_pull makes before it quotes (pull_by_ids.saved_uuids)."""
+    from siftmap_pull import WORLD
+    saved, seen = {}, set()
+    for i in range(0, len(ids), 100):
+        chunk = [str(x) for x in ids[i:i + 100]]
+        r = sm._request("/properties/search/", "POST", {
+            "result_index": 1, "with_boundaries": False, "filters": {},
+            "addresses": [{"search": x, "type": "ids"} for x in chunk], "polygon": WORLD}, timeout=120)
+        for h in (r or {}).get("data") or []:
+            seen.add(str(h.get("id")))
+            if h.get("saved") and h.get("saved_uuid"):
+                saved[str(h.get("id"))] = h["saved_uuid"]
+    return saved, [str(x) for x in ids if str(x) not in seen]
+
+
+def _hydrate_account(c: dict, args, sm, sids: list) -> int:
+    """Owners from the account: which lots are DataSift records now (saved_now), then each such record
+    read on the Open API key, cached --record-days. No SiftMap detail read is made; a lot that is not
+    a record yet waits for the pull."""
+    d = out_dir(c)
+    rpath = os.path.join(d, "records.json")
+    cache = _load(rpath, {})
+    now = dt.datetime.now()
+    saved, unknown = saved_now(sm, sids) if sids else ({}, [])
+    for sid in list(cache):                       # a lot that left the account is not its owner any more
+        if sid not in saved:
+            cache.pop(sid)
+    days = float(getattr(args, "record_days", RECORD_DAYS))
+    todo = []
+    for sid, uuid in saved.items():
+        row = cache.get(sid)
+        age = _record_age_days(row, now) if row else None
+        if (row and row.get("record_uuid") == uuid and age is not None and age < days
+                and not getattr(args, "refresh_owners", False)):
+            continue
+        todo.append((sid, uuid))
+    if args.limit:
+        todo = todo[:args.limit]
+    crm = _crm() if todo else None
+    errs = gone = 0
+    for n, (sid, uuid) in enumerate(todo, 1):
+        try:
+            rec = crm.get_record(uuid)
+        except Exception as e:  # noqa: BLE001
+            if "HTTP 404" in str(e):                # the search still lists it; the record route says gone
+                gone += 1
+                cache.pop(sid, None)
+                continue
+            errs += 1
+            print("  %s: %s" % (uuid, str(e)[:100]))
+            if errs > 25 and errs > n * 0.2:
+                _save(rpath, cache)
+                raise SystemExit("hydrate: too many record read errors (%d of %d), stopping" % (errs, n))
+            continue
+        row = flatten_record(rec or {})
+        row["read_at"] = now.isoformat(timespec="seconds")
+        cache[sid] = row
+        if n % 50 == 0:
+            _save(rpath, cache)
+            print("  %d / %d records read" % (n, len(todo)), flush=True)
+    _save(rpath, cache)
+    _save(os.path.join(d, "saved_ids.json"), {"checked": now.isoformat(timespec="seconds"),
+                                               "saved": saved, "unknown": unknown})
+    print("hydrate (owners from the account): %d of %d lots are records in this account; %d read now, %d "
+          "from the last %g days, %d gone, %d errors; %d not in the account yet (pull candidates)"
+          % (len(saved), len(sids), len(todo) - errs - gone, len(saved) - len(todo), days, gone, errs,
+             len(sids) - len(saved)))
     return 0
 
 
@@ -1385,9 +1580,26 @@ def tier(f: dict) -> str:
     return "C"
 
 
+def owner_row(sid: str, recs: dict, det: dict) -> tuple[dict | None, str]:
+    """(the owner facts for one lot, where they came from). A record in the account is the owner of
+    record and wins on every field it fills; a SiftMap detail cached by an earlier run fills the rest
+    (its assessed land value prices the lot) and is the only source when the lot is no record."""
+    r, s = recs.get(sid or ""), det.get(sid or "")
+    if r and s:
+        return dict(s, **{k: x for k, x in r.items() if x not in (None, "", [])}), "account"
+    if r:
+        return dict(r), "account"
+    if s:
+        return dict(s), "siftmap cache"
+    return None, ""
+
+
 def phase_score(c: dict, args) -> int:
     screen = _load(os.path.join(out_dir(c), "screen.json"))
     det = _load(os.path.join(out_dir(c), "details.json"), {})
+    recs = _load(os.path.join(out_dir(c), "records.json"), {})
+    sv = _load(os.path.join(out_dir(c), "saved_ids.json"), None)
+    saved_now = sv.get("saved") if isinstance(sv, dict) else None
     rescued = _load(os.path.join(out_dir(c), "rescued.json"), {})
     for f in screen:
         r = rescued.get(f["camano"])
@@ -1403,12 +1615,16 @@ def phase_score(c: dict, args) -> int:
     for f in screen:
         if f["verdict"] not in MARKETABLE:
             continue
-        d = det.get(f.get("sid") or "")
+        sid = f.get("sid") or ""
+        if saved_now is not None and sid:          # which lots are records now (hydrate just checked)
+            f["saved"] = sid in saved_now
+            f["saved_uuid"] = saved_now.get(sid, "")
+        d, source = owner_row(sid, recs, det)
         if d and d.get("apn") and digits(d["apn"]) != digits(f["camano"]):
             # The point fell in this parcel but SiftMap's record is another one.
             mismatch += 1
             f["sid_note"] = "SiftMap apn %s is not this parcel" % d["apn"]
-            f["sid"], d = None, None
+            f["sid"], d, source = None, None, ""
         if d:
             # The county and SiftMap can name different owners (a transfer, or
             # a common area the county still carries under the developer).
@@ -1429,16 +1645,26 @@ def phase_score(c: dict, args) -> int:
             if f["verdict"] != "VERIFY":
                 f["verdict"] = "VERIFY"
         f.update(motivation(f, d, county_zips))
+        for k in ("owner_mail_name", "tax_delinquent_year", "dm_lot_type", "land_value_est", "record_status"):
+            f.pop(k, None)                         # a value left by an earlier run must not outlive its source
         if d:
             f["owner_mail_name"] = d.get("owner_name")
             f["tax_delinquent_year"] = d.get("tax_delinquent_year")
             f["dm_lot_type"] = d.get("lot_type")
+            f["record_status"] = d.get("status") or ""
             if d.get("assessed_land"):
                 # Ohio assesses at 35% of appraised value.
                 f["land_value_est"] = round(float(d["assessed_land"]) / 0.35)
+        f["owner_source"] = source
         f["priority"] = round(0.55 * f["build_score"] + 0.45 * f["motivation"], 1)
         f["tier"] = tier(f)
-        f["mailable"] = bool(f.get("mail_street")) and not f.get("mls_active") and not f.get("recent_buy")
+        f["mailable"] = (bool(f.get("mail_street")) and not f.get("mls_active") and not f.get("recent_buy")
+                         and not (d or {}).get("do_not_mail") and not (d or {}).get("dead_status"))
+        # No owner to see yet: the lot has to be a record first (list_pull, or --phase pull).
+        f["pull_candidate"] = (bool(f.get("sid")) and not d and not f.get("saved")
+                               and not f.get("mls_active") and not f.get("recent_buy"))
+        # What the pull list carries: every lot worth working that is not a record yet.
+        f["to_pull"] = bool(f.get("sid")) and not f.get("saved") and (f["mailable"] or f["pull_candidate"])
         scored.append(f)
     scored.sort(key=lambda f: (f["tier"], -f["priority"]))
     _save(os.path.join(out_dir(c), "scored.json"), scored)
@@ -1446,6 +1672,9 @@ def phase_score(c: dict, args) -> int:
     print("score: %d marketable lots, %d mailable, %d SiftMap ids rejected on apn, "
           "%d reclassified on the DataSift owner"
           % (len(scored), sum(f["mailable"] for f in scored), mismatch, reclass))
+    print("       owners %s; %d with no owner until the lot is a record; %d on the pull list"
+          % (_counter(f["owner_source"] or "none yet" for f in scored), sum(f["pull_candidate"] for f in scored),
+             sum(f["to_pull"] for f in scored)))
     print("       tiers %s" % _counter(f["tier"] for f in scored if f["mailable"]))
     print("       segments %s" % _counter(f["segment"] for f in scored if f["mailable"]))
     return 0
@@ -1676,6 +1905,8 @@ def phase_export(c: dict, args) -> int:
         return ws
 
     mail = [f for f in scored if f["mailable"]]
+    pull = [f for f in scored if f.get("to_pull")]
+    src_n = _counter(f.get("owner_source") or "" for f in scored)
     v = _counter(f["verdict"] for f in screen)
     seg_n = _counter(f["segment"] for f in mail)
     overview = [
@@ -1686,8 +1917,12 @@ def phase_export(c: dict, args) -> int:
         ("Vacant-class parcels in the window", len(screen)),
     ] + [("  " + k, n) for k, n in v.items()] + [
         ("Marketable lots (buildable, likely, verify)", len(scored)),
-        ("Mailable now (mailing address, not listed, not bought in 2 years)", len(mail)),
+        ("Mailable now (mailing address, not listed, not bought in 2 years, not do-not-mail)", len(mail)),
     ] + [("  Tier " + k, n) for k, n in sorted(_counter(f["tier"] for f in mail).items())] + [
+        ("Owners read from the account (DataSift records)", src_n.get("account", 0)),
+        ("Owners from an earlier SiftMap read (cached, no new read)", src_n.get("siftmap cache", 0)),
+        ("Owner not visible until the lot is a record", sum(1 for f in scored if f.get("pull_candidate"))),
+        ("To pull into DataSift: not a record yet, mailable or owner unknown (Pull into DataSift tab)", len(pull)),
         ("SiftMap land rows in the county", meta.get("sm_rows")),
         ("SiftMap rows matched to a candidate parcel", meta.get("sm_on_candidates")),
         ("Lot comps used (valid vacant sales, %d months)" % COMP_MONTHS, len(comps)),
@@ -1726,6 +1961,21 @@ def phase_export(c: dict, args) -> int:
           money=("Land value est", "Lot comp median", "Offer low", "Offer high"),
           pct=("Flood %", "Steep share"))
 
+    # The lots worth working that are not DataSift records yet: the mailable ones, and the ones whose
+    # owner cannot be seen until they are records. The "DataSift id" column is what list_pull reads, so
+    # this file is the pull: list_pull quotes it and adds it only on an approved count, and the next
+    # hydrate reads each new record's owner.
+    pull_cols = ["Rank", "Tier", "Why", "Buildability", "Verdict", "Flags", "Parcel (CAMA)", "Property", "City",
+                 "ZIP", "Township", "Acres", "Owner (county)", "Owner type", "Years held", "Lot comp median",
+                 "Offer low", "Offer high", "DataSift id"]
+    pull_rows = [[n, f["tier"], "on the mail list" if f["mailable"] else "owner not visible yet",
+                  f["build_score"], f["verdict"], "; ".join(f["flags"]), f["camano"], f["address"],
+                  f["city"], f.get("zip", ""), f["township"], f["acres"], f["owner"], CAT_LABEL[f["owner_cat"]],
+                  f["years_held"], f.get("comp_median"), f.get("offer_low"), f.get("offer_high"), f.get("sid")]
+                 for n, f in enumerate(pull, 1)]
+    sheet("Pull into DataSift", pull_cols, pull_rows, {"Flags": 40, "Property": 28, "Owner (county)": 30},
+          money=("Lot comp median", "Offer low", "Offer high"))
+
     plan_rows = []
     for key, label in SEGMENTS:
         mine = [f for f in mail if f["segment"] == label]
@@ -1744,7 +1994,7 @@ def phase_export(c: dict, args) -> int:
     notes = [
         "", "How to run it",
         "1. Mail is the primary channel for land: nobody lives on a vacant lot, so the owner's mailing address is the only reach that works on day one.",
-        "2. Pull the mailable lots into DataSift (--phase pull) into one list, tagged by tier and segment; DataSift's skip trace runs on the pull.",
+        "2. Pull the lots into DataSift: in SiftStack ask Atlas to pull the pull list, pull_list.csv (list_pull quotes the add first and pulls only on an approved count), or run --phase pull. DataSift's skip trace runs on the pull, and the next run reads each new record's owner, which moves the lot onto the mail list.",
         "3. Tier A gets every touch plus text and call after skip trace; tier B gets the mail sequence; tier C gets the interest letter and the quarterly drip.",
         "4. Copy never names the situation (taxes, estate, liens): the owner should feel found, not targeted. Mention the lot by street, never by parcel trouble.",
         "5. Offers come off the township lot comps on the Lot comps tab at the offer band set on this run (%d%% to %d%% of the comp); move the band with --offer-low/--offer-high." % (lo_pct * 100, hi_pct * 100),
@@ -1808,7 +2058,11 @@ def phase_export(c: dict, args) -> int:
         ("Zoning", "Union County zoning layer (Leesburg, Liberty, Marysville, Millcreek, Paris, Taylor only; "
                    "every other township is unmapped and scored as not disqualifying)"),
         ("Sales and land value", "Union County most-recent-sale-per-parcel layer"),
-        ("Owner and distress", "SiftMap (DataSift) search rows and property detail, Open API key"),
+        ("Owner and distress", "SiftMap (DataSift) search rows for distress, MLS and presets; the owner and "
+                               "mailing address from the DataSift record once the lot is in the account (Open "
+                               "API key). No SiftMap detail pull is made (DataSift's acceptable use forbids "
+                               "them in volume without adding the records); a detail cached by an earlier run "
+                               "is used where it exists."),
         ("Land filter", "type_land: true, proven by count delta on every --phase probe run"),
         ("Sewer", "No sewer layer is published. Proxy: median lot size of houses within %d ft "
                   "(under %.2f ac = sewer likely, %.1f ac or more = septic area). Verify before contract."
@@ -1841,22 +2095,32 @@ def phase_export(c: dict, args) -> int:
     tmp = os.path.join(d, "_PENDING_" + name)
     wb.save(tmp)
     os.replace(tmp, path)
-    with open(os.path.join(d, "mail_list.csv"), "w", newline="", encoding="utf-8") as fh:
-        w = csv.writer(fh)
-        w.writerow(cols)
-        w.writerows(rows)
+    for fname, header, body in (("mail_list.csv", cols, rows), ("pull_list.csv", pull_cols, pull_rows)):
+        with open(os.path.join(d, fname), "w", newline="", encoding="utf-8") as fh:
+            w = csv.writer(fh)
+            w.writerow(header)
+            w.writerows(body)
     _save(os.path.join(d, "comps.json"), {"bands": bands, "comps": comps})
-    print("export: %s (%d mailable lots, %d comps)" % (path, len(mail), len(comps)))
+    _save(os.path.join(d, "export.json"), {
+        "run": dt.datetime.now().isoformat(timespec="seconds"), "workbook": name, "county": c["label"],
+        "fips": c["fips"], "parcels": meta.get("parcels"), "in_window": len(screen), "verdicts": v,
+        "marketable": len(scored), "mailable": len(mail), "tiers": _counter(f["tier"] for f in mail),
+        "segments": seg_n, "owners": src_n, "owner_unknown": sum(1 for f in scored if f.get("pull_candidate")),
+        "to_pull": len(pull), "pull_tiers": _counter(f["tier"] for f in pull), "comps": len(comps),
+        "comp_median": bands["COUNTY"].get("median"), "offer_band": [lo_pct, hi_pct],
+        "list": "%s - Buildable Lots" % c["label"]})
+    print("export: %s (%d mailable lots, %d on the pull list, %d comps)" % (path, len(mail), len(pull), len(comps)))
     return 0
 
 
 # ------------------------------------------------------------------- pull
 
 def pull_plan(scored: list, label: str) -> dict:
-    """Tier -> dataflik ids for the mailable lots, plus the list and tags."""
+    """Tier -> dataflik ids for the lots to bring into the account (the mailable ones and the pull
+    candidates whose owner is not visible yet), plus the list and tags."""
     plan = {"list": "%s - Buildable Lots" % label, "tiers": {}}
     for f in scored:
-        if f.get("mailable") and f.get("sid") and not f.get("saved"):
+        if (f.get("mailable") or f.get("pull_candidate")) and f.get("sid") and not f.get("saved"):
             plan["tiers"].setdefault(f["tier"], []).append(f["sid"])
     return plan
 
@@ -1914,17 +2178,30 @@ def main(argv=None) -> int:
     ap.add_argument("--offer-high", type=float, default=0.65, help="offer band high, share of the lot comp")
     ap.add_argument("--commit", action="store_true")
     ap.add_argument("--key-env", help="env var holding the target account's Open API key (pull)")
+    ap.add_argument("--owners", choices=("account", "siftmap"), default="account",
+                    help="hydrate: account (records already in the account, no SiftMap detail pull) or "
+                         "siftmap (a detail read per lot; DataSift's acceptable use forbids it in volume)")
+    ap.add_argument("--refresh-owners", action="store_true", help="hydrate: read every record again now")
+    ap.add_argument("--record-days", type=float, default=RECORD_DAYS,
+                    help="hydrate: a record read within this many days is not read again")
     args = ap.parse_args(argv)
     ACRES_MIN, ACRES_MAX = args.acres_min, args.acres_max
     c = COUNTIES[args.fips]
-    if args.phase == "all":
-        for p in ("county", "sweep", "topo", "screen", "hydrate", "score", "export"):
-            print("\n#### %s" % p)
-            rc = PHASES[p](c, args)
-            if rc:
-                return rc
-        return 0
-    return PHASES[args.phase](c, args)
+    try:
+        if args.phase == "all":
+            for p in ("county", "sweep", "topo", "screen", "hydrate", "score", "export"):
+                print("\n#### %s" % p)
+                rc = PHASES[p](c, args)
+                if rc:
+                    return rc
+            return 0
+        return PHASES[args.phase](c, args)
+    except RuntimeError as e:
+        if type(e).__name__ != "BudgetExhausted":
+            raise
+        # The box's shared DataSift budget is used up for now; everything finished is saved.
+        print("STOPPED: %s. Every phase already finished is saved; run it again to continue." % e)
+        return 4
 
 
 if __name__ == "__main__":

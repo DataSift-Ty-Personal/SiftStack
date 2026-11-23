@@ -6,7 +6,7 @@
 
 SiftStack is a free, open-source kit for running a real estate investing business on [DataSift.ai](https://datasift.ai) with Claude. It comes in three layers. Install only as far as you need:
 
-1. **Skills for Claude.** 27 current packages that each teach Claude one job: comp a house, price a rehab, find the heirs behind a probate, score phone numbers, grade cold calls. Two commands and no server.
+1. **Skills for Claude.** 28 current packages that each teach Claude one job: comp a house, price a rehab, find the heirs behind a probate, score phone numbers, grade cold calls. Two commands and no server.
 2. **The AI team.** One small always-on app on Fly.io. Four AI employees work in your Slack, take requests, and pick up work your DataSift account sends them. One command sets it up.
 3. **Two more always-on apps.** A texting agent that reads and sorts replies to your seller texts, and a first-to-market runner that pulls new foreclosure and probate notices every morning and loads them into DataSift.
 
@@ -23,7 +23,7 @@ Most people only need the first layer.
 /plugin install siftstack-all@siftstack
 ```
 
-That installs all 27 current packages. Then turn on updates once: run `/plugin`, open **Marketplaces**, select **siftstack**, choose **Enable auto-update**. Claude Code leaves auto-update off for any marketplace that is not Anthropic's, which is why this step exists. From then on every improvement reaches you on its own.
+That installs all 28 current packages. Then turn on updates once: run `/plugin`, open **Marketplaces**, select **siftstack**, choose **Enable auto-update**. Claude Code leaves auto-update off for any marketplace that is not Anthropic's, which is why this step exists. From then on every improvement reaches you on its own.
 
 Want one division instead of everything? Install a bundle: `siftstack-deal-analysis`, `siftstack-market-intel`, `siftstack-crm`, `siftstack-coaching` or `siftstack-operations`. Or one skill by name: `/plugin install rehab-estimator@siftstack`.
 
@@ -53,12 +53,12 @@ Chat and Projects take the packaged file. Download the `.skill` you want from [`
 
 ### What a skill needs from you
 
-**14 work on install, out of 27 current packages.** No key, no login, no card.
+**14 work on install, out of 28 current packages.** No key, no login, no card.
 
 | Tier | Count | What it means |
 |---|---|---|
 | No credentials | 14 | Works on install |
-| A login you already have | 8 | DataSift, SmrtPhone, Google. Browser-driven, no API access needed |
+| A login you already have | 9 | DataSift, SmrtPhone, Google. Your own login or your own DataSift Open API key |
 | A metered API key | 5 | Faster and deeper, and every one has a free route |
 
 From a terminal, `... | python3 - --doctor` (the installer line above) prints the same readout. It sends no requests and never prints a credential. Every paid step has a no-API route in the [no-API playbook](docs/setup/no-api-playbook.md), and a missing key skips that step and says so rather than failing.
@@ -76,6 +76,7 @@ More: [Getting started](docs/setup/GETTING-STARTED.md), [API contracts](docs/api
 | `probate-property-finder` | The real property behind a probate filing when all you have is a decedent name |
 | `real-estate-comping` | The valuation method on its own: Two-Bucket ARV, adjustments, disclosure state routing |
 | `deal-analyzer` (plugin) | Comps, rehab, MAO and financing in one pass, with exit strategies compared |
+| `mls-offer-engine` | A cash and a creative offer on every active listing in a market, priced off what investors pay nearby, with the agent call list ([runbook](docs/mls-offers.md)) |
 | **Market intelligence** | |
 | `sift-market-research` | ZIP code scoring off DataSift Market Finder, as a 7-sheet Excel report |
 | `first-market-county-data` | Where to pull distress lists in any US county, across 7 notice types, with FOIA templates |

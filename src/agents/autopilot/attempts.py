@@ -156,7 +156,7 @@ def run_attempts(ctx: Ctx) -> None:
     if st.get("first_run", "staged") == "staged" and not store.kv_get(_approved_key(st.id)):
         staged = ledger.staged_record_uuids(st.id)
         items = [c for c in changes if c["record_uuid"] not in staged]
-        if items:
+        if items and not staged:
             bid = ledger.batch_create(st.id, "attempts", items, 0)
             ctx.out.batch = bid
             ctx.out.acted = len(items)
@@ -164,7 +164,11 @@ def run_attempts(ctx: Ctx) -> None:
                             "staged as batch %d for a person to approve: python src/agents/cli.py autopilot release %d --commit"
                             % (len(items), mix, bid, bid))
         else:
-            ctx.out.head = "The first correction is still staged and waits on a person (%d record(s))." % len(staged)
+            # One batch waits on a person at a time. A second one an hour later would post again and split
+            # one approval into many; a record that fell behind since is written by the first live run
+            # after the release, which is when the stage starts writing on its own. Nothing acted: no post.
+            ctx.out.head = "The first correction is still staged and waits on a person (%d record(s))%s." % (
+                len(staged), "; %d more fell behind since and are corrected after the release" % len(items) if items else "")
         return
     state: dict = {}
     moved = 0

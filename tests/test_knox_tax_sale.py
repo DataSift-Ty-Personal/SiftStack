@@ -246,6 +246,105 @@ def test_with_no_open_list_the_report_says_so(tmp_path):
     assert T.describe(stats) == "no open tax sale list on the Trustee's page (1 past sale(s) skipped)"
 
 
+# ── the live page's shape (read 2026-11-20): site forms, the announced date, the dash ──
+
+EN = chr(0x2013)
+ANNOUNCED = """
+<html><head><script>var d = "Tax Sale 97 on January 5, 2020";</script></head><body>
+ <a href="https://property.example.invalid/assets/pdfs/TangiblePersonalPropertySchedule.pdf">Tangible Personal Property</a>
+ <a href="https://property.example.invalid/assets/pdfs/mailing_change.pdf">Mailing Address Change Form</a>
+ <p>Important Tax Sale 99 Information: Event Details: June 2nd, 2026 - Doors Open: 8:00am</p>
+ <a href="/assets/pdfs/TaxSale99-FINAL_RESULTS_PDF.pdf">Tax Sale 99 %s Final Results</a>
+ <a href="/assets/pdfs/TaxSale99-DecreeConfirmingSale.pdf">Tax Sale 99 %s Decree Confirming Sale</a>
+ <a href="/assets/pdfs/TaxSale98-FINAL_RESULTS.pdf">Tax Sale 98 Final Results</a>
+ <p>Tax Sale dates are determined by court proceedings and will be listed accordingly.</p>
+</body></html>
+""" % (EN, EN)
+
+
+def announced_web(html=ANNOUNCED):
+    return Web(html=html, files={"TangiblePersonal": b"%PDF-1.4 form", "mailing_change": b"%PDF-1.4 mail form",
+                                 "TaxSale99-FINAL": b"%PDF-1.4 results 99", "Decree": b"%PDF-1.4 decree 99",
+                                 "TaxSale98-FINAL": b"%PDF-1.4 results 98"})
+
+
+def test_the_trustees_site_forms_are_never_a_property_list():
+    assert T.classify("Tangible Personal Property", "x/TangiblePersonalPropertySchedule.pdf") == "other"
+    assert T.classify("Mailing Address Change Form", "x/mailing_change.pdf") == "other"
+    assert T.site_form("Tangible Personal Property", "x/TangiblePersonalPropertySchedule.pdf")
+    assert T.site_form("Mailing Address Change Form", "x/mailing_change.pdf")
+    assert not T.site_form("Tax Sale 25 - Final Results", "x/TaxSale25-FiNAL_RESULTS_PDF.pdf")
+    assert T.classify("Tax Sale 99 Property List", "x/TaxSale99-PropertyList.pdf") == "list", "a real list still is one"
+    assert T.classify("Delinquent Properties", "x/delinquent.pdf") == "list"
+    assert T.classify("Property Owner Guide", "x/guide.pdf") == "other", "a list must say it is for a sale"
+
+
+def test_a_form_an_older_run_filed_as_a_list_no_longer_fails_the_feed(tmp_path):
+    # The first-to-market box's archive, as the code before 2026-11-20 wrote it: the Tangible Personal
+    # Property form filed as a property list, which then read 0 parcel ids and failed the stage.
+    arc = tmp_path / "tax_sale_archive"
+    arc.mkdir()
+    (arc / "f0f0f0f0f0f0.pdf").write_bytes(b"%PDF-1.4 form")
+    old = {"f0f0f0f0f0f0": {"url": "https://property.example.invalid/assets/pdfs/TangiblePersonalPropertySchedule.pdf",
+                            "label": "Tangible Personal Property", "kind": "list", "first_seen": "2026-11-20",
+                            "checked": "2026-11-20", "path": str(arc / "f0f0f0f0f0f0.pdf")}}
+    (tmp_path / T.DOCS).write_text(__import__("json").dumps(old), encoding="utf-8")
+    stats = prepare(tmp_path, web=announced_web(), today="2026-11-20", text="a form with no parcel in it")
+    assert stats["problems"] == [] and stats["lists"] == 0, stats["problems"]
+    assert T._load_docs(str(tmp_path))["f0f0f0f0f0f0"]["kind"] == "other", "the archive is filed again by today's rules"
+    down = prepare(tmp_path, web=Web(fail=[PAGE]), today="2026-11-21", text="a form with no parcel in it")
+    assert not any("parcel id" in p for p in down["problems"]), "on a day the page cannot be read the old filing still does not count"
+
+
+def test_a_page_holding_only_the_sites_forms_has_lost_its_tax_sale_documents(tmp_path):
+    only_forms = '<a href="https://property.example.invalid/TangiblePersonalPropertySchedule.pdf">Tangible Personal Property</a>'
+    got = T.capture(str(tmp_path), Web(html=only_forms), "2026-11-20")
+    assert got["new"] == [] and "links only the site's own forms" in got["problems"][0]
+
+
+def test_a_documents_sale_number_comes_from_its_label_or_its_file_name():
+    assert T.sale_number("Tax Sale 25 - Final Results") == "25"
+    assert T.sale_number("Final Results", "https://x/assets/pdfs/TaxSale25-FiNAL_RESULTS_PDF.pdf") == "25"
+    assert T.sale_number("Tax Sale No. 007 report") == "7"
+    assert T.sale_number("Mailing Address Change Form", "x/mailing_change.pdf") == ""
+
+
+def test_the_page_announces_each_sales_date():
+    assert T.page_sales(ANNOUNCED) == {"99": "2026-06-02"}, "a script's text is not the page, and a sale named with no date is left out"
+    assert T.page_sales("<p>Tax Sale 98 results were posted on the court's site.</p>") == {}
+
+
+def test_capture_keeps_the_pages_date_on_each_document_of_that_sale(tmp_path):
+    web = announced_web()
+    got = T.capture(str(tmp_path), web, "2026-11-20")
+    by_label = {d["label"]: d for d in got["docs"].values()}
+    assert by_label["Tax Sale 99 - Final Results"]["sale_date_page"] == "2026-06-02"
+    assert by_label["Tax Sale 99 - Decree Confirming Sale"]["sale_date_page"] == "2026-06-02"
+    assert "sale_date_page" not in by_label["Tax Sale 98 Final Results"], "the page announced no date for sale 98"
+    assert "Tangible Personal Property" not in by_label and not any("TangiblePersonal" in u or "mailing_change" in u
+                                                                      for u in web.asked), "the site's forms are never downloaded"
+    assert all(d.get("sale_date_page") == "2026-06-02" for d in got["new"] if "99" in d["label"])
+    # The page moves on to the next sale: the documents of sale 99 keep the date they were given.
+    later = ANNOUNCED.replace("Tax Sale 99 Information: Event Details: June 2nd, 2026",
+                              "Tax Sale 100 Information: Event Details: June 1st, 2027")
+    again = T.capture(str(tmp_path), announced_web(later), "2026-12-30")
+    assert {d["label"]: d.get("sale_date_page") for d in again["docs"].values()}["Tax Sale 99 - Final Results"] == "2026-06-02"
+
+
+def test_a_label_is_kept_with_plain_hyphens_whatever_dash_the_page_used(tmp_path):
+    got = T.capture(str(tmp_path), announced_web(), "2026-11-20")
+    labels = [d["label"] for d in got["docs"].values()]
+    assert "Tax Sale 99 - Final Results" in labels and not any(EN in x or chr(0x2014) in x for x in labels)
+    assert T.links_from_page('<a href="a.pdf">Fees &amp; Costs</a>', PAGE)[0]["label"] == "Fees & Costs"
+
+
+def test_the_page_address_can_be_given_to_capture(tmp_path, monkeypatch):
+    monkeypatch.setenv("KNOX_TAX_SALE_PAGE", "https://somewhere.example.invalid/not-this-one")
+    web = Web()
+    got = T.capture(str(tmp_path), web, "2026-11-13", page=PAGE)
+    assert web.asked[0] == PAGE and got["problems"] == []
+
+
 # ── code violations ───────────────────────────────────────────────────
 
 EXPORT = """Record Number,Record Type,Status,Opened Date,Address,Parcel,Description

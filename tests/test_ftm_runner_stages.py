@@ -19,7 +19,7 @@ import ftm_runner as R  # noqa: E402
 import ftm_staging  # noqa: E402
 
 ROOT = os.path.join(os.path.dirname(__file__), "..")
-TODAY = ("notices", "capture", "liens", "county", "sold")
+TODAY = ("notices", "capture", "liens", "county", "estate_ready", "sold")
 NEW = ("tax_sale", "tax_delinquent", "public_notices", "appointments", "tax_sale_report", "code_violations",
        "deeds", "sold_reentry", "sold_audit")
 # Every setting this build added. None of them may be set by the deployed configuration.
@@ -53,10 +53,16 @@ def deployed_env() -> dict:
     return dict(re.findall(r"^\s*([A-Z_]+)\s*=\s*'([^']*)'", text, flags=re.M))
 
 
-def test_the_deployed_run_names_only_the_stages_it_always_ran():
+# Switched on 2026-11-20 on purpose (Ty: every county feed goes through the Smarter Contact flow on
+# the Top 1,000). Any other new stage in the deployed run is still an accident.
+SWITCHED_ON = ("tax_sale", "tax_delinquent", "tax_sale_report")
+
+
+def test_the_deployed_run_names_todays_stages_and_only_the_feeds_switched_on():
     stages = re.search(r"--stages\s+(\S+)", deployed_env()["FTM_ARGS"]).group(1).split(",")
-    assert tuple(stages) == TODAY
-    assert not set(stages) & set(NEW)
+    assert tuple(s for s in stages if s not in SWITCHED_ON) == TODAY
+    assert set(stages) & set(NEW) == set(SWITCHED_ON)
+    assert stages == [s for s in R.ALL_STAGES if s in stages], "the deployed run lists its stages in run order"
 
 
 def test_the_deployed_configuration_sets_none_of_the_new_switches():
@@ -76,6 +82,51 @@ def test_todays_stages_still_run_the_functions_they_always_did():
     assert R.STAGE_FUNCS["liens"] is R._stage_liens and R.STAGE_FUNCS["county"] is R._stage_county
     assert R.STAGE_FUNCS["sold"] is R._stage_sold
     assert R.ALL_STAGES[-1] == "sold", "sold stays last so a lead uploaded this run is revived this run"
+
+
+# ── the estate tag (2026-11-17) ───────────────────────────────────────
+
+
+def test_the_estate_tag_is_part_of_todays_run_before_sold():
+    assert R.STAGE_FUNCS["estate_ready"] is R._stage_estate_ready
+    assert R.ALL_STAGES.index("estate_ready") < R.ALL_STAGES.index("sold")
+    assert "estate_ready" in R.TODAY_STAGES and "estate_ready" not in R.DEFAULT_STAGES
+
+
+def _fake_ready(monkeypatch, seen, fail=None):
+    from agents.autopilot import flows, preset_patch
+
+    def key_only_crm(gap=1.0):
+        if fail:
+            raise fail
+        return "the key's client"
+
+    def ready(crm, *, commit=False, today=None, log_path=None, out=print, allowed=None):
+        seen.update(crm=crm, commit=commit, allowed=allowed, log_path=str(log_path))
+        return {"allowed": bool(allowed), "due": 3, "tagged": 3 if allowed else 0}
+
+    monkeypatch.setattr(preset_patch, "key_only_crm", key_only_crm)
+    monkeypatch.setattr(flows, "ready", ready)
+
+
+def test_the_estate_tag_writes_only_on_a_committed_run(monkeypatch, tmp_path):
+    monkeypatch.setenv("AGENTS_DATA_DIR", str(tmp_path / "agents"))
+    seen = {}
+    _fake_ready(monkeypatch, seen)
+    res = R.STAGE_FUNCS["estate_ready"](args(commit=True))
+    assert res.status == "ok" and res.records == 3 and seen["allowed"] is True
+    assert "3 obituary record(s) tagged Obituary 30+ Days" in res.detail
+    assert seen["crm"] == "the key's client" and "estate_ready" in seen["log_path"]
+    res = R.STAGE_FUNCS["estate_ready"](args(commit=False))
+    assert res.status == "ok" and res.records == 0 and seen["allowed"] is False
+    assert res.detail == "dry: 3 obituary record(s) due the tag Obituary 30+ Days"
+
+
+def test_an_estate_tag_that_breaks_fails_the_stage_by_name_and_not_the_run(monkeypatch, tmp_path):
+    monkeypatch.setenv("AGENTS_DATA_DIR", str(tmp_path / "agents"))
+    _fake_ready(monkeypatch, {}, fail=RuntimeError("REISIFT_API_KEY is not set"))
+    res = R.STAGE_FUNCS["estate_ready"](args())
+    assert res.status == "failed" and "REISIFT_API_KEY is not set" in res.detail
 
 
 def test_an_unknown_stage_is_refused_before_any_work():
@@ -401,19 +452,22 @@ def test_the_deeds_stage_says_when_the_notice_text_is_missing(monkeypatch):
 # ── the wiring check ──────────────────────────────────────────────────
 
 
-def test_the_wiring_check_reports_nothing_switched_on_for_todays_run(monkeypatch):
+def test_the_wiring_check_names_exactly_the_feeds_switched_on_for_todays_run(monkeypatch):
     monkeypatch.setenv("FTM_ARGS", deployed_env()["FTM_ARGS"])
     lines = R.switch_report()
-    assert "stages beyond today's five: none" in lines[0]
+    assert "stages beyond today's run: tax_sale, tax_delinquent, tax_sale_report" in lines[0]
     assert lines[-1] == "  settings switched on: none"
-    assert not [x for x in lines if "WARNING" in x or "live feed" in x]
+    assert not [x for x in lines if "WARNING" in x]
+    live = [x for x in lines if "live feed" in x]
+    assert live and all(("Tax sale notices" in x or "Tax delinquent notices" in x or "County tax sale report" in x)
+                        for x in live)
 
 
 def test_the_wiring_check_names_each_new_feed_and_a_stage_in_the_wrong_place(monkeypatch):
     monkeypatch.setenv("FTM_ARGS", "--stages notices,capture,liens,county,appointments,tax_sale,sold --commit")
     monkeypatch.setenv("FTM_INTAKE_SCREEN", "1")
     text = "\n".join(R.switch_report())
-    assert "stages beyond today's five: appointments, tax_sale" in text
+    assert "stages beyond today's run: appointments, tax_sale" in text
     assert "live feed: Substitute trustee appointments, Knox -> list 'Substitute Trustee'" in text
     assert "live feed: Tax sale notices, Knox -> list 'Tax Sale'" in text
     assert "appointments is listed AFTER `county`" in text
@@ -429,3 +483,12 @@ def test_the_module_holds_no_long_dash():
     for name in ("src/ftm_runner.py", "tests/test_ftm_runner_stages.py"):
         text = open(os.path.join(ROOT, name), encoding="utf-8").read()
         assert chr(0x2014) not in text and chr(0x2013) not in text and chr(8) not in text
+
+
+def test_notes_that_did_not_land_fail_the_stage_once_it_is_more_than_a_stray():
+    # 2026-11-19: every note went to a retired route and the run read OK.
+    assert R._notes_problem({"notes_failed": 0, "notes_tried": 9}) == ""
+    assert R._notes_problem({"notes_failed": 1, "notes_tried": 9}) == "", "a stray refusal stays a warning"
+    msg = R._notes_problem({"notes_failed": 3, "notes_tried": 9, "notes_error": "HTTP 404"})
+    assert msg.startswith("NOTES NOT POSTED on 3 of 9 records (HTTP 404)")
+    assert R._notes_problem({"notes_failed": 1, "notes_tried": 1}), "every note failing is never a stray"

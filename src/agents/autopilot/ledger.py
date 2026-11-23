@@ -171,6 +171,12 @@ def set_fact(record_uuid: str, key: str, value) -> None:
                   (record_uuid, key, json.dumps(value, default=str), store.now()))
 
 
+def drop_fact(record_uuid: str, key: str) -> None:
+    """Forget one fact, so the record reads as never having had it (a fact set to None is still there)."""
+    with store._LOCK, store._db() as c:
+        c.execute("DELETE FROM ap_facts WHERE record_uuid=? AND key=?", (record_uuid, key))
+
+
 def first_seen(record_uuid: str, scope: str, now: datetime | None = None) -> datetime:
     """When this stage first saw the record (recorded on first sight, plan or live). Used only for
     waiting periods and the backlog line, never as evidence that anything was done."""
@@ -248,6 +254,12 @@ def batch_set(batch_id: int, status: str, result: dict | None = None) -> None:
     with store._LOCK, store._db() as c:
         c.execute("UPDATE ap_batches SET status=?, released=?, result=? WHERE id=?",
                   (status, store.now(), json.dumps(result or {}, default=str), batch_id))
+
+
+def batch_result(batch_id: int, result: dict | None) -> None:
+    """Replace a batch's result and nothing else: its status and release time stay as they were."""
+    with store._LOCK, store._db() as c:
+        c.execute("UPDATE ap_batches SET result=? WHERE id=?", (json.dumps(result or {}, default=str), batch_id))
 
 
 def staged_record_uuids(stage: str) -> set[str]:

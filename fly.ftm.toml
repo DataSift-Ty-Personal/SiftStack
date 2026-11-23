@@ -21,7 +21,19 @@ primary_region = 'iad'
   # only then marks them handled. It needs the PAXSUB_* secrets.
   # `sold` (added 2026-11-12) is the sold guard: it revives a lead that landed on an
   # old Sold record and marks real sales. It runs LAST, after the day's uploads.
-  FTM_ARGS = '--stages notices,capture,liens,county,sold --commit'
+  # `estate_ready` (added 2026-11-17) puts the tag "Obituary 30+ Days" on obituary
+  # records whose death turned 30 days old, so the estate call presets show them.
+  # `tax_sale` and `tax_delinquent` (added 2026-11-20, Ty: the county feeds go through the
+  # Smarter Contact flow on the Top 1,000) scrape their own saved searches on their own
+  # proxy session. Their records carry no FTM tag (datasift_formatter.NOT_FTM_TYPES); the
+  # brain's top1000_feeds stage tags their lists Top 1000 at 07:35. The Blount searches
+  # read zero rows on the site (dry runs 2026-11-20), and an empty search turns a feed red
+  # every morning, so they are off below until Blount publishes there. `tax_sale_report`
+  # (the Knox Trustee's own sale lists) stages rows for `county`, so it sits before it; it
+  # stopped reading the site's forms as property lists the same day.
+  FTM_ARGS = '--stages notices,tax_sale,tax_delinquent,capture,liens,tax_sale_report,county,estate_ready,sold --commit'
+  FTM_SEARCH_BLOUNT_TAX_SALE = 'off'
+  FTM_SEARCH_BLOUNT_TAX_DELINQUENT = 'off'
   FTM_JITTER_SECONDS = '600'
   # The daily coverage digest, posted whether the news is good or bad. 08:00 is
   # clear of the run: it starts 06:30 plus up to 600s jitter and the slowest run

@@ -503,8 +503,13 @@ def _run(check, tmp, store, activity, attempts, audit, budget, gate, lanecheck, 
     s_first = sweep.run("k_attempts", crm=crm_a, now=T0, pol=pol)
     check(s_first.batch and not [w for w in crm_a.writes if w[0] == "call_attempts"] and "staged as batch" in s_first.head,
           "the first live run stages its list and writes nothing")
+    crm_a.log_rows.append(dial("i2", "o-a3", T0 + timedelta(minutes=30)))     # a new record falls behind meanwhile
     s_again = sweep.run("k_attempts", crm=crm_a, now=T0 + timedelta(hours=1), pol=pol)
     check(not s_again.batch and "still staged" in s_again.head, "it is not staged twice while it waits on a person")
+    check(s_again.acted == 0 and "1 more fell behind since" in s_again.head
+          and len(ledger.batches(status="staged", stage="k_attempts")) == 1,
+          "a record that falls behind while the first list waits joins no second batch, and the run posts nothing: %s"
+          % s_again.head)
     dry = attempts.release(s_first.batch, crm=crm_a, pol=pol)
     check(dry.get("dry") and dry["records"] == 1 and not [w for w in crm_a.writes if w[0] == "call_attempts"], "releasing without commit shows the list and writes nothing")
     rel_a = attempts.release(s_first.batch, crm=crm_a, pol=pol, commit=True, now=T0)
@@ -628,6 +633,7 @@ def _run(check, tmp, store, activity, attempts, audit, budget, gate, lanecheck, 
           "a live run takes that owner's piece out of the staged batch before anyone releases it")
     check(sweep.run("k_revoke", crm=crm_v, now=T0 + timedelta(minutes=30), pol=pol).found == 0, "each change is handled once")
     ledger.batch_set(bid, "cancelled")
+    _revoke_sc_checks(check, store, activity, ledger, policy, revoke, sweep)
 
     # ------------------------------------------------------------------ the sequence watchdog
     print("  sequence watchdog")
@@ -892,3 +898,327 @@ def _run(check, tmp, store, activity, attempts, audit, budget, gate, lanecheck, 
         live_shape = page()
         live_shape["autopilot"]["stage_a"]["last"] = brain.public_last({"at": "2026-11-13T12:20:00+00:00", "head": "x", "problems": []})
         check(hb.verdict(live_shape, at_now)[0] == "ok", "the watchdog reads the same shape the health page really serves")
+
+
+def _revoke_sc_checks(check, store, activity, ledger, policy, revoke, sweep) -> None:
+    """Revocation's Smarter Contact half through the texting app (2026-11-19). The brain holds no
+    Smarter Contact login, so the stage hands each job to the texting app's load route; here the
+    route is a stand-in that runs the texting app's own code (sms_agent.sc_load.revoke_run) against a
+    fake Smarter Contact. Every number is invented (555)."""
+    import json
+    import os
+
+    from sms_agent import sc_client, sc_load
+    from .autopilot import scpush
+
+    print("  revocation through the texting app")
+    book = copy.deepcopy(PLAYBOOK)
+    book["stages"]["k_revoke"] = dict(book["stages"]["k_revoke"], smarter_contact=True, max_records=2)
+    pol = policy.parse(book, EMPLOYEES)
+
+    class SC:
+        """Smarter Contact as the texting app's code sees it: phone lookups, the do-not-contact write
+        and the do-not-text list. Anything else a do-not-contact job sends is a failure."""
+        def __init__(self):
+            self.existing = {"8655550111": "c-11", "8655550112": "c-12", "8655550121": "c-21", "8655550131": "c-31",
+                             "8655550141": "c-41", "8655550151": "c-51", "8655550161": "c-61", "8655550171": "c-71"}
+            self.suppressed = ["8655550112"]
+            self.dnc, self.lookups, self.down, self.other = [], [], set(), []
+
+        def gql(self, query, variables=None):
+            if "findSuppressions" in query:
+                return {"findSuppressions": {"items": [{"number": "+1" + n} for n in self.suppressed], "hasNext": False}}
+            self.other.append(query[:60])
+            return {}
+
+        def contact_id_for(self, phone):
+            n = sc_load.digits10(phone)
+            self.lookups.append(n)
+            if n in self.down:
+                raise sc_client.SCError("HTTP 503 from https://api.example/gql: b'busy'")
+            return self.existing.get(n, "")
+
+        def add_contact_dnc(self, contact_id):
+            self.dnc.append(contact_id)
+            return "DNC"
+
+    class Texting:
+        """Where the texting app's route stands. `mode` is how it answers: answer, down (the post
+        fails), slow (still running when the stage stops waiting), stranger (another job's answer),
+        dry (its SMS_AGENT_DRY_RUN is on)."""
+        def __init__(self, sc):
+            self.sc, self.jobs, self.held, self.mode = sc, [], {}, "answer"
+
+        def revoke(self, job, dry=False, **kw):
+            self.jobs.append((copy.deepcopy(job), dry))
+            if self.mode == "down":
+                return {"status": "not handed over", "why": "the texting app did not answer (timed out)"}
+            if self.mode == "stranger":
+                return {"status": "done", "action": "revoke", "batch": job["batch"], "job": "another-job",
+                        "result": {"ok": True, "numbers": []}}
+            res = sc_load.revoke_run(job, commit=not dry and self.mode != "dry", sc=self.sc, pause=0)
+            doc = {"status": "done" if res["ok"] else "failed", "action": "revoke", "batch": job["batch"],
+                   "job": job["job"], "result": res}
+            if self.mode == "slow":
+                self.held[job["batch"]] = doc
+                return {"status": "loading", "action": "revoke", "batch": job["batch"], "job": job["job"],
+                        "why": "still loading after 120 seconds"}
+            return doc
+
+        def job_status(self, batch, dry=False, session=None):
+            return self.held.pop(batch, {"status": "loading", "action": "revoke"})
+
+    class Gone(Exception):
+        code = 404
+
+    class Crm(FakeCRM):
+        broken: dict = {}
+
+        def record(self, u):
+            if u in self.broken:
+                raise self.broken[u]
+            return super().record(u)
+
+    def owner(u, street, *numbers):
+        return _rec(u, street, phones=[{"number": n, "type": "MOBILE", "tags": ["Dial First"], "status": "UNKNOWN"}
+                                       for n in numbers])
+
+    recs = [owner("rv1", "101 Quit St", "8655550111", "8655550112", "8655550113"),
+            owner("rv2", "102 Quit St", "8655550121"), owner("rv3", "103 Quit St", "8655550131"),
+            owner("rv4", "104 Quit St", "8655550141"), owner("rv5", "105 Quit St", "8655550151"),
+            owner("rv6", "106 Quit St", "8655550161"), owner("rv7", "107 Quit St", "8655550171"),
+            owner("rv8", "108 Quit St", "8655550181"), owner("rv9", "109 Quit St", "8655550191"),
+            _rec("rv0", "100 Quit St")]
+    crm = Crm(recs)
+    crm.log_rows = [tag_ev("rv1", "rv1", T0 - timedelta(hours=2), ["Do Not Market"]),
+                    status_ev("rv2", "rv2", T0 - timedelta(hours=2), None, "Hot Lead"),
+                    status_ev("rv3", "rv3", T0 - timedelta(hours=2), None, "sold")]
+    sc = SC()
+    texting = Texting(sc)
+    saved = (scpush.revoke, scpush.job_status, scpush.ready, revoke._direct)
+    scpush.revoke, scpush.job_status, scpush.ready, revoke._direct = texting.revoke, texting.job_status, lambda: True, lambda: None
+    for key in (revoke.KV, revoke.KV_PLAN, revoke.SC_QUEUE, revoke.SC_JOBS):
+        store.kv_set(key, "")
+    activity.reset()
+
+    def run(minutes, plan=False):
+        return sweep.run("k_revoke", crm=crm, now=T0 + timedelta(minutes=minutes), pol=pol, plan=plan)
+
+    def events(u):
+        return [e["detail"] for e in ledger.events(record_uuid=u, action="revoke") if e["detail"].get("from") == "smarter contact"]
+
+    def add(i, u, minutes, tags):
+        crm.log_rows = list(crm.log_rows) + [tag_ev(i, u, T0 + timedelta(minutes=minutes), tags)]
+
+    try:
+        # A plan run looks the numbers up through the texting app's dry run and marks nothing.
+        rp = run(0, plan=True)
+        job, dry = texting.jobs[-1]
+        check(dry is True and sc.dnc == [] and [o["record"] for o in job["owners"]] == ["rv1", "rv2"],
+              "a plan run hands the texting app a dry job (at most max_records owners) and nothing is marked")
+        check(job["action"] == "revoke" and job["batch"] >= sc_load.REVOKE_MIN_ID and not job.get("groups")
+              and sc_load.check(job) == ["the load names no group"],
+              "the job is never a load: a texting app from before this change refuses it instead of building a campaign")
+        check(job["owners"][0] == {"record": "rv1", "dnc": True, "numbers": ["8655550111", "8655550112", "8655550113"]}
+              and job["owners"][1]["dnc"] is False, "every phone on the owner's record goes, and a new lead is marked look-only")
+        check(rp.acted == 1 and "Would pull" in rp.head and "mark 1 Smarter Contact number(s)" in rp.head
+              and any("would be marked" in ln for ln in rp.lines),
+              "the plan says which numbers a live run would mark, and only the one Smarter Contact holds and has not suppressed")
+        check(revoke.queued() == {} and events("rv1") == [], "a plan run keeps no queue and writes nothing to the ledger")
+        check(any("new leads are still in Smarter Contact" in ln for ln in rp.lines),
+              "a new lead's number is named for a person, as before, and never marked")
+
+        # The first live run marks what Smarter Contact holds; the owner past max_records waits.
+        rv = run(0)
+        job, dry = texting.jobs[-1]
+        check(dry is False and sc.dnc == ["c-11"] and "c-21" not in sc.dnc and sc.other == [],
+              "a live run marks the opted-out owner's number and leaves the new lead's alone, through the do-not-contact call only")
+        got = {r["number"]: r["outcome"] for r in events("rv1")[0]["numbers"]}
+        check(got == {"8655550111": "marked", "8655550112": "already", "8655550113": "not_in_sc"}
+              and events("rv1")[0]["via"] == "texting app" and events("rv2")[0]["numbers"][0]["outcome"] == "lead",
+              "each owner sent is written to the ledger with every number's answer")
+        check(list(revoke.queued()) == ["rv3"] and rv.acted == 1 and "marked 1 Smarter Contact number(s)" in rv.head,
+              "the owner past the cap stays queued for the next run instead of being dropped")
+
+        # The texting app does not answer: nothing is lost.
+        texting.mode = "down"
+        r2 = run(30)
+        check(r2.found == 0 and revoke.queued()["rv3"]["tries"] == 1
+              and any("could not hand the do-not-contact job" in p for p in r2.problems) and "wait for the next run" in r2.head,
+              "a job the texting app never took keeps its owners queued, and the run says so")
+
+        # Still running when the run stops waiting: the next run reads its answer, and sends nobody twice.
+        texting.mode = "slow"
+        r3 = run(60)
+        check(len(revoke.waiting_jobs()) == 1 and "rv3" in revoke.queued() and any("still running" in ln for ln in r3.lines),
+              "a job still running is remembered with its owners")
+        sent = len(texting.jobs)
+        texting.mode = "answer"
+        r4 = run(90)
+        check(len(texting.jobs) == sent and revoke.queued() == {} and revoke.waiting_jobs() == [] and "c-31" in sc.dnc
+              and r4.acted == 1, "the next run reads that job's answer and settles its owners without sending them again")
+
+        # A job the texting app never finishes is given up on after three hours and sent again.
+        add("rv4", "rv4", 100, ["Do Not Market"])
+        texting.mode = "slow"
+        run(110)
+        texting.held.clear()
+        texting.mode = "answer"
+        stuck_job = revoke.waiting_jobs()[0]["batch"]
+        r5 = run(110 + 4 * 60)
+        resent = texting.jobs[-1][0]
+        check(resent["batch"] != stuck_job and [o["record"] for o in resent["owners"]] == ["rv4"] and revoke.queued() == {}
+              and revoke.waiting_jobs() == [] and any("never finished" in p for p in r5.problems),
+              "a job stuck at loading for hours is given up on, and its owners go out again in a new job")
+
+        # One number fails: only that owner is tried again, and it settles once Smarter Contact answers.
+        add("rv5", "rv5", 400, ["Do Not Market"])
+        sc.down = {"8655550151"}
+        r6 = run(410)
+        check(revoke.queued()["rv5"]["tries"] == 1 and any("failed, tried again next run" in ln for ln in r6.lines),
+              "a number that failed keeps its owner queued")
+        sc.down = set()
+        run(440)
+        check(revoke.queued() == {} and "c-51" in sc.dnc, "the next run tries it again and settles it")
+
+        # An answer for another job, or a live job the texting app ran dry, settles nothing.
+        add("rv6", "rv6", 450, ["Do Not Market"])
+        texting.mode = "stranger"
+        r7 = run(460)
+        check("rv6" in revoke.queued() and any("another job" in p for p in r7.problems), "an answer for another job settles nothing")
+        texting.mode = "dry"
+        r8 = run(490)
+        check("rv6" in revoke.queued() and "c-61" not in sc.dnc and any("dry run" in p for p in r8.problems),
+              "a live job the texting app ran dry is not taken as done")
+        texting.mode = "answer"
+        run(520)
+        check(revoke.queued() == {} and "c-61" in sc.dnc, "then it is pulled for real")
+
+        # No route at all: a live run keeps the owner and says why; a plan run only notes it.
+        add("rv7", "rv7", 530, ["Do Not Market"])
+        scpush.ready = lambda: False
+        r9 = run(540)
+        check("rv7" in revoke.queued() and any("could not reach Smarter Contact" in p for p in r9.problems),
+              "with neither the login nor the texting app's route, the owner waits and the run says why")
+        store.kv_set(revoke.KV_PLAN, "")
+        rp2 = run(540, plan=True)
+        check(rp2.problems == [] and any("not reachable" in k for k in rp2.tally), "a plan run on such a box only notes it")
+
+        # A box that holds the login does the same work itself.
+        revoke._direct = lambda: sc
+        r10 = run(570)
+        check(revoke.queued() == {} and "c-71" in sc.dnc and events("rv7")[-1]["via"] == "this box" and r10.acted == 1,
+              "a box with the Smarter Contact login runs the same job in process")
+        revoke._direct = lambda: None
+        scpush.ready = lambda: True
+
+        # A record that cannot be read: gone from DataSift is said and dropped; any other error waits.
+        crm.broken = {"rv8": Gone("HTTP 404"), "rv9": RuntimeError("HTTP 502 on GET /api/internal/property/rv9/")}
+        add("rv8", "rv8", 580, ["Do Not Market"])
+        add("rv9", "rv9", 580, ["Do Not Market"])
+        add("rv0", "rv0", 580, ["Do Not Market"])
+        r11 = run(590)              # at most two a run: the record with no number and the deleted one go first
+        check(list(revoke.queued()) == ["rv9"] and any("gone from DataSift" in p for p in r11.problems)
+              and r11.tally.get("Smarter Contact: record with no number") == 1
+              and r11.tally.get("Smarter Contact: waiting for the next run") == 1,
+              "a deleted record is named and dropped, one with no number is settled, and the third waits its turn")
+        r12 = run(600)
+        check(revoke.queued()["rv9"]["tries"] == 1 and any("could not read a record" in p for p in r12.problems),
+              "a record that cannot be read for any other reason stays queued")
+        q = revoke.queued()
+        q["rv9"]["tries"] = 2
+        store.kv_set(revoke.SC_QUEUE, json.dumps(q))
+        r13 = run(610)
+        check(any("after 3 or more tries" in p for p in r13.problems), "an owner still queued after three tries is named on every run")
+        crm.broken = {}
+        r14 = run(620)
+        check(not any("after 3 or more tries" in p for p in r14.problems) and revoke.queued() == {},
+              "once it can be read it settles like any other")
+
+        # sc_reasons (2026-11-19) keeps Smarter Contact to the plain do-not-contact signals. Every
+        # reason still pulls staged batches; a sale or a Not Interested never reaches Smarter Contact,
+        # and a record that became a lead and also sold is looked up as a lead only.
+        def pol_with(**kw):
+            stages = dict(book["stages"], k_revoke=dict(book["stages"]["k_revoke"], **kw))
+            return policy.parse(dict(book, stages=stages), EMPLOYEES)
+
+        pol_keep = pol_with(sc_reasons=["opt_out", "do_not_market", "litigator", "lead"], max_records=5)
+        crm.log_rows = list(crm.log_rows) + [
+            status_ev("rk1", "rv1", T0 + timedelta(minutes=630), None, "sold"),
+            status_ev("rk2", "rv4", T0 + timedelta(minutes=630), None, "not_interested"),
+            tag_ev("rk3", "rv5", T0 + timedelta(minutes=630), ["Do Not Market"]),
+            status_ev("rk4", "rv6", T0 + timedelta(minutes=630), None, "Hot Lead"),
+            status_ev("rk5", "rv6", T0 + timedelta(minutes=631), None, "sold")]
+        sent_before = len(texting.jobs)
+        rk = sweep.run("k_revoke", crm=crm, now=T0 + timedelta(minutes=640), pol=pol_keep)
+        job = texting.jobs[-1][0] if len(texting.jobs) > sent_before else {"owners": []}
+        check({o["record"]: o["dnc"] for o in job["owners"]} == {"rv5": True, "rv6": False},
+              "with sc_reasons, only the Do Not Market owner is marked and the lead that also sold is looked up only")
+        check(rk.found == 4 and rk.tally.get("kept out of Smarter Contact (reason not in sc_reasons)") == 2
+              and "rv1" not in revoke.queued() and "rv4" not in revoke.queued(),
+              "a sale and a Not Interested are counted and kept out of Smarter Contact, never queued for it")
+        rb = sweep.run("k_revoke", crm=crm, now=T0 + timedelta(minutes=650), pol=pol_with(sc_reasons=["sold_out"]), plan=True)
+        check(any("sc_reasons" in p and "sold_out" in p for p in rb.problems),
+              "an sc_reasons word that is not a reason is named, never silently taken")
+    finally:
+        scpush.revoke, scpush.job_status, scpush.ready, revoke._direct = saved
+        for key in (revoke.KV, revoke.KV_PLAN, revoke.SC_QUEUE, revoke.SC_JOBS):
+            store.kv_set(key, "")
+
+    # The real client: the token rides in a header, the dry flag rides on the URL, and a failed read waits.
+    route, tok = "https://texting.example/hooks/scload", "s3cret-token-example"
+
+    class Resp:
+        def __init__(self, code, doc=None, text=""):
+            self.status_code, self._doc, self.text = code, doc or {}, text
+
+        def json(self):
+            return self._doc
+
+    class Session:
+        def __init__(self, gets):
+            self.posts, self.gets, self.heads, self.bodies, self._gets = [], [], [], [], list(gets)
+
+        def post(self, url, json=None, headers=None, timeout=0):
+            self.posts.append(url)
+            self.bodies.append(json)
+            self.heads.append(headers or {})
+            return Resp(200, {"accepted": True, "action": "revoke"})
+
+        def get(self, url, headers=None, timeout=0):
+            self.gets.append(url)
+            self.heads.append(headers or {})
+            return Resp(200, self._gets.pop(0) if self._gets else {"status": "loading"})
+
+    class Down(Session):
+        def get(self, url, headers=None, timeout=0):
+            raise RuntimeError("connection refused to %s with %s" % (url, (headers or {}).get("authorization")))
+
+    saved_env = {k: os.environ.get(k) for k in ("AGENTS_SC_LOAD_URL", "AGENTS_SC_LOAD_TOKEN")}
+    try:
+        os.environ.pop("AGENTS_SC_LOAD_URL", None)
+        os.environ.pop("AGENTS_SC_LOAD_TOKEN", None)
+        check(scpush.ready() is False and scpush.revoke({"batch": 1})["status"] == "not handed over",
+              "with no load route set the stage cannot hand a job over, and says so")
+        os.environ["AGENTS_SC_LOAD_URL"], os.environ["AGENTS_SC_LOAD_TOKEN"] = route, tok
+        n = 1_763_560_000_001
+        sess = Session([{"status": "done", "action": "revoke", "job": "j1", "result": {"ok": True, "numbers": []}}])
+        doc = scpush.revoke({"action": "revoke", "batch": n, "job": "j1", "owners": [{"record": "r", "numbers": ["8655550101"]}]},
+                            dry=True, session=sess, sleep=lambda s: None, wait_s=5, poll_s=0)
+        check(scpush.ready() and doc["status"] == "done" and sess.posts == [route + "?dry=1"]
+              and sess.gets == ["%s/%d?dry=1" % (route, n)] and sess.bodies[0]["action"] == "revoke",
+              "a dry job is posted to the load route and its answer read back on the same dry route")
+        check(all(h.get("authorization") == "Bearer " + tok for h in sess.heads) and not any(tok in u for u in sess.posts + sess.gets),
+              "the token rides in a header on every call and never in a URL")
+        later = Session([{"status": "done", "action": "revoke", "job": "j2"}])
+        check(scpush.job_status(n, session=later)["status"] == "done" and later.gets == ["%s/%d" % (route, n)],
+              "a job an earlier run stopped waiting on is read back by its number")
+        doc = scpush.job_status(n, session=Down([]))
+        check(doc["status"] == "loading" and tok not in json.dumps(doc),
+              "a read that fails keeps the job waiting, and the token is never in what comes back")
+    finally:
+        for k, v in saved_env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v

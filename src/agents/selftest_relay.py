@@ -26,6 +26,15 @@ DRY_RUN = ":white_check_mark: *SiftStack FTM run* (DRY RUN)\n  *notices* [OK] 0 
 WATCHDOG = ("*FTM pull is red*\nRED 2026-11-13 last_run=2026-11-13T11:39:19 :: Stage notices returned nothing. "
             "0 notices scraped.\n\nThis came from the watchdog, not the box, so it also fires when the daily digest "
             "never arrives.\nCheck: `fly status -a example-app` then `fly logs -a example-app`")
+# The watchdogs as the issue fixer's box and the GitHub workflows send them (2026-11-20): every status, not
+# just red. An unreachable box used to read as a chat message.
+FOOT = ("\n\nThis came from the watchdog on the issue fixer's box, so it also fires when the box itself goes quiet.\n"
+        "Check: `fly status -a example-app` then `fly logs -a example-app`")
+FTM_GONE = "*FTM pull is unreachable*\nThe machine did not answer (flyctl exit 1). It is most likely stopped." + FOOT
+BRAIN_GONE = ("*Agents brain is unreachable*\nThe health page did not answer (timed out). The machine is most likely "
+              "stopped, out of credit or mid-deploy." + FOOT)
+BRAIN_RED = "*Agents brain is red*\nThe worker thread is dead, so nothing queued will run." + FOOT
+TEXTING_STALE = ("*SMS agent is stale*\nThe receiver answered but the worker has not run a pass in 41 minutes." + FOOT)
 ABORTED = (":rotating_light: FTM pipeline ABORTED at pre-flight (2026-11-15, commit):\n"
            "- the admin token has < 0.5h left - refresh before running.")
 PROSPECT_QUIET = ":white_check_mark: Prospecting pipeline: up to date (1235 prospecting records, 7525 phones tagged, 0 new)."
@@ -34,13 +43,23 @@ DIAL = ":telephone_receiver: Dial KPIs %s Fri Nov 13, 2026\n*Example Account*  %
 DIAL_FAIL = ":rotating_light: Dial-KPI run FAILED for an example account 2026-11-14: HTTP 400 on the records search"
 OTHER = "Caller ID check: all 24 numbers clean."
 OTHER_FAIL = ":rotating_light: Caller ID check: 2 numbers flagged as spam."
+# The digest when a paid subscription is ending (ftm_health.expiring, 2026-11-19): amber reads as the
+# tick, and the line is a person's to-do.
+ROD_ENDING = "Register of Deeds subscription ends in 10 days (Dec 11). Renew it at paxsub.knoxrod.org, on the Subscription tab."
+TNPN_ENDING = ("tnpublicnotice subscription ends in 10 days (Dec 11). Renew it on tnpublicnotice.com "
+               "(My Smart Search, then Renew).")
+AMBER_ENDING = (":white_check_mark: *FTM Dec 1* %s 3 new records\n\nForeclosure 2 %s Probate 1 %s Condemned 0\n%s\n%s"
+                % (DOT, DOT, DOT, ROD_ENDING, TNPN_ENDING))
+RED_ENDING = (":rotating_light: *FTM Dec 9* %s 0 new records\n\nForeclosure 0 %s Probate 0 %s Condemned 0\n"
+              "Stage notices returned nothing. 0 notices scraped.\n%s\n%s"
+              % (DOT, DOT, DOT, ROD_ENDING.replace("in 10 days", "in 2 days"), TNPN_ENDING.replace("in 10 days", "in 2 days")))
 
 
 def run(check, tmp: Path) -> None:
     from . import relay, slack_app, store, voice
     keep = {k: getattr(config, k) for k in ("DATA_DIR", "DB_PATH", "SLACK_CHANNEL", "SLACK_PIPELINE_CHANNEL",
                                            "SLACK_ISSUES_CHANNEL", "SLACK_VOICE", "SLACK_BOT_TOKEN", "RELAY_SECRET")}
-    saved = (slack_app.post, voice._today, relay.handle)
+    saved = (slack_app.post, voice._today, relay.handle, relay.today_texts, slack_app._http)
     config.DATA_DIR = Path(tmp) / "relay"
     config.DB_PATH = config.DATA_DIR / "agents.db"
     store.init()
@@ -52,10 +71,12 @@ def run(check, tmp: Path) -> None:
     slack_app.post = fake_post
     config.SLACK_CHANNEL, config.SLACK_PIPELINE_CHANNEL, config.SLACK_ISSUES_CHANNEL = "CHOME", "CPIPE", "CISSUE"
     config.SLACK_VOICE, config.SLACK_BOT_TOKEN = "plain", "xoxb-test"
+    channel_today: list = []
+    relay.today_texts = lambda channel: list(channel_today)      # what the issues channel holds today
     try:
-        _checks(check, sent)
+        _checks(check, sent, channel_today, saved[3])
     finally:
-        slack_app.post, voice._today, relay.handle = saved
+        slack_app.post, voice._today, relay.handle, relay.today_texts, slack_app._http = saved
         for k, v in keep.items():
             setattr(config, k, v)
 
@@ -64,7 +85,7 @@ def _kinds(posts) -> list:
     return [p["kind"] for p in posts]
 
 
-def _checks(check, sent: list) -> None:
+def _checks(check, sent: list, channel_today: list, saved_today_texts) -> None:
     from . import relay, voice
     print("  what each message is")
     check([relay.classify(t) for t in (GREEN_DIGEST, RED_RUN, WATCHDOG, ABORTED, PROSPECT_QUIET, DIAL, DIAL_FAIL, OTHER)]
@@ -93,6 +114,34 @@ def _checks(check, sent: list) -> None:
     check(_kinds(relay.route(OTHER)) == ["chat"] and _kinds(relay.route(OTHER_FAIL)) == ["issues"],
           "anything else goes to the team channel, unless it says something broke")
 
+    print("  a paid subscription that is ending")
+    amber = relay.route(AMBER_ENDING)
+    check(relay.classify(AMBER_ENDING) == "ftm_digest" and _kinds(amber) == ["pipeline"]
+          and ROD_ENDING in amber[0]["text"] and TNPN_ENDING in amber[0]["text"],
+          "a digest that says a subscription is ending goes to the pipeline with that line, and nothing goes to issues")
+    red_e = relay.route(RED_ENDING)
+    check(_kinds(red_e) == ["pipeline", "issues"] and "returned nothing" in red_e[1]["text"]
+          and "subscription" not in red_e[1]["text"] and "Renew" not in red_e[1]["text"],
+          "on a red day issues hears only what broke: an ending subscription is a to-do, not breakage")
+    ended = AMBER_ENDING.replace("ends in 10 days (Dec 11)", "has ended")
+    check(_kinds(relay.route(ended)) == ["pipeline"] and relay.EXPIRY_RX.search("Register of Deeds subscription has ended."),
+          "a subscription that has ended is never by itself an issue (the stage that fails for it is)")
+    check(not relay.EXPIRY_RX.search("Stage liens FAILED: REGISTER OF DEEDS SUBSCRIPTION EXPIRED. Renew it."),
+          "a red reason that names a lapse is still breakage, not an ending-subscription line")
+    sec = relay.to_board(RED_ENDING)
+    check(sec and sec["head"].startswith("FTM Dec 9") and len(sec["lines"]) == 4
+          and sec["lines"][1].startswith("Stage notices returned nothing")
+          and sec["lines"][2].startswith("Register of Deeds subscription ends in 2 days")
+          and sec["lines"][3].startswith("tnpublicnotice subscription ends in 2 days"),
+          "the board section holds the counts, the reason and both ending subscriptions")
+    crowded = relay.to_board(RED_ENDING.replace("0 notices scraped.", "0 notices scraped.\nA fifth line.\nA sixth line."))
+    check(crowded and len(crowded["lines"]) == 4 and crowded["lines"][-2:] == [r for r in relay._lines(
+              relay._plain(RED_ENDING)) if relay.EXPIRY_RX.search(r)],
+          "a section with more lines than fit drops other lines first: an ending subscription is never the one cut")
+    check(relay.to_board(OTHER) is None and relay.to_board(DIAL)["lines"] == relay._lines(relay._plain(DIAL))[1:5]
+          and relay.to_board(PROSPECT_NEW)["lines"] == relay._lines(relay._plain(PROSPECT_NEW))[1:5],
+          "every other report's section is what it was")
+
     print("  one first-to-market problem a day")
     day = ["2026-11-16"]
     voice._today = lambda: day[0]
@@ -114,6 +163,115 @@ def _checks(check, sent: list) -> None:
     relay.deliver(OTHER_FAIL, "workstation")
     check([s[0] for s in sent] == ["CISSUE"], "any other problem is said once a day")
     check(all(":rotating_light:" not in s[1] and "*" not in s[1] for s in sent), "relayed posts carry no emoji codes or bold marks")
+
+    print("  the watchdogs, on time from the fixer's box and late from GitHub")
+    check([relay.classify(t) for t in (FTM_GONE, BRAIN_GONE, BRAIN_RED, TEXTING_STALE)]
+          == ["ftm_watchdog", "agents_watchdog", "agents_watchdog", "sms_watchdog"],
+          "every watchdog is recognised by its head at every status, unreachable included")
+    gone = relay.route(BRAIN_GONE)
+    check(_kinds(gone) == ["issues"] and gone[0]["group"] == "watchdog_agents" and gone[0]["voice"] == "plain"
+          and gone[0]["text"].startswith("Agents brain watchdog: the brain is unreachable.")
+          and "did not answer" in gone[0]["text"] and "fly status" not in gone[0]["text"],
+          "an unreachable brain goes to issues in its own words, starting with its marker (it went to the team channel)")
+    ftm_gone = relay.route(FTM_GONE)
+    check(_kinds(ftm_gone) == ["issues"] and ftm_gone[0]["group"] == "ftm"
+          and ftm_gone[0]["text"].startswith("First-to-market watchdog: the pull is unreachable."),
+          "an unreachable first-to-market box is a first-to-market problem, said once a day with the others")
+    texting = relay.route(TEXTING_STALE)
+    check(texting[0]["group"] == "watchdog_sms" and texting[0]["text"].startswith("Texting app watchdog: the app is stale."),
+          "a stale texting app goes to issues under its own marker")
+    day[0] = "2026-11-20"
+    sent.clear()
+    relay.deliver(BRAIN_GONE, "watchdog")           # the fixer's box, on time
+    relay.deliver(BRAIN_RED, "watchdog")            # GitHub, eight hours late, a different reason
+    check([s[0] for s in sent] == ["CISSUE"] and sent[0][1].startswith("Agents brain watchdog: the brain is unreachable."),
+          "one post per watchdog a day whoever sends it, unrewritten so it keeps its marker")
+    day[0] = "2026-11-21"
+    sent.clear()
+    channel_today[:] = ["Agents brain watchdog: the brain is unreachable. The brain's relay did not answer, so this "
+                        "came straight from the watchdog on the issue fixer's box."]
+    relay.deliver(BRAIN_RED, "watchdog")
+    check(sent == [] and relay.store.kv_get(relay._group_key("watchdog_agents")),
+          "a red the box posted straight to the channel (the relay was down) keeps GitHub's later one out, and is remembered")
+    channel_today.clear()
+    relay.deliver(TEXTING_STALE, "watchdog")
+    relay.deliver(TEXTING_STALE, "watchdog")
+    check([s[0] for s in sent] == ["CISSUE"], "another watchdog is its own post, once")
+    day[0] = "2026-11-22"
+    sent.clear()
+    relay.deliver(BRAIN_RED, "watchdog")
+    check([s[0] for s in sent] == ["CISSUE"], "the next business day the brain's watchdog is said again")
+
+    print("  reading today's posts in the channel")
+    from . import slack_app
+
+    class _Resp:
+        def __init__(self, data):
+            self.data = data
+
+        def json(self):
+            return self.data
+
+    pages = [{"ok": True, "messages": [{"ts": "3.0", "text": "Agents brain watchdog: the brain is red."},
+                                       {"ts": "2.5", "thread_ts": "1.0", "text": "Texting app watchdog: a reply sent to the channel too"}],
+              "response_metadata": {"next_cursor": "more"}},
+             {"ok": True, "messages": [{"ts": "1.0", "text": "Lead check: 2 leads"}]}]
+    asked: list = []
+
+    class _Http:
+        def get(self, url, timeout=0, params=None, headers=None):
+            asked.append(dict(params or {}))
+            return _Resp(pages[(len(asked) - 1) % len(pages)])
+
+    keep_texts, keep_http = relay.today_texts, slack_app._http
+    relay.today_texts = saved_today_texts
+    slack_app._http = _Http()
+    try:
+        texts = relay.today_texts("CISSUE")
+        check(texts == ["Agents brain watchdog: the brain is red.", "Lead check: 2 leads"] and asked[1].get("cursor") == "more"
+              and float(asked[0]["oldest"]) > 0,
+              "today's posts are read from midnight, every page, without the replies a thread also sent to the channel")
+        check(relay.said_today("CISSUE", "Agents brain watchdog:") and not relay.said_today("CISSUE", "Texting app watchdog:"),
+              "a marker is found only at the start of a post of its own")
+
+        class _Down:
+            def get(self, *a, **k):
+                raise OSError("no network")
+        slack_app._http = _Down()
+        check(relay.today_texts("CISSUE") == [], "a channel that cannot be read holds nothing: the alarm goes out")
+    finally:
+        relay.today_texts, slack_app._http = keep_texts, keep_http
+
+    print("  what the team can read back")
+    # 2026-11-18: nothing was kept, so Atlas could not see a clean morning run and said it never ran.
+    from datetime import date
+    from . import query
+    day[0] = "2026-11-18"
+    for t, src in ((GREEN_RUN, "ftm"), (GREEN_DIGEST, "ftm"), (DRY_RUN, "ftm"), (DIAL, "workstation"), (OTHER, "workstation")):
+        relay.handle(t, src)
+    kept = relay.ftm_reports("2026-11-18")
+    check([k["what"] for k in kept] == ["ftm_run", "ftm_digest", "ftm_run"] and [k["dry"] for k in kept] == [False, False, True],
+          "the first-to-market run report, its digest and a dry run are kept; the dial KPIs and anything else are not")
+    check(all("*" not in k["text"] and ":white_check_mark:" not in k["text"] and "1016.3" not in k["text"] for k in kept)
+          and "13 records, 13 into DataSift" in kept[0]["text"],
+          "a kept report is the box's own words without emoji codes, bold marks or timings")
+    said = relay.ftm_summary("2026-11-18")
+    check("13 records, 13 into DataSift" in said and "18 new records" in said and "DRY" not in said,
+          "the summary an employee reads carries the run report and the digest, and leaves the dry run out")
+    later = relay.ftm_summary("2026-11-19")
+    check("No report" in later and "2026-11-18" in later, "a morning with no report yet says so, and when the box last reported")
+    keep_today = query._today
+    query._today = lambda: date(2026, 11, 18)
+    try:
+        ans = query.team_query({"about": "ftm"})
+    finally:
+        query._today = keep_today
+    check(ans["reported_today"] and len(ans["reports"]) == 3 and ans["reports"][2]["dry_run"]
+          and any("records_query" in x for x in ans["limits"]) and any("nobody runs it by hand" in x for x in ans["limits"]),
+          "team_query about=ftm returns the day's reports, flags the dry run, and says why a created-today count is smaller")
+    for _ in range(20):
+        relay.remember(GREEN_RUN, "ftm")
+    check(len(relay.ftm_reports()) == relay.FTM_KEEP, "only the last %d reports are kept" % relay.FTM_KEEP)
 
     print("  safety")
     config.SLACK_BOT_TOKEN = ""

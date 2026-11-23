@@ -1,4 +1,5 @@
-"""The cold email program's daily jobs, run by Windows scheduled tasks until the agents brain owns them.
+"""The cold email program's daily jobs. The agents brain runs them as stages (agents/autopilot/coldemail.py);
+the command line below is the same code, for a run by hand.
 
     python src/cold_email/daily.py topup [--commit]   # nightly: keep about 3 sending days of leads queued
     python src/cold_email/daily.py health [--post]    # weekday mornings: post to the issues channel only if wrong
@@ -10,11 +11,17 @@ ZeroBounce on, every guard) and loads it. It never loads an owner twice (ledger.
 health checks what the course says to watch every morning: every inbox connected and warming, warmup
 health in the 90s, bounces under 2%, the campaign running, leads left to send, and that the reply
 watcher ran in the last half hour. A healthy morning posts nothing.
+
+The work and the posting are apart: topup_run, health_run and stats_text return what they found, and
+the brain's stages turn that into their own posts (the board, #issues). topup, health and stats below
+post to Slack themselves, as the scheduled tasks on the PC did. A --commit or --post run happens only on
+the install home.json names (coldstate.py).
 """
 from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 import time
@@ -27,6 +34,7 @@ import requests
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
+import coldstate  # noqa: E402
 from instantly import ROOT, Instantly  # noqa: E402
 from setup_accounts import env  # noqa: E402
 
@@ -35,12 +43,20 @@ CAMPAIGN = "Agency queue email 1"
 PRESET = "Agency - 01 Queue"
 DAYS_QUEUED = 3
 MIN_BATCH = 100
-REPLIES_LOG = ROOT / "output" / "cold_email" / "replies.jsonl"
-TASK_LOG = ROOT / "output" / "cold_email" / "replies_task.log"
-STATE = ROOT / "output" / "cold_email" / "daily_state.json"
+BUILD_TIMEOUT_S = 3 * 3600
+LOAD_TIMEOUT_S = 1800
+STATE_DIR = coldstate.state_dir()
+REPLIES_LOG = STATE_DIR / "replies.jsonl"
+# The Windows task wrote the reply watcher's output here; a pass now writes its own heartbeat
+# (coldstate.HEARTBEAT_FILE), and this file is only read when no heartbeat exists yet.
+TASK_LOG = STATE_DIR / "replies_task.log"
+STATE = STATE_DIR / "daily_state.json"
 # A pause on purpose ({"until": "YYYY-MM-DD", "why": ..., "since": ...}): health stays quiet until the date,
 # then says the campaign is still paused. campaign.py launch removes it.
-HOLD = ROOT / "output" / "cold_email" / "hold.json"
+HOLD = STATE_DIR / "hold.json"
+# How long the reply watcher may go quiet in business hours before health says so (it runs every 5).
+WATCHER_LATE_MIN = 30
+_EMAIL_RX = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 
 
 def slack(kind: str, text: str) -> bool:
@@ -58,10 +74,10 @@ def slack(kind: str, text: str) -> bool:
     return ok
 
 
-def campaign(api: Instantly) -> dict:
-    c = next((c for c in api.campaigns() if c.get("name") == CAMPAIGN), None)
+def campaign(api: Instantly, name: str = CAMPAIGN) -> dict:
+    c = next((c for c in api.campaigns() if c.get("name") == name), None)
     if not c:
-        raise SystemExit(f"no campaign named {CAMPAIGN!r}")
+        raise SystemExit(f"no campaign named {name!r}")
     return c
 
 
@@ -80,49 +96,137 @@ def analytics(api: Instantly, cid: str, days: int | None = None) -> dict:
     return row
 
 
-def topup(commit: bool) -> int:
+def _tail(run, n: int = 300) -> str:
+    """The end of a child's output for a person to read, with every email address taken out (a build's
+    error can quote a homeowner's address, and this goes to Slack)."""
+    t = ((getattr(run, "stderr", "") or "") or (getattr(run, "stdout", "") or ""))[-n:].strip()
+    return _EMAIL_RX.sub("<email>", t)
+
+
+def _ledger_size() -> int:
+    try:
+        return len((json.loads((coldstate.state_dir() / "ledger.json").read_text(encoding="utf-8")) or {}).get("owners") or {})
+    except (OSError, ValueError, AttributeError):
+        return 0
+
+
+def topup_run(commit: bool, *, name: str = CAMPAIGN, preset: str = PRESET, days_queued: int = DAYS_QUEUED,
+              min_batch: int = MIN_BATCH, build_timeout_s: int = BUILD_TIMEOUT_S) -> dict:
+    """The nightly top-up, and what happened, posting nothing:
+        action    enough | low_credits | would_build | built | build_failed | load_failed | busy
+        left      leads loaded and not yet emailed;  daily  the campaign's daily limit
+        want      leads wanted tonight (days_queued x daily - left)
+        credits   ZeroBounce credits before the build (0 when not read)
+        loaded    owners added to the ledger tonight
+        problems  sentences for a person (the command line prefixes "Cold email: " and posts them)
+        code      the command line's exit code
+    A committed top-up holds the `topup` lock: a second one on the same machine skips."""
+    out = {"action": "", "left": 0, "daily": 0, "want": 0, "credits": 0, "loaded": 0, "problems": [], "code": 0,
+           "slug": ""}
+    lock = None
+    if commit:
+        lock = coldstate.RunLock("topup", coldstate.state_dir())
+        if not lock.acquire():
+            out["action"] = "busy"
+            return out
+    try:
+        return _topup(commit, out, name, preset, days_queued, min_batch, build_timeout_s)
+    finally:
+        if lock is not None:
+            lock.release()
+
+
+def _topup(commit: bool, out: dict, name: str, preset: str, days_queued: int, min_batch: int,
+           build_timeout_s: int) -> dict:
     api = Instantly()
-    c = campaign(api)
+    c = campaign(api, name)
     a = analytics(api, c["id"])
     daily = int(c.get("daily_limit") or 250)
     left = int(a.get("leads_count") or 0) - int(a.get("contacted_count") or 0)
-    want = DAYS_QUEUED * daily - left
+    want = days_queued * daily - left
+    out.update(left=left, daily=daily, want=max(0, want))
     print(f"{left} leads not yet emailed, {daily} a day; {max(0, want)} wanted")
-    if want < MIN_BATCH:
+    if want < min_batch:
         print("enough queued; nothing to do")
-        return 0
+        out["action"] = "enough"
+        return out
     from zerobounce import ZeroBounce
     credits = ZeroBounce().credits()
+    out["credits"] = credits
     if credits < want * 2:
-        slack("issues", f"Cold email: ZeroBounce is down to {credits:,} credits, about {want * 2:,} are needed tonight. "
-                        "The list was not topped up.")
-        return 2
+        out.update(action="low_credits", code=2)
+        out["problems"].append(f"ZeroBounce is down to {credits:,} credits, about {want * 2:,} are needed tonight. "
+                               "The list was not topped up.")
+        return out
     if not commit:
-        print(f"dry run: would build about {want} leads from {PRESET!r} and load them")
-        return 0
+        print(f"dry run: would build about {want} leads from {preset!r} and load them")
+        out["action"] = "would_build"
+        return out
     # Its own folder name per night: on 11-16 the top-up reused the first list's folder (same date),
     # found that list finished and loaded 0 new leads. A re-run the same night still resumes.
     slug = "agency_queue_topup_" + datetime.now(ET).strftime("%Y%m%d")
+    out["slug"] = slug
     py = sys.executable
-    run = subprocess.run([py, "-u", str(HERE / "build_list.py"), "--preset", PRESET, "--target", str(want), "--verify",
-                          "--slug", slug], cwd=str(ROOT), capture_output=True, text=True, timeout=3 * 3600)
-    print(run.stdout[-3000:])
-    leads = ROOT / "output" / "cold_email" / "lists" / slug / "leads.json"
+    try:
+        run = subprocess.run([py, "-u", str(HERE / "build_list.py"), "--preset", preset, "--target", str(want), "--verify",
+                              "--slug", slug], cwd=str(ROOT), capture_output=True, text=True, timeout=build_timeout_s)
+    except subprocess.TimeoutExpired:
+        out.update(action="build_failed", code=2)
+        out["problems"].append("tonight's list build ran past %d minutes and was stopped, so no new leads were added. "
+                               "The next top-up picks up where it left off." % (build_timeout_s // 60))
+        return out
+    print((run.stdout or "")[-3000:])
+    leads = coldstate.state_dir() / "lists" / slug / "leads.json"
     if run.returncode not in (0,) or not leads.exists():
-        slack("issues", "Cold email: tonight's list build failed, so no new leads were added. "
-                        f"It tries again tomorrow night. ({(run.stderr or run.stdout)[-300:].strip()})")
-        return 2
-    load = subprocess.run([py, "-u", str(HERE / "campaign.py"), "load", "--name", CAMPAIGN, "--leads", str(leads)],
-                          cwd=str(ROOT), capture_output=True, text=True, timeout=1800)
-    print(load.stdout[-2000:])
+        out.update(action="build_failed", code=2)
+        out["problems"].append(f"tonight's list build failed, so no new leads were added. It tries again tomorrow night. "
+                               f"({_tail(run)})")
+        return out
+    before = _ledger_size()
+    try:
+        load = subprocess.run([py, "-u", str(HERE / "campaign.py"), "load", "--name", name, "--leads", str(leads)],
+                              cwd=str(ROOT), capture_output=True, text=True, timeout=LOAD_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        out.update(action="load_failed", code=2)
+        out["problems"].append("the new leads were built but did not load into Instantly in %d minutes. "
+                               "The next top-up loads them." % (LOAD_TIMEOUT_S // 60))
+        return out
+    print((load.stdout or "")[-2000:])
+    out["loaded"] = max(0, _ledger_size() - before)
     if load.returncode != 0:
-        slack("issues", "Cold email: the new leads were built but did not load into Instantly. "
-                        f"({(load.stderr or load.stdout)[-300:].strip()})")
-        return 2
-    return 0
+        out.update(action="load_failed", code=2)
+        out["problems"].append(f"the new leads were built but did not load into Instantly. ({_tail(load)})")
+        return out
+    out["action"] = "built"
+    return out
 
 
-def health(post: bool) -> list[str]:
+def topup(commit: bool) -> int:
+    r = topup_run(commit)
+    for p in r["problems"]:
+        slack("issues", "Cold email: " + p)
+    return r["code"]
+
+
+def _watcher_age_min() -> float | None:
+    """Minutes since the reply watcher's last committed pass: its heartbeat, else (a workstation that
+    has not run the new code yet) the Windows task's log. None when neither exists."""
+    hb = coldstate.heartbeat(STATE_DIR)
+    if hb.get("at"):
+        try:
+            t = datetime.fromisoformat(str(hb["at"]).replace("Z", "+00:00"))
+            if t.tzinfo is None:
+                t = t.replace(tzinfo=timezone.utc)
+            return (datetime.now(timezone.utc) - t).total_seconds() / 60
+        except ValueError:
+            pass
+    if TASK_LOG.exists():
+        return (time.time() - TASK_LOG.stat().st_mtime) / 60
+    return None
+
+
+def health_run(name: str = CAMPAIGN) -> list[str]:
+    """What is wrong this morning, as sentences (an empty list on a healthy morning). Posts nothing."""
     api = Instantly()
     problems = []
     accs = api.accounts()
@@ -140,7 +244,7 @@ def health(post: bool) -> list[str]:
             problems.append(f"warmup health is under 90 on {len(low)} inboxes")
     except Exception as exc:
         problems.append(f"could not read warmup health ({str(exc)[:80]})")
-    c = campaign(api)
+    c = campaign(api, name)
     if c.get("status") != 1:
         hold = json.loads(HOLD.read_text(encoding="utf-8-sig")) if HOLD.exists() else {}   # -sig: a PowerShell-written file
         today = datetime.now(ET).strftime("%Y-%m-%d")
@@ -160,27 +264,32 @@ def health(post: bool) -> list[str]:
     if left <= 0:
         problems.append("no leads left to email; the nightly top-up did not add any")
     now = datetime.now(ET)
-    if TASK_LOG.exists():
-        age = (time.time() - TASK_LOG.stat().st_mtime) / 60
-        if now.weekday() < 5 and 8 <= now.hour < 20 and age > 30:
-            problems.append(f"the reply watcher last ran {age:.0f} minutes ago (it runs every 5; is this PC on?)")
-    else:
+    age = _watcher_age_min()
+    if age is None:
         problems.append("the reply watcher has never run")
+    elif now.weekday() < 5 and 8 <= now.hour < 20 and age > WATCHER_LATE_MIN:
+        problems.append(f"the reply watcher last ran {age:.0f} minutes ago (it runs every 5 minutes)")
     print("\n".join(problems) or "all healthy")
+    return problems
+
+
+def health(post: bool) -> list[str]:
+    problems = health_run()
     if post and problems:
-        day = now.strftime("%Y-%m-%d")
+        day = datetime.now(ET).strftime("%Y-%m-%d")
         st = json.loads(STATE.read_text(encoding="utf-8")) if STATE.exists() else {}
         key = "|".join(sorted(p.split(" (")[0] for p in problems))
         if st.get("health_posted", {}).get(day) != key:
             slack("issues", "Cold email needs a look:\n" + "\n".join(f"- {p}" for p in problems))
             st.setdefault("health_posted", {})[day] = key
-            STATE.write_text(json.dumps(st, indent=1), encoding="utf-8")
+            coldstate.write_json(STATE, st)
     return problems
 
 
-def stats(post: bool) -> str:
+def stats_text(name: str = CAMPAIGN) -> str:
+    """Last week's numbers, two lines: the sends and the replies, then what the replies said and what is left."""
     api = Instantly()
-    c = campaign(api)
+    c = campaign(api, name)
     w = analytics(api, c["id"], days=7)
     a = analytics(api, c["id"])
     since = datetime.now(timezone.utc) - timedelta(days=7)
@@ -189,10 +298,10 @@ def stats(post: bool) -> str:
         for line in REPLIES_LOG.read_text(encoding="utf-8").splitlines():
             try:
                 r = json.loads(line)
-            except ValueError:
+                if datetime.fromisoformat(r["at"]) >= since:
+                    kinds[r["kind"]] += 1
+            except (ValueError, KeyError, TypeError):
                 continue
-            if datetime.fromisoformat(r["at"]) >= since:
-                kinds[r["kind"]] += 1
     sent = int(w.get("emails_sent_count") or 0)
     replies = sum(kinds.values())
     left = int(a.get("leads_count") or 0) - int(a.get("contacted_count") or 0)
@@ -204,6 +313,11 @@ def stats(post: bool) -> str:
             f"{kinds['needs_reply'] + kinds['sensitive']} needed an answer. {left:,} leads queued, "
             f"{ZeroBounce().credits():,} ZeroBounce credits left.")
     print(text)
+    return text
+
+
+def stats(post: bool) -> str:
+    text = stats_text()
     if post:
         slack("pipeline", text)
     return text
@@ -215,6 +329,8 @@ def main() -> int:
     ap.add_argument("--commit", action="store_true", help="topup: build and load for real")
     ap.add_argument("--post", action="store_true", help="health/stats: post to Slack")
     a = ap.parse_args()
+    if a.commit or a.post:
+        coldstate.require("cold email %s" % a.job, STATE_DIR)
     try:
         if a.job == "topup":
             return topup(a.commit)

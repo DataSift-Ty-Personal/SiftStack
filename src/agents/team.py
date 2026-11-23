@@ -26,7 +26,9 @@ import yaml
 from . import config
 
 SPEND = ("free", "paid", "records", "outreach")
-STATUS = ("live", "planned")
+# live: the team runs it. planned: not wired yet, a person runs it. box: runs on its own every day on
+# another machine (the first-to-market box), so the team neither starts it nor calls it "by hand".
+STATUS = ("live", "planned", "box")
 TRIGGER_KINDS = ("slack", "datasift", "schedule", "chain")
 EXTRA_BUILTINS = {"WebSearch", "WebFetch"}      # the only built-ins an employee may be granted
 SHARED_TOOLS = {"record_lookup"}
@@ -56,6 +58,14 @@ class Workflow:
     @property
     def live(self) -> bool:
         return self.status == "live"
+
+    @property
+    def on_box(self) -> bool:
+        return self.status == "box"
+
+    @property
+    def status_word(self) -> str:
+        return "live" if self.live else ("own box, daily" if self.on_box else "by hand today")
 
     def trigger_values(self, kind: str) -> list[str]:
         return [t.split(":", 1)[1].strip() for t in self.triggers if t.split(":", 1)[0] == kind and ":" in t]
@@ -149,7 +159,7 @@ def parse(data: dict, skills_dir: Path | None = None) -> Roster:
         if not isinstance(e, dict):
             problems.append("employee %s is not a mapping" % eid)
             continue
-        missing = [k for k in ("display_name", "role", "slack_channel", "model", "job", "introduction") if not e.get(k)]
+        missing = [k for k in ("display_name", "role", "slack_channel", "job", "introduction") if not e.get(k)]
         if missing:
             problems.append("employee %s is missing %s" % (eid, ", ".join(missing)))
         extra = sorted(set(_list(e.get("builtins"))) - EXTRA_BUILTINS)
@@ -313,7 +323,7 @@ def render_coverage_md(roster: Roster, agents: dict) -> str:
               "|---|---|---|"]
         for w in roster.owned(e.id):
             names = ", ".join("%s (%s)" % (agents[a]["name"], a) if a in agents else a for a in w.covers)
-            status = ("autopilot stage" if w.autopilot else "live") if w.live else "by hand today"
+            status = ("autopilot stage" if w.autopilot else "live") if w.live else w.status_word
             L.append("| %s | %s | %s |" % (w.name, status, names or "none: not on the org chart yet"))
         L.append("")
     L += ["## Not workflows", "", "| Agent | Why |", "|---|---|"]
@@ -432,8 +442,7 @@ def render_team_md(roster: Roster) -> str:
         L += ["### %s (%s)" % (e.display_name, e.role), "", "| Workflow | What it does | Runs on | Spend | Status |",
               "|---|---|---|---|---|"]
         for w in roster.owned(e.id):
-            status = "live" if w.live else "by hand today"
-            L.append("| %s | %s | %s | %s | %s |" % (w.name, w.summary, w.runs_on(), SPEND_LABEL[w.spend], status))
+            L.append("| %s | %s | %s | %s | %s |" % (w.name, w.summary, w.runs_on(), SPEND_LABEL[w.spend], w.status_word))
         L.append("")
     shared = ", ".join(list(roster.shared_tools) + ["spend_report"])
     L += ["Every employee can also use: %s, and four read-only query tools: records_query (counts and rows across "
@@ -442,7 +451,15 @@ def render_team_md(roster: Roster) -> str:
           "found, staged and spent)." % shared,
           "When the operator asks a question about the account or the team (how many, which, who did what, what it "
           "cost), answer it with those tools and say what each count includes. Never say you cannot look it up "
-          "without trying them first.", "",
+          "without trying them first.",
+          "A records_query count of records created on a day counts only records that were new to the account. A "
+          "notice or upload that landed on a record already there (most first-to-market foreclosures do) is not in "
+          "it. For what first-to-market brought in, read team_query about=ftm: the box's own run report and digest.",
+          "A DataSift record opens at https://app.reisift.io/records/properties/<record uuid> (checked against the "
+          "app's own routes; https://app.reisift.io/records/<uuid> opens the wrong page). record_lookup and "
+          "records_query give every record its link: whenever you name a record for the operator, give its link.",
+          "A stage's Slack report shows six lines at most. team_query about=stage with the stage's id gives every line "
+          "of its last run: use it when the operator asks about the rest of a list.", "",
           "## Handoffs", "",
           "1. Never pretend to own a workflow you do not. Hand it to the owner with the handoff tool.",
           "2. A handoff says what you already know and exactly what you need back, so the owner never"
@@ -455,28 +472,51 @@ def render_team_md(roster: Roster) -> str:
           " The operator's reply in the same thread wakes you up where you left off.",
           "- Anything irreversible, or anything that spends the record allowance: ask first, with the number.",
           "- Never invent a critical fact to avoid asking.", "",
+          "## Skills: work them the way Claude Code does", "",
+          "Your skills are in your workspace, whole: .claude/skills/<name>/ holds SKILL.md, its references, its"
+          " scripts and its data. When the operator asks for something a skill of yours covers, run THAT skill,"
+          " exactly as written, the way the operator would run it in Claude Code (Ty, 2026-11-17: the Slack"
+          " workflows mirror what someone would do in Claude Code). Not a summary of it, not a shortcut:",
+          "1. Load it with the Skill tool and follow its steps in order. Read every reference it says to read.",
+          "2. Gather its data with your tools: record_lookup, comps_data, records_query, the files on the thread."
+          " Where the skill names a source this box does not have (Zillow, MLS browsing, a web page), use what"
+          " you have, and say so in the skill's own sources section. Never invent a figure to fill a field.",
+          "3. Comps and rehab (real-estate-comping, rehab-estimator): hand the thinking step to skill_report,"
+          " which works the skill on the team's file-skill model, checks the answer and runs the skill's own"
+          " generator. If it answers ok=false, or for any other skill, build the JSON the skill describes"
+          " yourself and run the skill's own generator on it with run_python: pass"
+          " the script from .claude/skills/<skill>/scripts/ in files (it arrives as in/<script name>), write the"
+          " JSON from your code, then run it as the skill says, e.g. subprocess.run([sys.executable,"
+          " \"in/generate_excel_report.py\", \"out/<name>.xlsx\", \"data.json\"], check=True).",
+          "4. Publish the workbook with publish_sheet. If Google is not connected yet, share run_python's link.",
+          "5. Reply with the skill's own summary (its present-to-the-user step) cut down for Slack, and the link.", "",
           "## Money and outreach", "",
           "- free: run it. paid: run it inside the per-run and per-day caps; a step that would cross a cap"
           " is skipped and named. records: ask the operator first. outreach: stage it only; a human releases it.",
           "- In dry mode nothing is paid and nothing is written to DataSift. Say so when it matters.",
           "- A workflow marked 'by hand today' is not wired into the team yet. Say so plainly and offer what"
-          " you can do; never act as if it ran.", "",
+          " you can do; never act as if it ran.",
+          "- A workflow marked 'own box, daily' runs on its own every day on another machine (the first-to-market"
+          " box). Nobody runs it by hand and the team does not start it. Before you say what it did, read"
+          " team_query about=ftm, which holds that box's run report and digest; never say it did not run"
+          " without reading that.", "",
           "## Writing", "",
           "- Your final reply is posted to Slack exactly as you write it. Keep it to three short lines at"
-          " most: plain sentences, no headings, no tables, no bullet lists, no labels like 'Slack line:'.",
+          " most: plain sentences, no headings, no tables, no bullet lists, no labels like 'Slack line:'."
+          " A skill delivery is the one exception: its summary may run to twelve short lines, with the link.",
           "- Write the way Ty writes to his own team (his ask, 2026-11-15): the answer or the number first,"
           " plain everyday words, no greeting, no sign-off, no emoji, no hype. Lead with the bad number when"
           " something is off. Use 'I think' only for a judgment call. End with the next step when there is one.",
           "- The DataSift record is the system of record, so the detail goes there and the reply says where"
           " (in dry mode, say the detail was not written).",
-          "- A workflow that is not wired cannot be run by hand by you either. Say who can run it, not that"
-          " you will.",
+          "- A workflow that is not wired cannot be run by hand by you either. Say who can run it (the operator,"
+          " unless the roster names someone else), not that you will. Never invent a person, a team or a process.",
           "- Never use em dashes or en dashes. Use commas, periods, colons or parentheses; number ranges"
           " use a plain hyphen.",
           "- Keep private details (phone numbers, ages, family members) out of channels unless the operator"
           " needs them to act right now.",
-          "- You cannot run shell commands or edit files. Your tools do the work, and the skills in your"
-          " workspace describe methods for reference.", ""]
+          "- You cannot run shell commands or edit files. Your tools do the work, and run_python is your"
+          " terminal: a skill's scripts run there (see Skills above).", ""]
     return "\n".join(L)
 
 

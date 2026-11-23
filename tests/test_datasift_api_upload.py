@@ -112,7 +112,7 @@ def _attach(rec, body):
                 ("GET", "/api/internal/property/%s/" % uuid): rec})
     U.create_property(api, body)
     patches = [c[2] for c in api.calls if c[0] == "PATCH"]
-    notes = [c[2]["notes"] for c in api.calls if c[1].endswith("/add-notes/")]
+    notes = [c[2]["message"] for c in api.calls if c[0] == "POST" and c[1].endswith("/message/")]
     return patches, notes
 
 
@@ -279,3 +279,65 @@ if __name__ == "__main__":
         fn()
         print("ok ", fn.__name__)
     print("%d checks passed" % len(fns))
+
+
+# ── notes go on the message board (the add-notes route is gone since 2026-11-18) ──
+
+
+class Board:
+    """An account whose old add-notes route answers DataSift's HTML Not Found page (as since
+    2026-11-18) and whose message board keeps what was posted."""
+
+    def __init__(self, existing=False, board=(), refuse_notes=False):
+        self.calls, self.board, self.existing, self.refuse = [], list(board), existing, refuse_notes
+
+    def call(self, path, method="GET", body=None, headers=None):
+        self.calls.append((method, path, body))
+        if path.endswith("/add-notes/"):
+            raise U.ApiError(404, method, path, "<html>Not Found</html>")
+        if method == "POST" and path == U.CREATE_ROUTE:
+            if self.existing:
+                raise U.ApiError(400, "POST", path, DUP)
+            return {"uuid": "u-1"}
+        if "/message/" in path:
+            if method != "POST":
+                return {"results": [{"message": m} for m in self.board]}
+            if self.refuse:
+                raise U.ApiError(404, method, path, "<html>Not Found</html>")
+            self.board.append(body["message"])
+            return {"uuid": "m-%d" % len(self.board)}
+        return {}
+
+
+ROWS = [{"Property Street Address": "%d Sample Hollow Rd" % i, "Owner First Name": "Marlowe",
+         "Owner Last Name": "Quillfeather", "Notes": "Foreclosure | Auction: 12/18/2026 | row %d" % i}
+        for i in range(1, 4)]
+
+
+def _upload(monkeypatch, tmp_path, acct, rows=ROWS):
+    monkeypatch.setattr(U, "Api", lambda *a, **k: acct)
+    monkeypatch.setattr(U, "field_index", lambda api: {})
+    U._ROUTE_DECIDED["route"] = ""
+    return U.upload_rows(rows, commit=True, sleep=0, out_dir=str(tmp_path))
+
+
+def test_upload_notes_go_on_the_message_board(monkeypatch, tmp_path):
+    acct = Board()
+    res = _upload(monkeypatch, tmp_path, acct)
+    assert acct.board == [r["Notes"] for r in ROWS]
+    assert res["notes_tried"] == 3 and res["notes_failed"] == 0
+    assert not [c for c in acct.calls if c[1].endswith("/add-notes/")], "nothing goes to the retired route"
+
+
+def test_a_refused_note_is_counted_and_said_never_swallowed(monkeypatch, tmp_path):
+    # 2026-11-19: every note failed and the run read OK, because the error was swallowed.
+    res = _upload(monkeypatch, tmp_path, Board(refuse_notes=True))
+    assert res["created"] == 3 and res["notes_failed"] == 3
+    assert any("notes not posted on 3 of 3 records" in w for w in res["warnings"])
+
+
+def test_a_note_already_on_the_board_is_not_posted_again(monkeypatch, tmp_path):
+    # The county stage re-sends the same rows every morning.
+    acct = Board(existing=True, board=[ROWS[0]["Notes"]])
+    res = _upload(monkeypatch, tmp_path, acct, rows=ROWS[:1])
+    assert acct.board == [ROWS[0]["Notes"]] and res["notes_failed"] == 0

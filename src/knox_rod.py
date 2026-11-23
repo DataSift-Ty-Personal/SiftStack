@@ -77,8 +77,10 @@ DOC_TYPES = {"FTL": 4, "LEN": 5, "STL": 6, "REL": 13, "RFTL": 14, "RESL": 15,
 
 
 SUBSCRIPTION_WARN_DAYS = 14
-# What the last login saw: {"state": "active" | "expired" | "unknown", "days": int | None}.
-# Read by the daily lien stage so the days-left figure can ride in the run report.
+# What the last login saw: {"state": "active" | "expired" | "unknown", "days": int | None,
+# "read": "YYYY-MM-DD"}. Read by the daily lien stage so the days-left figure can ride in the run
+# report. "days" counts from "read": in the scheduler's one long process a later run that never
+# logged in still finds this, and the date keeps the count honest.
 SUBSCRIPTION: dict = {}
 
 # The doc-type tree as the last login read it off the live page: {label: API integer}.
@@ -216,7 +218,7 @@ async def capture_request() -> tuple[dict, dict]:
             " return e ? (e.value || e.innerText || '') : ''; }")
         state, days = subscription_state(timer)
         SUBSCRIPTION.clear()
-        SUBSCRIPTION.update(state=state, days=days)
+        SUBSCRIPTION.update(state=state, days=days, read=config.run_date())
         if state == "expired":
             await b.close()
             raise RodSubscriptionExpired(
@@ -289,10 +291,25 @@ async def capture_request() -> tuple[dict, dict]:
     return fields, headers
 
 
-def _post(fields: dict, headers: dict, timeout: int = 90) -> dict:
+POST_TRIES = 3          # a search is a read: a dropped connection is tried again
+POST_RETRY_WAIT = 10.0  # seconds before the second try, doubled before the third
+
+
+def _post(fields: dict, headers: dict, timeout: int = 90,
+          tries: int = POST_TRIES, wait: float = POST_RETRY_WAIT) -> dict:
     import requests
 
-    r = requests.post(SEARCH, data=fields, headers=headers, timeout=timeout)
+    # 2026-11-20: one "Connection reset by peer" on the RESL search failed the
+    # whole liens stage for the day. Only a dropped or timed-out connection is
+    # retried; an HTTP error status still raises at once.
+    for attempt in range(1, tries + 1):
+        try:
+            r = requests.post(SEARCH, data=fields, headers=headers, timeout=timeout)
+            break
+        except (requests.ConnectionError, requests.Timeout):
+            if attempt >= tries:
+                raise
+            time.sleep(wait * (2 ** (attempt - 1)))
     r.raise_for_status()
     payload = r.json()
     # Double encoded: the JSON body is itself a JSON string.

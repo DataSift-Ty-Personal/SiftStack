@@ -11,6 +11,14 @@ name: SMS agent heartbeat
 #
 # GitHub runs this on its own infrastructure, so it keeps checking even when
 # every part of ours is down.
+#
+# A LATE BACKUP since 2026-11-20. GitHub throttles a public repo's schedules (this
+# every-5-minute check ran about three times a day), so the same check now runs on
+# time, every 5 minutes, on the issue fixer's box (tools/issue_fixer/watch.py). It
+# posts ONLY through the brain's relay (the repo secret FTM_HEALTH_WEBHOOK is the
+# relay URL), which keeps one post per watchdog a day whoever sends it: the pair
+# never says the same red twice. (The SMS_AGENT_SLACK_WEBHOOK this read before was
+# never set on the public repo, so a down texting app never reached Slack from here.)
 
 on:
   schedule:
@@ -64,7 +72,7 @@ jobs:
       - name: Tell Slack when it is down
         if: steps.probe.outputs.status != 'ok'
         env:
-          SLACK_WEBHOOK: ${{ secrets.SMS_AGENT_SLACK_WEBHOOK }}
+          SLACK_WEBHOOK: ${{ secrets.FTM_HEALTH_WEBHOOK }}
         run: |
           if [ -z "$SLACK_WEBHOOK" ]; then
             echo "::error::SMS agent is ${{ steps.probe.outputs.status }} and no Slack webhook is configured."

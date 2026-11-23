@@ -180,7 +180,7 @@ BEREAVEMENT_NOW = [
     # the above, so the death never reached the record.
     r"\b(is|was|has\s+been)\s+dead\b",
     r"\b(mom|mother|dad|father|husband|wife|owner|grandma|grandmother|grandpa|grandfather|"
-    r"brother|sister|son|daughter|he|she)\s+(has\s+)?passed\b",
+    r"brother|sister|son|daughter|parents|he|she|they)\s+(has\s+|have\s+)?passed\b",
 ]
 
 SENSITIVE_OTHER = [
@@ -189,6 +189,23 @@ SENSITIVE_OTHER = [
 ]
 
 ESCALATE_NOW = HOSTILE_NOW + BEREAVEMENT_NOW + SENSITIVE_OTHER
+
+# Asking who WE are, in the words that read as legal to the model: "Who do you represent" went to
+# ESCALATE (0.72) on 2026-11-10 and was filed Mail Only with nobody told. It is a question, and the
+# agent has an answer for it.
+WHO_WE_ARE = [
+    r"\bwho\s+(?:do\s+you|are\s+you|y'?all)\s+(?:represent|repping|with|work(?:ing)?\s+(?:for|with))\b",
+    r"\bwhat\s+(?:company|business|firm|agency|outfit)\s+(?:is\s+this|are\s+you(?:\s+with)?|do\s+you\s+(?:represent|work\s+for))\b",
+]
+
+# A yes. "Yes - but my HOA has filed $248,119.21 in liens on my $200,000 condo." (2026-11-19) answered
+# our "would you consider an offer", and the model filed it ESCALATE (0.60) because the rules told it
+# to prefer ESCALATE over INTERESTED when torn. ESCALATE is filed quietly, so a yes filed there is a lost
+# seller; the problem attached to it is the reason to sell. The guard in classify() turns it back.
+YES_OPENER = re.compile(
+    r"^\s*(?:yes|yeah|yea|yep|yup|ya|sure|absolutely|definitely|possibly|maybe|perhaps|"
+    r"i\s+would|i\s+might|we\s+would|we\s+might|i'?d\s+(?:consider|think\s+about|be\s+open)|"
+    r"i'?m\s+open|we'?re\s+open|open\s+to\s+it)\b", re.I)
 
 INTENTS = (
     "OPT_OUT",
@@ -247,6 +264,9 @@ def classify_rules(text: str) -> Optional[Classification]:
     hit = _hit(t, WRONG_NUMBER)
     if hit:
         return Classification("WRONG_NUMBER", 0.95, "rules", f"wrong-number: {hit}")
+    hit = _hit(t, WHO_WE_ARE)
+    if hit:
+        return Classification("ASKING_WHO", 0.9, "rules", f"asks who we are: {hit}")
 
     # Decided here rather than by the model, because the model already got this
     # wrong once: an ownership confirmation sitting in front of a refusal read
@@ -267,16 +287,18 @@ Return exactly one intent:
 - INTERESTED: engages about selling, asks price/offer/process, asks to be called, says yes, or gives any opening.
 - NOT_INTERESTED: a soft no. Not selling, already listed, has an agent, "no thanks". This is NOT a legal opt-out.
 - WRONG_NUMBER: says they are not the owner, do not own the property, or the number belongs to someone else.
-- ASKING_WHO: does not know who is texting or how you got their info, asks what property, or asks if this is a bot or a scam.
-- ESCALATE: mentions a lawyer, a death, bankruptcy, harassment, a regulator, or anything a human must handle personally.
+- ASKING_WHO: does not know who is texting or how you got their info, asks who you represent or what company this is, asks what property, or asks if this is a bot or a scam.
+- ESCALATE: mentions a lawyer, a death, bankruptcy, harassment, a regulator, or anything a human must handle personally, and is not a yes.
 - OTHER: anything that fits none of the above.
 
 Rules:
 - Judge only this message in the context of the thread. Do not infer motivation that is not there.
 - The first text asks whether an address belongs to them. So "yes", "it is", "correct", "that's mine" answer the OWNERSHIP question. Confirming ownership is not a signal about selling, and on its own it is OTHER, never INTERESTED.
+- But when OUR last text in the thread asked about selling, an offer or a price, a "yes" answers THAT question: it is INTERESTED.
+- A yes, or any opening to sell, that comes with a money problem (liens, an HOA, back taxes, payments behind, a foreclosure, repairs, a divorce, a bankruptcy) is INTERESTED, never ESCALATE. The problem is the reason they would sell, and an INTERESTED reply reaches a person at once.
 - When a reply confirms ownership AND says anything about keeping the house ("it is, and it's staying that way", "yes, but I'm not selling", "that's mine and I plan to keep it"), the second half is the answer. Label it NOT_INTERESTED. The confirmation only tells you the phone number is right.
 - INTERESTED needs a signal about SELLING: a price question, an opening, a request to be called, a reason they might move. Attachment to the house is the opposite of that signal.
-- If the message could plausibly be two intents, pick the more conservative one (ESCALATE over INTERESTED, ASKING_WHO over INTERESTED, NOT_INTERESTED over INTERESTED) and lower your confidence.
+- If the message could plausibly be two intents, pick the more conservative one (ASKING_WHO over INTERESTED, NOT_INTERESTED over INTERESTED) and lower your confidence. Never choose ESCALATE over INTERESTED for a yes: an ESCALATE reply is filed quietly, so a yes filed there is a lost seller.
 - confidence is your honest probability that a careful human would assign the same label. Do not inflate it.
 - Never label a message OPT_OUT. Opt-outs are decided before you see the message."""
 
@@ -352,6 +374,21 @@ def classify_rules_wrong_number(text: str) -> bool:
     return bool(_hit((text or "").strip().lower(), WRONG_NUMBER))
 
 
+def yes_is_a_yes(text: str, c: Classification) -> Classification:
+    """A reply that opens with a yes, filed ESCALATE by the MODEL, is a hand raise (2026-11-19, the
+    HOA liens condo): INTERESTED reaches a person at once, ESCALATE is filed quietly. Only the model's
+    reading is turned: the rules' ESCALATE (a lawyer, a reported death, a bankruptcy named outright) and
+    crisis language keep their own handling, and an opt-out never gets this far."""
+    if c.intent != "ESCALATE" or c.source != "llm" or not YES_OPENER.search(text or ""):
+        return c
+    low = (text or "").lower()
+    from . import engine as _engine        # late: engine imports this module
+    if _hit(low, HOSTILE_NOW) or _engine._is_crisis(low) or _engine._wants_no_contact(low):
+        return c
+    return Classification("INTERESTED", c.confidence, "llm",
+                          ("a yes with a problem attached, read as a hand raise: " + (c.rationale or ""))[:300])
+
+
 def classify(text: str, history: Optional[list[dict]] = None) -> Classification:
     """Rules first, model second. The rules pass is authoritative when it fires."""
     ruled = classify_rules(text)
@@ -360,7 +397,7 @@ def classify(text: str, history: Optional[list[dict]] = None) -> Classification:
 
     llm = classify_llm(text, history)
     if llm.source == "llm" and llm.confidence >= 0.5:
-        return llm
+        return yes_is_a_yes(text, llm)
 
     # Model unavailable or unsure. Fall back to the weak keyword buckets, which
     # only ever route to a human anyway.

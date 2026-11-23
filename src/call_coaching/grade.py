@@ -23,6 +23,12 @@ ANTHROPIC_API_KEY set.
 from __future__ import annotations
 
 import json
+import sys as _sys
+from pathlib import Path as _Path
+
+if str(_Path(__file__).resolve().parents[1]) not in _sys.path:   # src/, for model_registry
+    _sys.path.insert(0, str(_Path(__file__).resolve().parents[1]))
+import model_registry  # noqa: E402
 import os
 import re
 from pathlib import Path
@@ -34,9 +40,8 @@ PIPELINE_WORDS = {"cold_call": "cold call", "lead_management": "lead management 
 FALLBACK_BETA = "server-side-fallback-2026-07-01"
 # Dollars per million tokens: input, output, cache read, cache write (five-minute). Read 2026-11-13.
 # A model not listed is priced at the dearest rate, so a cap can only be met early, never overrun.
-PRICES = {"claude-opus-5-5": (4.0, 20.0, 0.20, 5.0), "claude-sonnet-5-5": (2.0, 10.0, 0.10, 2.5),
-          "claude-haiku-5-5": (0.10, 0.50, 0.01, 0.125), "claude-fable-5-2": (8.0, 40.0, 0.20, 10.0)}
-DEAREST = (10.0, 50.0, 1.0, 12.5)
+PRICES = model_registry.PRICES
+DEAREST = model_registry.DEAREST
 BANDS = ((90.0, "Elite"), (75.0, "Strong"), (60.0, "Developing"), (40.0, "Needs Work"), (0.0, "Retrain"))
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
 EM, EN = chr(0x2014), chr(0x2013)       # the two dashes the house rules ban from anything a person reads
@@ -272,7 +277,7 @@ def _client():
 
 
 def model_of() -> str:
-    return (os.environ.get("AGENTS_COACH_MODEL") or os.environ.get("AGENTS_MODEL") or "claude-opus-5-5").strip()
+    return model_registry.model("call_grading")
 
 
 def effort_of() -> str:
@@ -291,7 +296,9 @@ def grade(transcript: str, meta: dict, pipeline: str, *, client=None, model: str
     client = client or _client()
     kw = dict(model=model, max_tokens=32000, system=system_blocks(text_r),
               messages=[{"role": "user", "content": user_text(transcript, dict(meta, pipeline=pipeline))}],
-              output_config={"effort": effort}, betas=[FALLBACK_BETA], extra_body={"fallbacks": "default"})
+              output_config={"effort": effort})
+    if model_registry.server_fallback(model):   # Haiku 5.5 has no server-side refusal fallback
+        kw.update(betas=[FALLBACK_BETA], extra_body={"fallbacks": "default"})
     with client.beta.messages.stream(**kw) as s:
         msg = s.get_final_message()
     out = {"usd": round(usage_usd(getattr(msg, "usage", None), model), 4), "model": model, "report": "",

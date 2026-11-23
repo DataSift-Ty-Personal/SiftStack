@@ -456,6 +456,13 @@ def _checks(check, base: Path) -> None:
     check(len(sit) == 1 and "who is not on the callers list: 5, 3 of them past their date" in sit[0]
           and "Lead Intake 4" in sit[0] and "by hand 1" in sit[0] and "Point the sequences" in sit[0],
           "open tasks on someone who is not a caller are named, with what made them: %s" % sit[:1])
+    from collections import Counter as _C
+    only_old = accountchecks._makers(_C({accountchecks.UNSEEN: 3}))
+    mixed = accountchecks._makers(_C({"Lead Intake": 4, accountchecks.BY_HAND: 1, accountchecks.UNSEEN: 2}))
+    check(only_old == ("3 too old for the log to show who made them", False)
+          and mixed == ("made by Lead Intake 4, by hand 1; 2 too old for the log to show", True)
+          and "made by older" not in only_old[0] + mixed[0],
+          "tasks older than the log copy are a count of their own, never read as who made them: %r %r" % (only_old, mixed))
     check(not any("Casey" in p for p in out.problems), "a caller holding tasks on time is not named")
     check(any(p.startswith("Open tasks assigned to nobody: 1") for p in out.problems), "a task nobody holds is named")
     check(out.tally.get("open tasks given to a role") == 1 and out.tally.get("open tasks read") == 9,

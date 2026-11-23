@@ -201,6 +201,8 @@ def run(check, tmp: Path) -> None:
         _more_rules(check)
         _hook_checks(check)
         _textlane_checks(check)
+        _texted_before_checks(check)
+        _require_text_checks(check)
         _attempt_checks(check)
         _afternoon_lane_checks(check)
         _account_checks(check, Path(tmp) / "pipelines")
@@ -631,6 +633,65 @@ def _textlane_checks(check) -> None:
           "a card held on its day after its text went is not texted again")
     check(s.tally.get("in Research on the board: research has not named a decision maker with a number yet") == 1,
           "a card in Research is not texted")
+
+
+def _texted_before_checks(check) -> None:
+    from .autopilot import ftmpipeline as fp
+    from .autopilot import ledger, limits, policy
+    print("  a card whose owner Smarter Contact texted before")
+    _clean()
+    pol = policy.parse(playbook(), EMPLOYEES)
+    # Z1's one number and one of Z3's two were texted in Smarter Contact before; Z4's too, but the
+    # brain's own text 1 reached it in this round. Z2 is an ordinary card.
+    recs = [_rec("z1", "801 Before St", phones=[mob(6801)]), _rec("z2", "802 Before St", phones=[mob(6802)]),
+            _rec("z3", "803 Before St", phones=[mob(6803), mob(6804)]), _rec("z4", "804 Before St", phones=[mob(6805)])]
+    limits.note_sc_texted({"8655556801": ("o-z1", "z1"), "8655556803": ("o-z3", "z3"), "8655556805": ("o-z4", "z4")})
+    crm = BoardCrm(recs)
+    _sweep("p_board", crm, at(16, 8, 35), pol)
+    flags = {u: (ledger.fact(u, fp.FACT) or {}).get("sc_before") for u in ("z1", "z2", "z3", "z4")}
+    check(flags == {"z1": True, "z2": False, "z3": False, "z4": True},
+          "a card remembers when Smarter Contact texted every number its owner may get a text on: %s" % flags)
+    crm.log_rows += [call_ev("zb-%s" % u, "o-" + u, at(16, 10, 0), n) for u, n in
+                     (("z1", "8655556801"), ("z2", "8655556802"), ("z3", "8655556803"), ("z4", "8655556805"))]
+    _texted("z4", "o-z4", at(16, 10, 5), "8655556805")
+    s = _sweep("p_board", crm, at(17, 8, 35), pol)
+    where = {u: (ledger.fact(u, fp.FACT) or {}).get("column") for u in ("z1", "z2", "z3", "z4")}
+    check(where["z1"] == "Day 2",
+          "no opening text can be staged for an owner Smarter Contact texted on every number, so the day's call alone "
+          "moves the card instead of holding it for good")
+    check(where["z2"] == "Day 1" and where["z3"] == "Day 1" and "no text on Mon Nov 16 2" in s.head,
+          "an ordinary card, and one with a number text 1 can still go to, wait on the day's text as before: %s" % s.head)
+    check(where["z4"] == "Day 2", "a card whose text 1 went out moves on its call and its text, as before")
+    check(any(ln.startswith("1 card(s) count the day's text as done: Smarter Contact had texted every number") for ln in s.lines),
+          "the run says which cards moved on the call alone, and why: %s" % s.lines)
+    crm.log_rows += [call_ev("zc-%s" % u, "o-" + u, at(17, 10, 0), n) for u, n in (("z1", "8655556801"), ("z4", "8655556805"))]
+    s = _sweep("p_board", crm, at(18, 8, 35), pol)
+    where = {u: (ledger.fact(u, fp.FACT) or {}).get("column") for u in ("z1", "z4")}
+    check(where["z1"] == "Day 3", "the next day's call moves it again: texts 2 and 3 follow text 1, which never went")
+    check(where["z4"] == "Day 2" and "no text on Tue Nov 17" in s.head,
+          "an owner who got text 1 in this round still owes text 2: the memory of an old thread lifts nothing there")
+
+
+def _require_text_checks(check) -> None:
+    from .autopilot import ftmpipeline as fp
+    from .autopilot import policy
+    print("  require_text auto on a free box")
+    saved = (config.MODE, config.LIVE_STAGES)
+
+    def text_live(mode, live_stages=(), text_mode="live", **over) -> bool:
+        config.MODE, config.LIVE_STAGES = mode, frozenset(live_stages)
+        pol = policy.parse(playbook(text_mode=text_mode, **over), EMPLOYEES)
+        return fp.Run(_ctx(pol, "p_board", BoardCrm([]), at(16, 8, 35)), fp.options(pol.stage("p_board"))).text_live
+    try:
+        check(text_live("free", {"p_text"}) and not text_live("free") and not text_live("free", {"p_full"}),
+              "on a free box auto needs the text exactly when the text stage acts there: named in AGENTS_LIVE_STAGES, as "
+              "an outreach stage must be")
+        check(text_live("live") and not text_live("live", text_mode="plan") and not text_live("dry", {"p_text"}),
+              "on a live box auto needs it while the text stage is live, never while it is in plan, and on a dry box never")
+        check(text_live("free", require_text="always") and not text_live("live", {"p_text"}, require_text="never"),
+              "always and never are what they say, whatever the box")
+    finally:
+        config.MODE, config.LIVE_STAGES = saved
 
 
 def _attempt_checks(check) -> None:
@@ -1393,6 +1454,10 @@ TWINS = {"ftm_death_screen": "top1000_death_screen", "ftm_attempts": "top1000_at
          "ftm_mail": "top1000_mail", "ftm_registry_scrub": "top1000_registry_scrub", "ftm_texts": "top1000_texts",
          "ftm_followup_texts": "top1000_followup_texts", "ftm_refresh": "top1000_trace_refresh"}
 REPORT_ONLY = ("digest",)          # a report may count both pipelines' presets; it works no record
+# Second chances (2026-11-19) hands one of our callers a task to call a Correct number again. It reads no
+# preset and no lane's timeline (its clock is set by the list a record is on), and the same callers work
+# both in-house lanes, so it may take its Not Interested records from both: lanes: [ftm, top1000].
+BOTH_IN_HOUSE_LANES = ("secondchance",)
 
 
 def mixes(st) -> str:
@@ -1407,7 +1472,7 @@ def mixes(st) -> str:
     work = stages.stage_lanes(st)
     if top and county:
         return "reads both the Priority and the county presets"
-    if "ftm" in work and "top1000" in work:
+    if "ftm" in work and "top1000" in work and not (st.kind in BOTH_IN_HOUSE_LANES and not titles):
         return "works both the ftm and the top1000 lanes"
     if top and work != ["top1000"]:
         return "reads the Top 1,000 presets with the lanes %s" % work
@@ -1439,6 +1504,24 @@ def _playbook_checks(check) -> None:
     check(not clash, "no handed-over block takes the id of a different stage already in the playbook: %s" % (clash or "ok"))
     bad = {sid: mixes(st) for sid, st in pol.stages.items() if mixes(st)}
     check(not bad, "no stage mixes the two pipelines: %s" % (bad or "ok"))
+    # The line handed over for second chances (2026-11-19): the shipped playbook with it still loads and mixes
+    # nothing, while any other kind, and second chances reading presets, may still not work both lanes.
+    from .autopilot import stages
+    with_line = copy.deepcopy(merged)
+    if isinstance(with_line.get("second_chances"), dict):
+        with_line["second_chances"]["lanes"] = ["ftm", "top1000"]
+        both = policy.parse(dict(base, stages=with_line), EMPLOYEES)
+        mixed = {sid: mixes(s) for sid, s in both.stages.items() if mixes(s)}
+        check(stages.stage_lanes(both.stage("second_chances")) == ["ftm", "top1000"] and not mixed,
+              "the playbook with lanes: [ftm, top1000] on second chances loads and no stage mixes the pipelines: %s"
+              % (mixed or "ok"))
+
+    def two_lanes(kind, presets):
+        return policy.Stage(id="x", kind=kind, owner="ops", mode="plan", summary="", schedule=[], presets=list(presets),
+                            params={"lanes": ["ftm", "top1000"]})
+    check(mixes(two_lanes("assign", [])) and mixes(two_lanes("secondchance", ["Not Interested - FTM Foreclosure (30d)"]))
+          and not mixes(two_lanes("secondchance", [])),
+          "only second chances reading no preset may take both in-house lanes; every other stage still works one")
     check(all(sid in blocks and twin in blocks for sid, twin in TWINS.items()),
           "every stage that worked both lanes is handed over with its Top 1,000 twin")
     follows = sorted(sid for sid, st in pol.stages.items() if st.get("pipeline"))

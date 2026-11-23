@@ -14,14 +14,16 @@ What a person can paste, read the way the comp_package and post_walkthrough flag
     --beds/--baths/--sqft/--year-built flags do, an asking price ("asking 95k"), and anything else,
     which is carried into the result as context.
 
-Where the comps come from, cheapest first:
-  * SiftMap's deeds by distance (Ty's standing rule, deed comps first): free, capped per run and per
-    day, because Acceptable use forbids detail pulls in volume without adding the records;
-  * the Zillow sold pull (OpenWebNinja, the comp_package band pull): PAID, and the point of a comp
-    request, so it runs when the operator asked in Slack (an employee queued it on a Slack thread),
-    in dry mode too since nothing is written to DataSift, inside AGENTS_COMPS_DAILY_USD. A screen a
-    webhook or a stage started never pulls it. A pull for the same ZIP and window inside
-    AGENTS_ZILLOW_CACHE_DAYS is reused instead of bought again.
+Where the comps come from:
+  * SiftMap's deeds by distance or inside the drawn boundary (Ty's standing rule, deed comps first):
+    free, capped per run (AGENTS_COMPS_DEED_READS, 30) and per day (AGENTS_DEAL_READS_PER_DAY, 300),
+    because Acceptable use forbids detail pulls in volume without adding the records. A deed read once
+    is reused from the cache, so a pocket asked about twice costs its reads once;
+  * the Zillow sold pull (OpenWebNinja, the comp_package band pull): OFF unless AGENTS_ZILLOW_COMPS=1
+    (Ty, 2026-11-17: "we should not need the Zillow API calls"; SiftMap carries the investor sales and
+    closed sales). Switched on, it runs only when the operator asked in Slack, inside
+    AGENTS_COMPS_DAILY_USD, and a pull for the same ZIP and window inside AGENTS_ZILLOW_CACHE_DAYS is
+    reused instead of bought again.
 The value is post_walkthrough's own math (bucket refinement, dual track, tight ARV) on those comps,
 with the house held to the layout it has today: a screen never adds a bedroom (Ty, 1541 Example).
 
@@ -616,7 +618,7 @@ def free_comps(subj: dict, area: dict | None = None, *, cap: int | None = None) 
     day read caps. The search pages up to AGENTS_COMPS_SEARCH_ROWS rows; only deeds cost a read."""
     import comp_package
     months = int(setting("AGENTS_COMPS_MONTHS", 18))
-    want = int(setting("AGENTS_COMPS_DEED_READS", 15)) if cap is None else int(cap)
+    want = int(setting("AGENTS_COMPS_DEED_READS", 30)) if cap is None else int(cap)   # 15 while Zillow filled in
     left = deed_reads_left()
     cache = _load_cache()
     b = (area or {}).get("boundary")
@@ -670,8 +672,9 @@ def zillow_pull(task: dict, subj: dict, months: int, budget: Budget) -> dict:
            "asked": from_slack(task)}
     if not out["asked"]:
         return out
-    if not setting("AGENTS_ZILLOW_COMPS", True):
-        out["why"] = "the Zillow pull is switched off (AGENTS_ZILLOW_COMPS=0)"
+    if not setting("AGENTS_ZILLOW_COMPS", False):
+        # Off unless switched on (Ty, 2026-11-17: "we should not need the Zillow API calls"; SiftMap's
+        # deeds, investor sales and closed sales are the comps). Nothing to say in the reply.
         return out
     if not subj.get("zip"):
         out["why"] = "the record has no ZIP, so there is no Zillow area to pull"
@@ -931,7 +934,8 @@ def write_note(uuid: str, text: str) -> str:
         return "nothing written to the record (AGENTS_QUICK_SCREEN_NOTE is off)"
     try:
         crm().message(uuid, text)
-        back = str((crm().record(uuid) or {}).get("notes") or "")
+        from ..autopilot.crm import record_said
+        back = record_said(crm(), uuid, crm().record(uuid) or {})   # the note is on the board
     except Exception as exc:  # noqa: BLE001
         return "the note on the record failed: %s" % str(exc)[:160]
     return "note written to the record and read back" if text[:60] in back else \
@@ -1015,6 +1019,81 @@ def run(task: dict) -> dict:
     out["files"] = ["comps.csv", "screen.json"]
     out["note"] = write_note(subj["uuid"], _note_text(out)) if value else \
         "nothing written to the record (no value to write)"
+    return out
+
+
+_PHONE_RX = re.compile(r"\(?\b\d{3}\)?[\s.\-]*\d{3}[\s.\-]*\d{4}\b")
+
+
+def dataset(task: dict, args: dict) -> dict:
+    """The comp data a SKILL run works from, gathered inside an employee's turn (the comps_data tool),
+    the way the real-estate-comping skill's own data step pulls it in Claude Code: the subject off the
+    record and the operator's notes, every SiftMap deed comp inside the area, and the engine's own value
+    (post_walkthrough's tight ARV) for the side-by-side the operator asked for (2026-11-17). Reads only:
+    no note on the record, no Slack post. Writes comps_<street>.csv and subject_<street>.json into the
+    turn's exports/, where run_python finds them, and returns the same as data."""
+    from .. import sandbox
+    from datasift_links import record_url
+    inputs = {k: str(args.get(k) or "").strip() for k in ("address", "boundary", "streets", "notes")}
+    out: dict = {"ok": False}
+    area = area_inputs(inputs, "")
+    if area["why"]:
+        out["why"] = area["why"]
+        return out
+    rec, fields, why, _ = locate({"record_uuid": ""}, inputs)
+    if not rec:
+        out["why"] = why
+        return out
+    subj = subject_of(rec)
+    notes = area["notes"]
+    from_notes = apply_notes(subj, notes)
+    if not (subj["lat"] and subj["lon"]):
+        out["why"] = "the record has no map point, so there is no area to pull comps from"
+        return out
+    if not subj["sqft"]:
+        out["why"] = "the record has no square footage; put it in the notes (for example 3/1, 1,400 sqft, built 1950)"
+        return out
+    budget = Budget(task.get("id") or 0, float(setting("AGENTS_DEALS_RUN_CAP_USD", 2.0)))
+    try:
+        asked_reads = int(_f(args.get("deed_reads")))
+        cap = min(asked_reads, int(setting("AGENTS_SKILL_DEED_READS_MAX", 60))) if asked_reads > 0 else None
+        got = comps_for(task, subj, area, budget, cap=cap)
+    except MissingKey as exc:
+        out["why"] = str(exc)
+        return out
+    except Exception as exc:  # noqa: BLE001  (SiftMap down or refusing: said, not raised)
+        out["why"] = "the comp search failed: %s" % str(exc)[:200]
+        return out
+    walk, held = pinned_walk(subj)
+    walk, _ = notes_beat_walk(walk, notes)
+    months = int(setting("AGENTS_COMPS_MONTHS", 18))
+    pack = build_pack(subj, lead_for(rec, fields), got["sold"], got["deeds"]["records"], walk, months,
+                      overrides=notes, active=got["active"], land=got["land"])
+    value, n, how = arv_of(pack)
+    rehab, rehab_label = rehab_pick(pack, str(setting("AGENTS_SCREEN_REHAB", "mid")))
+    stem = safe_text(re.sub(r"[^A-Za-z0-9]+", "_", subj["street"] or subj["uuid"])).strip("_")[:40] or "subject"
+    exports = sandbox.run_dir_for(task) / "exports"
+    exports.mkdir(parents=True, exist_ok=True)
+    csv_name, json_name = "comps_%s.csv" % stem, "subject_%s.json" % stem
+    comps_csv(exports / csv_name, pack, subj)
+    with (exports / csv_name).open(encoding="utf-8") as fh:
+        rows = list(csv.DictReader(fh))
+    notes_text = _PHONE_RX.sub("[number removed]", str(rec.get("notes") or ""))[-4000:]
+    subject = {k: subj[k] for k in ("uuid", "street", "city", "state", "zip", "county", "lat", "lon", "beds", "baths",
+                                    "sqft", "year_built", "structure_type", "estimate_value", "equity_percent", "status")}
+    subject.update(link=record_url(subj["uuid"]), lot_size=rec.get("lot_size"), last_sold=rec.get("last_sold"),
+                   last_sale_price=rec.get("last_sale_price"), rental_value=rec.get("rental_value"),
+                   facts_from_notes=from_notes, record_notes=notes_text)
+    engine = {"tight_arv": value, "comps_used": n, "basis": how, "rehab": rehab, "rehab_label": rehab_label,
+              "as_is": int(_f((pack.get("exits") or {}).get("inputs", {}).get("as_is_point"))), "layout_held": held}
+    deeds = got["deeds"]
+    data = {"subject": subject, "engine": engine, "area": area_line(area), "months": months,
+            "counts": {k: deeds.get(k) for k in ("found", "read", "cached", "not_read", "cap", "day_cap_hit")},
+            "comps": rows}
+    (exports / json_name).write_text(json.dumps(data, indent=1, default=str), encoding="utf-8")
+    out.update(ok=True, files={"comps_csv": "exports/" + csv_name, "subject_json": "exports/" + json_name}, **data)
+    if budget.skipped:
+        out["skipped"] = list(budget.skipped)
     return out
 
 

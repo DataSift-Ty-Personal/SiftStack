@@ -30,6 +30,12 @@ If the decedent is not the owner, the record is a **living owner with a recent h
 death**. That is usually a *better* lead than an heir case, and it needs a completely
 different opening. Correct the record: it should not sit in a deceased-owner queue.
 
+**The reverse trap: a survivor named in an obituary may have died since.** "She is survived
+by her loving husband" shows he was alive on the day that obituary ran, nothing more. On a
+live record a 90-year-old husband was written up as living on his wife's obituary from nine
+months earlier, while SmartSkip flagged him deceased. He had died two months after her. If
+SmartSkip flags the surviving spouse deceased, they are deceased (Gotcha 1): work the estate.
+
 ### 2. Pull the verbatim survivors paragraph
 Funeral-home pages are the best source. Quote it exactly into the research pack. Do not
 paraphrase; the exact wording carries relationships ("and husband [name]") that a summary

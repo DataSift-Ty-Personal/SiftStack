@@ -44,7 +44,20 @@ def _startup() -> None:
     n = store.requeue_stale()
     if n:
         log.info("requeued %d task(s) interrupted by a restart", n)
-    if config.INLINE_WORKER:
+    try:
+        from .autopilot import policy as _policy
+        fast = sorted(s.id for s in _policy.load().stages.values() if s.get("fast_lane") is True)
+        store.set_fast_lane(fast)
+        if fast:
+            log.info("fast lane: %s run on the people lane", ", ".join(fast))
+    except Exception as exc:  # noqa: BLE001  (a playbook that will not load must not stop the brain booting)
+        log.warning("fast lane not set (%s); every stage runs on the schedule lane", exc)
+    if config.INLINE_WORKER and config.PEOPLE_WORKER:
+        # Two lanes: scheduled stage runs on one thread, anything a person or an event started on the
+        # other, so a long stage run never holds an ask (2026-11-17: twenty minutes behind one run).
+        _worker["thread"], _worker["stop"] = worker.start_thread("schedule")
+        _worker["people"], _worker["people_stop"] = worker.start_thread("people", name="agents-people")
+    elif config.INLINE_WORKER:
         _worker["thread"], _worker["stop"] = worker.start_thread()
     if config.SCHEDULER:
         from . import scheduler
@@ -197,8 +210,13 @@ def _roster_or_none():
 def health() -> dict:
     day = datetime.now(timezone.utc).isoformat()[:10]
     roster = _roster_or_none()
-    return {"ok": True, "mode": config.MODE, "tasks": store.counts(),
-            "spent_today_usd": round(store.spent(day=day), 2), "daily_cap_usd": config.DAILY_CAP_USD,
+    # Two day caps (2026-11-19): spent_today_usd is the team's own work against daily_cap_usd, research
+    # is against its own cap, and total_spent_today_usd is both together.
+    return {"ok": True, "mode": config.MODE, "live_stages": sorted(config.LIVE_STAGES), "tasks": store.counts(),
+            "spent_today_usd": round(store.spent(day=day, research=False), 2), "daily_cap_usd": config.DAILY_CAP_USD,
+            "research_spent_today_usd": round(store.spent(day=day, research=True), 2),
+            "research_cap_usd": config.RESEARCH_DAILY_CAP_USD,
+            "total_spent_today_usd": round(store.spent(day=day), 2),
             "run_cap_usd": config.RUN_CAP_USD, "slack": slack_app.mode(), "claude": config.USE_LLM,
             "slack_one_channel": bool(config.SLACK_CHANNEL), "slack_first_hello": store.kv_get(FIRST_HELLO_KEY),
             "slack_socket": slack_socket.status() if config.SLACK_APP_TOKEN else {"state": "off"},
@@ -208,6 +226,8 @@ def health() -> dict:
             "team": {e.id: e.display_name for e in roster.employees.values()} if roster else None,
             "live_workflows": sorted(w.name for w in roster.workflows.values() if w.live) if roster else [],
             "worker_alive": bool(_worker.get("thread") and _worker["thread"].is_alive()),
+            "people_worker_alive": bool(_worker.get("people") and _worker["people"].is_alive())
+            if config.PEOPLE_WORKER else None,
             "clock_alive": bool(_worker.get("clock") and _worker["clock"].is_alive()),
             "datasift_webhook_tests": {slug: store.kv_get("datasift:webhook_test:%s" % slug)
                                        for slug in router.routes(roster)},

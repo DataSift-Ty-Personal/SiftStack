@@ -140,7 +140,7 @@ def upload_rows(rows: list[dict], *, commit: bool = False, api=None, source_tag:
             if pairs and up.write_fields(api, uuid, pairs, warn):
                 stats["fielded"] += 1
             if row.get("Notes"):
-                api.call("/api/internal/property/%s/add-notes/" % uuid, "POST", {"notes": str(row["Notes"])[:2000]})
+                up.add_note(api, uuid, str(row["Notes"])[:2000], have=None if res.get("existing") else "")
             wanted = phones_of(row)
             sent: list[str] = []
             if wanted:

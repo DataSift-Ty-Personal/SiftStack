@@ -11,6 +11,8 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+import model_registry  # src/model_registry.py; the texting image copies it beside this package
+
 ROOT = Path(__file__).resolve().parent.parent.parent
 load_dotenv(ROOT / ".env")
 
@@ -58,6 +60,10 @@ SC_SIGNING_SECRET = _env("SMARTERCONTACT_SIGNING_SECRET", "")
 # authenticates with a header we chose instead: "Authorization: Bearer <this>".
 # A token of its own, so nothing Smarter Contact holds opens the smrtPhone feed.
 SC_WEBHOOK_TOKEN = _env("SMARTERCONTACT_WEBHOOK_TOKEN", "")
+# The brain hands a released text batch to this box, which loads it into Smarter Contact with the
+# login it already holds (sc_load.py). Its own bearer token, sent in a header: the smrtPhone secret and
+# IP allowlist guard a different sender. Unset, the route answers 404 and nothing can be loaded.
+SC_LOAD_SECRET = _env("SMS_AGENT_SC_LOAD_SECRET", "")
 SC_SIGNATURE_MAX_AGE = int(_env("SMARTERCONTACT_SIGNATURE_MAX_AGE", str(3 * 60 * 60)))
 # Replies and labels in Smarter Contact go through its web app's own API, signed
 # in as Ty's account (no public API on this plan). The refresh token is the
@@ -142,7 +148,7 @@ DISPO_SLACK_WEBHOOK_URL = _env("SMS_AGENT_DISPO_SLACK_WEBHOOK", "")
 
 # ---------------------------------------------------------------- model
 ANTHROPIC_API_KEY = _env("ANTHROPIC_API_KEY", "")
-MODEL = _env("SMS_AGENT_MODEL", "claude-opus-5")
+MODEL = _env("SMS_AGENT_MODEL", model_registry.default("text_replies"))
 # Thinking is on by default on Opus 5 and counts against max_tokens, so leave
 # real headroom or replies truncate mid-sentence.
 MAX_TOKENS = int(_env("SMS_AGENT_MAX_TOKENS", "8000"))
@@ -474,6 +480,10 @@ NOT_NOW_STATUS = _env("SMS_AGENT_NOT_NOW_STATUS", "follow_up")
 TAG_CONFIRM_CALL = _env("SMS_AGENT_TAG_CONFIRM_CALL", "Confirm By Call")
 # A phone that reaches a relative of the owner (a valid contact on an estate, not a wrong number).
 TAG_RELATIVE = _env("SMS_AGENT_TAG_RELATIVE", "Relative")
+# A relative who reports the owner's death puts this on the record: the agents' outreach gate holds
+# every text and call to the owner on it, and research takes the estate (2026-11-19: the owners'
+# daughter texted that both parents had died, and the next text in the series still went to the house).
+TAG_VERIFY_DECEASED = _env("SMS_AGENT_TAG_VERIFY_DECEASED", "Verify Deceased")
 # Records with simply no number get their own tag, so Mail Only keeps one meaning: a person asked
 # not to be called. This app never writes it; the name lives here so every tool spells it alike.
 TAG_NO_NUMBER = _env("SMS_AGENT_TAG_NO_NUMBER", "No Number")

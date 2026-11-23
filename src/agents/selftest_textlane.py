@@ -149,7 +149,7 @@ def _wipe(store, activity, limits, scrub) -> None:
     scrub.ensure()
     with store._LOCK, store._db() as c:
         for table in ("ap_events", "ap_facts", "ap_changes", "ap_batches", "ap_owner_lane", "ap_log", "ap_phones",
-                      "ap_texts", "ap_dnc"):
+                      "ap_texts", "ap_dnc", "ap_sc_texted"):
             c.execute("DELETE FROM " + table)
         c.execute("DELETE FROM kv WHERE key LIKE 'autopilot:%'")
 
@@ -214,8 +214,8 @@ def _run(check, tmp, store, activity, fullattempt, gate, lanes, ledger, limits, 
     check(bad("Hey {first}, last note from me about {addr} for a while. Take care. {sender}", named=True, role="breakup") == [],
           "a breakup may end without a question, and says for a while")
     titles = [t["title"] for t in textlane.templates("Emerson")]
-    check(len(titles) == len(set(titles)) == 36 and max(len(t) for t in titles) <= textlane.TITLE_CAP,
-          "the 36 follow-up and urgent templates have unique titles inside the platform's limit")
+    check(len(titles) == len(set(titles)) == 54 and max(len(t) for t in titles) <= textlane.TITLE_CAP,
+          "the 54 follow-up, urgent and probate templates have unique titles inside the platform's limit")
     check(all("<First Name>" in t["content"] or t["audience"] == "noname" for t in textlane.templates("Emerson"))
           and all("{" not in t["content"] and "Emerson" in t["content"] for t in textlane.templates("Emerson")),
           "a template is exported with the platform's merge tags and the sender as a literal first name")
@@ -405,8 +405,9 @@ def _limits_checks(check, *, store, activity, ledger, limits, policy, scrub, **_
     tz = "America/New_York"
     lim, bad = limits.read(pol)
     check(lim.day_capacity == 250 and lim.owner_texts_day == 1 and lim.owner_texts_week == 5 and lim.text_hours == (540, 1080)
-          and lim.call_hours == (540, 1140) and lim.calls_per_line_day == 25 and lim.lines_per_caller == 10 and not bad,
-          "the house limits are the defaults: 25 a number, 10 numbers, one text a day, five a week, 9 to 6 and 9 to 7")
+          and lim.call_hours == (540, 1140) and lim.calls_per_line_day == 0 and lim.lines_per_caller == 0 and not bad,
+          "the house limits are the defaults: one text a day, five a week, 9 to 6 and 9 to 7; the caller ID line rules are "
+          "off unless a playbook sets them (Ty, 2026-11-15: no caller ID checks)")
     edit = copy.deepcopy(PLAYBOOK)
     edit["stages"]["t_limits"].update(text_hours="10:00-17:00", owner_texts_week=3, text_lines=2, mode="off")
     pol2 = policy.parse(edit, EMPLOYEES)
@@ -424,7 +425,7 @@ def _limits_checks(check, *, store, activity, ledger, limits, policy, scrub, **_
           "a limit that cannot be read is refused when the playbook loads, so a typo never runs quietly")
     pol2.stages["t_limits"].params.update(calls_per_line_day="many", call_hours="soon")   # a block that got past the load
     lim3, bad3 = limits.read(pol2)
-    check(lim3.calls_per_line_day == 25 and lim3.call_hours == (540, 1140) and len(bad3) == 2,
+    check(lim3.calls_per_line_day == 0 and lim3.call_hours == (540, 1140) and len(bad3) == 2,
           "and one that gets past the load keeps its default and is said out loud, never read as no limit")
 
     east, central, pacific, alaska = "8655552001", "6155552002", "3105552003", "9075552004"
@@ -543,7 +544,11 @@ def _limits_checks(check, *, store, activity, ledger, limits, policy, scrub, **_
 
 def _nightly_checks(check, *, store, activity, limits, policy, scrub, sweep, **_) -> None:
     print("  limits: the nightly check")
-    pol = policy.parse(copy.deepcopy(PLAYBOOK), EMPLOYEES)
+    # The caller ID line rules are off by default; set here so the check that a playbook can still
+    # switch them on keeps its proof.
+    on = copy.deepcopy(PLAYBOOK)
+    on["stages"]["t_limits"].update(calls_per_line_day=25, lines_per_caller=10)
+    pol = policy.parse(on, EMPLOYEES)
     _wipe(store, activity, limits, scrub)
     tz = "America/New_York"
     thu = 12
@@ -574,7 +579,10 @@ def _nightly_checks(check, *, store, activity, limits, policy, scrub, sweep, **_
         text("o-t2", i, at(d, 10, 0), number="8655553602", batch=60)
     text("o-t2", 6, at(thu, 10, 0), number="8655553602", batch=60)       # the seventh in seven days
     text("o-t3", 0, at(thu, 11, 0), number="8655553501", batch=80)       # a registry number
-    s = sweep.run("t_limits", crm=crm, now=at(thu, 19, 20), pol=pol)
+    evening = sweep.run("t_limits", crm=crm, now=at(thu, 19, 20), pol=pol)
+    check(not evening.problems and any("dialed more than once" in ln for ln in evening.lines) and "so far" in evening.head,
+          "the evening run reads the day so far and keeps what it found as lines, so the morning run says it once")
+    s = sweep.run("t_limits", crm=crm, now=at(13, 7, 25), pol=pol)
     said = " | ".join(s.problems)
     check("a caller ID line carried more than 25 dials (the line ending 9001 made 26)" in said, "a line past 25 dials is named by its last four digits")
     check("a caller dialed from more than 10 numbers (Marcus used 11)" in said, "a caller past 10 numbers is named by first name")
@@ -1351,6 +1359,10 @@ def _afternoon_checks(check, *, store, activity, ledger, limits, policy, scrub, 
     s = sweep.run("t_full", crm=crm, now=at(thu, 16, 35), pol=policy.parse(listing, EMPLOYEES))
     check(s.tally["one or two numbers short"] == 1 and any("150 List St" in ln and "3402" in ln for ln in s.lines),
           "once the playbook allows those calls, the same number is back on the list")
+    plan = sweep.board_plan({"id": 1, "workflow": "t_full", "source": "schedule", "agent": "sales"}, s.as_dict())
+    check(s.live and plan["dept"] == "sales"
+          and any("150 List St" in ln and "3402" in ln for ln in (plan["section"] or {}).get("lines") or []),
+          "and in the boards layout that list reaches the stage's section on the sales board, not only its count")
 
 
 PLAYBOOK_BLOCKS = """
@@ -1428,10 +1440,10 @@ PLAYBOOK_BLOCKS = """
     # (limits.room), whatever this stage's mode.
     call_hours: "09:00-19:00"   # people call 9am to 7pm, on the business clock and on the owner's own
     text_hours: "09:00-18:00"   # what the machine sends goes out 9am to 6pm, on both clocks
-    calls_per_line_day: 25
+    calls_per_line_day: 0       # off: caller ID line rules are a number-reputation tactic (Ty, 2026-11-15: no caller ID checks)
     texts_per_line_day: 25
     text_lines: 10              # how many sending numbers carry the day's texts: 25 x 10 = 250 a day
-    lines_per_caller: 10
+    lines_per_caller: 0         # off, for the same reason
     monthly_texts: 20000
     owner_texts_day: 1
     owner_texts_week: 5

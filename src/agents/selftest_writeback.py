@@ -37,6 +37,12 @@ N_OWNER, N_MARLA, N_INES, N_PELL, N_DROP = "8655550100", "8655550111", "86555501
 
 # ------------------------------------------------------------------ builders --
 
+def said(api, uuid):
+    """Everything posted to a record's message board, where notes go since the add-notes route was
+    retired (2026-11-18)."""
+    return "\n".join(str(m.get("message") or "") for m in api.messages.get(uuid, []))
+
+
 def reach(name, tag="", role="signer", owner_like=False):
     return {"name": name, "relationship": tag.lower(), "tag": tag, "role": role, "owner_like": owner_like}
 
@@ -801,7 +807,7 @@ def _api_helpers(check, tmp: Path) -> None:
     got = wb.suppress_litigator(api, U, OW)
     check(set(api.records[U]["tags"]) >= {"Litigator", "Do Not Market"} and set(api.records[U2]["tags"]) >= {"Litigator", "Do Not Market"},
           "a litigator tags the record and the same owner's other record Litigator and Do Not Market")
-    check(api.records[U]["notes"] == wb.LITIGATOR_NOTE and api.records[U2]["notes"] == wb.LITIGATOR_NOTE and len(got["tagged"]) == 2,
+    check(said(api, U).count(wb.LITIGATOR_NOTE) == 1 and said(api, U2).count(wb.LITIGATOR_NOTE) == 1 and len(got["tagged"]) == 2,
           "each tagged record gets the one note saying why")
     check("Litigator" not in api.records["rec-0003"]["tags"], "another owner's record is not touched")
     check(got["tagged"][1]["added"] == ["Do Not Market"], "only the tag a record lacks is added")
@@ -872,14 +878,14 @@ def _api_helpers(check, tmp: Path) -> None:
         check(done["ok"] and ow["first_name"] == "Marla" and ow["deceased"] is False and done["same_owner"] is (not relink),
               "the owner change writes the name, and the person now named does not carry the dead owner's deceased mark (%s)"
               % ("a new owner attached" if relink else "the same owner renamed"))
-        check(api.records[U]["notes"].count("Owner changed by research") == 1 and api.records[U]["address"]["street"] == "12 Test Ln",
+        check(said(api, U).count("Owner changed by research") == 1 and api.records[U]["address"]["street"] == "12 Test Ln",
               "one note says who was replaced, and the property address is untouched")
     stuck = FakeDataSift([record()])
     real = stuck.call
     stuck.call = lambda path, method="GET", body=None, headers=None, _retry=True: (
         copy.deepcopy(stuck.records[U]) if method == "PATCH" and path.endswith("/property/%s/" % U) else real(path, method, body, headers))
     done = wb.swap_owner(stuck, U, plan)
-    check(not done["ok"] and stuck.records[U]["notes"] == "", "an owner change that did not take leaves no note claiming it did")
+    check(not done["ok"] and "Owner changed by research" not in said(stuck, U), "an owner change that did not take leaves no note claiming it did")
 
 
 def _write_run(tmp: Path, name: str, *, an=None, rec=None, scores=None, verify=None, page=True, ledger=True):
@@ -1013,7 +1019,7 @@ def _chain(check, tmp: Path) -> None:
     check(len(api.documents[U]) == 1 and rb["document_ok"] and api.documents[U][0]["prop"] == 4101, "switched on, the report is filed in the record's documents")
     ow = api.owner(OW)
     check(ow["first_name"] == "Marla" and ow["last_name"] == "Quillfeather" and rb["owner_ok"] and ow["deceased"] is False
-          and entry["owner_swap"]["before"]["first_name"] == "Dorn" and "Owner changed by research" in api.records[U]["notes"],
+          and entry["owner_swap"]["before"]["first_name"] == "Dorn" and "Owner changed by research" in said(api, U),
           "switched on, the owner changes to the verified wife, the audit keeps who was there before, and she is not marked deceased")
     check(all(s in entry["summary"] for s in ("tag Heir Identified", "skip trace counter 1", "report filed", "owner changed to Marla Quillfeather",
                                               "1 Dial Third number held in reserve")),
@@ -1021,8 +1027,8 @@ def _chain(check, tmp: Path) -> None:
     with env(**everything), patched(wb, _post_file=api.post_file):
         entry2 = write_back(run, api)
     ow = api.owner(OW)
-    check(ow["skiptrace_attempts"] == 1 and len(api.documents[U]) == 1 and len(api.uploads) == 1 and len(api.messages[U]) == 1
-          and api.records[U]["notes"].count("Owner changed by research") == 1 and api.records[U]["tags"].count("Heir Identified") == 1,
+    check(ow["skiptrace_attempts"] == 1 and len(api.documents[U]) == 1 and len(api.uploads) == 1 and len(api.messages[U]) == 2
+          and said(api, U).count("Owner changed by research") == 1 and api.records[U]["tags"].count("Heir Identified") == 1,
           "run a second time with everything on: the counter, the document, the note and the tag are not written twice")
     check(ow["first_name"] == "Marla" and ow["deceased"] is False and "is not the person who died" in entry2["held"]["deceased"]
           and "is not the person who died" in entry2["held"]["owner_swap"][0],

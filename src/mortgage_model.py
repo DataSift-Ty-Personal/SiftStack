@@ -10,7 +10,7 @@ models the same three numbers from public facts, best evidence first:
      quarter point give their median ("HMDA match, n loans"). Measured on Knox 2023: 49% of first-lien
      single-family loans are alone on their key.
   2. Otherwise: Freddie Mac's weekly 30-year (or 15-year) rate in the week the loan was locked (about 35 days
-     before it recorded), plus the Knox spread HMDA shows for that loan type and year.
+     before it recorded), plus the spread HMDA shows in the market's own counties for that loan type and year.
   3. The payment and today's balance come from the original amount, that rate and the real term (the due date
      says 15 or 30 years), amortized month by month; FHA, USDA and private mortgage insurance are added.
 
@@ -30,6 +30,7 @@ import io
 import json
 import logging
 import math
+import os
 import subprocess
 import time
 from bisect import bisect_right
@@ -39,7 +40,10 @@ from statistics import median
 from typing import Optional
 
 ROOT = Path(__file__).resolve().parent.parent
-CACHE = ROOT / "output" / "mortgage_model"
+# The HMDA and Freddie Mac downloads are kept in output/ in a SiftStack checkout, else in ~/SiftStack/cache (an
+# installed skill's own folder is replaced on every update). MORTGAGE_MODEL_CACHE overrides both.
+CACHE = Path(os.environ.get("MORTGAGE_MODEL_CACHE")
+             or ((ROOT / "output" if (ROOT / "src").is_dir() else Path.home() / "SiftStack" / "cache") / "mortgage_model"))
 logger = logging.getLogger("mortgage_model")
 
 HMDA_YEARS = range(2018, 2026)
@@ -52,9 +56,19 @@ TERMS = (120, 180, 240, 300, 360, 480)
 
 # --------------------------------------------------------------------------------------------- sources
 
+class DownloadFailed(RuntimeError):
+    """A public download (Freddie Mac, HMDA) did not arrive. A RuntimeError, not SystemExit, so a program that
+    calls the model as a library (the MLS offer engine, the agents brain) gets an error to say, not an exit."""
+
+
 def _get(url: str, timeout: int = 300) -> bytes:
     """curl, not requests: the HMDA host answers a Python client with 403 and serves curl a redirect."""
-    out = subprocess.run(["curl", "-s", "-L", "-m", str(timeout), url], capture_output=True, check=True).stdout
+    try:
+        out = subprocess.run(["curl", "-s", "-L", "-m", str(timeout), url], capture_output=True, check=True).stdout
+    except FileNotFoundError as exc:
+        raise DownloadFailed("curl is not installed; the public mortgage data downloads need it") from exc
+    except subprocess.CalledProcessError as exc:
+        raise DownloadFailed("a public mortgage data download failed (curl exit %s)" % exc.returncode) from exc
     return gzip.decompress(out) if out[:2] == b"\x1f\x8b" else out
 
 
@@ -63,7 +77,7 @@ def fetch_pmms(force: bool = False) -> Path:
     if force or not p.exists() or time.time() - p.stat().st_mtime > 6 * 86400:
         body = _get("https://fred.stlouisfed.org/graph/fredgraph.csv?id=MORTGAGE30US,MORTGAGE15US", 60)
         if b"MORTGAGE30US" not in body[:200]:
-            raise SystemExit("Freddie Mac series did not download")
+            raise DownloadFailed("Freddie Mac series did not download")
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_bytes(body)
     return p
@@ -81,7 +95,7 @@ def fetch_hmda(county: str, year: int, force: bool = False) -> Path:
     raw = _get(f"https://ffiec.cfpb.gov/v2/data-browser-api/view/csv?counties={county}&years={year}&actions_taken=1")
     text = raw.decode("utf-8", "replace")
     if not text.startswith("activity_year"):
-        raise SystemExit(f"HMDA {county} {year} did not download ({text[:120]!r})")
+        raise DownloadFailed(f"HMDA {county} {year} did not download ({text[:120]!r})")
     rows = []
     for r in csv.DictReader(io.StringIO(text)):
         if (r["lien_status"] != "1" or r["open-end_line_of_credit"] != "2"
@@ -312,7 +326,9 @@ class Model:
             elif self.method == "blend" and index_rate and pm is not None:
                 rate, source = round((pm + float(index_rate)) / 2, 3), "average of index and Freddie Mac"
             elif pm is not None:
-                rate, source = pm, "Freddie Mac week + Knox spread"
+                # The spread is measured in this market's own HMDA; with none cached it is zero, so say so.
+                rate = pm
+                source = "Freddie Mac week + local spread" if (self.spread or self.dated) else "Freddie Mac week"
             elif index_rate:
                 rate, source = float(index_rate), "index estimate"
             else:
@@ -365,7 +381,7 @@ def main(argv=None) -> int:
             for y in HMDA_YEARS:
                 try:
                     fetch_hmda(c, y, a.force)
-                except SystemExit as e:
+                except DownloadFailed as e:
                     logger.warning("%s", e)
     m = Model(counties, Rates(fetch_pmms()))
     d, r = m.rates.latest()

@@ -12,6 +12,7 @@
       "comp-package",
       "deal-analyzer",
       "deep-prospecting-v5",
+      "mls-offer-engine",
       "probate-property-finder",
       "real-estate-comping",
       "rehab-estimator",
@@ -58,6 +59,7 @@
       "first-market-county-data",
       "kpi-engine",
       "lead-manager-coach",
+      "mls-offer-engine",
       "phone-validator",
       "playbook-creator",
       "probate-property-finder",
@@ -216,6 +218,20 @@
         "cost": "About $0.24 per record end to end",
         "fallback": "no-api-playbook#heir-research-by-hand",
         "note": "Enformion is optional and only needed for LLC and trust owners.",
+        "accounts": []
+      }
+    },
+    {
+      "name": "mls-offer-engine",
+      "category": "Deal Analysis",
+      "requires": {
+        "tier": "account",
+        "env": [
+          "REISIFT_API_KEY"
+        ],
+        "cost": "Free to screen and price. Adding the shortlist to your account uses record allowance, quoted first. The Zillow check is optional and metered",
+        "fallback": "no-api-playbook#mls-offers-by-hand",
+        "note": "Runs on your DataSift Open API key. OPENWEBNINJA_API_KEY is optional and only powers the Zillow check. Sends nothing: every text is a draft.",
         "accounts": []
       }
     },

@@ -279,6 +279,31 @@ def _client(check, tw, real_fetch) -> None:
     except tw.Ambiguous:
         check(True, "two accounts at one house that both answer with bills are refused, never guessed")
 
+    # Measured 2026-11-18: all seven houses the encumbrance check could not read had a second account at
+    # the same street, and none of them was a real conflict.
+    roll = FakeRoll(by_query={"15 Example Ave": [{"account_number": "094BA-040", "parcel_address": "15 EXAMPLE AVE", "owner": "SAMPLE PAT"},
+                                                 {"account_number": "1358392", "parcel_address": "15 EXAMPLE AVE", "owner": "DEMO JEWELRY"}]},
+                    bills={"094BA-040": [dict(bill(258.0, 2024), bill_type="Real")], "135-8392": []})
+    got = tw.county_tax("15 Example Ave", "Knox", fetch=roll)
+    check(got and got["account"] == "094BA-040" and got["amount"] == 258.0,
+          said(bool(got), "a business at the house whose account answers with no bills is passed over for the house's own", got))
+    roll = FakeRoll(by_query={"9 Sample Ln": [{"account_number": "31616", "parcel_address": "9 SAMPLE LN", "owner": "SAMPLE ROBIN"},
+                                              {"account_number": "94451", "parcel_address": "9 SAMPLE LN", "owner": "DEMO COTTAGE"}]},
+                    bills={"31616": [dict(bill(1710.0, 2025, paid=True), bill_type="Real"), dict(bill(1681.0, 2024, paid=True), bill_type="Real")],
+                           "94451": [dict(bill(36.0, 2025, paid=True), bill_type="Real")]})
+    got = tw.county_tax("9 Sample Ln", "Blount", fetch=roll)
+    check(got and got["amount"] == 0 and got["account"] == "31616",
+          said(bool(got), "two accounts at one house that give the same answer (nothing delinquent) are not a conflict", got))
+    roll = FakeRoll(by_query={"16 Twin Rd": [{"account_number": "005EE-001", "parcel_address": "16 TWIN RD", "owner": "EXAMPLE PAT Q"},
+                                             {"account_number": "005EE-002", "parcel_address": "16 TWIN RD", "owner": "DEMO HOLDINGS LLC"}]},
+                    bills={"005EE-001": [bill(100.0, 2024)], "005EE-002": [bill(700.0, 2024)]})
+    got = tw.county_tax("16 Twin Rd", "Knox", fetch=roll, owner="Pat Example")
+    check(got and got["account"] == "005EE-001" and got["amount"] == 100.0,
+          said(bool(got), "when two accounts differ, the one in the record owner's name is the record's", got))
+    check(tw.call_lookup(lambda street, county: "plain", "1 Test Way", "Knox", "Pat Example") == "plain"
+          and tw.call_lookup(lambda street, county, owner="": owner, "1 Test Way", "Knox", "Pat Example") == "Pat Example",
+          "the owner hint goes only to a lookup that takes it")
+
     roll = FakeRoll(by_query={"21 Quiz Ct": [{"account_number": "006FF-001", "parcel_address": "21 QUIZ CT"}]})
     try:
         tw.county_tax("21 Quiz Ct", "Knox", fetch=roll)
@@ -340,8 +365,41 @@ def _client(check, tw, real_fetch) -> None:
             return Resp(b"<html>down for maintenance</html>" if kind == "html" else b'{"parcels": []}')
         return f
 
+    def flaky(fails, kind):
+        calls = []
+
+        def f(req, timeout=None):
+            calls.append(1)
+            seen.append(req.get_header("User-agent"))
+            if len(calls) <= fails:
+                if kind == "drop":
+                    raise urllib.error.URLError(ConnectionResetError(104, "Connection reset by peer"))
+                if kind == "timeout":
+                    raise TimeoutError("timed out")
+                raise urllib.error.HTTPError(req.full_url, kind, "status", {}, None)
+            return Resp(b'{"parcels": []}')
+        return f, calls
+
     real_open = urllib.request.urlopen
+    real_waits = tw.ROLL_RETRY_WAITS_S
+    tw.ROLL_RETRY_WAITS_S = (0, 0)
     try:
+        for kind in ("drop", "timeout", 502):
+            urllib.request.urlopen, calls = flaky(1, kind)
+            check(real_fetch("https://knox.example.test/parcels/x", pause=0) == {"parcels": []} and len(calls) == 2,
+                  said(len(calls) == 2, "one %s is asked again and the answer is read, not the county stopped" % kind, calls))
+        urllib.request.urlopen, calls = flaky(99, "drop")
+        try:
+            real_fetch("https://knox.example.test/parcels/x", pause=0)
+            check(False, "a county that keeps dropping the connection stops the county")
+        except OSError:
+            check(len(calls) == 3, said(len(calls) == 3, "a county that keeps dropping is asked 3 times, then stops", calls))
+        urllib.request.urlopen, calls = flaky(99, 500)
+        try:
+            real_fetch("https://knox.example.test/parcels/x", pause=0)
+            check(False, "a 500 stops the county")
+        except OSError:
+            check(len(calls) == 1, said(len(calls) == 1, "a 500 is not a gateway hiccup: asked once", calls))
         urllib.request.urlopen = opener(404)
         check(real_fetch("https://knox.example.test/parcels/x", pause=0) is None, "the site's 404 reads as no answer here")
         out = {}
@@ -359,6 +417,7 @@ def _client(check, tw, real_fetch) -> None:
         check(real_fetch("https://knox.example.test/parcels/x", pause=0) == {"parcels": []}, "a JSON answer is read as it is")
     finally:
         urllib.request.urlopen = real_open
+        tw.ROLL_RETRY_WAITS_S = real_waits
     check(seen and all(h == tw.ROLL_AGENT for h in seen),
           "the county is asked under a plain client name, never a person's name or an email")
 

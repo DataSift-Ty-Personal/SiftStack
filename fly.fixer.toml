@@ -1,0 +1,25 @@
+# The issue fixer's own box (tools/issue_fixer). No public port: it reads the issues channel, works in its own
+# clone of the repo on the volume, and deploys the other three apps with their deploy tokens. Its Claude Code
+# signs in with CLAUDE_CODE_OAUTH_TOKEN (Ty's Max plan, from `claude setup-token`), never an API key.
+# It also watches the other three boxes on time and reads their logs (tools/issue_fixer/watch.py, a thread in
+# the loop); its posts go through the brain's relay (the secret ISSUE_FIXER_RELAY_URL).
+# Deploy: fly deploy -c fly.fixer.toml --remote-only (from a clean checkout with Unix line endings).
+app = "siftstack-fixer"
+primary_region = "iad"
+
+[build]
+  dockerfile = "deploy/Dockerfile.fixer"
+
+[env]
+  ISSUE_FIXER = "on"   # the secret of the same name overrides this (off during the cutover)
+
+[[mounts]]
+  source = "fixer_data"
+  destination = "/data"
+
+[[restart]]
+  policy = "always"
+
+[[vm]]
+  size = "shared-cpu-2x"
+  memory = "2gb"

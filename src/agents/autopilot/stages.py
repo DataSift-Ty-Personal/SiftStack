@@ -529,13 +529,18 @@ def stage_rows(ctx: Ctx, extra: dict | None = None, cap: int | None = None) -> l
     return _in_tranche(ctx, preset_rows(ctx, ctx.stage.presets, extra, cap))
 
 
-def lane_rows(ctx: Ctx, titles, many: list[str], extra: dict | None = None, cap: int = 2000) -> list[tuple[str, dict]]:
+def lane_rows(ctx: Ctx, titles, many: list[str], extra: dict | None = None, cap: int = 2000,
+              search: dict | None = None) -> list[tuple[str, dict]]:
     """(preset title, search row) for a stage that works several lanes: one pass per lane, highest
     first, each search narrowed to the lane's marker tag. Two things depend on it. A search row
     carries no tags, so the row has to say which lane it is in (under `_lane`) before the record is
     opened: the text lane counts days from that lane's entry. And first-to-market rows come before
     the Top 1,000's under every cap, which is what "first to market sits on top" means in practice.
-    A lane marked only by a list cannot be narrowed this way and is said, not guessed."""
+    A lane marked only by a list cannot be narrowed this way and is said, not guessed.
+
+    A stage that reads by a search rather than by presets (second chances reads every Not Interested
+    record) passes that one search as `search`; it is narrowed to each lane the same way, and each row
+    comes back as ("", row)."""
     cfg = getattr(ctx.policy, "lanes", None) or lanes.Lanes()
     seen, out = set(), []
     for ln in many:
@@ -544,7 +549,7 @@ def lane_rows(ctx: Ctx, titles, many: list[str], extra: dict | None = None, cap:
             continue
         tags = (cfg.markers.get(ln) or {}).get("tags") or []
         if not tags:
-            ctx.out.problem("the %s lane has no marker tag, so a stage that works two lanes cannot read it" % ln.replace("_", " "))
+            ctx.out.problem("the %s lane has no marker tag, so its records cannot be read lane by lane" % ln.replace("_", " "))
             continue
         for t in tags:
             uid = ctx.crm.tag_uuid(t)
@@ -552,7 +557,9 @@ def lane_rows(ctx: Ctx, titles, many: list[str], extra: dict | None = None, cap:
                 ctx.out.problem("the tag %s does not exist in this account, so no %s record was read" % (t, ln.replace("_", " ")))
                 continue
             narrowed = merge_must(dict(extra or {}), {"all_tags": [uid]})
-            for title, row in preset_rows(ctx, titles, narrowed, cap):
+            found = (preset_rows(ctx, titles, narrowed, cap) if search is None
+                     else [("", r) for r in ctx.crm.rows(merge_must(dict(search), narrowed), cap=cap)])
+            for title, row in found:
                 u = row.get("uuid")
                 if u and u not in seen:
                     seen.add(u)
@@ -731,6 +738,18 @@ def run_assign(ctx: Ctx) -> None:
         baseline = ctx.now.isoformat(timespec="seconds")
         store.kv_set("autopilot:baseline:%s" % st.id, baseline)
     backlog = bool(st.get("backlog", False))
+    # A held record is remembered for held_recheck_minutes (2026-11-20). Measured on the box: each
+    # 30-minute run of ftm_assign found 1,085 unassigned records and re-read about 780 the gate holds
+    # (research, a possible death, mail only and the like), about 23 minutes a run and 351 of 853 minutes
+    # of the brain's work in a day, while every other scheduled stage waited behind it. A hold that
+    # clears is seen within the window; an unreadable record is never remembered.
+    recheck_s = 60 * int(st.get("held_recheck_minutes", 180) or 0)
+    hkey = "autopilot:assign_held:%s" % st.id
+    try:
+        held_was = json.loads(store.kv_get(hkey) or "{}")
+    except ValueError:
+        held_was = {}
+    held_now: dict = {}
     given: Counter = Counter()
     readback = 0
     for title, row in rows:
@@ -743,8 +762,22 @@ def run_assign(ctx: Ctx) -> None:
         if not backlog and ledger.first_seen(u, st.id, ctx.now).isoformat(timespec="seconds") <= baseline:
             ctx.out.tally["backlog left as is (set backlog: true to hand these out)"] += 1
             continue
+        h = held_was.get(u)
+        if recheck_s and isinstance(h, list) and len(h) == 2:
+            try:
+                fresh = (ctx.now - datetime.fromisoformat(h[1])).total_seconds() < recheck_s
+            except (TypeError, ValueError):
+                fresh = False
+            if fresh:
+                held_now[u] = h
+                ctx.out.tally["held back: %s" % h[0]] += 1
+                continue
         rec = ctx.crm.record(u)
-        if not ctx.passes(rec, "assign", row=row):
+        v = ctx.verdict(rec, "assign", row=row)
+        if not v.ok:
+            ctx.out.tally["held back: %s" % v.reason()] += 1
+            if v.code != "unreadable":
+                held_now[u] = [v.reason(), ctx.now.isoformat(timespec="seconds")]
             continue
         pool = people
         if routes:
@@ -777,6 +810,8 @@ def run_assign(ctx: Ctx) -> None:
         ctx.out.line("%s -> %s (%s)" % (addr(row), who["name"], title))
     if strategy == "round_robin" and ctx.live:
         store.kv_set("autopilot:rr:%s" % st.id, str(rr))
+    if recheck_s:
+        store.kv_set(hkey, json.dumps(held_now))     # knowledge, kept in plan mode too; only records still in the presets
     ctx.out.acted = sum(given.values())
     verb = "Assigned" if ctx.live else "Would assign"
     held = ctx.out.tally.get("backlog left as is (set backlog: true to hand these out)", 0)
@@ -1506,6 +1541,9 @@ def run_retrace(ctx: Ctx) -> None:
     ctx.out.found = len(rows)
     order = [s for s in _list(st.get("sources"))]
     max_records = int(st.get("max_records", 50))
+    # deceased: deep_prospect hands a possible death (and a probate owner) to Diggs; retrace traces the
+    # owner anyway; hold (2026-11-19) traces a probate record's personal representative like any
+    # owner and holds a possible death for the research queue, which owns research spend.
     deceased_to = st.get("deceased", "deep_prospect")
     entity_to = st.get("entity", "after")
     new_tag = st.get("new_numbers_tag", "")
@@ -1567,6 +1605,8 @@ def run_retrace(ctx: Ctx) -> None:
                 # The gate reads death from more places than the owner flag (the Obituary list, the
                 # Owner Deceased field), and a possible death goes to research, never to a blind trace.
                 _handoff(ctx, rec, subj, "the owner may have died (%s)" % v.reasons[0][1], death=True)
+            elif v.code == "deceased" and deceased_to == "hold":
+                ctx.out.tally["held back: a possible death, left for the research queue"] += 1
             else:
                 ctx.out.tally["held back: %s" % v.reason()] += 1
             continue
@@ -2217,7 +2257,9 @@ def digest_extras(ctx: Ctx, counts: dict) -> None:
 
     from . import alarms, heirlane, leadclock, limits, obituary, pacing, researchqueue, scrub
     add("speed", lambda: leadclock.speed_lines(ctx.now, ctx.policy.tz), limit=2)
-    add("limits", lambda: limits.recent_lines(ctx.now, ctx.policy.tz), problem=True, limit=3)
+    # A line, not a problem: the limits stage posts its own findings to the issues channel, and as a
+    # problem each one was posted a second time from here (2026-11-18: three times a day in all).
+    add("limits", lambda: limits.recent_lines(ctx.now, ctx.policy.tz), limit=3)
     add("scrub", lambda: [scrub.recent_line(sid) for sid in _stage_ids(ctx, "scrub")] if scrub.settings(ctx.policy).on else [],
         limit=2)
     add("research", lambda: [researchqueue.digest_line()], limit=1)

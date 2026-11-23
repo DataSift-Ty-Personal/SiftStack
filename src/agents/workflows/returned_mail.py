@@ -63,6 +63,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from .. import attachments, config, store
+import model_registry
 from ..autopilot import budget, ledger
 from ..autopilot.crm import titles
 from ..autopilot.sources import same_street
@@ -85,7 +86,7 @@ NOW = None      # a fixed "now"
 
 # Input and output price per million tokens (claude-api skill, 2026-11-15). An unknown model is priced
 # as Opus, so the books run high rather than low.
-PRICES = {"claude-haiku-5-5": (0.10, 0.50), "claude-sonnet-5-5": (2.0, 10.0), "claude-opus-5-5": (4.0, 20.0)}
+PRICES = {m: p[:2] for m, p in model_registry.PRICES.items()}
 DEFAULT_PRICE = (4.0, 20.0)
 
 SIDES = ("address", "back", "other", "unreadable")
@@ -159,7 +160,7 @@ class ReadCap(RuntimeError):
 # ---------------------------------------------------------------------- settings and small helpers
 def settings() -> dict:
     """Read on use, so an operator (or the selftest) can change one without a restart."""
-    return {"model": str(qs.setting("AGENTS_RETURNED_MAIL_MODEL", "claude-haiku-5-5")),
+    return {"model": str(qs.setting("AGENTS_RETURNED_MAIL_MODEL", model_registry.model("reading_images"))),
             "ask_pages": max(1, int(qs.setting("AGENTS_RETURNED_MAIL_ASK_PAGES", 40))),
             "max_pages": max(1, int(qs.setting("AGENTS_RETURNED_MAIL_MAX_PAGES", 200))),
             "run_usd": float(qs.setting("AGENTS_RETURNED_MAIL_RUN_USD", 1.0)),
@@ -691,7 +692,9 @@ def write_record(crm_, uuid_: str, rec: dict, envs: list[dict], s: dict, scan_da
     back = crm_.record(uuid_) or {}
     got = {t.lower() for t in titles(back.get("tags"))}
     missing = [t for t in want if t.lower() not in got]
-    if missing or note[:60] not in str(back.get("notes") or ""):
+    # The note was posted to the message board, which DataSift does not copy into the notes field.
+    from ..autopilot.crm import record_said
+    if missing or note[:60] not in record_said(crm_, uuid_, back):
         return "write_failed", "the %s did not read back on the record" % (
             ("tag %s" % missing[0]) if missing else "note")
     prior = ledger.fact(uuid_, "returned_mail") or {}

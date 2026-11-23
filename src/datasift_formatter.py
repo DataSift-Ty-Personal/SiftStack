@@ -252,6 +252,15 @@ def _split_name(full_name: str) -> tuple[str, str]:
 
 # Map notice_type → DataSift list name for niche sequential marketing.
 # DataSift auto-creates lists from CSV if they don't exist yet.
+# County notices that do NOT carry the FTM tag (Ty, 2026-11-20: the county feeds go through the
+# Smarter Contact flow on the Top 1,000). The FTM tag alone puts a record in the first-to-market lane
+# (agents/autopilot/lanes.py), whose presets are the foreclosure and estate flows only (they also need
+# the Foreclosure or Probate list), so a tax sale notice holding FTM would sit in no preset and be
+# kept out of the Top 1,000 as "already in the first-to-market lane". These go there instead: the
+# brain's top1000_feeds stage tags their lists Top 1000 the morning they land.
+NOT_FTM_TYPES = frozenset({"tax_sale", "tax_delinquent", "public_sale", "order", "court_order", "code_violation",
+                           "eviction", "divorce", "substitute_trustee", "lien"})
+
 NOTICE_TYPE_TO_LIST = {
     "foreclosure": "Foreclosure",
     "probate": "Probate",
@@ -279,7 +288,9 @@ def _build_tags(notice: NoticeData) -> str:
     # Tier 1) is the tag the prod-account marketing template routes on: direct-from-county notice
     # data is the FTM upload stream and must carry `FTM` to land in the FTM-CALL/FTM-MAIL
     # folders (SiftMap/aggregated data is `Tier 2` instead). See the data-tier model.
-    tags = ["Courthouse Data", "FTM"]
+    # Since 2026-11-20 only the foreclosure and estate flows carry it: every other county
+    # notice goes to the Top 1,000 lane and its Smarter Contact texts (NOT_FTM_TYPES).
+    tags = ["Courthouse Data"] + ([] if notice.notice_type in NOT_FTM_TYPES else ["FTM"])
 
     # Notice type
     if notice.notice_type:

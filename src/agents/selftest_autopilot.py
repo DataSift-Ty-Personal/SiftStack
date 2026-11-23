@@ -443,6 +443,22 @@ def run(check, tmp: Path) -> None:
     store.kv_set("autopilot:baseline:a_assign", "2000-01-01T00:00:00+00:00")
     sp = sweep.run("a_assign", crm=crm_p, now=T0, pol=pol, plan=True)
     check(sp.acted == 1 and not crm_p.writes and not sp.live, "plan mode works out the assignment and writes nothing")
+    # A held record is read once and remembered for held_recheck_minutes (2026-11-20: ftm_assign re-read
+    # about 780 held records every 30 minutes, 23 minutes a run).
+    held = _rec("h1", "111 Held St")
+    held["tags"] = list(held.get("tags") or []) + ["Do Not Market"]
+    crm_h = FakeCRM([held])
+    reads = []
+    real_record = crm_h.record
+    crm_h.record = lambda u: (reads.append(u), real_record(u))[1]
+    store.kv_set("autopilot:baseline:a_assign", "2000-01-01T00:00:00+00:00")
+    store.kv_set("autopilot:assign_held:a_assign", "")
+    h1 = sweep.run("a_assign", crm=crm_h, now=T0, pol=pol, plan=True)
+    h2 = sweep.run("a_assign", crm=crm_h, now=T0 + timedelta(minutes=30), pol=pol, plan=True)
+    h3 = sweep.run("a_assign", crm=crm_h, now=T0 + timedelta(hours=4), pol=pol, plan=True)
+    check(reads == ["h1", "h1"] and h1.acted == h2.acted == h3.acted == 0
+          and any(k.startswith("held back:") for k in h2.tally),
+          "a held record is read once, counted from memory on the next run, and read again after the window: %s" % reads)
 
     print("  native trace")
     batch = [_rec("n%02d" % i, "%d Trace Ln" % i, skiptraced=False) for i in range(20)]
@@ -528,6 +544,32 @@ def run(check, tmp: Path) -> None:
                                "enformion": FakeSource("enformion", 0.10, "match", {})}, scorer=scorer, enqueue=enq)
     check(any("brain cap" in k for k in brain.tally), "the brain's own daily cap stops autopilot spend too")
     config.DAILY_CAP_USD = 100000.0
+
+    # deceased: hold (2026-11-19). Research spend belongs to the research queue: a possible death is
+    # held, never handed to Diggs from here, and a probate record's personal representative is traced
+    # like any living owner.
+    book_h = copy.deepcopy(PLAYBOOK)
+    book_h["stages"]["r_retrace"]["deceased"] = "hold"
+    pol_h = policy.parse(book_h, EMPLOYEES)          # hold is an accepted deceased setting
+    crm_h = FakeCRM([_rec("h1", "31 Hold Rd", deceased=True),
+                     _rec("h2", "32 Estate Rd", tags=["FTM", "Courthouse Data", "probate"])])
+    trace_h = FakeSource("tracerfy", 0.02, "row", {"h2": ["8655550131"]})
+    handoffs.clear()
+    held = sweep.run("r_retrace", crm=crm_h, now=T0, pol=pol_h, sources={"tracerfy": trace_h,
+                     "enformion": FakeSource("enformion", 0.10, "match", {})}, scorer=scorer, enqueue=enq)
+    check(handoffs == [] and held.tally.get("held back: a possible death, left for the research queue") == 1,
+          "with deceased: hold a possible death is held for the research queue and nothing goes to Diggs")
+    check(trace_h.calls and set(trace_h.calls[0]) == {"h2"}
+          and any(p["number"] == "8655550131" for p in crm_h.recs["h2"]["owner"]["phones"]),
+          "a probate record's representative is traced like a living owner")
+    bad_h = copy.deepcopy(PLAYBOOK)
+    bad_h["stages"]["r_retrace"]["deceased"] = "maybe"
+    try:
+        policy.parse(bad_h, EMPLOYEES)
+        refused = False
+    except policy.PolicyError as exc:
+        refused = "deep_prospect, retrace or hold" in str(exc)
+    check(refused, "any other deceased word is refused when the playbook loads")
 
     from .autopilot.sources import SmartSkip, Subject
     sk = SmartSkip()

@@ -182,6 +182,16 @@ def handle_inbound(payload: dict) -> dict:
         outcome["action"] = "opted_out"
         return outcome
 
+    # A relative or an heir is a contact on the estate, not a wrong number to burn and not a silent
+    # filing (2026-11-19). The table's relative row, run here too while the table is off.
+    if (result.intent in ("WRONG_NUMBER", "ESCALATE") and program not in ("buyer", "dispo")
+            and dispositions.is_family(body)):
+        env = dispositions.Env(phone=phone, record_uuid=record_uuid, body=body, result=result, context=context,
+                               matches=matches, program=program, inbox="smrtPhone")
+        outcome["actions"] += dispositions._relative(env).actions
+        outcome["action"] = "relative"
+        return outcome
+
     if result.intent == "WRONG_NUMBER":
         outcome["actions"] += _do_wrong_number(phone, record_uuid, body, context, matches)
         outcome["action"] = "wrong_number"

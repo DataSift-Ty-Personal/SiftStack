@@ -254,7 +254,7 @@ def run(check, tmp: Path) -> None:
     old_clients = (qs.CRM, qs.SIFTMAP, qs.ZILLOW)
     try:
         with _env(AGENTS_ZILLOW_CALL_USD="0.01", AGENTS_COMPS_DAILY_USD="5", AGENTS_DEALS_RUN_CAP_USD="2",
-                  AGENTS_DEAL_READS_PER_DAY="1000", AGENTS_DEALS_DIR=None, AGENTS_ZILLOW_COMPS=None,
+                  AGENTS_DEAL_READS_PER_DAY="1000", AGENTS_DEALS_DIR=None, AGENTS_ZILLOW_COMPS="1",
                   SIFTSTACK_DEAL_ROOM_CLIENTS=None, OPENWEBNINJA_API_KEY=None):
             _run(check, tmp, qs, dbm, dbp)
     finally:
@@ -281,6 +281,7 @@ def _run(check, tmp, qs, dbm, dbp) -> None:
     _deed_comps(check, cp, tmp)
     _lead_and_hygiene(check, pw, crm)
     _quick_screen(check, qs, crm, fake_map)
+    _skill_data(check, qs, crm)
     full = _underwrite(check, qs, pw, crm, fake_map, tmp)
     _offer_sheet(check, qs, tmp, full)
     _deal_buyers(check, qs, dbm, dbp, crm, fake_map, tmp)
@@ -519,6 +520,31 @@ def _lead_and_hygiene(check, pw, crm) -> None:
 
 # ------------------------------------------------------------------------------- quick screen
 
+def _skill_data(check, qs, crm) -> None:
+    """The comps_data tool's work (quick_screen.dataset): the data step of the comping and rehab skills,
+    run inside an employee's turn the way the skill pulls its data in Claude Code."""
+    print("  the comp data a skill run works from")
+    from . import sandbox
+    ask = _task("ask", "", {}, source="slack")
+    crm.notes[U_SUBJ] = "Seller says roof is 2019. Call her at (865) 555-0142 after 5."
+    before = list(crm.writes)
+    res = qs.dataset(ask, {"address": "12 Testwood Dr", "notes": "3/1, 1,500 sqft, built 1955"})
+    check(res["ok"] and res["subject"]["uuid"] == U_SUBJ and res["subject"]["link"].endswith("/records/properties/" + U_SUBJ)
+          and res["comps"] and res["engine"]["tight_arv"] > 0 and res["subject"]["sqft"] == 1500,
+          "the data step gives the subject (notes beat the record), its link, every comp and the engine's own value")
+    check("555-0142" not in json.dumps(res) and "[number removed]" in res["subject"]["record_notes"]
+          and "roof is 2019" in res["subject"]["record_notes"],
+          "the record's notes come along for the skill, with any phone number taken out")
+    p = sandbox.resolve_input(res["files"]["comps_csv"], ask, "sales")
+    j = sandbox.resolve_input(res["files"]["subject_json"], ask, "sales")
+    check(p.read_text(encoding="utf-8").startswith("Address,") and json.loads(j.read_text(encoding="utf-8"))["engine"],
+          "the comps and the subject land in the turn's exports, where run_python takes them")
+    check(crm.writes == before, "the data step writes nothing to the record")
+    crm.notes.pop(U_SUBJ, None)
+    miss = qs.dataset(ask, {"address": "99 Nowhere Test Rd"})
+    check(not miss["ok"] and miss.get("why"), "a house that is not a record is said in one line, not raised")
+
+
 def _quick_screen(check, qs, crm, fake_map) -> None:
     print("  quick screen")
     zillow = qs.ZILLOW
@@ -558,6 +584,13 @@ def _quick_screen(check, qs, crm, fake_map) -> None:
     check(r5["ok"] and "OPENWEBNINJA_API_KEY is not set" in r5["zillow"]["why"],
           "no Zillow key on the box is said in one line, and the free comps still screen")
     qs.ZILLOW = zillow
+    zillow.calls = 0
+    with _env(AGENTS_ZILLOW_COMPS=None):
+        r_off = qs.run(_task("quick_screen", U_SUBJ, {"record": U_SUBJ}))
+    check(r_off["ok"] and zillow.calls == 0 and not r_off["zillow"]["why"] and r_off["value"] > 0
+          and not r_off["zillow"].get("spent_usd"),
+          "with the switch unset (the default) a comp ask buys no Zillow data, says nothing about it, and values the "
+          "house off SiftMap's deeds")
     r6 = qs.run(_task("quick_screen", U_SUBJ, {"record": U_SUBJ, "notes": "3/1, 1,500 sqft, built 1955, seller is relocating"}))
     check("1,500 sqft" in r6["from_notes"] and r6["context"] == "3/1, 1,500 sqft, built 1955, seller is relocating",
           "card facts in the notes beat the record, and the notes are carried as the operator wrote them")

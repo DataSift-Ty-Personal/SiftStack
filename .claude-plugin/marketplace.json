@@ -11,7 +11,7 @@
     {
       "name": "siftstack-all",
       "source": "./marketplace/bundles/siftstack-all",
-      "description": "The whole SiftStack REI skill library in one install. Installs 27 plugins.",
+      "description": "The whole SiftStack REI skill library in one install. Installs 28 plugins.",
       "category": "Bundles",
       "keywords": [
         "bundle",
@@ -53,7 +53,7 @@
     {
       "name": "siftstack-deal-analysis",
       "source": "./marketplace/bundles/siftstack-deal-analysis",
-      "description": "Every SiftStack Deal Analysis skill in one install. Installs 7 plugins.",
+      "description": "Every SiftStack Deal Analysis skill in one install. Installs 8 plugins.",
       "category": "Bundles",
       "keywords": [
         "bundle",
@@ -255,6 +255,24 @@
         "datasift",
         "real-estate",
         "tier-api"
+      ],
+      "author": {
+        "name": "DataSift"
+      },
+      "strict": false,
+      "skills": [
+        "./"
+      ]
+    },
+    {
+      "name": "mls-offer-engine",
+      "source": "./skills/mls-offer-engine",
+      "description": "Make a cash offer and a creative offer on every active MLS listing in a county or a set of ZIP codes, on your own DataSift Open API key.",
+      "category": "Deal Analysis",
+      "keywords": [
+        "datasift",
+        "real-estate",
+        "tier-account"
       ],
       "author": {
         "name": "DataSift"

@@ -333,7 +333,7 @@ def annotate(rows: list[dict], scratch: str, api=None, commit: bool = False, lim
             continue
         try:
             if note:
-                api.call("/api/internal/property/%s/add-notes/" % uuid, "POST", {"notes": note[:1900]})
+                up.add_note(api, uuid, note[:1900])
             if debt:
                 idx = idx or up.field_index(api)
                 label = up.field_map().get("Mortgage Debt")

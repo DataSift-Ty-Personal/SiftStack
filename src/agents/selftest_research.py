@@ -42,7 +42,8 @@ PLAYBOOK = {
         "heir_lane": {"kind": "heirlane", "owner": "ops", "mode": "live", "schedule": "08:20 Mon-Fri",
                       "gate_allow": ["heir", "in_research"], "heir_caller": "Dana"},
         "obituary_lane": {"kind": "obituary", "owner": "research", "mode": "live", "schedule": "09:30 Mon-Fri",
-                          "presets": ["OB - All"], "gate_allow": ["deceased"], "call_presets": ["OB - Call"]},
+                          "presets": ["OB - All"], "gate_allow": ["deceased"], "call_presets": ["OB - Call"],
+                          "ready_tag": "Obituary 30+ Days"},
         "probate_honest": {"kind": "probate", "owner": "analysis", "mode": "live", "schedule": "Mon 07:40"},
         "paid_lookups": {"kind": "paidlookup", "owner": "ops", "mode": "live", "schedule": "08:30 Mon-Fri",
                          "presets": ["PL - No Number"], "assistant": "Dana"},
@@ -555,6 +556,28 @@ def _run(check, tmp, store, policy, registry) -> None:
     check(json.loads(store.kv_get(rq.KV_LAST))["waiting"] == 3 and "3 waiting" in rq.digest_line(),
           "the queue's last numbers are kept for the morning readout")
 
+    # A record the search still lists but the record route answers 404 (deleted or merged in DataSift):
+    # on 2026-11-16 one such record failed the whole stage every half hour.
+    print("  queue: a record that left the account")
+
+    class GoneCRM(RCRM):
+        gone_reads = 0
+
+        def record(self, u):
+            if u == "q_gone":
+                self.gone_reads += 1
+                raise NotFound("HTTP 404 on GET /api/internal/property/q_gone/")
+            return super().record(u)
+
+    gc = GoneCRM([R("q_gone", "131 Queue St", tags=["RQ", "FTM"], lists=["Probate"]),
+                  R("q_here", "132 Queue St", tags=["RQ", "FTM"], lists=["Probate"])])
+    g1 = sweep.run("research_queue", crm=gc, now=T0 + timedelta(days=3), pol=pol, enqueue=enq, plan=True)
+    check(g1.tally.get("records no longer in the account (skipped for 30 days)") == 1 and gc.gone_reads == 1
+          and not any("q_gone" in p or "could not" in p for p in g1.problems),
+          "a record that answers 404 is remembered as gone and the run carries on")
+    sweep.run("research_queue", crm=gc, now=T0 + timedelta(days=3, hours=1), pol=pol, enqueue=enq, plan=True)
+    check(gc.gone_reads == 1, "the gone record is not read again on the next run")
+
     # the budget
     print("  queue budget")
     _wipe(store)
@@ -619,6 +642,27 @@ def _run(check, tmp, store, policy, registry) -> None:
     capped_reads = sweep.run("research_queue", crm=crm, now=T0, pol=with_stage("research_queue", max_reads=3), enqueue=enq, plan=True)
     check(crm.reads == 3 and capped_reads.tally.get("not ranked yet (opened on a later run)") == 17,
           "a run opens at most max_reads records to rank them, and says how many it has not ranked yet")
+
+    # one rank class held to a few handoffs a day (class_daily): the Knox tax sale redemptions, 2026-11-20
+    print("  queue: a class held to a few a day")
+    from .autopilot import taxsale
+    _wipe(store)
+    reds = [R("q_red%d" % i, "%d Redeem St" % (140 + i), tags=["RQ"]) for i in range(3)]
+    crm = RCRM(reds + [R("q_prob9", "150 Queue St", tags=["RQ", "FTM"], lists=["Probate"])])
+    for i in range(3):
+        ledger.set_fact("q_red%d" % i, taxsale.FACT, {"until": _day(30 + 10 * i), "sale": _day(-170)})
+    handed.clear()
+    one = with_stage("research_queue", class_daily={"tax_redemption": 1})
+    c1 = sweep.run("research_queue", crm=crm, now=T0, pol=one, enqueue=enq)
+    check([h[2] for h in handed] == ["q_red0", "q_prob9"]
+          and c1.tally.get("held to tomorrow: tax sale, can still redeem takes 1 a day") == 2,
+          "a class held to one a day hands its soonest deadline only, and the rest of the queue still runs: %s"
+          % [h[2] for h in handed])
+    c2 = sweep.run("research_queue", crm=crm, now=T0 + timedelta(minutes=30), pol=one, enqueue=enq)
+    check(len(handed) == 2 and c2.tally.get("held to tomorrow: tax sale, can still redeem takes 1 a day") == 2,
+          "a second run the same day counts the day's live handoffs and hands no second one")
+    sweep.run("research_queue", crm=crm, now=T0 + timedelta(days=1), pol=one, enqueue=enq)
+    check([h[2] for h in handed] == ["q_red0", "q_prob9", "q_red1"], "the next day the next deadline goes")
 
     # the second check, the gate, repeats, cards
     print("  queue checks and cards")
@@ -1273,6 +1317,11 @@ def _obituaries(check, tmp, store, policy, pol, with_stage) -> None:
     check("Probate Filed" in crm.recs["o_twin"]["tags"] and "Probate" not in crm.recs["o_twin"]["lists"]
           and "Probate Filed" not in crm.recs["p_twin"]["tags"],
           "a probate record at the same street marks the obituary record Probate Filed; it is never put on the Probate list itself")
+    rt = obituary.options(pol.stage("obituary_lane"))["ready_tag"]
+    check(bool(rt) and all(rt in crm.recs[u]["tags"] for u in ("o_soft", "o_month", "o_np", "o_done"))
+          and not any(rt in crm.recs[u]["tags"] for u in ("o_hold", "o_called", "o_prob", "o_lead", "o_nodate", "o_twin")),
+          "a record thirty days past the death earns the estate tag %r; one inside the month, a probate, a lead or one "
+          "with no date does not" % rt)
     check(not [w for w in crm.writes if w[0] in ("status", "assign", "upsert")] and all(w[0] in ("add_tags", "remove_tags", "message") for w in crm.writes),
           "the pipeline writes tags and a note and nothing else: no status, no owner, no mark of a death")
     again = sweep.run("obituary_lane", crm=crm, now=T0 + timedelta(hours=2), pol=pol)

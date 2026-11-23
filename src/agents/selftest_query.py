@@ -461,9 +461,10 @@ def _records(check, query) -> None:
           "Probate records with no phone are counted through the search's own list and phone filters")
     check(sent == {"any_lists": [LISTS["Probate"]], "phone": 0, "property_type": "clean"},
           "the search is sent only proven keys: the list by its uuid, phone 0, and the clean record type")
-    check(len(r["rows"]) == query.ROWS_DEFAULT and set(r["rows"][0]) == {"uuid", "street", "city", "zip", "status",
-                                                                          "lists", "tags", "has_phones"},
-          "ten example rows by default, each built from a whitelist of fields")
+    check(len(r["rows"]) == query.ROWS_DEFAULT and set(r["rows"][0]) == {"uuid", "link", "street", "city", "zip", "status",
+                                                                          "lists", "tags", "has_phones"}
+          and r["rows"][0]["link"] == "https://app.reisift.io/records/properties/%s" % r["rows"][0]["uuid"],
+          "ten example rows by default, each built from a whitelist of fields, each with its record link")
     out = json.dumps(r)
     check("8650000" not in out and "doNotCall" not in out and "Testowner" not in out and "Quincy" not in out,
           "no phone number, no do-not-call flag and no owner name leaves the tool")
@@ -902,6 +903,12 @@ def _team(check, query, store) -> None:
     check(r["stage"]["staged_batches"] == [{"batch": staged, "kind": "mail", "records": 2, "usd": 3.78,
                                            "created": r["stage"]["staged_batches"][0]["created"]}],
           "one stage shows its batches waiting for a person")
+    store.kv_set("autopilot:last:q_mail", json.dumps({
+        "at": NOW.isoformat(timespec="seconds"), "live": False, "found": 10, "acted": 0, "problems": [],
+        "head": "10 owners called in", "lines": ["%d Example St: missed call" % i for i in range(1, 11)]}))
+    r = query.answer("team_query", {"about": "stage", "stage": "q_mail"})
+    check(len(r["stage"]["lines"]) == 10 and r["stage"]["lines"][9].startswith("10 Example St"),
+          "one stage gives every line of its last run, the ones its six-line Slack report leaves out")
     why = _refused(query, "team_query", {"about": "stage", "stage": "q_asign"})
     check("q_assign" in why, "a mistyped stage is refused with the close ids")
     check("needs stage" in _refused(query, "team_query", {"about": "stage"}), "about=stage needs a stage")

@@ -10,7 +10,9 @@ import llm_client
 
 logger = logging.getLogger(__name__)
 
-MODEL = "claude-haiku-4-5-20251001"
+import model_registry  # noqa: E402
+
+MODEL = model_registry.model("extraction")
 MAX_TOKENS = 256
 
 SYSTEM_PROMPT = (

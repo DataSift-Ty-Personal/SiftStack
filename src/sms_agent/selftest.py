@@ -1912,6 +1912,62 @@ def run(live_model: bool = False) -> int:
     kept = {t: classify.classify(t).intent for t in ("Is this a scam?", "who is this?")}
     r.check("asking if it is a scam is still a question", set(kept.values()) == {"ASKING_WHO"}, str(kept))
 
+    # ---- 2026-11-19: three replies that were leads, filed as anything but ----
+    # The model filed "Yes - but my HOA has filed $248,119.21 in liens on my $200,000 condo" ESCALATE (it
+    # was told to prefer ESCALATE over INTERESTED when torn), and ESCALATE is filed quietly as Mail Only.
+    from . import dispositions as _disp
+
+    condo = "Yes - but my HOA has filed $248,119.21 in liens on my $200,000 condo."
+    saved_llm_19 = classify.classify_llm
+    classify.classify_llm = lambda text, history=None: classify.Classification("ESCALATE", 0.6, "llm", "stub: liens")
+    try:
+        got = classify.classify(condo)
+        r.check("a yes with liens attached is a hand raise, never the quiet ESCALATE",
+                got.intent == "INTERESTED" and "hand raise" in got.rationale, f"{got.intent} {got.rationale[:80]}")
+        r.check("a yes that names a lawyer keeps the legal handling (the rules decide it, not the guard)",
+                classify.classify("Yes, talk to my lawyer").intent == "ESCALATE")
+        r.check("a sensitive reply that is not a yes stays where the model put it",
+                classify.classify("We are dealing with a lot right now").intent == "ESCALATE")
+    finally:
+        classify.classify_llm = saved_llm_19
+    r.check("'Who do you represent' is a question about us, by rule",
+            classify.classify("Who do you represent").intent == "ASKING_WHO")
+    heirs = ("I'm not the owner.  My parents were and when they passed there was no will",
+             "It was my father in law he passed 9 yrs ago,my wife was executor  of his estate",
+             "It was willed to me, but I do not own it.",
+             "It's my dads", "You would have to talk to my brother Sam Testerly.")
+    fam = {t[:30]: _disp.is_family(t) for t in heirs}
+    r.check("an heir speaking about the estate is family", all(fam.values()), str(fam))
+    strangers = ("Wrong number", "I don't own that place", "My ex wife is the owner of that property.",
+                 "This is not Thomas.", "My parents passed, leave us alone", "It's my number",
+                 "Talk to my lawyer", "Not at all and never will! Plus I don't know Charles")
+    fam = {t[:30]: _disp.is_family(t) for t in strangers}
+    r.check("a stranger, and family asking to be left alone, are not handed over as family",
+            not any(fam.values()), str(fam))
+    r.check("what an owner owes is not an ask; an ask still is",
+            sc_inbound.asking_price(condo) == 0 and sc_inbound.asking_price("I'd take $155,000") == 155000
+            and sc_inbound.asking_price("Make it 180k, I owe about $60,000") == 0,
+            f"{sc_inbound.asking_price(condo)} {sc_inbound.asking_price('I would take $155,000')}")
+    ph = "8650019001"
+    store.map_phone(ph, record_uuid="rec-heir-1", context=ctx)
+    slack_before = len(stub.slack)
+    out = sc2(ph, heirs[0], "c-heir-1")
+    queued = [tuple(x) for x in store._conn().execute(
+        "SELECT kind, status FROM sc_outbox WHERE phone=? AND kind IN ('reply','dnc')", (ph,))]
+    r.check("an heir on the live Smarter Contact path goes to a person: no wrong-number apology, no do-not-contact",
+            out.get("action") == "relative" and not queued and not store.is_suppressed(ph)
+            and len(stub.slack) > slack_before and "relative of the owner" in stub.slack[-1],
+            f"{out.get('action')} {queued} {out.get('actions')}")
+    r.check("family reporting the owners' death puts Verify Deceased on the record, so no text or call asks for the dead",
+            any(w[0] == "add_tags" and w[1][0] == "rec-heir-1" and config.TAG_VERIFY_DECEASED in w[1][1]
+                for w in stub.crm_writes), str([w for w in stub.crm_writes if w[1][:1] == ("rec-heir-1",)])[:300])
+    ph2 = "8650019002"
+    store.map_phone(ph2, record_uuid="rec-heir-2", context=ctx)
+    sc2(ph2, "This is his daughter, you can text me about the house", "c-heir-2")
+    r.check("family with no death in the message is a relative but puts no death hold on the record",
+            not any(w[0] == "add_tags" and w[1][0] == "rec-heir-2" and config.TAG_VERIFY_DECEASED in w[1][1]
+                    for w in stub.crm_writes))
+
     class _Resp:
         def __init__(self, data):
             self.ok, self._data = True, data

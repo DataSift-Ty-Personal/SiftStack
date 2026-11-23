@@ -1,0 +1,35 @@
+# The issue fixer's own box (tools/issue_fixer, fly.fixer.toml). It sorts each new post in the SiftStack
+# issues channel and fixes, tests and ships a bug on its own, so it needs what the workstation had:
+# Python with every package the repo's test suites use (deploy/requirements-fixer.txt), git, flyctl and
+# Claude Code, at the versions the fixer was tested with on 2026-11-18. Its code runs from this image; the
+# repo it fixes is its own clone on the volume (/data/repo).
+FROM python:3.12-slim
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends git openssh-client curl ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+# flyctl 0.5.8 and Claude Code 2.1.319, the versions the workstation ran.
+RUN curl -fsSL https://fly.io/install.sh | FLYCTL_INSTALL=/usr/local sh -s 0.5.8 \
+ && ln -sf /usr/local/bin/flyctl /usr/local/bin/fly
+RUN curl -fsSL https://claude.ai/install.sh | bash -s 2.1.319 \
+ && ln -sf /root/.local/bin/claude /usr/local/bin/claude
+
+WORKDIR /app
+COPY deploy/requirements-fixer.txt ./requirements-fixer.txt
+RUN pip install --no-cache-dir -r requirements-fixer.txt
+
+COPY tools/issue_fixer/ ./tools/issue_fixer/
+COPY deploy/fixer_entry.sh ./fixer_entry.sh
+# The watch (tools/issue_fixer/watch.py) judges the brain with the GitHub watchdog's own verdict.
+COPY deploy/agents_heartbeat.py ./deploy/agents_heartbeat.py
+
+ENV SIFTSTACK_MAIN=/data/repo \
+    ISSUE_FIXER_STATE=/data/state \
+    ISSUE_FIXER_WORKTREE=/data/work/issue_fixer \
+    ISSUE_FIXER_DEPLOY_TREE=/data/work/fixer_deploy \
+    ISSUE_FIXER_PYTHON=/usr/local/bin/python \
+    ISSUE_FIXER_OWN_CLONE=1 \
+    PYTHONUNBUFFERED=1
+
+CMD ["sh", "/app/fixer_entry.sh"]

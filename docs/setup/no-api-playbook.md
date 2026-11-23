@@ -232,6 +232,43 @@ signal in the calls that were real.
 
 ---
 
+## MLS offers by hand
+<a id="mls-offers-by-hand"></a>
+
+The `mls-offer-engine` skill screens every listing in a market on your DataSift
+Open API key. Without the key, the method still works on a smaller scale, and
+it is the method the skill was built from.
+
+1. **Pull the listings.** On Zillow or Realtor.com, filter your area to
+   single-family homes for sale, sort by days on market, and keep the ones
+   listed 90 days or longer or cut in price. Screenshot the list and hand it to
+   Claude to turn into a table.
+2. **Price the cash offer off what investors paid.** For each house, find two
+   or three nearby sales to investors in the last two years (county deeds, or
+   houses that resold after a renovation). The median price per square foot
+   times the house's size, less your fee, is the number. Cap it at 70% of list.
+   Anything under half of list waits for a price cut.
+3. **Look for a creative offer.** The county register of deeds shows the
+   seller's mortgage: amount, date and lender. A loan from 2020 or 2021 is very
+   likely under 4%. When the seller owes close to the list price, offer to keep
+   the loan in place, pay them a small amount at closing and cover the
+   commission.
+4. **Call the listing agent.** Say you are a local investor, give both numbers,
+   ask one question. Never contact the homeowner of a listed house.
+
+Practical notes:
+
+- Re-check every listing's status before you call. Listings go pending fast.
+- Write contracts "and/or assigns" and tell the agent you may assign. Check
+  your state's wholesaling rules with a closing attorney.
+- A subject-to keeps the loan in the seller's name, and the lender can call it
+  due. Use a closing attorney who does them.
+
+**When to get the key.** Once you want to work more than about 20 listings a
+week. The screen covers a whole county in minutes and reads the loans for you.
+
+---
+
 ## What has no substitute
 
 Being honest about the limits:

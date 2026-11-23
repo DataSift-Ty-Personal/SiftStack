@@ -24,7 +24,9 @@ from notice_parser import NoticeData
 
 logger = logging.getLogger(__name__)
 
-MODEL = "claude-haiku-4-5-20251001"
+import model_registry  # noqa: E402
+
+MODEL = model_registry.model("extraction")
 MAX_TOKENS = 256
 SEARCH_DELAY_MIN = 0.5
 SEARCH_DELAY_MAX = 1.0
@@ -234,13 +236,9 @@ def _parse_entity_with_llm(
 
     try:
         client = anthropic.Anthropic(api_key=api_key)
-        response = client.messages.create(
-            model=MODEL,
-            max_tokens=MAX_TOKENS,
-            system=ENTITY_SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        result_text = response.content[0].text.strip()
+        import llm_client
+        result_text = llm_client.ask_text(client, model=MODEL, system=ENTITY_SYSTEM_PROMPT, prompt=prompt,
+                                          max_tokens=MAX_TOKENS)
         # Strip markdown code fences if present
         result_text = re.sub(r"^```(?:json)?\s*", "", result_text)
         result_text = re.sub(r"\s*```$", "", result_text)

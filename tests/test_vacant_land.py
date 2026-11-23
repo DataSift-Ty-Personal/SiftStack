@@ -220,6 +220,146 @@ plan = v.pull_plan([{"mailable": True, "sid": "1", "tier": "A"}, {"mailable": Tr
                     {"mailable": False, "sid": "3", "tier": "B"}, {"mailable": True, "sid": None, "tier": "B"}],
                    "Union OH")
 check(plan == {"list": "Union OH - Buildable Lots", "tiers": {"A": ["1"]}}, plan)
+plan = v.pull_plan([{"mailable": False, "pull_candidate": True, "sid": "4", "tier": "C"},
+                    {"mailable": False, "pull_candidate": True, "sid": "5", "tier": "C", "saved": True}], "Union OH")
+check(plan["tiers"] == {"C": ["4"]}, "a pull candidate not yet in the account is in the pull plan: %s" % plan)
+
+# ---- owners from the account: a DataSift record in the shape a SiftMap detail had (invented record)
+REC = {"uuid": "rec-1", "apn": "9900100001", "status": "not_interested",
+       "owner": {"first_name": "Avery", "last_name": "Testowner", "company": "", "deceased": False,
+                 "address": {"street": "1 Example Rd", "city": "Sampleville", "state": "fl", "postal_code": "33001-0001"}},
+       "secondary_owners": [{"first_name": "Blake", "last_name": "Testowner"}],
+       "tags": [{"title": "Do Not Market"}], "lists": [{"title": "Sample OH - Buildable Lots"}],
+       "tax_delinquent_value": "812.40", "tax_delinquent_year": 2025, "last_sold": "2001-04-02",
+       "last_sale_price": 18000, "lot_type": "Standard"}
+fr = v.flatten_record(REC)
+check(fr["mail"] == "1 Example Rd, Sampleville, FL 33001", fr["mail"])
+check(fr["owner_name"] == "Avery Testowner" and fr["co_owners"] == ["Blake Testowner"], fr)
+check(fr["tax_delinquent"] and fr["tax_amount"] == 812.4 and fr["sale_date"] == "2001-04-02", fr)
+check(fr["do_not_mail"] and fr["dead_status"] and fr["record_uuid"] == "rec-1", "do not market and a dead status read")
+check(v.flatten_record({"owner": {"company": "Sample Land LLC", "address": {"city": "X"}}})["mail"] == "",
+      "no mailing street means no mailing address, not a city alone")
+check(v.flatten_record({"owner": {"company": "Sample Land LLC"}})["owner_name"] == "Sample Land LLC", "a company owner")
+m = v.motivation({"owner_cat": "person"}, fr, {"43040"}, as_of=dt.date(2026, 11, 23))
+check("Out-of-state owner" in m["segment_tags"] and "Tax delinquent" in m["segment_tags"]
+      and "Held 20+ years" in m["segment_tags"], "a record scores like a detail: %s" % m["segment_tags"])
+
+row, src_ = v.owner_row("7", {"7": dict(fr, assessed_land=None)}, {"7": {"assessed_land": 7000, "owner_name": "Old Name"}})
+check(src_ == "account" and row["owner_name"] == "Avery Testowner" and row["assessed_land"] == 7000,
+      "the record wins on what it fills, a cached detail fills the rest: %s" % row)
+check(v.owner_row("8", {}, {"8": {"owner_name": "Cached"}})[1] == "siftmap cache", "a cached detail is the fallback")
+check(v.owner_row("9", {}, {}) == (None, ""), "no owner anywhere")
+
+# ---- score: record, cached detail, and a lot with no owner yet (an invented three-lot county)
+import json as _json
+import tempfile as _tempfile
+_TMP = Path(_tempfile.mkdtemp())
+_C = {"fips": "99001", "name": "Sample", "state": "OH", "label": "Sample OH", "slug": "sample_oh"}
+_D = _TMP / "sample_oh"
+(_D / "layers").mkdir(parents=True)
+(_D / "layers" / "parcels.json").write_text(_json.dumps([{"attributes": {"ZipCode": "SAMPLEVILLE OH 43040"}}]))
+
+
+def _lot(camano, sid, **kw):
+    f = {"camano": camano, "sid": sid, "verdict": "BUILDABLE", "build_score": 80, "owner_cat": "person",
+         "flags": [], "hard": [], "zip": "43040", "owner_lots_in_window": 1, "side_lot_of": "",
+         "last_sale_date": "1999-01-01", "saved": False}
+    f.update(kw)
+    return f
+
+
+_D.joinpath("screen.json").write_text(_json.dumps([
+    _lot("9900100001", "11", saved=True, saved_uuid="rec-1"),
+    _lot("9900100002", "12"),
+    _lot("9900100003", "13"),
+    _lot("9900100004", "14", last_sale_date="2026-06-01"),
+]))
+_D.joinpath("records.json").write_text(_json.dumps({"11": dict(fr, apn="9900100001", do_not_mail=False,
+                                                               dead_status=False)}))
+_D.joinpath("details.json").write_text(_json.dumps({"12": {"apn": "9900100002", "owner_name": "Casey Sample",
+                                                           "mail": "2 Sample Ln, Plain City, OH 43064"}}))
+_D.joinpath("saved_ids.json").write_text(_json.dumps({"saved": {"11": "rec-1"}}))
+_keep = v.OUT_ROOT
+v.OUT_ROOT = str(_TMP)
+try:
+    v.phase_score(_C, None)
+    got = {f["sid"]: f for f in _json.loads(_D.joinpath("scored.json").read_text())}
+finally:
+    v.OUT_ROOT = _keep
+check(got["11"]["owner_source"] == "account" and got["11"]["mailable"] and not got["11"]["pull_candidate"],
+      "a record in the account is the owner and is mailable: %s" % {k: got["11"].get(k) for k in ("owner_source", "mailable")})
+check(got["12"]["owner_source"] == "siftmap cache" and got["12"]["mailable"], "a cached detail still mails")
+check(got["13"]["owner_source"] == "" and not got["13"]["mailable"] and got["13"]["pull_candidate"],
+      "no owner yet: not mailable, a pull candidate")
+check(not got["14"]["pull_candidate"], "a lot bought in the last 2 years is not pulled")
+check([s for s in ("11", "12", "13", "14") if got[s]["to_pull"]] == ["12", "13"],
+      "the pull list: mailable lots that are not records, and lots whose owner is not visible yet")
+
+
+# ---- hydrate in account mode makes no SiftMap detail read (fakes: which ids are records, the record read)
+class _NoDetail:
+    def _request(self, *a, **kw):
+        return {"data": []}
+
+    def get_detail(self, *a, **kw):
+        raise AssertionError("account mode made a SiftMap detail read")
+
+
+class _FakeCRM:
+    reads: list = []
+
+    def get_record(self, uuid):
+        self.reads.append(uuid)
+        if uuid == "rec-gone":
+            raise RuntimeError("HTTP 404 on GET /api/internal/property/rec-gone/: not found")
+        return dict(REC, uuid=uuid)
+
+
+import types as _types
+
+
+class _SearchById:
+    """SiftMap's ids-typed search: 11 and 13 are records, 12 is not, 99 is unknown to SiftMap."""
+    bodies: list = []
+
+    def _request(self, path, method="GET", body=None, **kw):
+        self.bodies.append(body)
+        rows = {"11": {"id": 11, "saved": True, "saved_uuid": "rec-1"}, "12": {"id": 12, "saved": False},
+                "13": {"id": 13, "saved": True, "saved_uuid": "rec-gone"}}
+        return {"data": [rows[a["search"]] for a in body["addresses"] if a["search"] in rows]}
+
+    def get_detail(self, *a, **kw):
+        raise AssertionError("account mode made a SiftMap detail read")
+
+
+saved, unknown = v.saved_now(_SearchById(), ["11", "12", "13", "99"])
+check(saved == {"11": "rec-1", "13": "rec-gone"} and unknown == ["99"], (saved, unknown))
+check(all(a["type"] == "ids" for a in _SearchById.bodies[0]["addresses"]) and _SearchById.bodies[0]["filters"] == {},
+      "the lookup is an ids-typed search")
+check(len(v.saved_now(_SearchById(), [str(1000 + i) for i in range(250)])[1]) == 250 and len(_SearchById.bodies) == 4,
+      "100 ids a search")
+_keep_crm = v._crm
+v._crm = lambda: _FakeCRM()
+v.OUT_ROOT = str(_TMP)
+try:
+    _D.joinpath("records.json").write_text(_json.dumps({"12": {"read_at": "2026-11-01T00:00:00"}}))
+    args = _types.SimpleNamespace(owners="account", limit=0, record_days=7, refresh_owners=False)
+    rc = v._hydrate_account(_C, args, _SearchById(), ["11", "12", "13"])
+    recs = _json.loads(_D.joinpath("records.json").read_text())
+    sv_ = _json.loads(_D.joinpath("saved_ids.json").read_text())
+finally:
+    v.OUT_ROOT, v._crm = _keep, _keep_crm
+check(rc == 0 and sorted(_FakeCRM.reads) == ["rec-1", "rec-gone"], "only lots that are records are read: %s" % _FakeCRM.reads)
+check(set(recs) == {"11"} and recs["11"]["record_uuid"] == "rec-1",
+      "a lot that left the account and a 404 record are dropped: %s" % sorted(recs))
+check(sv_["saved"] == {"11": "rec-1", "13": "rec-gone"}, "which lots are records is kept for score")
+
+# ---- the output folder follows VACANT_LAND_DIR (the box keeps it on its volume)
+import os as _os
+import subprocess as _sp
+out = _sp.run([sys.executable, "-c", "import vacant_land as v; print(v.OUT_ROOT)"], capture_output=True, text=True,
+              cwd=str(Path(__file__).resolve().parents[1] / "src"), env=dict(_os.environ, VACANT_LAND_DIR="/data/vl"))
+check(out.stdout.strip() == "/data/vl", "VACANT_LAND_DIR moves the output: %r %s" % (out.stdout, out.stderr[-300:]))
 
 # ---- house rules on the source itself
 src = (Path(__file__).resolve().parents[1] / "src" / "vacant_land.py").read_text(encoding="utf-8")

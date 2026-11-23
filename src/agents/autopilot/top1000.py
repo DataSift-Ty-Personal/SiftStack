@@ -25,6 +25,30 @@ an upside-down house, a house over $700,000, and anything the suppression gate w
 caller (a litigator, an opt-out, a possible death, mail only). An owner who is a lead, opted out or
 in a higher lane on ANY house is left out whole.
 
+ALWAYS IN (the owner's ruling, 2026-11-17: condemned, code violation and eviction records go in the
+Top 1,000 "no matter what"). The block's `always_include` names lists and tags; an owner with a house
+on one of them takes a slot before the ranking fills the rest. Rank, the buy box, the discount-room
+floor and the people-only rule do not apply to that house, so it is judged on its own full record,
+and read even when the month's sweep never saw it. The hard holds still do (always_hold): a house in
+a higher lane (first to market, an obituary, a live lead), sold, a finished status such as Not
+Interested, Do Not Market, a litigator, an opt-out, a possible death, research under way, listed, not
+a single-family house. A hold about the person leaves the owner out whole; mail only and the end of
+the call round, which close one channel, hold nothing. The owner's other houses come in on the
+ranking's own rules, so the owner sits in one lane. Unset, nobody is put in this way.
+
+COUNTY FEEDS, DAILY (Ty, 2026-11-20: "make sure that the county feeds are all getting sent through
+the smarter contact flow ... on the top 1,000 ... It doesn't have to be perfectly top 1,000 if there
+are more properties that fit"). A stage of this kind with `job: include` runs every morning after the
+first-to-market box's pull and tags the always-in houses that arrived since, so a county record
+reaches the Top 1,000 texts the day it lands instead of on the 1st of next month. It reads its lists
+from the monthly stage (`include_from`), judges each house with the same hard holds (always_hold),
+writes only additions (the month's run keeps removing), and `recent_lists` brings in a list's NEW
+arrivals only: a record on the list that carries a `pulled_<date>` tag from the last `recent_days`
+(the county pull stamps one on every record it uploads), so the Liens backlog stays on the ranking
+while each day's new liens go straight in. `always_on_top: true` puts the always-in owners on top
+of `size` instead of inside it, and `always_people_only: true` keeps the people-only rule for them
+too (the owner's rule of 2026-11-14), so a company or trust on a county list is left out.
+
 WHERE THE NUMBERS COME FROM, and what it costs. SiftMap's documented search (POST
 /properties/search/, in_my_account_mode in) returns, for every house already in the account, the
 value, equity, the investor and realtor scores, the distress flags, the record's id and its tags
@@ -55,6 +79,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import sys
 from collections import Counter
 from datetime import datetime, timedelta, timezone
@@ -71,7 +96,7 @@ if str(SRC) not in sys.path:
 
 from agents import config, store  # noqa: E402
 from agents.autopilot import budget, gate, lanes, ledger, windows  # noqa: E402
-from agents.autopilot.stages import Ctx, Summary  # noqa: E402
+from agents.autopilot.stages import Ctx, Summary, addr  # noqa: E402
 
 ALLOW_ENV = "TOP1000_ALLOW"
 TRACK = "top1000"
@@ -115,7 +140,27 @@ DEFAULTS = {
     # name, an LLC, corporation, trust, church, bank or partnership in the name, or no full name) is
     # left out whole. Measured on the first deal-odds plan: 160 of the 1,000 were entities.
     "individuals_only": True,
+    # Lists and tags whose records are in whatever their rank ({lists: [...], tags: [...]}, titles as
+    # the account holds them; see ALWAYS IN above). Empty: nobody is put in this way.
+    "always_include": {},
+    # Always-in owners on top of `size` instead of taking its slots first (Ty, 2026-11-20: the Top 1,000
+    # "doesn't have to be perfectly" 1,000 when more county records fit).
+    "always_on_top": False,
+    # The people-only rule for always-in houses too (a company or trust on a county list is left out).
+    "always_people_only": False,
+    # job: include (COUNTY FEEDS, DAILY above): the monthly stage whose always_include it reads, the lists
+    # whose NEW arrivals only come in, how recent counts, and how much one run may read and write.
+    "include_from": "top1000_refresh",
+    "recent_lists": [],
+    "recent_days": 30,
+    "include_reads": 250,
+    "include_recheck_days": 14,
 }
+# A hold that closes only one channel keeps no always-in house out: mail only (it is still mailed) and
+# the call round being over (it stays in the lane). Every other reason the gate gives against assigning
+# the house does, as the owner's hand run of 2026-11-17 chose them (ledger run forcetopbc8fd2).
+ALWAYS_SOFT = frozenset({"mail_only", "exhausted"})
+ALWAYS_KINDS = ("lists", "tags")
 POOL_VERSION = 2      # the pool rows carry the owner's entity verdict; a pool kept before is read again
 SCORES = ("deal_odds", "dream100")
 SLIM_VERSION = 2      # the month's sweep keeps what the deal-odds model reads; a sweep made before is re-made
@@ -153,10 +198,27 @@ def block_problems(st) -> list[str]:
     if isinstance(ps, int) and not isinstance(ps, bool) and ps > 100:
         out.append("stage %s: page_size above 100 is against SiftMap's fair use; keep it 100 or under" % st.id)
     counties = st.get("counties")
-    if not isinstance(counties, list) or not counties:
+    include_job = str(st.get("job") or "").strip().lower() == "include"
+    if include_job:
+        pass                        # the daily county-feed job searches the account, never SiftMap
+    elif not isinstance(counties, list) or not counties:
         out.append("stage %s: name the counties to search, as counties: [{fips, name, state}]" % st.id)
     elif any(not isinstance(c, dict) or not (c.get("fips") and c.get("name") and c.get("state")) for c in counties):
         out.append("stage %s: each county needs fips, name and state" % st.id)
+    job = st.get("job")
+    if job is not None and str(job).strip().lower() not in ("", "include"):
+        out.append("stage %s: job is include (the daily county-feed pass) or left out (the monthly ranking)" % st.id)
+    for key in ("always_on_top", "always_people_only"):
+        v = st.get(key)
+        if v is not None and not isinstance(v, bool):
+            out.append("stage %s: %s is true or false" % (st.id, key))
+    rl = st.get("recent_lists")
+    if rl is not None and (not isinstance(rl, list) or any(not isinstance(x, str) or not x.strip() for x in rl)):
+        out.append("stage %s: recent_lists must be a list of list titles" % st.id)
+    for key, low in (("recent_days", 1), ("include_reads", 1), ("include_recheck_days", 0)):
+        v = st.get(key)
+        if v is not None and (isinstance(v, bool) or not isinstance(v, int) or v < low):
+            out.append("stage %s: %s must be a whole number, %d or more" % (st.id, key, low))
     if "tag" in (st.params or {}) and not str(st.get("tag") or "").strip():
         out.append("stage %s: tag may not be empty" % st.id)
     for key in ("exclude_lists", "pool_lists", "pool_tags"):
@@ -175,7 +237,41 @@ def block_problems(st) -> list[str]:
     io = st.get("individuals_only")
     if io is not None and not isinstance(io, bool):
         out.append("stage %s: individuals_only is true or false" % st.id)
+    ai = st.get("always_include")
+    if ai is not None:
+        if st.kind != "top1000":
+            out.append("stage %s: always_include is read only by the Top 1,000 stage (kind top1000)" % st.id)
+        elif not isinstance(ai, dict):
+            out.append("stage %s: always_include maps lists and tags to titles, as always_include: {lists: [...], tags: [...]}"
+                       % st.id)
+        else:
+            bad = sorted(str(k) for k in ai if k not in ALWAYS_KINDS)
+            if bad:
+                out.append("stage %s: always_include has %s (its keys are lists and tags)" % (st.id, ", ".join(bad)))
+            for k in ALWAYS_KINDS:
+                v = ai.get(k)
+                if v is not None and (not isinstance(v, list) or any(not isinstance(x, str) or not x.strip() for x in v)):
+                    out.append("stage %s: always_include.%s must be a list of titles" % (st.id, k))
     return out
+
+
+def always_include(o: dict) -> dict:
+    """The block's always_include as {"lists": [...], "tags": [...]}, each title trimmed; both empty when
+    it is unset."""
+    raw = (o or {}).get("always_include")
+    raw = raw if isinstance(raw, dict) else {}
+    return {k: [str(t).strip() for t in (raw.get(k) or []) if isinstance(t, str) and t.strip()] for k in ALWAYS_KINDS}
+
+
+def always_key(always: dict | None) -> str:
+    """The always-in titles in one comparable string ('' for none), kept with the pool so a pool read
+    before the titles changed is read again."""
+    a = {k: sorted((always or {}).get(k) or []) for k in ALWAYS_KINDS}
+    return json.dumps(a, sort_keys=True) if any(a.values()) else ""
+
+
+def always_words(kind: str, title: str) -> str:
+    return ("on the %s list" if kind == "lists" else "tagged %s") % title
 
 
 def is_entity(owner: dict) -> bool:
@@ -425,7 +521,7 @@ def band_rows(ctx, sources: list, out: dict) -> None:
     from agents.autopilot.lanecheck import scan
     tenure, years = band_windows(ctx.now.date())
     hit = Counter()
-    for label, must, _holds in sources:
+    for label, must, *_rest in sources:
         for key, field, bands in (("ten", "last_sold", tenure), ("yb", "year", years)):
             for name, lo, hi in bands:
                 m = _with_range(must, field, lo, hi)
@@ -446,12 +542,13 @@ def band_rows(ctx, sources: list, out: dict) -> None:
 
 
 def pool_rows(ctx, o: dict, presets: list[str], tag_titles=(), list_titles=(), holder_tag: str = "",
-              bands: bool = False) -> dict | None:
+              bands: bool = False, always: dict | None = None) -> dict | None:
     """record uuid -> {owner, status, street, city, holds} from the stage's pool presets, the records
     carrying the pool tags and the records on the pool lists. A search row is the only place the
     owner's id is, and a page of 250 costs one request. None when a source is larger than the
     block's max_pool allows (the run says which). With `bands`, each row also gets its tenure and
-    year-built band (band_rows)."""
+    year-built band (band_rows). With `always` ({lists, tags}), the records on those lists and tags
+    come in too, each carrying `always`: the words for why it is in whatever its rank."""
     from agents.autopilot.lanecheck import scan
     out: dict = {}
     room = int(o["max_pool"])
@@ -462,18 +559,30 @@ def pool_rows(ctx, o: dict, presets: list[str], tag_titles=(), list_titles=(), h
         except KeyError as exc:
             ctx.out.problem("%s (the pool skipped it)" % exc)
             continue
-        sources.append(("preset %s" % title, must, False))
+        sources.append(("preset %s" % title, must, False, ""))
     for t in tag_titles:
         uid = ctx.crm.tag_uuid(t)
         if uid:
-            sources.append(("tag %s" % t, {"any_tags": [uid]}, bool(holder_tag) and t.strip().lower() == holder_tag.strip().lower()))
+            sources.append(("tag %s" % t, {"any_tags": [uid]}, bool(holder_tag) and t.strip().lower() == holder_tag.strip().lower(), ""))
         elif holder_tag and t.strip().lower() == holder_tag.strip().lower():
             ctx.out.tally["the tag %s does not exist yet: nobody holds it" % t] += 1
     for t in list_titles:
         uid = ctx.crm.list_uuid(t)
         if uid:
-            sources.append(("list %s" % t, {"any_lists": [uid]}, False))
-    for label, must, holds in sources:
+            sources.append(("list %s" % t, {"any_lists": [uid]}, False, ""))
+    for kind in ALWAYS_KINDS:
+        for t in (always or {}).get(kind) or []:
+            uid = ctx.crm.list_uuid(t) if kind == "lists" else ctx.crm.tag_uuid(t)
+            word = "list" if kind == "lists" else "tag"
+            if not uid:
+                # A title the account does not hold puts nobody in, which reads exactly like a month
+                # with no such record: said, so a typo cannot pass for a quiet month.
+                ctx.out.problem("always_include names the %s %s, which the account does not have; nobody was put in "
+                                "for it" % (word, t))
+                continue
+            sources.append(("always_include %s %s" % (word, t), {"any_lists" if kind == "lists" else "any_tags": [uid]},
+                            False, always_words(kind, t)))
+    for label, must, holds, why in sources:
         n = ctx.crm.count(must)
         if n > room:
             ctx.out.problem("the pool's %s holds %d records, more than the %d left under max_pool; raise max_pool" % (label, n, room))
@@ -499,6 +608,8 @@ def pool_rows(ctx, o: dict, presets: list[str], tag_titles=(), list_titles=(), h
             have["holds"] = bool(have["holds"] or holds)
             if label not in have["from"]:
                 have["from"].append(label)
+            if why and why not in have.setdefault("always", []):
+                have["always"].append(why)
             out[u] = have
         ctx.out.tally["pool rows from the %s" % label] = len(rows)
     if bands and out:
@@ -519,23 +630,26 @@ def facts_of(key: str) -> dict:
     return out
 
 
-def cached_pool(ctx, o: dict, path: Path, presets, tag_titles=(), list_titles=(), holder_tag: str = "") -> dict | None:
+def cached_pool(ctx, o: dict, path: Path, presets, tag_titles=(), list_titles=(), holder_tag: str = "",
+                always: dict | None = None) -> dict | None:
     """The pool, read once and kept for `pool_days`: a run that continues reading the next night
     must not page the account again to learn the same owners. A pool kept without the bands the
-    deal-odds score needs is read again."""
+    deal-odds score needs is read again, and so is one kept under other always-in titles."""
     bands = score_of(o) == "deal_odds"
+    akey = always_key(always)
     have = load_json(path, {})
     try:
         fresh = ctx.now - datetime.fromisoformat(have.get("at") or "") < timedelta(days=float(o["pool_days"]))
     except (TypeError, ValueError):
         fresh = False
     if (fresh and isinstance(have.get("rows"), dict) and (have.get("bands") or not bands)
-            and int(have.get("v") or 1) >= POOL_VERSION):
+            and int(have.get("v") or 1) >= POOL_VERSION and str(have.get("always") or "") == akey):
         ctx.out.tally["pool rows (kept from %s)" % str(have["at"])[:10]] = len(have["rows"])
         return have["rows"]
-    rows = pool_rows(ctx, o, presets, tag_titles, list_titles, holder_tag, bands=bands)
+    rows = pool_rows(ctx, o, presets, tag_titles, list_titles, holder_tag, bands=bands, always=always)
     if rows is not None:
-        save_json(path, {"at": ctx.now.isoformat(timespec="seconds"), "rows": rows, "bands": bands, "v": POOL_VERSION})
+        save_json(path, {"at": ctx.now.isoformat(timespec="seconds"), "rows": rows, "bands": bands, "v": POOL_VERSION,
+                         "always": akey})
     return rows
 
 
@@ -752,23 +866,30 @@ def exclusion(ctx, uuid: str, tags: list[str], lists: list[str], status: str, ow
 
 
 def candidates(ctx, build, sift: dict, pool: dict, target: str, d4d: dict, skip=None,
-               held_lists=()) -> tuple[dict, Counter]:
+               held_lists=(), always=frozenset(), dropped_out: dict | None = None) -> tuple[dict, Counter]:
     """owner key -> {"houses": [...], "pre": owner_score without reach} for every owner with a house
     still in, and the houses left out, counted by reason. `skip(uuid, owner)` returns a reason to
     leave a house out before it is scored (the agency's 90-day rule), or ''. A house on a held list
-    (exclude_lists) leaves its whole owner out."""
+    (exclude_lists) leaves its whole owner out. `always` names the always-in houses: each is decided
+    on its own record (always_in), so it is neither ranked nor counted here, and the people-only rule
+    is lifted for its owner's other houses (the owner is in whatever they are). `dropped_out`, when
+    given, receives owner key -> why for every owner left out whole."""
     out_by: Counter = Counter()
     owners: dict = {}
     dropped: dict = {}
+    always_owners = {(pool.get(u) or {}).get("owner") or u for u in always}
     for u, p in pool.items():
+        if u in always:
+            continue
         s = sift.get(u)
         if s is None:
             out_by["no SiftMap row in the buy box (outside the counties, the value or single family, or tagged out)"] += 1
             continue
-        if _RULES["individuals_only"] and p.get("entity"):
+        key = p.get("owner") or u
+        entity = bool(_RULES["individuals_only"] and p.get("entity"))
+        if entity and key not in always_owners:
             out_by["the owner is a company or trust, not a person"] += 1
             continue
-        key = p.get("owner") or u
         if skip is not None:
             why = skip(u, key)
             if why:
@@ -797,13 +918,107 @@ def candidates(ctx, build, sift: dict, pool: dict, target: str, d4d: dict, skip=
         r["holds"] = bool(p.get("holds"))
         r["city"] = p.get("city") or ""
         owners.setdefault(key, {"houses": []})["houses"].append(r)
+        if entity:
+            # An always-in owner's other house, kept for always_in. Should every always-in house of the
+            # owner be held, the owner is ranked like anyone else, and the people-only rule holds (_work).
+            owners[key]["entity"] = True
     for key, why in dropped.items():
         if key in owners:
             out_by["owner left out whole: %s on another house" % why] += len(owners[key]["houses"])
             del owners[key]
+    if dropped_out is not None:
+        dropped_out.update(dropped)
     for o in owners.values():
         o["pre"] = owner_score(build, o["houses"])
     return owners, out_by
+
+
+# ---------------------------------------------------------------------- always in
+def always_hold(ctx, rec: dict, held_lists=()) -> tuple[str, str]:
+    """(code, words) for what keeps an always-in house out anyway, or ("", "") when it is in. Read from
+    the house's own record: a house in a higher lane or on a held list stays in that lane's work (a
+    live lead, first to market, an obituary), and every reason the gate gives against assigning it
+    holds it out except the two that close only one channel (ALWAYS_SOFT). Rank, the buy box, the
+    discount-room floor and the people-only rule are never asked."""
+    if not rec or rec.get("_gone") or not rec.get("uuid"):
+        return "unreadable", gate.TEXT["unreadable"]
+    cfg = getattr(ctx.policy, "lanes", None) or lanes.Lanes()
+    mine = lanes.lane_of(rec, cfg)
+    if lanes.rank(mine) < lanes.rank(TRACK):
+        return ("lead", "a live lead") if mine == "lead" else ("lane", "already in the %s lane" % lanes.name(mine))
+    held = on_held_list(rec.get("lists"), held_lists)
+    if held:
+        return "lane", "on the %s list" % held
+    v = ctx.verdict(rec, "assign", lane=TRACK)
+    for code, detail in v.reasons:
+        if code not in ALWAYS_SOFT:
+            return code, gate.words(code, detail)
+    return "", ""
+
+
+def always_house(ctx, build, u: str, s: dict | None, rec: dict, p: dict, d4d: dict) -> dict:
+    """An always-in house in the shape the score reads, for the ranking file: from its SiftMap row when
+    the month's sweep has one, else from its own record (an always-in house can sit outside the buy
+    box). Its tags, lists and status are the record's own."""
+    if s is None:
+        a = rec.get("address") or {}
+        s = {"v": rec.get("estimate_value"), "e": rec.get("equity_percent"),
+             "addr": (a.get("street") if isinstance(a, dict) else "") or p.get("street") or ""}
+    r = house(u, s, _titles(rec.get("tags")), _titles(rec.get("lists")), lanes.status_of(rec), d4d)
+    build.score(r)
+    model = _ODDS["model"]
+    if model is not None:
+        import deal_odds
+        facts = deal_odds.with_bands(deal_odds.facts_from_search_row(s), p.get("ten"), p.get("yb"))
+        r["facts"] = deal_odds.facts_from_record(rec, facts, today=ctx.now.date())
+        r["odds"] = deal_odds.prob(model, r["facts"])
+    r["holds"], r["city"], r["always"] = bool(p.get("holds")), p.get("city") or "", True
+    return r
+
+
+def always_in(ctx, build, o: dict, sift: dict, pool: dict, owners: dict, dropped: dict, recs: dict, d4d: dict,
+              out_by: Counter) -> tuple[dict, dict]:
+    """({owner key: {houses, score, reach, always}} for every owner an always-in house puts in whatever
+    their rank, {owner key: why} for every always-in owner held out whole). Each always-in house is
+    judged on its own record in `recs` by always_hold: a hold about the person (OWNER_LEVEL), on that
+    house or seen on another (`dropped`, or the ranking's own read of the owner), leaves the owner out
+    whole; one about the house leaves out that house. The owner's other houses are the ones the
+    ranking's rules kept, so the owner sits in one lane."""
+    by_owner: dict = {}
+    for u, p in pool.items():
+        if p.get("always"):
+            by_owner.setdefault(p.get("owner") or u, []).append(u)
+    forced, held_whole = {}, {}
+    for key in sorted(by_owner):
+        us = sorted(by_owner[key])
+        own = owners.get(key) or {}
+        whole = (("%s on another house" % dropped[key]) if key in dropped else "") or own.get("whole") or ""
+        passed = []
+        if not whole and o.get("always_people_only") and (
+                own.get("entity") or any(is_entity((recs.get(u) or {}).get("owner") or {}) for u in us if recs.get(u))):
+            whole = "a company or trust, not a person"
+        if not whole:
+            for u in us:
+                code, why = always_hold(ctx, recs.get(u) or {"uuid": u, "_gone": True}, o["exclude_lists"])
+                if code in OWNER_LEVEL:
+                    whole = why
+                    break
+                if code:
+                    out_by["always in, but held out: %s" % why] += 1
+                    continue
+                passed.append(u)
+        if whole:
+            held_whole[key] = whole
+            out_by["always in, but the owner is held out whole: %s" % whole] += len(us)
+            continue
+        if not passed:
+            continue
+        houses = list(own.get("kept", own.get("houses") or []))
+        houses += [always_house(ctx, build, u, sift.get(u), recs[u], pool[u], d4d) for u in passed]
+        pts, words = reach_of(build, recs[passed[0]])
+        forced[key] = {"houses": houses, "score": owner_score(build, houses, pts, words), "reach": words,
+                       "always": sorted({w for u in passed for w in pool[u].get("always") or []})}
+    return forced, held_whole
 
 
 def ranked(owners: dict, field: str = "pre") -> list[str]:
@@ -905,8 +1120,207 @@ def in_round(ctx, rec: dict) -> bool:
     return (calls >= 1 or texts >= 1) and calls < round_end(ctx)
 
 
+PULLED_RX = re.compile(r"^pulled_(\d{4}-\d{2}-\d{2})$")
+
+
+def include_state_path(stage_id: str) -> Path:
+    return tracks_dir() / ("%s-include.json" % stage_id)
+
+
+def include_sources(ctx, o: dict, base: dict) -> list[tuple[str, dict]]:
+    """(words, search filter) for every county source the daily pass reads: the monthly stage's
+    always_include plus this stage's own, then each recent list's new arrivals (a pulled_<date> tag
+    from the last recent_days). A title the account does not hold is a problem, never a quiet day."""
+    always = always_include(base)
+    own = always_include(o)
+    for k in ALWAYS_KINDS:
+        always[k] = sorted(set(always[k]) | set(own[k]))
+    out = []
+    for kind in ALWAYS_KINDS:
+        for t in always[kind]:
+            uid = ctx.crm.list_uuid(t) if kind == "lists" else ctx.crm.tag_uuid(t)
+            if not uid:
+                ctx.out.problem("always_include names the %s %s, which the account does not have; nobody was put in "
+                                "for it" % ("list" if kind == "lists" else "tag", t))
+                continue
+            out.append((always_words(kind, t), {"any_lists" if kind == "lists" else "any_tags": [uid]}))
+    recent = [str(t).strip() for t in (o.get("recent_lists") or []) if str(t).strip()]
+    if recent:
+        cutoff = ctx.now.astimezone(ZoneInfo(ctx.policy.tz)).date() - timedelta(days=int(o["recent_days"]))
+        pulled = sorted(u for u, title in (index(ctx.crm, "tag") or {}).items()
+                        if PULLED_RX.match(title) and datetime.strptime(title[7:], "%Y-%m-%d").date() >= cutoff)
+        for t in recent:
+            uid = ctx.crm.list_uuid(t)
+            if not uid:
+                ctx.out.problem("recent_lists names the list %s, which the account does not have" % t)
+                continue
+            if not pulled:
+                ctx.out.line("No record was pulled in the last %d days (no pulled_<date> tag), so nothing new came in "
+                             "on the %s list." % (int(o["recent_days"]), t))
+                continue
+            out.append(("new on the %s list" % t, {"any_lists": [uid], "any_tags": pulled}))
+    return out
+
+
+def owner_elsewhere(ctx, owner_uuid: str, held_lists) -> str:
+    """Why the owner is held on ANOTHER house ("" when nothing holds them), from three counts on the
+    owner's records: a tag or list that puts a house in a higher lane or stops all contact (Do Not
+    Market, a litigator, a possible death, first to market, an heir, an obituary, the DNC list), and a
+    live lead status. The month's ranking learns this from its own pool; the daily pass asks."""
+    if not owner_uuid:
+        return ""
+    # Most owners hold one house: one count settles it before the three that look at the others.
+    if ctx.crm.count({"owners": [owner_uuid]}) <= 1:
+        return ""
+    cfg = getattr(ctx.policy, "gate", None) or gate.GateConfig()
+    lcfg = getattr(ctx.policy, "lanes", None) or lanes.Lanes()
+    tags = set(cfg.do_not_market_tags) | set(cfg.litigator_tags) | set(cfg.deceased_tags) | set(cfg.heir_tags)
+    lists = set(cfg.suppress_lists) | set(held_lists or ())
+    for lane in lanes.ORDER:
+        if lanes.rank(lane) >= lanes.rank(TRACK):
+            break
+        m = (getattr(lcfg, "markers", None) or {}).get(lane) or {}
+        tags |= set(m.get("tags") or [])
+        lists |= set(m.get("lists") or [])
+    tag_ids = [x for x in (ctx.crm.tag_uuid(t) for t in sorted(tags)) if x]
+    list_ids = [x for x in (ctx.crm.list_uuid(t) for t in sorted(lists)) if x]
+    if tag_ids and ctx.crm.count({"owners": [owner_uuid], "any_tags": tag_ids}):
+        return "held on another house (a contact stop, a possible death or a higher lane's tag)"
+    if list_ids and ctx.crm.count({"owners": [owner_uuid], "any_lists": list_ids}):
+        return "held on another house (a list of a higher lane or the DNC list)"
+    if ctx.crm.count({"owners": [owner_uuid], "any_property_status": list(lanes.LEAD_STATUS_VALUES)}):
+        return "a live lead on another house"
+    return ""
+
+
+def run_include(ctx: Ctx) -> None:
+    """The county feeds, daily (COUNTY FEEDS, DAILY above): every always-in house that does not hold
+    the tag yet, judged with the month's hard holds, tagged in a live run. Only additions: the
+    monthly stage keeps removing, so the two never fight over a house."""
+    st = ctx.stage
+    o = options(st)
+    src = ctx.policy.stages.get(str(o.get("include_from") or "")) if o.get("include_from") else None
+    base = options(src) if src is not None else o
+    if o.get("include_from") and src is None:
+        ctx.out.problem("include_from names the stage %s, which the playbook does not have; this stage's own "
+                        "always_include is all it reads" % o["include_from"])
+    tag = str(base["tag"]).strip()
+    people_only = bool(base.get("always_people_only") or o.get("always_people_only"))
+    tag_uid = ctx.crm.tag_uuid(tag)
+    if not tag_uid:
+        ctx.out.problem("the tag %s does not exist in the account; nobody was put in" % tag)
+        return
+    sources = include_sources(ctx, o, base)
+    if not sources:
+        ctx.out.head = "No county list to read (always_include is empty)."
+        return
+    spath = include_state_path(st.id)
+    state = load_json(spath, {}) or {}
+    held: dict = state.get("held") or {}
+    today = ctx.now.astimezone(ZoneInfo(ctx.policy.tz)).date()
+    recheck = timedelta(days=int(o["include_recheck_days"]))
+    from agents.autopilot.lanecheck import scan
+    seen, owner_held, reads, adds, left = set(), {}, 0, [], 0
+    by_source = Counter()
+    for words, flt in sources:
+        must = dict(flt, must_not={"any_tags": [tag_uid]})
+        for r in scan(ctx, must):
+            u = r.get("uuid")
+            if not u or u in seen:
+                continue
+            seen.add(u)
+            h = held.get(u)
+            if h and today - datetime.strptime(h["at"], "%Y-%m-%d").date() < recheck:
+                ctx.out.tally["left out on an earlier run: %s (read again every %d days)" % (
+                    h["why"], int(o["include_recheck_days"]))] += 1
+                continue
+            if reads >= int(o["include_reads"]):
+                left += 1
+                continue
+            reads += 1
+            try:
+                rec = ctx.crm.record(u)
+            except budget.BudgetExhausted:
+                raise
+            except Exception as exc:  # noqa: BLE001  (a record that cannot be read is skipped and said)
+                if getattr(exc, "code", None) == 404:
+                    held[u] = {"why": "the record is gone", "at": today.isoformat()}
+                    ctx.out.tally["left out: the record is gone (404)"] += 1
+                else:
+                    ctx.out.tally["left out: the record could not be read"] += 1
+                continue
+            ow = rec.get("owner") or {}
+            okey = str(ow.get("uuid") or u)
+            why = owner_held.get(okey, "")
+            if not why and people_only and is_entity(ow):
+                why = "a company or trust, not a person"
+                owner_held[okey] = why
+            code = "owner" if why else ""
+            if not code:
+                code, why = always_hold(ctx, rec, base["exclude_lists"])
+                if code in OWNER_LEVEL:
+                    owner_held[okey] = why
+            if not code and ow.get("uuid"):
+                why = owner_elsewhere(ctx, str(ow["uuid"]), base["exclude_lists"])
+                if why:
+                    code = "owner"
+                    owner_held[okey] = why
+            if code:
+                held[u] = {"why": why, "at": today.isoformat()}
+                ctx.out.tally["left out: %s" % why] += 1
+                continue
+            held.pop(u, None)
+            adds.append((u, addr(rec), words))
+            by_source[words] += 1
+    written, stopped = 0, ""
+    verified = bool(state.get("verified"))
+    for u, street, words in adds:
+        try:
+            ctx.change(u, "add_tags", [], [tag])
+            ctx.write("tag", ctx.crm.add_tags, u, [tag], {"tags": []})
+        except budget.BudgetExhausted as exc:
+            stopped = str(exc)
+            break
+        except Exception as exc:  # noqa: BLE001  (a failed write is said; what landed is kept)
+            stopped = "tagging %s failed (%s)" % (street or u[:8], str(exc)[:80])
+            break
+        written += 1
+        if ctx.live:
+            if not verified:
+                back = {t.strip().lower() for t in _titles(ctx.crm.record(u).get("tags"))}
+                if tag.lower() not in back:
+                    ctx.out.problem("the tag did not stick on %s; nothing more was written" % (street or u[:8]))
+                    stopped = "read back"
+                    break
+                verified = True
+            ledger.event(ctx.run_id, st.id, u, "top1000_add", {"tag": tag, "why": words}, now=ctx.now, tz=ctx.policy.tz)
+    if ctx.live:
+        save_json(spath, {"held": held, "verified": verified, "updated": ctx.now.isoformat(timespec="seconds")})
+    else:
+        # Knowledge, kept in plan mode too: what is held, so a plan run does not re-read it daily either.
+        save_json(spath, dict(state, held=held, updated=ctx.now.isoformat(timespec="seconds")))
+    ctx.out.acted = written if ctx.live else 0
+    ctx.out.found = len(seen)
+    verb = "Put" if ctx.live else "Would put"
+    if adds:
+        ctx.out.head = "%s the %s tag on %d county record(s) for the Top 1,000 texts: %s." % (
+            verb, tag, written if ctx.live else len(adds),
+            ", ".join("%d %s" % (n, w) for w, n in by_source.most_common()))
+        for u, street, words in adds[:6]:
+            ctx.out.line("%s (%s)" % (street or u[:8], words))
+    else:
+        ctx.out.head = "No new county record to put in the Top 1,000 (%d read, %d held)." % (reads, len(seen) - reads)
+    if left:
+        ctx.out.line("%d more wait for the next run (include_reads is %d)." % (left, int(o["include_reads"])))
+    if stopped and stopped != "read back":
+        ctx.out.problem("stopped after %d tag(s): %s; the next run continues" % (written, stopped))
+
+
 def run_top1000(ctx: Ctx) -> None:
     st = ctx.stage
+    if str(st.get("job") or "").strip().lower() == "include":
+        run_include(ctx)
+        return
     o = options(st)
     tag = str(o["tag"]).strip()
     month = month_of(ctx)
@@ -925,7 +1339,8 @@ def run_top1000(ctx: Ctx) -> None:
     if sift is None:
         return
     pool = cached_pool(ctx, o, spath.with_name(spath.stem + "-pool.json"), list(st.presets),
-                       [tag] + [str(t) for t in o["pool_tags"]], [str(t) for t in o["pool_lists"]], holder_tag=tag)
+                       [tag] + [str(t) for t in o["pool_tags"]], [str(t) for t in o["pool_lists"]], holder_tag=tag,
+                       always=always_include(o))
     if pool is None:
         return
     for kind in ("tag", "list"):
@@ -951,14 +1366,28 @@ def _work(ctx, o, build, tag, sift, pool, state, spath) -> None:
         # it the gate holds such a house later, after it has taken a slot here.
         ctx.out.line("The nightly owner-lane map has not been built, so an owner first to market on a house outside "
                      "the pool is not known here; the gate holds that house once the map exists.")
-    owners, out_by = candidates(ctx, build, sift, pool, TRACK, d4d, held_lists=o["exclude_lists"])
+    always = {u for u, p in pool.items() if p.get("always")}
+    dropped: dict = {}
+    owners, out_by = candidates(ctx, build, sift, pool, TRACK, d4d, held_lists=o["exclude_lists"], always=always,
+                                dropped_out=dropped)
     tag_id = ctx.crm.tag_uuid(tag) if tag else ""
     holders = {u for u, p in pool.items() if p.get("holds") or (tag_id and tag_id in (sift.get(u) or {}).get("tags", []))}
     order = ranked(owners)
     finalists = order[: int(math.ceil(o["size"] * float(o["finalists"])))]
-    ctx.out.found = len(owners)
+    always_keys = {(pool[u].get("owner") or u) for u in always}
+    ctx.out.found = len(set(owners) | always_keys)
     rd = Reader(ctx, o["max_reads"], o["facts_days"])
     left = 0
+    # The always-in houses are read first, so the ranking's reads can never starve them. An owner a
+    # hold about the person already leaves out whole needs no read.
+    need = [u for u in sorted(always) if (pool[u].get("owner") or u) not in dropped]
+    always_recs: dict = {}
+    for u in need:
+        rec = rd.get(u)
+        if rec is None:
+            left += 1
+        else:
+            always_recs[u] = rec
     for key in finalists:
         rec = rd.get(owners[key]["pre"]["best"])
         if rec is None:
@@ -966,10 +1395,11 @@ def _work(ctx, o, build, tag, sift, pool, state, spath) -> None:
         else:
             owners[key]["rec"] = rec
     if left:
+        total = len(finalists) + len(need)
         reread_note(ctx, rd, left)
         save_json(spath, dict(state, phase="read", updated=ctx.now.isoformat(timespec="seconds"),
-                              progress={"finalists": len(finalists), "read": len(finalists) - left}))
-        ctx.out.head = "Reading the finalists for this month's Top 1,000: %d of %d read." % (len(finalists) - left, len(finalists))
+                              progress={"finalists": total, "read": total - left}))
+        ctx.out.head = "Reading the finalists for this month's Top 1,000: %d of %d read." % (total - left, total)
         return
     # The final score: the full record's gate, then the owner's reach from their own phones.
     final: dict = {}
@@ -977,24 +1407,31 @@ def _work(ctx, o, build, tag, sift, pool, state, spath) -> None:
         own = owners[key]
         rec = own.get("rec") or {}
         if rec.get("_gone"):
+            own["kept"] = [h for h in own["houses"] if h["uuid"] != rec.get("uuid")]
             out_by["the record could not be read"] += 1
             continue
         v = ctx.verdict(rec, "assign", lane=TRACK)
         houses = list(own["houses"])
-        if _RULES["individuals_only"] and is_entity(rec.get("owner") or {}):
+        entity = bool(_RULES["individuals_only"] and is_entity(rec.get("owner") or {}))
+        if entity and key not in always_keys:
             # The full record is the last word: a search row with a person's name can hide a company
             # field or a trust in the name.
             out_by["owner left out whole: a company or trust, not a person"] += len(houses)
             continue
+        if entity:
+            own["entity"] = True     # an always-in owner is in whatever they are; ranked, the rule holds (below)
         held = on_held_list(rec.get("lists"), o["exclude_lists"])
         if held:
+            own["whole"] = "on the %s list" % held
             out_by["owner left out whole: on the %s list" % held] += len(houses)
             continue
         if not v.ok:
             if v.code in OWNER_LEVEL:
+                own["whole"] = v.reason()
                 out_by["owner left out whole: %s" % v.reason()] += len(houses)
                 continue
             houses = [h for h in houses if h["uuid"] != rec.get("uuid")]
+            own["kept"] = houses
             out_by[v.reason()] += 1
             if not houses:
                 continue
@@ -1008,7 +1445,17 @@ def _work(ctx, o, build, tag, sift, pool, state, spath) -> None:
                     h["odds"] = deal_odds.prob(model, h["facts"])
         pts, words = reach_of(build, rec)
         final[key] = {"houses": houses, "score": owner_score(build, houses, pts, words), "reach": words}
-    picked = sorted(final, key=lambda k: (-final[k]["score"]["score"], -final[k]["score"]["room"], k))[: o["size"]]
+    # The always-in owners take their slots first; the ranking fills the rest.
+    forced, held_whole = always_in(ctx, build, o, sift, pool, owners, dropped, always_recs, d4d, out_by)
+    for k in [k for k in final if k in always_keys and k not in forced and (owners.get(k) or {}).get("entity")]:
+        # Every always-in house of this owner was held, so the owner is only ranked, and the people rule holds.
+        out_by["owner left out whole: a company or trust, not a person"] += len(final[k]["houses"])
+        del final[k]
+    by_score = lambda d: sorted(d, key=lambda k: (-d[k]["score"]["score"], -d[k]["score"]["room"], k))  # noqa: E731
+    rest = int(o["size"]) if o.get("always_on_top") else max(0, int(o["size"]) - len(forced))
+    regular = [k for k in by_score(final) if k not in forced and k not in held_whole][:rest]
+    final.update(forced)
+    picked = by_score(forced) + regular
     tag_set = {h["uuid"] for k in picked for h in final[k]["houses"]}
     kept, leads, reads_left = set(), set(), 0
     dropping = sorted(holders - tag_set)
@@ -1062,7 +1509,16 @@ def _work(ctx, o, build, tag, sift, pool, state, spath) -> None:
     elif missing_cond:
         ctx.out.line("%d of the %d owners were scored without a condition score (no D4D visual score): their other "
                      "components were scaled to 100." % (missing_cond, len(picked)))
-    for i, k in enumerate(picked[:3], 1):
+    if forced:
+        said = Counter(w for k in forced for w in forced[k]["always"])
+        ctx.out.line("%d owner(s) are in whatever their rank (always_include: %s); the ranking filled the other %d slot(s)." % (
+            len(forced), ", ".join("%d %s" % (n, w) for w, n in sorted(said.items(), key=lambda kv: (-kv[1], kv[0]))),
+            len(regular)))
+    held_always = sum(n for w, n in out_by.items() if w.startswith("always in, but"))
+    if held_always:
+        ctx.out.line("%d always-in house(s) were held out anyway by a hard hold (a lead, first to market, sold, a finished "
+                     "status, Do Not Market and the like; each is counted below)." % held_always)
+    for i, k in enumerate(regular[:3], 1):
         sc = final[k]["score"]
         if model is not None:
             ctx.out.line("rank %d: %s, %.1f%% in six months, %d house(s), $%s discount room, %s; %s" % (
@@ -1079,8 +1535,8 @@ def _work(ctx, o, build, tag, sift, pool, state, spath) -> None:
         ctx.out.line("%d holder house(s) fell out because they are live leads now; they keep the tag and are not touched." % len(leads))
     ctx.out.line("The ranking: %s" % where)
     summary = {"owners": len(picked), "houses": houses_n, "adds": len(adds), "removes": len(removes), "kept": len(kept),
-               "leads": len(leads), "file": str(csv_path), "link": where}
-    keep_state = dict(state, owners=sorted(picked), tagged=sorted(tag_set | kept | leads))
+               "leads": len(leads), "always": len(forced), "file": str(csv_path), "link": where}
+    keep_state = dict(state, owners=sorted(picked), tagged=sorted(tag_set | kept | leads), always=sorted(forced))
     if not ctx.live:
         ctx.out.acted = len(adds) + len(removes)
         line = ("Top 1,000 for %s (plan): %d owners on %d houses%s; %d house(s) would get the tag and %d would lose it."
@@ -1200,15 +1656,18 @@ def _csv_rows(picked, final, holders, kept, tag_set, streets, leads=frozenset())
         sc = f["score"]
         best = next((h for h in f["houses"] if h["uuid"] == sc["best"]), f["houses"][0])
         holds = any(h["uuid"] in holders for h in f["houses"])
+        decision = "keep" if holds else "add"
+        if f.get("always"):
+            decision += ": always in, %s" % "; ".join(f["always"])
         if odds:
             rows.append([i, round(100.0 * float(sc.get("odds") or 0.0), 2), len(f["houses"]), best.get("street") or "",
                          best.get("city") or "", int(sc["room"]), "; ".join(sc.get("why") or []), f["reach"],
-                         sc.get("reach_factor", ""), "yes" if holds else "", "keep" if holds else "add", best["uuid"]])
+                         sc.get("reach_factor", ""), "yes" if holds else "", decision, best["uuid"]])
             continue
         rows.append([i, sc["score"], len(f["houses"]), best.get("street") or "", best.get("city") or "", int(sc["room"]),
                      sc["pts"].get("deal", ""), sc["pts"].get("cond", ""), sc["pts"].get("inv", ""), sc["pts"].get("evid", ""),
                      sc["pts"].get("reach", ""), f["reach"], ", ".join(sc["missing"]), "yes" if holds else "",
-                     "keep" if holds else "add", best["uuid"]])
+                     decision, best["uuid"]])
     for u in sorted(holders - tag_set):
         why = ("kept while its round finishes" if u in kept else "kept: a live lead, not touched" if u in leads else "remove")
         # rank, score, houses, street, then blanks up to the last three columns: holds, decision, record id

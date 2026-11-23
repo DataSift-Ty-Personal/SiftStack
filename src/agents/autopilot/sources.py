@@ -50,6 +50,10 @@ TRACERFY_PHONE_FIELDS = ["primary_phone", "mobile_1", "mobile_2", "mobile_3", "m
 TRACERFY_TRACE_URL = "https://tracerfy.com/v1/api/trace/"
 TRACERFY_QUEUE_URL = "https://tracerfy.com/v1/api/queue/"
 ENFORMION_URL = "https://devapi.enformion.com/PersonSearch"
+# Tracerfy sits behind Cloudflare, which refuses urllib's default "Python-urllib/3.x" User-Agent with
+# HTTP 403 "error code: 1010" before the key is read (measured on the brain 2026-11-20: default 403,
+# a named agent reaches the API). Every Tracerfy request names itself.
+TRACERFY_AGENT = "SiftStack-autopilot/1.0"
 
 
 def digits(n) -> str:
@@ -217,7 +221,8 @@ class Tracerfy(Source):
                   "mail_state_column": "mail_state", "mailing_zip_column": "mail_zip"}
         body, ctype = self._multipart(fields, buf.getvalue())
         req = urllib.request.Request(TRACERFY_TRACE_URL, data=body, method="POST",
-                                     headers={"Authorization": "Bearer " + self.key, "Content-Type": ctype})
+                                     headers={"Authorization": "Bearer " + self.key, "Content-Type": ctype,
+                                              "User-Agent": TRACERFY_AGENT})
         try:
             with urllib.request.urlopen(req, timeout=45) as r:
                 queued = json.loads(r.read().decode() or "{}")
@@ -233,7 +238,8 @@ class Tracerfy(Source):
         records = None
         while time.time() - t0 < self.max_wait_s:
             time.sleep(self.poll_s)
-            req = urllib.request.Request(TRACERFY_QUEUE_URL + str(qid), headers={"Authorization": "Bearer " + self.key})
+            req = urllib.request.Request(TRACERFY_QUEUE_URL + str(qid), headers={"Authorization": "Bearer " + self.key,
+                                                                                 "User-Agent": TRACERFY_AGENT})
             with urllib.request.urlopen(req, timeout=30) as r:
                 data = json.loads(r.read().decode() or "{}")
             if isinstance(data, list):

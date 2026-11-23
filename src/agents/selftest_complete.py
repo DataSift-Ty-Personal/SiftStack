@@ -43,6 +43,7 @@ class FakeCRM:
         self.rows_, self.recs, self.calls = rows, recs, []
         self.made = {r["uuid"]: (made or {}).get(r["uuid"], "2026-07-01") for r in rows}
         self.counts = []
+        self.unclean = set()   # completed records the search still lists on the incomplete tab
 
     def _in(self, u, must):
         span = must.get("created")
@@ -57,6 +58,8 @@ class FakeCRM:
         return 0
 
     def rows(self, must, cap=9900):
+        if must.get("properties") and must.get("property_type") == "clean":
+            return [{"uuid": u} for u in must["properties"] if u not in self.unclean][:cap]
         if must.get("property_type") != "incomplete":
             return []
         return copy.deepcopy([r for r in self.rows_ if self._in(r["uuid"], must)][:cap])
@@ -115,8 +118,43 @@ def run(check, tmp: Path) -> None:
     try:
         _pure(check)
         _runs(check)
+        _gone(check)
     finally:
         config.DATA_DIR, config.DB_PATH, config.MODE = keep
+
+
+class _GoneCRM(FakeCRM):
+    """A record the search still lists while the record route answers 404 (deleted or merged)."""
+
+    def record(self, u):
+        if u == "g1":
+            raise RuntimeError('HTTP 404 on GET /api/internal/property/g1/: {"detail":"No Property matches"}')
+        return super().record(u)
+
+
+def _gone(check) -> None:
+    from . import store
+    from .autopilot import policy, sweep
+    print("  a record the search lists but DataSift has deleted")
+    with store._LOCK, store._db() as db:
+        db.execute("DELETE FROM ap_facts")
+    for f in ("pool.json", "for_a_person.csv"):
+        p = Path(config.DATA_DIR) / "autopilot" / "complete" / f
+        if p.exists():
+            p.unlink()
+    config.MODE = "dry"
+    rows = [_row("g1", company="Example Pat Q", lists=3), _row("p1", company="Example Pat Q", lists=1)]
+    recs = {"p1": _full(rows[1])}
+    _, _, sm = _fixture()
+    out = sweep.run("c_complete", crm=_GoneCRM(rows, recs), now=NOW, pol=policy.parse(playbook("plan"), EMPLOYEES),
+                    sources={"siftmap": sm})
+    check(not [p for p in out.problems if "could not read" in p]
+          and out.tally.get("gone from DataSift (the search still lists it)") == 1,
+          "a 404 on a listed record is counted as gone, not posted as a problem")
+    again = sweep.run("c_complete", crm=_GoneCRM(rows, recs), now=NOW, pol=policy.parse(playbook("plan"), EMPLOYEES),
+                      sources={"siftmap": sm})
+    check(not again.tally.get("gone from DataSift (the search still lists it)"),
+          "a record found gone is remembered and not read again the next night")
 
 
 def _pure(check) -> None:
@@ -270,6 +308,25 @@ def _runs(check) -> None:
     check(len(traces) == 2 and traces[0][2] is True and traces[1][2] is False and len(traces[1][1]) == 21
           and traces[1][3] == (c.TAG,) and json.loads(store.kv_get(c.QUEUE_KEY)) == [],
           "at 20 or more, the completed records get DataSift's own skip trace: a dry run first, then exactly those")
+    store.kv_set(c.QUEUE_KEY, json.dumps(["s%02d" % i for i in range(25)]))
+    store.kv_set(c.MISS_KEY, "{}")
+    stuck = {"s03", "s11", "s19"}
+    for night in range(c.MISS_LIMIT):
+        if night:   # each night completes more records, so the queue reaches the batch floor again
+            store.kv_set(c.QUEUE_KEY, json.dumps(json.loads(store.kv_get(c.QUEUE_KEY)) + ["n%d%02d" % (night, i) for i in range(20)]))
+        crm5 = FakeCRM([], {})
+        crm5.unclean = set(stuck)
+        r5 = sweep.run("c_complete", crm=crm5, now=NOW, pol=policy.parse(playbook("live"), EMPLOYEES), sources={"siftmap": sm})
+        t5 = [x for x in crm5.calls if x[0] == "trace"]
+        if night == 0:
+            check(len(t5) == 2 and set(t5[1][1]) == {"s%02d" % i for i in range(25)} - stuck
+                  and not any("dry run covers" in p for p in r5.problems)
+                  and sorted(json.loads(store.kv_get(c.QUEUE_KEY))) == sorted(stuck),
+                  "a completed record still off the clean tab does not stop the trace: the 22 clean ones go, the 3 wait")
+    left = json.loads(store.kv_get(c.QUEUE_KEY))
+    held = (Path(config.DATA_DIR) / "autopilot" / "complete" / "for_a_person.csv").read_text(encoding="utf-8")
+    check(left == [] and all(u in held for u in stuck) and c.STILL_INCOMPLETE in held,
+          "a completed record still incomplete after %d nights leaves the queue for a person" % c.MISS_LIMIT)
     print("  caps and the trust switch")
     with store._LOCK, store._db() as db:
         db.execute("DELETE FROM ap_facts")

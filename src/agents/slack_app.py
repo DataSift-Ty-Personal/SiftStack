@@ -152,13 +152,49 @@ def home_channel(employee=None, roster=None) -> str:
 def channel_for(kind: str, employee=None, roster=None) -> str:
     """Where a post of this kind goes: "pipeline" (the team's daily view: the morning digest, what a
     live stage did, a lead that needs a call now), "issues" (anything broken, in plain words) or
-    "chat" (talking with the team). A kind whose channel is not set goes to the team's home channel,
-    so nothing is lost before the channels exist."""
-    if kind == "pipeline" and config.SLACK_PIPELINE_CHANNEL:
+    "chat" (talking with the team). A department ("sales", "marketing", "ops", 2026-11-19) goes to its
+    own channel, else the ops channel, else the pipeline channel. A kind whose channel is not set goes
+    to the team's home channel, so nothing is lost before the channels exist."""
+    if kind in ("sales", "marketing") and getattr(config, "SLACK_%s_CHANNEL" % kind.upper(), ""):
+        return getattr(config, "SLACK_%s_CHANNEL" % kind.upper())
+    if kind in ("sales", "marketing", "ops") and getattr(config, "SLACK_OPS_CHANNEL", ""):
+        return config.SLACK_OPS_CHANNEL
+    boards = (getattr(config, "SLACK_LAYOUT", "") or "classic").strip().lower() == "boards"
+    if kind == "pipeline" and boards and getattr(config, "SLACK_OPS_CHANNEL", ""):
+        return config.SLACK_OPS_CHANNEL            # the boards layout retires the pipeline channel: a straggler lands in ops
+    if kind in ("pipeline", "sales", "marketing", "ops") and config.SLACK_PIPELINE_CHANNEL:
         return config.SLACK_PIPELINE_CHANNEL
     if kind == "issues" and config.SLACK_ISSUES_CHANNEL:
         return config.SLACK_ISSUES_CHANNEL
     return home_channel(employee, roster)
+
+
+# chat.update answers these when the message it was asked to edit is gone (deleted, or in a channel the
+# app left): the caller posts a new one instead.
+GONE = {"message_not_found", "cant_update_message", "edit_window_closed", "channel_not_found", "is_archived",
+        "not_in_channel"}
+
+
+def update(channel: str, ts: str, text: str) -> tuple[bool, str]:
+    """Edit one of the app's own messages in place: (ok, Slack's error word). An edit sends nobody a
+    notification, which is the point of a message the team keeps current through the day."""
+    if not (config.SLACK_BOT_TOKEN and channel and ts):
+        return False, "not_set_up"
+    data = _api("chat.update", {"channel": channel, "ts": ts, "text": clean_text(text)[:3900]})
+    return bool(data.get("ok")), str(data.get("error") or "")
+
+
+def permalink(channel: str, ts: str) -> str:
+    """A link to one message, or "" when Slack will not say."""
+    if not (config.SLACK_BOT_TOKEN and channel and ts):
+        return ""
+    try:
+        r = _http.get("%s/chat.getPermalink" % API, params={"channel": channel, "message_ts": ts}, timeout=15,
+                      headers={"Authorization": "Bearer %s" % config.SLACK_BOT_TOKEN})
+        data = r.json() if hasattr(r, "json") else {}
+    except Exception:  # noqa: BLE001
+        return ""
+    return str(data.get("permalink") or "") if data.get("ok") else ""
 
 
 def join(channel: str) -> bool:
@@ -266,3 +302,32 @@ def channel_name(channel_id: str) -> str:
     if name:
         _CHANNEL_NAMES[channel_id] = name
     return name
+
+
+def channel_before(channel_id: str, ts: str, limit: int = 5) -> list[dict]:
+    """The messages posted in a channel just before `ts`, oldest first: [{"who", "text"}]. An ask
+    written at the top of a channel often points at the post above it ("give me the links to these");
+    the employee sees its own thread only, so without this it answers that nothing was posted (Ty,
+    2026-11-17). Empty when Slack cannot be read; never raises."""
+    if not (config.SLACK_BOT_TOKEN and channel_id and ts):
+        return []
+    try:
+        r = _http.get("%s/conversations.history" % API, timeout=15,
+                      params={"channel": channel_id, "latest": ts, "limit": int(limit), "inclusive": "false"},
+                      headers={"Authorization": "Bearer %s" % config.SLACK_BOT_TOKEN})
+        data = r.json()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("slack conversations.history unreachable: %s", exc)
+        return []
+    if not data.get("ok"):
+        return []
+    out = []
+    for m in reversed(data.get("messages") or []):            # Slack returns the newest first
+        if m.get("subtype") in ("channel_join", "channel_leave", "channel_topic", "channel_purpose"):
+            continue
+        text = str(m.get("text") or "").strip()
+        if not text:
+            continue
+        who = m.get("username") or (m.get("bot_profile") or {}).get("name") or ("the operator" if m.get("user") else "the app")
+        out.append({"who": str(who), "text": text[:1500]})
+    return out

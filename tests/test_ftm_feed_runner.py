@@ -237,6 +237,37 @@ def test_the_second_run_starts_from_the_feeds_own_last_good_day(tmp_path):
     assert h2.scrapes[0]["since"] == "2026-10-01"
 
 
+def test_a_stored_last_day_still_searches_the_full_daily_window(tmp_path, monkeypatch):
+    """2026-11-22: the tax feeds searched only Saturday to Sunday (their own last run to today),
+    read no rows, and reported a renamed or deleted search. A stored day is a floor, not the
+    window: the real scrape must reach the scraper's daily lookback; only --since is exact."""
+    import datetime as dt
+    import scraper
+
+    calls = []
+
+    async def fake_scrape_all(**kw):
+        calls.append(kw)
+        return []
+
+    monkeypatch.setattr(scraper, "scrape_all", fake_scrape_all)
+    monkeypatch.delenv("FTM_DAILY_WINDOW_DAYS", raising=False)
+    R.save_last_run("tax_sale", "2026-11-12", tmp_path)
+    h = Harness(tmp_path)
+    run = lambda a: R.run(a, "tax_sale", next_suffix=h.next_suffix, resolve_proxy=lambda session_suffix="": None,
+                          stats=h.stats, enrich=lambda ns: list(ns), screen=h.screen, write_csv=h.write,
+                          upload=h.upload, today=TODAY, state_dir=tmp_path, out_dir=tmp_path)
+    run(args())
+    run(args(since="2026-11-12"))
+    assert calls[0]["since_date_override"] == "2026-11-12" and calls[0]["since_explicit"] is False
+    assert calls[1]["since_explicit"] is True
+    now = dt.datetime(2026, 11, 13, 7, 0)
+    stored = scraper.daily_window(calls[0]["since_date_override"], now, explicit=calls[0]["since_explicit"])
+    assert stored[:2] == ("10/30/2026", "11/13/2026"), "a stored day reaches the 14 day lookback"
+    exact = scraper.daily_window(calls[1]["since_date_override"], now, explicit=calls[1]["since_explicit"])
+    assert exact[:2] == ("11/12/2026", "11/13/2026"), "a person's --since is used as given"
+
+
 def test_each_run_takes_its_own_proxy_session(tmp_path):
     h = Harness(tmp_path)
     h.run()
@@ -369,7 +400,9 @@ def test_the_screens_tags_and_note_are_merged_into_the_upload_row(tmp_path, monk
         reader = csv.DictReader(fh)
         row = next(reader)
         columns = reader.fieldnames
-    assert row["Tags"].endswith(",Listed") and row["Tags"].startswith("Courthouse Data,FTM,tax_sale")
+    # A tax sale notice goes to the Top 1,000 lane, not first to market (2026-11-20): no FTM tag.
+    assert row["Tags"].endswith(",Listed") and row["Tags"].startswith("Courthouse Data,tax_sale")
+    assert "FTM" not in row["Tags"].split(",")
     assert row["Notes"].startswith("Intake check: value $200,000.") and row["Est Equity"] == "60000"
     assert not [c for c in columns if c.startswith("_")], "the screen's private keys are not columns"
     assert res["warnings"] == ["1 thing to know"]

@@ -12,16 +12,18 @@ its job, because the SDK's allowed_tools only pre-approves and does not restrict
                             workspace, so a prompt injection cannot read the box's environment.
 
 Spend: every turn runs under max_budget_usd, the lesser of the per-turn cap and what is left of the
-day's cap, and its cost lands in the same ledger the paid workflows use.
+team's day cap (research is counted against its own cap, never this one), and its cost lands in the
+same ledger the paid workflows use.
 """
 from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import attachments, bus, config, sandbox, store, team
+from . import attachments, bus, config, sandbox, slack_app, store, team
 from . import tools as team_tools
 
 log = logging.getLogger(__name__)
@@ -86,10 +88,17 @@ def make_guard(allowed: set, ws: Path):
     return guard
 
 
+def team_spent_today() -> float:
+    """What the team's own work spent today: everything but research, which has its own day cap
+    (config.RESEARCH_DAILY_CAP_USD) and never uses up the team's."""
+    return store.spent(day=store.today(), research=False)
+
+
 def budget_now(files: bool = False) -> float:
-    """The lesser of the turn cap and what is left today. A turn that carries files (a walkthrough's
-    photos) gets FILE_TURN_USD instead of the plain cap, since every photo it reads is input."""
-    left_today = config.DAILY_CAP_USD - store.spent(day=store.today())
+    """The lesser of the turn cap and what is left of the team's day. A turn that carries files (a
+    walkthrough's photos) gets FILE_TURN_USD instead of the plain cap, since every photo it reads is
+    input."""
+    left_today = config.DAILY_CAP_USD - team_spent_today()
     cap = max(config.AGENT_BUDGET_USD, config.FILE_TURN_USD) if files else config.AGENT_BUDGET_USD
     return max(0.0, min(cap, left_today))
 
@@ -108,6 +117,12 @@ def prompt_for(task: dict, roster, emp, files: list | None = None) -> str:
         where = ("#" + p["channel_name"]) if p.get("channel_name") else "a direct message"
         said = p.get("text") or ("(no message, only files)" if files else task.get("subject") or "")
         lines = ["The operator wrote in %s:" % where, said]
+        if p.get("top_level"):
+            # Written at the top of the channel, not in a thread: it may point at the post above it.
+            before = slack_app.channel_before(task.get("slack_channel") or "", task.get("slack_thread") or "")
+            if before:
+                lines += ["", "Just before that message, the channel showed (oldest first; it may be what they mean):"]
+                lines += ["- %s: %s" % (m["who"], m["text"]) for m in before]
     lines += attachments.prompt_lines(files or [], attachments.over(task.get("slack_channel") or "",
                                                                     task.get("slack_thread") or ""))
     hist = bus.thread_summary(task["thread_id"], roster, exclude=task["id"], limit=8)
@@ -116,13 +131,20 @@ def prompt_for(task: dict, roster, emp, files: list | None = None) -> str:
         for h in hist:
             said = h["result"] or h["question"] or h["asked"] or h["error"]
             lines.append("- task %s, %s, %s (%s): %s" % (h["task"], h["who"], h["type"], h["status"], said[:240]))
-    lines += ["", "Mode: %s. Caps: $%.0f per run, $%.0f per day; $%.2f spent today before this turn "
-              "(this turn's own Claude cost is added after it ends)." % (
-        config.MODE, config.RUN_CAP_USD, config.DAILY_CAP_USD, store.spent(day=store.today())),
-        "Dry mode means nothing is written to DataSift and nothing is sent. It does not mean nothing is spent: "
-        "your own turn costs Claude time, and a comp pull asked for in Slack can buy Zillow sold data inside its "
-        "own daily cap. Say what was spent, never that nothing was. spend_report reads the real figures.",
-        "Your reply is posted in the Slack thread as written: three short lines at most."]
+    lines += ["", "Mode: %s. Caps: $%.0f per run, $%.0f per day for the team's own work; $%.2f of that spent today "
+              "before this turn (this turn's own Claude cost is added after it ends). Research (the deep prospects) has "
+              "its own $%.0f a day; $%.2f of it spent today." % (
+        config.MODE, config.RUN_CAP_USD, config.DAILY_CAP_USD, team_spent_today(),
+        config.RESEARCH_DAILY_CAP_USD, store.spent(day=store.today(), research=True)),
+        "Dry mode means nothing is written to DataSift and nothing is sent. Free mode is the same for everything "
+        "you run; only the autopilot's own stages that spend nothing write, on their schedule. Neither means nothing is spent: "
+        "your own turn costs Claude time. Comps come from SiftMap's deeds (investor and closed sales); %s "
+        "Say what was spent, never that nothing was. spend_report reads the real figures." % (
+            "a comp pull asked for in Slack can also buy Zillow sold data inside its own daily cap."
+            if (os.environ.get("AGENTS_ZILLOW_COMPS") or "").strip().lower() in ("1", "true", "yes", "on")
+            else "the Zillow pull is off."),
+        "Your reply is posted in the Slack thread as written: three short lines at most, or, when you deliver "
+        "a skill's output, its summary in twelve short lines at most with the link."]
     return "\n".join(lines)
 
 
@@ -187,7 +209,8 @@ def run(task: dict, roster) -> tuple[Turn, "team_tools.RunContext"]:
     files = attachments.fetch_for_turn(task, ws)      # the thread's photos and files, into the workspace
     budget = budget_now(files=any(f["path"] for f in files))
     if budget < 0.05:
-        return Turn(error="today's spend cap ($%.0f) is used up, so nothing ran" % config.DAILY_CAP_USD), ctx
+        return Turn(error="today's spend cap for the team's own work ($%.0f; research has its own) is used up, so "
+                          "nothing ran" % config.DAILY_CAP_USD), ctx
     resume = (task.get("session_id") or "") if task["workflow"] == "resume" else ""
     opts = options(sdk(), ctx, tool_list, ws, emp.model, budget, resume=resume)
     turn = asyncio.run(_turn(sdk(), prompt_for(task, roster, emp, files), opts))

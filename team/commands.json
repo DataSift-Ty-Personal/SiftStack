@@ -3,10 +3,10 @@
  "counts": {
   "browser": 23,
   "package": 1,
-  "paid": 13,
+  "paid": 12,
   "retired": 17,
-  "runnable": 51,
-  "wired": 28,
+  "runnable": 50,
+  "wired": 30,
   "writes": 19
  },
  "scripts": {
@@ -1780,7 +1780,7 @@
        "flags": [
         "--daily-cap"
        ],
-       "help": "override AGENTS_DAILY_CAP_USD for this batch",
+       "help": "override the day caps for this batch (AGENTS_RESEARCH_DAILY_CAP_USD, which research counts against, and AGENTS_DAILY_CAP_USD)",
        "kind": "value",
        "type": "float"
       },
@@ -2747,7 +2747,11 @@
     "ddgs"
    ],
    "paid": [
-    "Claude"
+    "Claude",
+    "OpenRouter"
+   ],
+   "paid_deeper": [
+    "OpenAI"
    ],
    "summary": "Top 25 Wholesale-Friendly Cash Buyer List Generator.",
    "why": "imports ddgs, which the brain image does not install",
@@ -3794,6 +3798,13 @@
       "--scratch"
      ],
      "kind": "value"
+    },
+    {
+     "flags": [
+      "--capture-only"
+     ],
+     "help": "archive the page's documents and stop: no parcel lookups, nothing staged (the copy a box that cannot reach the Trustee's site reads)",
+     "kind": "switch"
     }
    ],
    "browser": [
@@ -4926,20 +4937,111 @@
    "args": [
     {
      "choices": [
-      "pull",
-      "history",
-      "mortgage",
-      "buyers",
-      "zillow",
-      "offers",
-      "export",
-      "all"
+      "api",
+      "cluster"
      ],
+     "default": "api",
+     "flags": [
+      "--source"
+     ],
+     "kind": "value"
+    },
+    {
+     "choices": "dynamic",
      "flags": [
       "--phase"
      ],
+     "help": "one step of the run, or all of it (all)",
      "kind": "value",
      "required": true
+    },
+    {
+     "flags": [
+      "--county"
+     ],
+     "help": "county and state, like \"Knox, TN\" (several separated by \";\")",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--fips"
+     ],
+     "help": "county FIPS codes, like 47093,47009",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--zips"
+     ],
+     "help": "ZIP codes, like 37914,37917",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--name"
+     ],
+     "help": "a short name for the market's output folder",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--out"
+     ],
+     "help": "the folder every file is written to (default output/mls_offers/<market> in a SiftStack checkout, ~/SiftStack/mls_offers/<market> for an inst",
+     "kind": "value"
+    },
+    {
+     "default": 60,
+     "flags": [
+      "--shortlist"
+     ],
+     "help": "how many listings to read in full",
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "flags": [
+      "--add"
+     ],
+     "help": "add the shortlisted listings not yet in your account",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--commit"
+     ],
+     "help": "with --add, actually add (uses record allowance)",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--zillow"
+     ],
+     "help": "all: check the offers on Zillow (paid, OPENWEBNINJA_API_KEY)",
+     "kind": "switch"
+    },
+    {
+     "default": "MLS Offers",
+     "flags": [
+      "--list-name"
+     ],
+     "help": "the DataSift list added listings go on",
+     "kind": "value"
+    },
+    {
+     "default": "MLS Listing",
+     "flags": [
+      "--tag"
+     ],
+     "help": "the tag added listings get",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--expect-email"
+     ],
+     "help": "refuse to add unless the key belongs to this user",
+     "kind": "value"
     },
     {
      "default": 24,
@@ -4979,10 +5081,10 @@
      "kind": "value"
     },
     {
-     "default": "Ty",
      "flags": [
       "--sender"
      ],
+     "help": "who the drafts are from (default MLS_OFFERS_SENDER, else unnamed)",
      "kind": "value"
     },
     {
@@ -4993,14 +5095,22 @@
      "kind": "switch"
     }
    ],
-   "class": "runnable",
+   "class": "wired",
    "cli": "argparse",
    "complete": false,
    "paid": [
     "Zillow (OpenWeb Ninja)"
    ],
    "summary": "MLS offer engine: every active listing in a county, a cash offer and a creative offer on each.",
-   "writes": ""
+   "why": "runs inside mls_offers (Roma)",
+   "workflows": [
+    "mls_offers"
+   ],
+   "write_flags": [
+    "--add",
+    "--commit"
+   ],
+   "writes": "commit"
   },
   "mms_inbox_snapshot": {
    "args": [],
@@ -5115,6 +5225,14 @@
    ],
    "writes": "commit"
   },
+  "model_registry": {
+   "args": [],
+   "class": "runnable",
+   "cli": "none",
+   "complete": true,
+   "summary": "Which model does which job. The one place in SiftStack where a model is named.",
+   "writes": ""
+  },
   "mortgage_model": {
    "args": [
     {
@@ -5137,10 +5255,14 @@
      "kind": "switch"
     }
    ],
-   "class": "runnable",
+   "class": "wired",
    "cli": "argparse",
    "complete": true,
    "summary": "Model a seller's mortgage from when it was made: the rate, the monthly payment and what is left on it today.",
+   "why": "runs inside mls_offers (Roma)",
+   "workflows": [
+    "mls_offers"
+   ],
    "writes": ""
   },
   "obituary_campaign": {
@@ -6487,7 +6609,7 @@
    "summary": "What research reads first: the deed records and the tax roll (build plan 3.3).",
    "why": "drives a browser (playwright), and the brain has none",
    "write_calls": [
-    "/api/internal/property/%s/add-notes/",
+    "add_note",
     "write_fields"
    ],
    "writes": "always"
@@ -8479,6 +8601,33 @@
      ],
      "help": "env var holding the target account's Open API key (pull)",
      "kind": "value"
+    },
+    {
+     "choices": [
+      "account",
+      "siftmap"
+     ],
+     "default": "account",
+     "flags": [
+      "--owners"
+     ],
+     "help": "hydrate: account (records already in the account, no SiftMap detail pull) or siftmap (a detail read per lot; DataSift's acceptable use forbi",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--refresh-owners"
+     ],
+     "help": "hydrate: read every record again now",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--record-days"
+     ],
+     "help": "hydrate: a record read within this many days is not read again",
+     "kind": "value",
+     "type": "float"
     }
    ],
    "class": "wired",
@@ -8495,9 +8644,9 @@
     "get_detail"
    ],
    "summary": "Buildable vacant lots, 0.20 to 2.00 acres, in Union County OH (39159).",
-   "why": "runs inside land_desk (Atlas)",
+   "why": "runs inside buildable_lots (Atlas)",
    "workflows": [
-    "land_desk"
+    "buildable_lots"
    ],
    "write_flags": [
     "--commit"

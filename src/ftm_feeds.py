@@ -14,6 +14,9 @@ This table answers, per feed:
   * how the lanes should treat a record on that list (build plan 1.17): when research runs,
     whether a sale date makes it hot, and how long before a second pass
 
+A second, short table names the paid sources themselves: what a person calls each one, how to renew
+it, and how many days before it ends the run warns and the daily digest says so (PAID_SOURCES).
+
 It holds no network code and reads nothing but environment variables.
 
 SWITCHES. A feed is live when its STAGE is named in the run's --stages. Nothing here turns a feed
@@ -143,6 +146,66 @@ BY_KEY = {f.key: f for f in FEEDS}
 
 # Stages that existed before this table. A feed on one of these is part of today's run.
 TODAY_STAGES = ("notices", "capture", "liens", "county", "sold")
+
+
+# ── the paid sources behind the feeds ─────────────────────────────────
+#
+# Both are subscriptions that end on a date, and a lapse stops every feed that rides on one. Since
+# 2026-11-19 (approved by Ty) the daily digest says so well before either ends, 10 days out for both.
+# Both run out about 2026-12-11, and the recorder's renewal is a purchase only he can make. The old warning
+# (3 days out) was a stage warning: the digest scored it amber, the two-line post prints amber as
+# the all-clear, and the brain's relay drops a run report that did not fail, so the first anyone
+# heard of a lapse was the red run on the day it happened.
+
+WARN_DAYS_DEFAULT = 10
+
+
+@dataclass(frozen=True)
+class PaidSource:
+    key: str
+    label: str            # what a person calls it, the start of its digest line
+    renew: str            # what to do about it, one sentence
+    warn_env: tuple       # the settings for its lead time; the first one set wins
+    default_days: int = WARN_DAYS_DEFAULT   # the lead time when none of those settings is set
+
+
+PAID_SOURCES: tuple[PaidSource, ...] = (
+    # 3 days: Ty set the notice site's 30 Day product to auto-renew (2026-11-11), so a longer window
+    # would show its line for a third of every month and stop meaning anything.
+    PaidSource(_TNPN, "tnpublicnotice subscription",
+               "Renew it on tnpublicnotice.com (My Smart Search, then Renew).", ("SUBSCRIPTION_WARN_DAYS",),
+               default_days=3),
+    # 10 days: the recorder's renewal is a purchase a person has to make. SUBSCRIPTION_WARN_DAYS set
+    # both windows before the recorder had a setting of its own, and still does when
+    # ROD_SUBSCRIPTION_WARN_DAYS is unset.
+    PaidSource(_ROD, "Register of Deeds subscription",
+               "Renew it at paxsub.knoxrod.org, on the Subscription tab.",
+               ("ROD_SUBSCRIPTION_WARN_DAYS", "SUBSCRIPTION_WARN_DAYS"), default_days=10),
+)
+PAID_BY_KEY = {p.key: p for p in PAID_SOURCES}
+
+
+def warn_days(source: str) -> int:
+    """How many days before a paid source ends the run warns and the daily digest says so. A
+    setting that is not a whole number is passed over, never a reason the run fails to start."""
+    paid = PAID_BY_KEY.get(source)
+    for name in (paid.warn_env if paid else ("SUBSCRIPTION_WARN_DAYS",)):
+        raw = (os.environ.get(name) or "").strip()
+        if not raw:
+            continue
+        try:
+            return int(raw)
+        except ValueError:
+            continue
+    return paid.default_days if paid else WARN_DAYS_DEFAULT
+
+
+def paid_sources_read_by(stages: list[str]) -> list[str]:
+    """The paid sources these stages log in to, in table order. A stage reads its source's expiry on
+    every run, whether or not the stage that uploads its rows is also running."""
+    want = set(stages or [])
+    used = {f.paid_source for f in FEEDS if f.stage in want and f.paid_source}
+    return [p.key for p in PAID_SOURCES if p.key in used]
 
 
 def requested_stages(raw_args: str | None = None) -> list[str]:

@@ -88,6 +88,8 @@ def _webhook_signer(check):
 
 
 EXTRA_SECTIONS: list[tuple[str, str]] = [
+    ("skills worked as in Claude Code", "selftest_skilltools"),
+    ("the model lineup and skill_report", "selftest_skillrun"),
     ("data, lists and hygiene", "selftest_data"),
     ("releasing a batch from slack", "selftest_release"),
     ("text lane", "selftest_textlane"),
@@ -107,9 +109,12 @@ EXTRA_SECTIONS: list[tuple[str, str]] = [
     ("two tracks for the presets", "selftest_restructure"),
     ("the two tracks", "selftest_tracks"),
     ("three pipelines", "selftest_pipeline"),
+    ("three marketing flows", "selftest_flows"),
     ("deal odds", "selftest_deal_odds"),
+    ("the Top 1,000's always-in records", "selftest_always"),
     ("slack channels and voice", "selftest_slack_split"),
     ("slack relay for the first-to-market jobs", "selftest_relay"),
+    ("slack by department, one board a day", "selftest_boards"),
     ("completing incomplete records owned by people", "selftest_complete"),
     ("the morning callback list", "selftest_callbacks"),
     ("a new hire's first week", "selftest_newhire"),
@@ -120,6 +125,7 @@ EXTRA_SECTIONS: list[tuple[str, str]] = [
     ("lost deals and neighborhood suppression", "selftest_outcomes"),
     ("county tax status, re-read until paid", "selftest_taxwatch"),
     ("deeper research pass", "selftest_research2"),
+    ("a death reported after the research sends it back", "selftest_reopen"),
     ("three lead workflows: property check, closer handoff, primary phone", "selftest_leadprep"),
     ("account checks and the business audit", "selftest_accountchecks"),
     ("walkthrough videos", "selftest_walkvideo"),
@@ -132,6 +138,11 @@ EXTRA_SECTIONS: list[tuple[str, str]] = [
     ("the kpi tracker", "selftest_kpitracker"),
     ("kpi sources: any tool's work, each act counted once", "selftest_kpisources"),
     ("mail counted from a date: the auction and probate campaigns", "selftest_mailcadence"),
+    ("first-to-market texts and foreclosure research on their own", "selftest_sc_auto"),
+    ("research's own day cap, apart from the team's", "selftest_research_cap"),
+    ("cold email in the brain: one home, the email channel, the cutover", "selftest_coldemail"),
+    ("buildable lots in slack: the lot finder in the background, owners from the account", "selftest_buildable_lots"),
+    ("mls offers: every listing in a market, on the install's own key", "selftest_mls_offers"),
 ]
 
 
@@ -155,6 +166,9 @@ def main() -> int:
     # The routed channels and the voice rewrite reach a live service too: blanked and set to the free
     # cleanup here, and the section that tests them sets its own fakes.
     config.SLACK_PIPELINE_CHANNEL = config.SLACK_ISSUES_CHANNEL = ""
+    config.SLACK_SALES_CHANNEL = config.SLACK_MARKETING_CHANNEL = config.SLACK_OPS_CHANNEL = ""
+    # The layout every other section was written against; the boards section sets its own.
+    config.SLACK_LAYOUT = "classic"
     config.SLACK_VOICE = "plain"
     from . import slack_app, slack_socket
     slack_app._http = slack_socket._http = NoNetwork()
@@ -179,6 +193,63 @@ def main() -> int:
     store.add_spend(t1, 1.25, "smartskip")
     store.add_spend(t1, 0, "nothing")
     check(abs(store.spent(task_id=t1) - 1.25) < 1e-9, "spend sums per task and ignores zero")
+    sched, _ = store.enqueue("ops", "a_stage", source="schedule", force=True)
+    asked, _ = store.enqueue("sales", "ask", subject="ask", source="slack", force=True)
+    order, others = [], []
+    while True:
+        nxt = store.claim_next()
+        if not nxt:
+            break
+        (order if nxt["id"] in (sched, asked) else others).append(nxt["id"])
+    check(order == [asked, sched], "a person's ask goes before a scheduled stage run queued ahead of it")
+    for i in others:
+        store.mark(i, "queued")
+    for i in (sched, asked):
+        store.finish(i, "done", {})
+    sched2, _ = store.enqueue("ops", "b_stage", source="schedule", force=True)
+    asked2, _ = store.enqueue("sales", "ask", subject="ask", source="slack", force=True)
+    by_people, others = [], []
+    while True:
+        nxt = store.claim_next("people")
+        if not nxt:
+            break
+        (by_people if nxt["id"] in (sched2, asked2) else others).append(nxt["id"])
+    by_sched = store.claim_next("schedule")
+    check(by_people == [asked2] and by_sched and by_sched["id"] == sched2 and store.claim_next("schedule") is None,
+          "the people lane takes only what a person started and the schedule lane only stage runs")
+    try:
+        store.claim_next("bogus")
+        check(False, "an unknown claim lane is refused")
+    except ValueError:
+        check(True, "an unknown claim lane is refused")
+    for i in others:
+        store.mark(i, "queued")
+    for i in (sched2, asked2):
+        store.finish(i, "done", {})
+    # A quick, time-critical stage marked fast_lane runs on the people lane (2026-11-20).
+    store.set_fast_lane({"quick_stage"})
+    try:
+        quick, _ = store.enqueue("sales", "quick_stage", source="schedule", force=True)
+        slow, _ = store.enqueue("ops", "slow_stage", source="schedule", force=True)
+        by_sched3, by_people3, others3 = [], [], []
+        while True:
+            nxt = store.claim_next("schedule")
+            if not nxt:
+                break
+            (by_sched3 if nxt["id"] in (quick, slow) else others3).append(nxt["id"])
+        while True:
+            nxt = store.claim_next("people")
+            if not nxt:
+                break
+            (by_people3 if nxt["id"] in (quick, slow) else others3).append(nxt["id"])
+        check(by_sched3 == [slow] and by_people3 == [quick],
+              "a stage marked fast_lane is claimed by the people lane, every other stage run by the schedule lane")
+        for i in others3:
+            store.mark(i, "queued")
+        for i in (quick, slow):
+            store.finish(i, "done", {})
+    finally:
+        store.set_fast_lane(())
 
     print("router")
     shapes = [({"property": {"uuid": U1}}, U1), ({"property_uuid": U1}, U1),
@@ -192,6 +263,26 @@ def main() -> int:
     check(slack.sign(7, "a.pdf") == slack.sign(7, "a.pdf") != slack.sign(8, "a.pdf"), "file signatures are per task")
     check(slack.file_url(7, "a.pdf").endswith("/files/7/%s/a.pdf" % slack.sign(7, "a.pdf")), "signed file URL")
     check(slack.post("hello") is False, "no webhook set: post logs and returns False, never raises")
+
+    print("record links")
+    import re as _re
+    from datasift_links import record_url, slack_link
+    from .query import compact_row
+    from .tools import compact_record
+    from . import voice
+    check(record_url("u-1") == "https://app.reisift.io/records/properties/u-1" and record_url("") == "",
+          "a record link opens the record's own page (never the records list route)")
+    check(slack_link("u-1", "100 Example St") == "<https://app.reisift.io/records/properties/u-1|100 Example St>"
+          and slack_link("", "100 Example St") == "100 Example St", "a Slack link is labelled with the street")
+    check(compact_record({"uuid": "u-1"})["link"].endswith("/records/properties/u-1")
+          and compact_row({"uuid": "u-1"})["link"].endswith("/records/properties/u-1"),
+          "record_lookup and records_query give every record its link")
+    wrong = sorted(f.name for f in config.ROOT.joinpath("src").rglob("*.py") if "__pycache__" not in f.parts
+                   and _re.search(r"app\.reisift\.io/records/(%s|\{)", f.read_text(encoding="utf-8", errors="ignore")))
+    check(not wrong, "no module builds a record link on the records list route: %s" % (", ".join(wrong) or "none"))
+    rep = voice.report_text("morning_callbacks", "10 owners called in", ["%d Example St" % i for i in range(1, 11)])
+    check("6 Example St" in rep and "7 Example St" not in rep and "And 4 more" in rep,
+          "a report cut to six lines says how many it left out")
 
     print("researcher guards")
     for name, schema in (("research", researcher.RESEARCH_SCHEMA), ("analysis", researcher.ANALYSIS_SCHEMA)):

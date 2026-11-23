@@ -203,7 +203,8 @@ _GENERATIONAL_SUFFIXES = {"jr", "sr", "ii", "iii", "iv", "v"}
 
 def _obituary_model() -> str:
     """High-quality model for heir-determining obituary parsing (configurable)."""
-    return getattr(_cfg, "OBITUARY_LLM_MODEL", "claude-sonnet-4-6")
+    import model_registry
+    return getattr(_cfg, "OBITUARY_LLM_MODEL", "") or model_registry.model("obituary_reading")
 
 
 def _survivor_name(item) -> str:

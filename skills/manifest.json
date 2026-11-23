@@ -5,9 +5,9 @@
   "raw_base": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main",
   "install_target": "~/.claude/skills",
   "counts": {
-    "total": 29,
-    "current": 27,
-    "skills": 26,
+    "total": 30,
+    "current": 28,
+    "skills": 27,
     "plugins": 3
   },
   "categories": [
@@ -25,7 +25,7 @@
   },
   "tier_counts": {
     "none": 14,
-    "account": 8,
+    "account": 9,
     "api": 5
   },
   "skills": [
@@ -231,9 +231,9 @@
         "scripts/pull_kpis.py"
       ],
       "file_count": 3,
-      "bytes": 33180,
+      "bytes": 34442,
       "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/kpi-engine.skill",
-      "sha256": "a33f6806787f25298b95359325b82485467b8eadcdc686fdf357c5448712c8cc",
+      "sha256": "79358414f29533c1094c5c7b98f5d1e0e864b11dc508bfa7a740905c21e54464",
       "requires": {
         "tier": "account",
         "env": [
@@ -436,9 +436,9 @@
         "templates/research-pack-template.md"
       ],
       "file_count": 12,
-      "bytes": 79232,
+      "bytes": 80474,
       "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/deep-prospecting-v5.skill",
-      "sha256": "cdcfbe6f639eb88a7e2faaa5739d2df266944c38a91839c6687f75b6ca9d4b4c",
+      "sha256": "ca170f0cc75014cacc133aee53e04865c7c73dbbaebd752e0d4d00083e93ef08",
       "requires": {
         "tier": "api",
         "env": [
@@ -449,6 +449,40 @@
         "cost": "About $0.24 per record end to end",
         "fallback": "no-api-playbook#heir-research-by-hand",
         "note": "Enformion is optional and only needed for LLC and trust owners.",
+        "accounts": []
+      }
+    },
+    {
+      "name": "mls-offer-engine",
+      "kind": "skill",
+      "category": "Deal Analysis",
+      "version": null,
+      "description": "Make a cash offer and a creative offer on every active MLS listing in a county or a set of ZIP codes, on your own DataSift Open API key. Screens every active single-family listing through SiftMap search, prices each cash offer off what investors actually paid for similar houses nearby, adds only the shortlist to your DataSift account (quoted first) so it can read the listing agent, the price history and the seller's loans, models each loan's real rate and payment from public HMDA and Freddie Mac data, and offers subject-to on every low-rate loan. Writes an Excel workbook and an agent call list with a drafted first text for each listing. Sends nothing. Trigger for: make offers on MLS listings, offer on every listing in my county, subject-to offers on listed houses, build an MLS offer list, which listings would take a subject-to, or call listing agents with cash offers.",
+      "status": "current",
+      "source_dir": "skills/mls-offer-engine",
+      "files": [
+        "SKILL.md",
+        "data/us_counties.csv",
+        "references/api-and-acceptable-use.md",
+        "references/method.md",
+        "references/outreach.md",
+        "scripts/mls_offers.py",
+        "scripts/mls_offers_api.py",
+        "scripts/mortgage_model.py",
+        "scripts/siftmap_standalone.py"
+      ],
+      "file_count": 9,
+      "bytes": 306578,
+      "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/mls-offer-engine.skill",
+      "sha256": "78dc0acb021103debb027f43cb3f2b5d852f846a5f27d9f7cf5cfa1bf8dbd47b",
+      "requires": {
+        "tier": "account",
+        "env": [
+          "REISIFT_API_KEY"
+        ],
+        "cost": "Free to screen and price. Adding the shortlist to your account uses record allowance, quoted first. The Zillow check is optional and metered",
+        "fallback": "no-api-playbook#mls-offers-by-hand",
+        "note": "Runs on your DataSift Open API key. OPENWEBNINJA_API_KEY is optional and only powers the Zillow check. Sends nothing: every text is a draft.",
         "accounts": []
       }
     },
@@ -966,9 +1000,9 @@
         "skills/setup/SKILL.md"
       ],
       "file_count": 6,
-      "bytes": 27212,
+      "bytes": 28263,
       "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/siftstack-core.plugin",
-      "sha256": "e17eb16ba1018d672b4e74ae22faa0be8260244a5979cdd9dd96ec5d2f27c514",
+      "sha256": "05f3c73f841ce3f601bf726f24f14f780ca7d9f142af233c8b98e61f2b1b4ca1",
       "requires": {
         "tier": "none",
         "fallback": null,

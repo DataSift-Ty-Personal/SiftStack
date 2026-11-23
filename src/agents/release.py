@@ -12,9 +12,13 @@ channel now, in two steps:
 Four rules keep this from becoming a way around a person's judgment:
   * Only Slack users named in AGENTS_RELEASERS can release. Everyone else is told so, and nothing
     is staged for them to confirm.
-  * Nothing is released on a dry brain. The release functions take a plain commit switch and do
-    not look at the box's mode, so this module checks it twice: when the person confirms, and
-    again when the worker runs the release.
+  * A batch is released only where the stage that staged it would act on its own (rule(), the
+    stages' own config.stage_live, 2026-11-19): every batch on a live box; on a free box a batch
+    whose stage is live in the playbook and whose kind spends nothing, or a paid or outreach one
+    whose stage AGENTS_LIVE_STAGES names; nothing on a dry box. A script command has no stage and
+    waits for a live box. The release functions take a plain commit switch and do not look at the
+    box, so this module checks it every time: when the person confirms, when the worker runs the
+    release, and on the command line (`cli.py autopilot release N --commit`).
   * A model never releases. The command is read by a pattern in intake before any employee sees
     the message, and release_batch is not on the roster, so no employee has it as a tool.
   * Each release re-runs the gate on every item (the release functions already do), so a record
@@ -99,8 +103,50 @@ def describe(b: dict) -> str:
                                                      str(b.get("created") or "")[:16].replace("T", " "))
 
 
+def _policy():
+    """The playbook rule() reads (the selftest puts its own here)."""
+    from .autopilot import policy as policy_mod
+    return policy_mod.load()
+
+
+def stage_may_release(st) -> bool:
+    """May a batch this stage staged be released on this box? On a live box, yes. On a free box, when
+    the stage acts live on its own there: its playbook mode is live and its kind spends nothing, or
+    AGENTS_LIVE_STAGES names it (config.stage_live). agencyexport.drain asks the same before it marks
+    the rest of a released file."""
+    if config.live():
+        return True
+    return st is not None and getattr(st, "mode", "") == "live" and config.stage_live(st.spend, st.id)
+
+
+def rule(b: dict, pol=None) -> tuple[bool, str, str]:
+    """(may this box release the batch, a short code for the intake log, why not in words)."""
+    if config.live():
+        return True, "", ""
+    if config.MODE != "free":
+        return False, "dry box", "the brain is in dry mode"
+    b = b or {}
+    if b.get("kind") == "command":
+        return False, "live box only", "the brain is in free mode, and a script command is released on a live box only"
+    try:
+        pol = pol if pol is not None else _policy()
+    except Exception as exc:  # noqa: BLE001  (a playbook that does not load releases nothing on a free box)
+        return False, "no playbook", "the brain is in free mode and the playbook did not load (%s)" % str(exc)[:160]
+    sid = str(b.get("stage") or "")
+    st = (getattr(pol, "stages", None) or {}).get(sid)
+    if st is None:
+        return False, "no stage", "the brain is in free mode and the batch's stage %s is not in the playbook" % (sid or "(none)")
+    if st.mode != "live":
+        return False, "stage not live", "the brain is in free mode and stage %s is in %s mode in the playbook" % (sid, st.mode)
+    if not stage_may_release(st):
+        return False, "stage not live", ("the brain is in free mode and stage %s spends on %s without AGENTS_LIVE_STAGES "
+                                         "naming it" % (sid, st.spend))
+    return True, "", ""
+
+
 def run(batch_id: int, *, commit: bool = False, uploaded: bool = False, **kw) -> dict:
-    """Release one batch through its kind's own function. Dry unless commit."""
+    """Release one batch through its kind's own function. Dry unless commit. A commit this box may not
+    make (rule) is refused before the kind's function runs, from the command line and from the worker."""
     from .autopilot import ledger
     b = ledger.batch(batch_id)
     if not b:
@@ -108,6 +154,10 @@ def run(batch_id: int, *, commit: bool = False, uploaded: bool = False, **kw) ->
     fn = release_fn(b["kind"])
     if fn is None:
         raise SystemExit("batch %d is a %s batch, and nothing is registered to release that kind" % (batch_id, b["kind"]))
+    if commit:
+        ok, _, why = rule(b)
+        if not ok:
+            raise SystemExit("batch %d was not released: %s. Nothing changed; it is still staged." % (batch_id, why))
     if b["kind"] == "mail" or b["kind"] in FILE_KINDS:
         kw["uploaded"] = uploaded
     return fn(batch_id, commit=commit, **kw)
@@ -157,7 +207,9 @@ def slack_command(cmd: tuple[str, int, bool], user: str, channel: str, thread: s
         if b["kind"] == "newhire":
             from .autopilot import newhire
             extra = " " + newhire.release_note(b)
-        mode = "" if config.live() else " The brain is in dry mode, so a confirm will not send anything yet."
+        ok, code, why = rule(b)
+        mode = "" if ok else (" The brain is in dry mode, so a confirm will not send anything yet." if code == "dry box"
+                              else " %s%s, so a confirm will not release it yet." % (why[:1].upper(), why[1:]))
         say("%s. Reply `confirm %d` within %d minutes to release it.%s%s" % (
             describe(b)[0].upper() + describe(b)[1:], batch_id, CONFIRM_MINUTES, extra, mode))
         return {"release": "asked", "batch": batch_id}
@@ -175,9 +227,13 @@ def slack_command(cmd: tuple[str, int, bool], user: str, channel: str, thread: s
         say("That was more than %d minutes ago. Ask again with `release batch %d`." % (CONFIRM_MINUTES, batch_id))
         return {"release": "refused", "why": "expired"}
     store.kv_set(_key(user, batch_id), "")          # one confirm, one release
-    if not config.live():
-        say("The brain is in dry mode, so nothing was released. Batch %d is still staged." % batch_id)
-        return {"release": "refused", "why": "dry box"}
+    ok, code, why = rule(b)
+    if not ok:
+        if code == "dry box":
+            say("The brain is in dry mode, so nothing was released. Batch %d is still staged." % batch_id)
+        else:
+            say("Nothing was released: %s. Batch %d is still staged." % (why, batch_id))
+        return {"release": "refused", "why": code}
     tid, _ = store.enqueue("ops", WORKFLOW, "", subject="release batch %d" % batch_id,
                            payload={"batch": batch_id, "uploaded": uploaded, "by": user},
                            mode="direct", source="slack", slack_channel=channel, slack_thread=thread)
@@ -199,11 +255,17 @@ def _export_only(b: dict) -> bool:
 # ------------------------------------------------------------------ the worker's side (workflows.REGISTRY)
 
 def task_run(task: dict) -> dict:
-    """The queued release. The box is checked again here: it may have been put back in dry mode
-    between the confirm and this run."""
+    """The queued release. The rule is checked again here: the box may have been put back in dry mode,
+    or the stage taken off AGENTS_LIVE_STAGES or out of live, between the confirm and this run."""
+    from .autopilot import ledger
     p = store.payload_of(task)
-    if not config.live():
-        return {"batch": p.get("batch"), "released": False, "why": "the brain is in dry mode"}
+    try:
+        b = ledger.batch(int(p.get("batch") or 0)) or {"id": p.get("batch")}
+    except (TypeError, ValueError):
+        b = {"id": p.get("batch")}
+    ok, _, why = rule(b)
+    if not ok:
+        return {"batch": p.get("batch"), "released": False, "why": why}
     out = run(int(p["batch"]), commit=True, uploaded=bool(p.get("uploaded")))
     return {"batch": p.get("batch"), "released": True, "result": out, "by": p.get("by", "")}
 

@@ -243,7 +243,8 @@ def test_the_full_report_carries_the_feed_table():
 
 
 def test_the_full_report_says_when_days_left_are_not_being_recorded():
-    assert "Days left are not being recorded (set FTM_FEED_HEALTH=1 on the runner)." in H.render(green())
+    # Every run records them in its own log line now, so the only reason for none is that no run read one.
+    assert "No run has recorded the days left on a paid source yet." in H.render(green())
 
 
 def test_the_full_report_shows_days_left_on_each_paid_source():

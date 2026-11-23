@@ -15,15 +15,20 @@ primary_region = "iad"
   AGENTS_PUBLIC_URL = "https://siftstack-agents.fly.dev"
   AGENTS_SANDBOX_MEM_MB = "1280"   # one sandbox run; the brain and the Claude engine keep the rest of 2 GB
   # Secrets beat [env]: if AGENTS_MODE is ever set as a secret, that value wins and this line
-  # lies. Ask the box: GET /health reports the effective mode.
+  # lies. Ask the box: GET /health reports the effective mode. dry | free | live: free lets the
+  # playbook's live stages that spend nothing act on their schedule, and keeps everything else dry.
   AGENTS_MODE = "dry"
   AGENTS_RUN_CAP_USD = "5"
-  AGENTS_DAILY_CAP_USD = "25"
+  AGENTS_DAILY_CAP_USD = "25"            # the team's own work: the employees' turns and skills, the stages' data spend
+  AGENTS_RESEARCH_DAILY_CAP_USD = "25"   # research (every deep prospect) on its own cap, never the team's
   AGENTS_DP_COLUMN = "Check Relatives"
   # The deep prospect's research runs on the low-cost engine (two inexpensive models, cross-checked,
   # a referee on a hard disagreement; measured $1.21 a record live against more than $4). The
   # analysis passes stay on Claude. Remove this line and the Claude researcher does the research.
   AGENTS_RESEARCH_ENGINE = "open"
+  # MLS offers: the public HMDA and Freddie Mac downloads behind the modeled mortgages, kept on the
+  # volume so a deploy does not make the next ask download them again.
+  MORTGAGE_MODEL_CACHE = "/data/mortgage_model"
 
 [mounts]
   source = "agents_data"

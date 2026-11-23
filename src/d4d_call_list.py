@@ -96,7 +96,7 @@ DEFAULT_MASTER = "output/Knox_Blount_Master_20260908.xlsx"
 ASSIGNED_JSONL = Path("output/tn_market/assigned.jsonl")
 DEFAULT_LIST = "D4D Top 3000"
 DEFAULT_TAG = "D4D"
-CRM_URL = "https://app.reisift.io/records/%s"
+CRM_URL = "https://app.reisift.io/records/properties/%s"     # the record page; /records/<uuid> is the list (datasift_links)
 
 # A number the team already disposed is not re-bought and not re-dialed.
 BAD_STATUSES = {"WRONG", "DEAD", "DNC", "CORRECT_DNC", "WRONG_DNC"}

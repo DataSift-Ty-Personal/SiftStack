@@ -328,10 +328,11 @@ def _shipped_checks(check) -> None:
     old = [sid for sid in pol.stages if sid.startswith(("hottest_", "strong_", "bulk_")) or sid == "caller_book"]
     check(old and all(pol.stage(sid).mode == "off" for sid in old), "every Hottest, Strong and Bulk stage is switched off")
     top, ag = pol.stage("top1000_refresh"), pol.stage("agency_export")
-    check((top.kind, top.owner, top.mode, top.get("lane")) == ("top1000", "analysis", "plan", "top1000")
-          and (ag.kind, ag.owner, ag.mode, ag.get("lane")) == ("agencyexport", "ops", "plan", "agency")
+    # Both went live on 2026-11-19 (Ty: switch on what is left); the agency file still waits for a releaser.
+    check((top.kind, top.owner, top.mode, top.get("lane")) == ("top1000", "analysis", "live", "top1000")
+          and (ag.kind, ag.owner, ag.mode, ag.get("lane")) == ("agencyexport", "ops", "live", "agency")
           and top.presets == ag.presets == ["Agency - 01 Queue"] and "Obituary" in top.get("exclude_lists"),
-          "the Top 1,000 refresh (Atlas) and the agency export (Quinn) ship in plan, reading the agency queue")
+          "the Top 1,000 refresh (Atlas) and the agency export (Quinn) ship live, reading the agency queue")
     # Three pipelines (2026-11-14): each stage that worked both lanes is two now.
     from .autopilot import stages
     from .selftest_pipeline import TWINS, mixes

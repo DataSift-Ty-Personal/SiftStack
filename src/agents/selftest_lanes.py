@@ -892,6 +892,53 @@ def _auction(check, go, parse, auctiontasks, gate, ledger) -> None:
     check(crm.recs["d1"]["status"] is None and sa.tally.get("sale passed, borrower still owns it: left in the lane") == 1,
           "the auction stage does not close out a second time the record the deed check brought back")
 
+    _fresh()
+    pol_nc = parse({"k_hot": stage("auctiontasks", "analysis", lane="hot_auction", scope_tags=base, tag="Auction Soon",
+                                   call_tasks=False, still_owned_remove_tags=["FTM"], deed_check_tries=2)})
+    crm_nc = crm_new()
+    snc = go("k_hot", crm_nc, pol_nc)
+    check(not [t for t in crm_nc.tasks.values() if t["title"].startswith("Call before the sale")]
+          and crm_nc.recs["p1"]["status"] == passed and crm_nc.recs["d1"]["status"] is None
+          and snc.tally.get("call tasks are off in the playbook (call_tasks: false)", 0) >= 1,
+          "with call_tasks off the lane makes no call task, and still closes out a passed sale and runs the deed check")
+    check("FTM" not in crm_nc.recs["d1"]["tags"] and "Still Owned After Sale" in crm_nc.recs["d1"]["tags"]
+          and any(u == "d1" and "leaves the foreclosure lists" in t for u, t in crm_nc.msgs)
+          and "FTM" in crm_nc.recs["d2"]["tags"] and crm_nc.recs["d2"]["status"] == passed,
+          "a borrower still on the roll after the sale leaves the foreclosure flow for the long-term pool; a new owner stays closed")
+    # A republished notice: the tag back, a new sale that has passed too, closed out again. Its deed
+    # check is a new one: the verdict for the first sale does not settle the second.
+    crm_nc.recs["d1"]["status"] = passed
+    crm_nc.recs["d1"]["tags"].append("FTM")
+    ledger.set_fact("d1", "closed_out", {"sale": day(-46), "from": ""})
+    crm_nc.custom["d1"] = {"Foreclosure Date": day(-46)}
+    go("k_hot", crm_nc, pol_nc, now=T0 + timedelta(hours=1))
+    check((ledger.fact("d1", "deed_check") or {}).get("sale") == day(-46) and crm_nc.recs["d1"]["status"] is None
+          and "FTM" not in crm_nc.recs["d1"]["tags"],
+          "a republished sale gets its own deed check: a verdict settles only the sale it was made for")
+
+    # AGENTS_MODE=free: a stage marked live acts only when its kind spends nothing; everything else stays dry.
+    from . import config as cfg
+    keep_mode = cfg.MODE
+    try:
+        cfg.MODE = "free"
+        check(cfg.stage_live("free") and not cfg.stage_live("paid") and not cfg.stage_live("outreach") and not cfg.live(),
+              "a free box lets a stage that spends nothing act, and keeps paid and outreach stages, workflows and releases dry")
+        _fresh()
+        crm_f = crm_new()
+        sf = go("k_hot", crm_f, pol_nc)
+        check(sf.live and crm_f.recs["p1"]["status"] == passed, "on a free box the hot auction lane, marked live, closes out a passed sale")
+        pol_pl = parse({"k_hot": stage("auctiontasks", "analysis", mode="plan", lane="hot_auction", scope_tags=base, tag="Auction Soon")})
+        crm_pl = crm_new()
+        spl = go("k_hot", crm_pl, pol_pl)
+        check(not spl.live and not crm_pl.writes and crm_pl.recs["p1"]["status"] is None,
+              "on a free box a stage the playbook keeps in plan still writes nothing")
+        cfg.MODE = "dry"
+        crm_d = crm_new()
+        sd = go("k_hot", crm_d, pol_nc)
+        check(not sd.live and not crm_d.writes, "a dry box keeps every stage in plan, whatever the playbook says")
+    finally:
+        cfg.MODE = keep_mode
+
 
 # ---------------------------------------------------------------------- second chances (plan 4.4)
 def _second_chances(check, go, parse, activity, ledger, secondchance) -> None:
@@ -994,6 +1041,60 @@ def _second_chances(check, go, parse, activity, ledger, secondchance) -> None:
     looked = sorted(str((ledger.fact(u, "second_chance") or {}).get("looked") or "")[:10] for u in ("q1", "q2"))
     check(looked == [T0.date().isoformat(), (T0 + timedelta(days=1)).date().isoformat()],
           "with more open tasks than reads, each run reads the ones looked at longest ago, so every record is reached in turn")
+
+    # ---- our own callers' lanes only (2026-11-19): 44 of the 46 tasks due on the first read were owners on the
+    # agency track, whom the outside calling agency works. With lanes named, only those lanes' records are read.
+    from .autopilot import policy
+
+    def house_crm():
+        c = LaneCRM([_r("s1", "1 House St", ["FTM", "Foreclosure"], status=ni, phones=[yes("8655553111")]),
+                     _r("s2", "2 House St", ["Top 1000", "Priority 1"], status=ni, phones=[yes("8655553121")]),
+                     _r("s3", "3 House St", ["Priority 1"], status=ni, phones=[yes("8655553131")]),
+                     _r("s4", "4 House St", ["Foreclosure"], status=ni, phones=[yes("8655553141")])])
+        c.rec_logs = {u: [status_ev("h" + u, u, T0 - timedelta(days=46), None, ni)] for u in ("s1", "s2", "s3", "s4")}
+        return c
+
+    def tasked(c):
+        return sorted(t.get("assigned_to_property") for t in c.tasks.values())
+
+    _fresh()
+    activity.reset()
+    c = house_crm()
+    s = go("k_house", c, parse({"k_house": stage("secondchance", "analysis", lanes=["ftm", "top1000"])}))
+    check(tasked(c) == ["s1", "s2"] and s.found == 2 and not {"s3", "s4"} & set(c.reads + c.log_reads),
+          "named to the in-house lanes, only first-to-market and Top 1,000 owners get a re-call task, and an "
+          "agency-track owner is never even read")
+    check("Not Interested record(s) in the first-to-market and Top 1,000 lanes" in s.head,
+          "the run says which lanes it read: %s" % s.head)
+    _fresh()
+    activity.reset()
+    c = house_crm()
+    go("k_one", c, parse({"k_one": stage("secondchance", "analysis", lane="ftm")}))
+    check(tasked(c) == ["s1"], "one lane named, that lane alone is read")
+    _fresh()
+    activity.reset()
+    c = house_crm()
+    go("k_second", c, parse({"k_second": stage("secondchance", "analysis")}))
+    check(tasked(c) == ["s1", "s2", "s3", "s4"], "with no lane named the stage reads every Not Interested record, as before")
+    _fresh()
+    activity.reset()
+    c = house_crm()
+    s = go("k_agency", c, parse({"k_agency": stage("secondchance", "analysis", lane="agency")}))
+    check(not c.tasks and any("agency lane has no marker tag" in p for p in s.problems),
+          "the agency lane, which no tag marks, cannot be read this way, and that is said rather than guessed")
+    try:
+        parse({"k_bad": stage("secondchance", "analysis", lanes=["ftm", "top100"])})
+        refused = ""
+    except policy.PolicyError as exc:
+        refused = str(exc)
+    check("lanes must list lanes" in refused and "top100" in refused,
+          "a lane name that is not a lane is refused when the playbook loads")
+    try:
+        parse({"k_word": stage("secondchance", "analysis", lanes="ftm")})
+        refused = ""
+    except policy.PolicyError as exc:
+        refused = str(exc)
+    check("lanes must be a list of lanes" in refused, "lanes written as one word instead of a list is refused too")
 
 
 # ---------------------------------------------------------------------- the weekly caller book (plan 4.2)

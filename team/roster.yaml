@@ -20,7 +20,6 @@ employees:
     icon: team/assets/atlas.png          # portrait beside every post; the emoji is the fallback
     icon_emoji: ":world_map:"
     slack_channel: atlas-analysis
-    model: claude-opus-5-5
     job: >-
       Finds the data and the market: first-to-market notices, county pulls, list pulls,
       idle records worth working, and the account structure (presets, fields, sequences)
@@ -37,7 +36,6 @@ employees:
     icon: team/assets/diggs.png          # portrait beside every post; the emoji is the fallback
     icon_emoji: ":mag:"
     slack_channel: diggs-research
-    model: claude-opus-5-5
     job: >-
       Finds the people: who owns it, who can legally sign, and which number reaches them.
       Deep prospecting, skip tracing, entity principals, phone scoring, probate property, buyer research.
@@ -53,7 +51,6 @@ employees:
     icon: team/assets/roma.png          # portrait beside every post; the emoji is the fallback
     icon_emoji: ":chart_with_upwards_trend:"
     slack_channel: roma-sales
-    model: claude-opus-5-5
     job: >-
       Runs the numbers and works the deal: quick screens, full underwrites, offer sheets,
       the buyers for a contracted house, dispo staging, and lender packages.
@@ -69,7 +66,6 @@ employees:
     icon: team/assets/quinn.png          # portrait beside every post; the emoji is the fallback
     icon_emoji: ":clipboard:"
     slack_channel: quinn-ops
-    model: claude-opus-5-5
     job: >-
       Keeps the machine honest: the morning digest, QA before anything reaches a homeowner,
       KPIs, call coaching, SOPs and training, and outreach health.
@@ -97,19 +93,19 @@ workflows:
   ftm_pull:
     owner: analysis
     summary: First-to-market notices (foreclosure, probate) pulled, filtered, enriched and uploaded.
-    status: planned
+    status: box
     spend: paid
     triggers: [schedule:06:30 America/New_York, slack]
-    manual: "Runs on its own Fly app, siftstack-ftm, every day at 06:30 America/New_York (up to 10 minutes of jitter): src/ftm_schedule.py runs src/ftm_runner.py --stages notices,capture,liens,county,sold --commit and posts the health digest at 08:00. The brain cannot reach that machine. By hand: fly ssh console -a siftstack-ftm -C 'python /app/src/ftm_runner.py --doctor' (credentials, egress, searches); --max-notices 2 is a bounded dry run, --commit the real thing. Runbook: deploy/FTM_RUNBOOK.md."
+    manual: "Every day at 06:30 America/New_York on the first-to-market box, with the 8am digest after it. The box (siftstack-ftm) runs src/ftm_schedule.py, which runs src/ftm_runner.py --stages notices,capture,liens,county,estate_ready,sold --commit; its run report and digest reach the team through the Slack relay (team_query about=ftm). To re-run or check it on that box: fly ssh console -a siftstack-ftm -C 'python /app/src/ftm_runner.py --doctor' (credentials, egress, searches); --max-notices 2 is a bounded dry run, --commit the real thing. Runbook: deploy/FTM_RUNBOOK.md."
     sources: [ftm_runner, ftm_schedule, scraper, captcha_solver, notice_parser, foreclosure_filter, proxy_resolver]
     covers: [ftmrun, ftmsched, proxy, scraper, gate, parser, fcfilter, addr, prop, tax, obit, apiupload]
   county_pull:
     owner: analysis
     summary: Register of Deeds liens and trustee deeds, condemnations and evictions, matched to parcels.
-    status: planned
+    status: box
     spend: free
     triggers: [schedule:06:30 America/New_York, slack]
-    manual: "Runs as the capture, liens and county stages of the daily first-to-market run on siftstack-ftm (06:30 America/New_York): Knox Register of Deeds liens and releases, the condemnation agendas, the county upload. Knox only. By hand on that box: fly ssh console -a siftstack-ftm -C 'python /app/src/ftm_runner.py --stages capture,liens,county --commit' (liens before county). The recorder is a paid monthly subscription; a lapse fails the stage by name."
+    manual: "Every day at 06:30 America/New_York on the first-to-market box, as the capture, liens and county stages of its daily run. Knox Register of Deeds liens and releases, the condemnation agendas, the county upload; Knox only. To re-run it on that box: fly ssh console -a siftstack-ftm -C 'python /app/src/ftm_runner.py --stages capture,liens,county --commit' (liens before county). The recorder is a paid monthly subscription; a lapse fails the stage by name."
     sources: [knox_ftm_pull, knox_lien_resolve]
     covers: [knoxftm, lien, consolidate, apiupload]
   courthouse_import:
@@ -154,10 +150,10 @@ workflows:
   sold_cleanup:
     owner: analysis
     summary: Recently sold properties tagged and pulled out of marketing.
-    status: planned
+    status: box
     spend: free
     triggers: [schedule:06:30 America/New_York]
-    manual: "Runs as the sold stage of the daily first-to-market run on siftstack-ftm (src/sold_guard.py daily --commit, last, after the day's uploads). By hand: python src/sold_guard.py audit (read only), daily (dry) or daily --commit; undo --commit replays changes.jsonl backwards. Never switch the Recently Sold SiftMap presets back on: they re-tag every restored record the same night."
+    manual: "Every day on the first-to-market box, as the sold stage of its daily run, after the day's uploads (src/sold_guard.py daily --commit). To check or re-run it: python src/sold_guard.py audit (read only), daily (dry) or daily --commit; undo --commit replays changes.jsonl backwards. Never switch the Recently Sold SiftMap presets back on: they re-tag every restored record the same night."
     sources: [sold_guard, ftm_runner]
     covers: [siftmap]
   account_setup:
@@ -177,9 +173,19 @@ workflows:
     spend: free
     triggers: [slack]
     inputs: {market: "The land desk market, the folder its analysis was built in (knox_blount, union_oh, franklin_oh)"}
-    manual: "python src/vacant_land.py, src/builder_land.py, src/land_market.py on the workstation; copy output/builder_land/<market>/analysis.json to the box's builder_land folder for the team to render it."
-    sources: [agents.workflows.land_desk, builder_land, vacant_land, land_market]
-    covers: [builderland, vacantland]
+    manual: "python src/builder_land.py and src/land_market.py on the workstation (they need the opensearch MCP); copy output/builder_land/<market>/analysis.json to the box's builder_land folder for the team to render it. The buildable lot screen itself is buildable_lots."
+    sources: [agents.workflows.land_desk, builder_land, land_market]
+    covers: [builderland]
+  buildable_lots:
+    owner: analysis
+    summary: Every vacant lot of 0.20 to 2.00 acres in a county screened for whether it can carry a house (built on, access, flood, width, slope, zoning, sewer), owners read from the account, offers priced off real lot sales, a mail list, a marketing plan and a pull list for list_pull.
+    status: live
+    spend: free
+    triggers: [slack]
+    inputs: {county: "The county, by FIPS (39159) or name and state (Union OH). Union County OH is the one set up today", refresh: "yes to run the whole screen again from the county's own records (about 30 minutes, in the background); left out, the last run is re-scored with the owners the account holds now", offer_low: "Optional: the low end of the offer band as a share of the lot comp (0.50 when left out)", offer_high: "Optional: the high end of the offer band as a share of the lot comp (0.65 when left out)"}
+    manual: "python src/vacant_land.py --phase all --fips 39159 on a workstation (phases probe, county, sweep, topo, screen, hydrate, score, export); then the pull list through list_pull, or --phase pull --commit --key-env <VAR>. A new county is a COUNTIES entry in src/vacant_land.py."
+    sources: [agents.workflows.buildable_lots, vacant_land]
+    covers: [vacantland]
   doorknock_route:
     owner: analysis
     summary: The week's door knocks as a printable route sheet, the hot auction houses with a sale inside a week (or the houses a person names) in driving order from a start address, with each sale date, the owner's first name and the packet to leave, and no phone numbers.
@@ -276,7 +282,6 @@ workflows:
     status: live
     spend: paid
     triggers: [datasift:quick-screen, slack]
-    model: claude-sonnet-5-5
     inputs:
       address: "The record uuid or the house's street line"
       boundary: "Where the comps come from: empty or 'radius' for a 1 mile circle, 'radius 0.75' for another size, a box lat_min,lat_max,lon_min,lon_max, a list of lat,lon points, or the coordinates from a Google My Maps KML or GeoJSON export"
@@ -362,6 +367,20 @@ workflows:
     manual: python src/lender_package.py and src/lender_docs.py --spec deals/<deal>.json.
     sources: [agents.workflows.lender_package, lender_package, lender_docs]
     covers: [lender, lenderpkg, lenderdocs]
+  mls_offers:
+    owner: sales
+    summary: Every active single-family listing in a market screened through SiftMap search, a cash offer priced off what investors paid nearby and a subject-to or seller-finance offer where the seller's loan allows, with the listing agent to call and a draft first text for each; full details only for listings already in the account, adds only on a live box with the operator's add and AGENTS_MLS_ADD_MAX above 0, and it sends nothing.
+    status: live
+    spend: paid
+    triggers: [slack]
+    inputs:
+      market: "The market: a county like Knox, TN (several separated by semicolons), fips 47093, or ZIP codes like 37914, 37917"
+      shortlist: "Optional: how many listings to read in full (60 when left out, at most 150)"
+      add: "Optional: yes to add the shortlisted listings that are not records yet to the account, on the list MLS Offers (it uses the record allowance; only on a live box with AGENTS_MLS_ADD_MAX above 0)"
+      zillow: "Optional: yes to read each offer's listing on Zillow for remarks and a freshness check (paid per call, live box only)"
+    manual: python src/mls_offers.py --county "Knox, TN" --phase all
+    sources: [mls_offers, mls_offers_api, mortgage_model, agents.workflows.mls_offers]
+    covers: [mlsoffers]
   sms_replies:
     owner: sales
     summary: Seller and buyer text replies read, classified, written back to the record, hot leads handed to a person.

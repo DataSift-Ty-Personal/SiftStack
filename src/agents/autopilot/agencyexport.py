@@ -47,7 +47,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from .. import config, store
+from .. import store
 from . import activity, budget, ledger, top1000
 from .stages import Ctx, Summary
 
@@ -675,14 +675,18 @@ def _queue() -> list:
 
 def drain(ctx, o: dict) -> None:
     """Mark the records a released file left for later, at most max_writes a run, under the release's
-    own run id so one undo puts a whole file's marks back. Only on a live box: these writes are the
-    release's, approved by the person who confirmed it, so they do not wait on the stage's mode."""
+    own run id so one undo puts a whole file's marks back. Only where the release itself may run
+    (agents/release.py stage_may_release): these writes are the release's, approved by the person who
+    confirmed it, so on a live box they do not wait on the stage's mode, and on a free box they go
+    exactly when this stage's file could be released there."""
+    from .. import release
     queue = _queue()
     if not queue:
         return
     waiting = sum(len(q.get("records") or []) for q in queue)
-    if not config.live():
-        ctx.out.line("%d record(s) of a sent agency file wait to be marked; they are marked once the box is live." % waiting)
+    if not release.stage_may_release(ctx.stage):
+        ctx.out.line("%d record(s) of a sent agency file wait to be marked; they are marked once this box may release "
+                     "the stage's file (a live box, or this stage live and named in AGENTS_LIVE_STAGES)." % waiting)
         return
     cap, marked, rest = int(o["max_writes"]), 0, []
     for q in queue:

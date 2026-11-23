@@ -128,13 +128,11 @@ def parse_page_llm(ocr_text: str, county: str, api_key: str) -> list[dict]:
     prompt = LLM_PROMPT.format(county=county, ocr_text=ocr_text[:12000])
 
     try:
-        response = client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=4096,
-            system="You extract structured data from OCR text. Return ONLY valid JSON arrays.",
-            messages=[{"role": "user", "content": prompt}],
-        )
-        raw = response.content[0].text.strip()
+        import llm_client
+        import model_registry
+        raw = llm_client.ask_text(client, model=model_registry.model("extraction"), max_tokens=4096,
+                                  system="You extract structured data from OCR text. Return ONLY valid JSON arrays.",
+                                  prompt=prompt)
         # Strip markdown fences if present
         if raw.startswith("```"):
             raw = re.sub(r"^```\w*\n?", "", raw)

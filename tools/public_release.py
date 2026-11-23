@@ -21,6 +21,10 @@ The scrub, in order:
 
 The private half (what to leave out, the phrase map, the private scan words) lives in
 private/public_release.json, which is gitignored. Without it the tool refuses to run.
+
+Two repositories: the owner's checkout has origin (the PRIVATE working repo, every branch and its history)
+and `public` (the published repo, main only). A pre-push hook in the owner's checkout refuses any push to
+the public repo that is not a release on main; this tool sets PUBLIC_RELEASE=1, which the hook asks for.
 """
 from __future__ import annotations
 
@@ -57,11 +61,23 @@ def load_private() -> dict:
     return json.loads(PRIVATE.read_text(encoding="utf-8"))
 
 
-def git(*args, cwd=ROOT, check=True, capture=True) -> str:
-    r = subprocess.run(["git", *args], cwd=cwd, capture_output=capture, text=True)
+def git(*args, cwd=ROOT, check=True, capture=True, env_extra: dict | None = None) -> str:
+    env = dict(os.environ, **(env_extra or {})) if env_extra else None
+    r = subprocess.run(["git", *args], cwd=cwd, capture_output=capture, text=True, env=env)
     if check and r.returncode:
         raise SystemExit("git %s failed: %s" % (" ".join(args), (r.stderr or r.stdout).strip()[:400]))
     return (r.stdout or "").strip()
+
+
+def public_remote() -> str:
+    """The remote that is the PUBLIC repo. The owner's checkout has two: origin is the private working
+    repo and `public` is the published one (a pre-push hook there refuses anything but a release on main).
+    A plain clone of the public repo has only origin, which then is the public one."""
+    named = os.environ.get("PUBLIC_RELEASE_REMOTE", "")
+    if named:
+        return named
+    remotes = git("remote").split()
+    return "public" if "public" in remotes else "origin"
 
 
 def export(ref: str, dest: Path) -> None:
@@ -279,14 +295,16 @@ def checks(release: Path, py: str, pytest_files: list[str]) -> list[str]:
 
 
 def publish(dest: Path, report: dict, push: bool, message: str | None) -> str:
-    git("fetch", "origin", "main")
+    remote = public_remote()
+    base = "%s/main" % remote
+    git("fetch", remote, "main")
     if not (MAIN_WT / ".git").exists():
         if MAIN_WT.exists():
             shutil.rmtree(MAIN_WT)
-        git("worktree", "add", "--detach", str(MAIN_WT), "origin/main")
+        git("worktree", "add", "--detach", str(MAIN_WT), base)
     else:
-        git("checkout", "--detach", "origin/main", cwd=MAIN_WT)
-        git("reset", "--hard", "origin/main", cwd=MAIN_WT)
+        git("checkout", "--detach", base, cwd=MAIN_WT)
+        git("reset", "--hard", base, cwd=MAIN_WT)
         git("clean", "-fdx", "-q", cwd=MAIN_WT)
     for p in MAIN_WT.iterdir():
         if p.name == ".git":
@@ -308,10 +326,11 @@ def publish(dest: Path, report: dict, push: bool, message: str | None) -> str:
     f.write_text(body, encoding="utf-8")
     git("commit", "-q", "-F", str(f), cwd=MAIN_WT)
     sha = git("rev-parse", "HEAD", cwd=MAIN_WT)
-    say("committed %s on top of origin/main" % sha[:12])
+    say("committed %s on top of %s" % (sha[:12], base))
     if push:
-        git("push", "origin", "HEAD:main", cwd=MAIN_WT, capture=True)
-        say("pushed main -> %s" % sha[:12])
+        # PUBLIC_RELEASE=1 is what the owner's pre-push hook asks for before anything reaches the public repo
+        git("push", remote, "HEAD:main", cwd=MAIN_WT, capture=True, env_extra={"PUBLIC_RELEASE": "1"})
+        say("pushed %s main -> %s" % (remote, sha[:12]))
     return sha
 
 

@@ -19,6 +19,9 @@ Why it is built this way:
     (Claude) are paid. In dry mode the run does every free step (it opens each recording link to
     prove it holds audio) and says what the paid steps would cost. Live, each paid step asks this
     run's cap (AGENTS_COACH_RUN_CAP_USD) and the brain's daily cap first, and is recorded after.
+    On a box in AGENTS_MODE=free a pack is live only when the stage that queued it (coaching_picks,
+    the task's source "autopilot:<stage id>") is named in AGENTS_LIVE_STAGES (config.task_live); an
+    ask in Slack on that box stays dry.
   * A CALL IS PAID FOR ONCE. Every result is kept in wf_coach_grades with its transcript, and a call
     asked about again is read from there; an ungraded one is graded again without paying for the
     transcription twice.
@@ -381,7 +384,9 @@ def run(task: dict) -> dict:
     st = settings()
     tz = _tz()
     payload = store.payload_of(task)
-    live = config.live()
+    # The task decides, not the box alone: on a free box config.live() is always False, so a pack queued
+    # by a stage named in AGENTS_LIVE_STAGES (coaching_picks) was never transcribed or graded.
+    live = config.task_live(task)
     picks, seen = [], set()
     for p in _calls_from(payload):
         if p["call"] and p["call"] not in seen:

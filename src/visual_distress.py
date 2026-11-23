@@ -1279,7 +1279,7 @@ def phase_report(args) -> None:
                     real_explanation(d.get("distress_explanation"))[:300]
                     or "no description generated",
                     sv,
-                    ("https://app.reisift.io/records/%s" % uuid) if uuid else "",
+                    ("https://app.reisift.io/records/properties/%s" % uuid) if uuid else "",
                     d.get("PropertyID")]
         for i, v in enumerate(vals_row, 1):
             c = ws.cell(row=rr, column=i, value=v)
@@ -1663,7 +1663,7 @@ def phase_master(args) -> None:
                d.get("cluttered_yard_score"),
                d.get("bad_driveways_walkways_score"),
                d.get("aged_outdated_score"), hv, d.get("photo_quality_score"),
-               sv, ("https://app.reisift.io/records/%s" % uuid) if uuid else "",
+               sv, ("https://app.reisift.io/records/properties/%s" % uuid) if uuid else "",
                d.get("PropertyID")]
         for i, v in enumerate(row, 1):
             c = ws2.cell(row=rr, column=i, value=v)

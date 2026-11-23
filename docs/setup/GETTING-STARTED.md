@@ -3,7 +3,7 @@
 Install the library, find out what you can already run, then add credentials
 only for the things you actually want.
 
-14 work on install, out of 27 current packages. You do not need an API key,
+14 work on install, out of 28 current packages. You do not need an API key,
 a developer account, or a credit card to get value out of this on day one.
 
 ## 1. Install
@@ -95,6 +95,7 @@ account credentials.
 | `lead-manager-coach` | same | same |
 | `closer-coach` | same | same |
 | `candidate-intake` | Google account, Claude in Chrome | Nothing to set, it runs in the browser |
+| `mls-offer-engine` | DataSift Open API key | `REISIFT_API_KEY` (`OPENWEBNINJA_API_KEY` optional, for the Zillow check) |
 
 The three DataSift skills use Playwright to drive the web app the same way you
 would by hand. That is deliberate: it means you need no API access at all, and

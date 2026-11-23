@@ -115,7 +115,7 @@ def slack_event(event: dict, roster) -> dict:
         return {"joined": waiting_turn["id"], "agent": route["agent"]}
 
     tid, _ = store.enqueue(route["agent"], "ask", "", subject=(route["text"] or "files")[:120],
-                           payload={"text": route["text"], "user": user, "channel_name": name},
+                           payload={"text": route["text"], "user": user, "channel_name": name, "top_level": not thread},
                            thread_id=on_thread[-1]["thread_id"] if on_thread else "", mode="agent", source="slack",
                            slack_channel=channel, slack_thread=thread or ts, not_before=settle)
     slack_app.react(channel, ts)

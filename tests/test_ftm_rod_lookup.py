@@ -224,7 +224,7 @@ def annotate(tmp_path, rows, commit=True, api=None, **kw):
 def test_a_knox_foreclosure_gets_a_note_and_the_debt_field(tmp_path):
     stats, api = annotate(tmp_path, [upload_row()])
     assert stats["written"] == 1 and stats["with_debt"] == 1
-    notes = [c[2]["notes"] for c in api.calls if c[1].endswith("/add-notes/")]
+    notes = [c[2]["message"] for c in api.calls if c[0] == "POST" and c[1].endswith("/message/")]
     assert len(notes) == 1 and notes[0].startswith("Deed records check:")
     fields = [c[2] for c in api.calls if c[1].endswith("/custom-field/update-values/")]
     assert fields == [[{"field_uuid": "f-debt", "value": "185000.0"}]]

@@ -144,12 +144,25 @@ _KIN = (r"(?:son|daughter|wife|husband|brother|sister|mother|mom|mama|father|dad
         r"step ?(?:son|daughter|mom|dad|mother|father)|(?:son|daughter|mother|father|brother|sister)[- ]in[- ]law)")
 # The sender says who they are to the owner, or whose house it is. Deliberately narrow: a wrong
 # guess here keeps a stranger's number on the record as a contact.
+_ESTATE_ROLE = (r"(?:the\s+)?(?:owners?|executor|executrix|administrator|administratrix|"
+                r"personal\s+representative|heirs?)")
 RELATIVE = re.compile(
     r"\b(?:this\s+is|i\s+am|i'?m|im)\s+(?:his|her|their|the\s+owner'?s)\s+" + _KIN + r"\b"
     r"|\b(?:that'?s|that\s+is|that\s+was|it'?s|it\s+is|it\s+was|he\s+is|he'?s|she\s+is|she'?s|you\s+want|you\s+need)\s+my\s+"
-    + _KIN + r"\b"
+    + _KIN + r"(?:'s|s)?\b"
+    # The owner's family pointing us to the right person, and a possessive typed without its apostrophe
+    # (2026-11-19: "It's my dads" and "You would have to talk to my brother ..." were both marked wrong).
+    r"|\b(?:talk|speak)\s+(?:to|with)\s+my\s+(?:late\s+)?" + _KIN + r"\b"
     r"|\bmy\s+(?:late\s+)?" + _KIN + r"(?:'s|s)?\s+(?:house|home|property|place|land|lot|number|phone)\b"
-    r"|\bbelongs?\s+to\s+my\s+" + _KIN + r"\b", re.I)
+    r"|\bbelongs?\s+to\s+my\s+" + _KIN + r"\b"
+    # The estate, in the heir's own words (2026-11-19: all three were burned as wrong numbers or filed
+    # silently): "my wife was executor of his estate", "My parents were [the owners] and when they passed
+    # there was no will", "It was willed to me".
+    r"|\bmy\s+(?:late\s+)?" + _KIN + r"\s+(?:was|were|is|are)\s+" + _ESTATE_ROLE + r"\b"
+    r"|\bmy\s+(?:late\s+)?" + _KIN + r"\s+(?:was|were)\b(?=[^.!?]{0,80}\b(?:passed|died|deceased|will|estate)\b)"
+    r"|\b(?:willed|left|deeded)\s+(?:it\s+|the\s+(?:house|home|property|land|place)\s+)?to\s+(?:me|us)\b"
+    r"|\bi\s+(?:inherited|am\s+(?:the|an|one\s+of\s+the)\s+heirs?)\b"
+    r"|\bexecut(?:or|rix)\s+of\s+(?:his|her|their|the|my\s+\w+(?:'s)?)\s+estate\b", re.I)
 
 
 @dataclass
@@ -186,6 +199,17 @@ def is_relative(body: str) -> bool:
     return bool(RELATIVE.search(body or ""))
 
 
+def is_family(body: str) -> bool:
+    """A relative or an heir speaking, and not also a stop, a legal threat or a crisis: those keep their
+    own handling (a stop everywhere, or a person at once). What both texting paths ask before burning a
+    number as wrong or filing a reported death silently."""
+    from . import engine
+
+    low = (body or "").lower()
+    return (is_relative(body) and not engine._is_crisis(low) and not classify._hit(low, classify.HOSTILE_NOW)
+            and not engine._wants_no_contact(low))
+
+
 def is_hostile(body: str) -> bool:
     """Anger without a demand: an insult or an accusation in a reply that is otherwise a no."""
     from . import engine
@@ -212,6 +236,10 @@ def decide(intent: str, body: str, program: str = "seller") -> str:
             return "legal_stop"
         if engine._wants_no_contact(low):
             return "leave_alone"
+        if is_relative(text):
+            # Family reporting a death is a contact on the estate, and a person takes the thread
+            # ("It was my father in law he passed 9 yrs ago, my wife was executor of his estate").
+            return "relative"
         if classify._hit(low, classify.BEREAVEMENT_NOW):
             return "bereavement"
         return "sensitive_other"
@@ -347,6 +375,10 @@ def _relative(env: Env) -> Outcome:
         acts.append(f"phone tagged {tag}: {engine._report(crm.add_phone_tag(env.record_uuid, env.phone, tag))}")
         crm.post_note(env.record_uuid, f'{env.phone} is a relative of the owner, by text in {env.inbox}: '
                                        f'"{env.body[:180]}". The number was kept, not marked wrong.')
+    hold = getattr(config, "TAG_VERIFY_DECEASED", "")
+    if hold and env.record_uuid and classify._hit((env.body or "").lower(), classify.BEREAVEMENT_NOW):
+        # Family reporting the death: nothing more goes to the owner, and research takes the estate.
+        acts.append(f"tagged {hold}: {engine._report(crm.add_tags(env.record_uuid, [hold]))}")
     store.pause_conversation(env.phone, "a relative of the owner replied")
     store.cancel_queued(env.phone, "a relative replied")
     if config.PHASE >= 2 and store.mark_notified(env.phone, "relative"):

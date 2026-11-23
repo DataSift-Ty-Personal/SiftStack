@@ -12,6 +12,7 @@ import logging
 import re
 
 import config as cfg
+import model_registry
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +64,47 @@ def chat_json_async(
 # ── Anthropic backend ────────────────────────────────────────────────
 
 
+def text_of(response) -> str:
+    """The reply's text. A model that thinks puts a thinking block first, so content[0] is not the
+    answer: reading it there returned nothing, silently, once the lineup moved to models that think."""
+    return "".join(getattr(b, "text", "") or "" for b in (getattr(response, "content", None) or [])
+                   if getattr(b, "type", "") == "text").strip()
+
+
+def _ask_kwargs(model: str, system: str, prompt: str, max_tokens: int) -> tuple[dict, dict]:
+    kw = dict(model=model, max_tokens=max_tokens, messages=[{"role": "user", "content": prompt}])
+    if system:
+        kw["system"] = system
+    off = model_registry.thinking_off(model)
+    return kw, ({"thinking": off} if off else {})
+
+
+def ask_text(client, *, model: str, system: str, prompt: str, max_tokens: int) -> str:
+    """One short extraction call, thinking off where the model allows it. A model that refuses the
+    thinking setting is asked again without it, so a lineup change can never empty a call silently."""
+    import anthropic
+    kw, extra = _ask_kwargs(model, system, prompt, max_tokens)
+    try:
+        return text_of(client.messages.create(**kw, **extra))
+    except anthropic.BadRequestError as e:
+        if not extra or "thinking" not in str(e).lower():
+            raise
+        logger.warning("model %s refused the thinking setting; asking again without it", model)
+        return text_of(client.messages.create(**kw))
+
+
+async def ask_text_async(client, *, model: str, system: str, prompt: str, max_tokens: int) -> str:
+    import anthropic
+    kw, extra = _ask_kwargs(model, system, prompt, max_tokens)
+    try:
+        return text_of(await client.messages.create(**kw, **extra))
+    except anthropic.BadRequestError as e:
+        if not extra or "thinking" not in str(e).lower():
+            raise
+        logger.warning("model %s refused the thinking setting; asking again without it", model)
+        return text_of(await client.messages.create(**kw))
+
+
 def _chat_anthropic(
     prompt: str, system: str, max_tokens: int, api_key: str | None,
     model: str | None = None,
@@ -75,16 +117,10 @@ def _chat_anthropic(
         logger.warning("No Anthropic API key — skipping LLM call")
         return None
 
-    model = model or getattr(cfg, "LLM_MODEL", "claude-haiku-4-5-20251001")
+    model = model or getattr(cfg, "LLM_MODEL", "") or model_registry.model("extraction")
     try:
         client = anthropic.Anthropic(api_key=key)
-        response = client.messages.create(
-            model=model,
-            max_tokens=max_tokens,
-            system=system,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        result_text = response.content[0].text.strip()
+        result_text = ask_text(client, model=model, system=system, prompt=prompt, max_tokens=max_tokens)
         return _parse_json(result_text)
     except anthropic.NotFoundError as e:
         # Almost always a bad/retired model id. Surface loudly: silently returning
@@ -108,16 +144,11 @@ async def _chat_anthropic_async(
         logger.warning("No Anthropic API key — skipping LLM call")
         return None
 
-    model = model or getattr(cfg, "LLM_MODEL", "claude-haiku-4-5-20251001")
+    model = model or getattr(cfg, "LLM_MODEL", "") or model_registry.model("extraction")
     try:
         client = anthropic.AsyncAnthropic(api_key=key)
-        response = await client.messages.create(
-            model=model,
-            max_tokens=max_tokens,
-            system=system,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        result_text = response.content[0].text.strip()
+        result_text = await ask_text_async(client, model=model, system=system, prompt=prompt,
+                                           max_tokens=max_tokens)
         return _parse_json(result_text)
     except anthropic.NotFoundError as e:
         logger.error("Anthropic rejected model %r (NotFoundError): %s", model, e)
@@ -234,7 +265,7 @@ def _chat_openrouter(
         return None
 
     base_url = getattr(cfg, "OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
-    model = getattr(cfg, "OPENROUTER_MODEL", "qwen/qwen-2.5-72b-instruct")
+    model = (getattr(cfg, "OPENROUTER_MODEL", "") or model_registry.model("openrouter_backend"))
 
     messages = []
     if system:
@@ -283,7 +314,7 @@ async def _chat_openrouter_async(
         return None
 
     base_url = getattr(cfg, "OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
-    model = getattr(cfg, "OPENROUTER_MODEL", "qwen/qwen-2.5-72b-instruct")
+    model = (getattr(cfg, "OPENROUTER_MODEL", "") or model_registry.model("openrouter_backend"))
 
     messages = []
     if system:

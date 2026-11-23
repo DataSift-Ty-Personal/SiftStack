@@ -121,7 +121,7 @@ def run(task: dict) -> dict:
     import deep_prospect_record as dpr   # noqa: E402  (imported late: it monkeypatches dream100_dp)
     dp = dpr.dp
     dp.load_env()
-    live = config.live()
+    live = config.task_live(task)      # a live box, or a task a stage in AGENTS_LIVE_STAGES queued
     cfg = writeback.settings()
     free_first = cfg["order"] == "free_first"
     budget = Budget(task["id"])

@@ -420,6 +420,18 @@ def _entity(check, store, ledger, pol) -> None:
         r = ep.run(_task(store, "entity_principals", u, source=source), crm=crm, pol=pol, map_client=m, officer_search=f, now=now)
         return r, m, f
 
+    # On the free box (2026-11-19): a lookup a stage in AGENTS_LIVE_STAGES queued runs live, an ask stays dry.
+    saved_live = (config.MODE, config.LIVE_STAGES)
+    config.MODE, config.LIVE_STAGES = "free", frozenset({"ftm_retrace"})
+    check(ep.run(_task(store, "entity_principals", "ep1", source="agent:research"), crm=crm, pol=pol,
+                 map_client=Map(rows, details), officer_search=biz([], ""), now=now)["live"] is False
+          and ep.run(_task(store, "entity_principals", "ep1", source="autopilot:top1000_retrace"), crm=crm, pol=pol,
+                     map_client=Map(rows, details), officer_search=biz([], ""), now=now)["live"] is False
+          and ep.run(_task(store, "entity_principals", "ep1", source="autopilot:ftm_retrace"), crm=crm, pol=pol,
+                     map_client=Map(rows, details), officer_search=biz([], ""), now=now)["live"] is True,
+          "on a free box only a lookup a stage named in AGENTS_LIVE_STAGES queued runs live")
+    config.MODE, config.LIVE_STAGES = saved_live
+
     config.MODE = "dry"
     r, m, f = go("ep1")
     check("not a company" in r["head"] and not m.log, "a person-owned record has nobody behind it to find")

@@ -11,8 +11,9 @@ Every problem in the file is collected and reported together (the roster's rule)
       presets:  the saved DataSift presets that hold its records, by exact title
       ...       kind-specific settings, documented in the playbook itself
 
-Mode `live` acts only when the box also runs AGENTS_MODE=live. Two switches, on purpose: the file
-says what the owner wants, the environment says whether this box may write at all.
+Mode `live` acts only when the box also runs AGENTS_MODE=live, or AGENTS_MODE=free for a stage whose
+kind spends nothing (config.stage_live). Two switches, on purpose: the file says what the owner
+wants, the environment says whether this box may write at all.
 """
 from __future__ import annotations
 
@@ -41,7 +42,7 @@ SPEND_BY_KIND.update({k: row[2] for k, row in registry.EXTRA.items()})
 NO_PRESETS = ("digest", "mail", "lanes", "revoke", "watchdog", "audit", "capture", "leadcheck", "fullattempt"
               ) + tuple(k for k, row in registry.EXTRA.items() if not row[3])
 ALLOW_WORDS = ("not_interested", "deceased", "heir", "lead", "in_research", "unknown_status", "listed", "mail_only",
-               "exhausted")
+               "exhausted", "research_tag")
 SUMMARY_BY_KIND = {
     "assign": "New records handed to a caller the moment they land, balanced by open workload.",
     "native_trace": "Records waiting on a skip trace get DataSift's own (free on the unlimited plan).",
@@ -65,8 +66,9 @@ SUMMARY_BY_KIND = {
 SOURCES = ("smartskip", "tracerfy", "enformion")
 AFTER = ("mail_only", "deep_prospect", "none")
 # soft_offer_check prints an offer amount and needs offer_pct; check_letter is the check-style letter with no
-# amount (Ty, 2026-11-16), so it needs nothing from the record but the owner and the house.
-PIECES = ("handwritten_letter", "family_postcard", "soft_offer_check", "check_letter", "postcard", "letter")
+# amount (Ty, 2026-11-16), so it needs nothing from the record but the owner and the house. snap_pack is the
+# pressure-sealed Snap Pack (product 18, from 2026-11-20): the offer check with no amount, or a sealed letter.
+PIECES = ("handwritten_letter", "family_postcard", "soft_offer_check", "check_letter", "postcard", "letter", "snap_pack")
 DAY_NAMES = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 
 
@@ -210,8 +212,8 @@ def _check_stage(st: Stage, problems: list[str]) -> None:
             p.append("stage %s: list the skip trace sources in the order to try them" % st.id)
         if st.get("after_sources", "mail_only") not in AFTER:
             p.append("stage %s: after_sources must be one of %s" % (st.id, ", ".join(AFTER)))
-        if st.get("deceased", "deep_prospect") not in ("deep_prospect", "retrace"):
-            p.append("stage %s: deceased must be deep_prospect or retrace" % st.id)
+        if st.get("deceased", "deep_prospect") not in ("deep_prospect", "retrace", "hold"):
+            p.append("stage %s: deceased must be deep_prospect, retrace or hold" % st.id)
     if st.kind == "auction":
         days = st.get("soon_days", 21)
         if not isinstance(days, int) or not 1 <= days <= 120:

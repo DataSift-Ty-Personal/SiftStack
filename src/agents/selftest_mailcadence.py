@@ -147,6 +147,47 @@ def _write_audit(path: Path) -> None:
             w.writerow([verdict, suggested, "", u])
 
 
+# Ty, 2026-11-20 (on Open Letter's advice): the mail runs on three formats only, the 6x9 postcard, the Real
+# Penned handwritten letter and the Snap Pack. No professional letter (products 1 and 3) and no personal letter
+# (5); the letter lanes that print a file write handwritten pieces only.
+MAIL_FORMATS = {14: "6x9 postcard", 16: "Real Penned letter", 18: "Snap Pack"}
+
+
+def _three_formats(check) -> None:
+    """The playbook on disk keeps to the three formats: every SiftMail piece of every mail stage (off ones
+    included, so a stage switched back on cannot bring a typed letter with it), and the file lanes' letters."""
+    import yaml
+    from .autopilot import heirlane, obituary
+    real_file = config.TEAM_DIR / "autopilot.yaml"
+    if not real_file.is_file():
+        check(True, "no playbook on this install, so the three formats are proven on the selftest's own playbook only")
+        return
+    real = yaml.safe_load(real_file.read_text(encoding="utf-8")) or {}
+    stages_ = real.get("stages") or {}
+    bad, seen = [], 0
+    for sid, st in stages_.items():
+        if not isinstance(st, dict) or st.get("kind") not in ("mail", "mailcadence"):
+            continue
+        for pc in st.get("pieces") or []:
+            seen += 1
+            prod = pc.get("product_id")
+            if prod is not None and int(prod) not in MAIL_FORMATS:
+                bad.append("%s %s: product %s" % (sid, pc.get("id") or pc.get("preset"), prod))
+    check(bool(seen) and not bad, "every mail piece in the playbook is a 6x9 postcard, a Real Penned letter or a Snap Pack "
+                            "(%d pieces; outside the three: %s)" % (seen, bad or "none"))
+    lanes_bad = []
+    for st in stages_.values():
+        if not isinstance(st, dict):
+            continue
+        if st.get("kind") == "obituary":
+            o = {k: (st.get(k) if st.get(k) is not None else v) for k, v in obituary.DEFAULTS.items()}
+            lanes_bad += [k for k in ("soft_piece", "monthly_piece") if o[k] != "handwritten_letter"]
+        if st.get("kind") == "heirlane":
+            o = heirlane.options(st)
+            lanes_bad += [k for k in ("letter_piece",) if o.get(k) != "handwritten_letter"]
+    check(not lanes_bad, "the obituary and heir lanes write handwritten letters only (typed: %s)" % (lanes_bad or "none"))
+
+
 def run(check, tmp: Path) -> None:
     from . import store
     keep = (config.DATA_DIR, config.DB_PATH, config.MODE)
@@ -237,7 +278,13 @@ def _checks(check, tmp: Path) -> None:
     moved = mc.countdown_next(half, new_sale, new_sale - timedelta(days=10), c, every, False)
     check(moved.design is not None and moved.design.id == "A3",
           "a moved sale re-times the pieces left: the next one waits for the new date's slots, in order")
-    with_fb = copy.deepcopy(AUCTION_PIECES) + [{"id": "A3L", "piece": "closing_letter", "product_id": 1, "envelope": 1, "design": "tpl-x"}]
+    # The Snap Pack (product 18) is priced since 2026-11-20, so the unorderable piece in these checks is a bi-fold
+    # (product 9), which still has no row in the account's price table.
+    check(mc.MAIL_TYPE_PRICES.get(18) == 1.15 and "A3" in mc.usable(designs, o, mail.vendor_for(pol.stage("auction_mail"))),
+          "the Snap Pack (product 18) has its price row since 2026-11-20 ($1.15), so the countdown can order it")
+    unpriced = copy.deepcopy(AUCTION_PIECES)
+    unpriced[2].update({"piece": "postcard", "product_id": 9})
+    with_fb = copy.deepcopy(unpriced) + [{"id": "A3L", "piece": "closing_letter", "product_id": 1, "envelope": 1, "design": "tpl-x"}]
     with_fb[2]["fallback"] = "A3L"
     st_fb = copy.deepcopy(playbook(audit_csv)["stages"]["auction_mail"])
     st_fb["pieces"] = with_fb
@@ -245,15 +292,19 @@ def _checks(check, tmp: Path) -> None:
     av_fb = mc.usable(mc.designs_of(st_fb), mc.options(st_fb), mail.vendor_for(policy.Stage("t", "mailcadence", "ops", "plan", "", [], [], st_fb)), out_fb)
     check(av_fb["A3"].id == "A3L" and any("Its fallback A3L goes in its place" in p for p in out_fb.problems),
           "a piece that cannot be ordered is replaced by the fallback it names, and the run says so")
+    st_np = copy.deepcopy(playbook(audit_csv)["stages"]["auction_mail"])
+    st_np["pieces"] = unpriced
+    d_np = mc.designs_of(st_np)
     out_np = stages.Summary("t", "mailcadence", "ops", "plan", False)
-    av_np = mc.usable(designs, o, mail.vendor_for(pol.stage("auction_mail")), out_np)
+    av_np = mc.usable(d_np, mc.options(st_np), mail.vendor_for(policy.Stage("t", "mailcadence", "ops", "plan", "", [], [], st_np)), out_np)
     check("A3" not in av_np and any(p.startswith("Piece A3 cannot be ordered") for p in out_np.problems),
-          "the Snap Pack (product 18) has no price row in this account: refused with a plain problem")
-    st_priced = dict(pol.stage("auction_mail").params, mail_type_prices={18: 1.28})
-    check("A3" in mc.usable(designs, mc.options(st_priced), mail.vendor_for(pol.stage("auction_mail"))),
-          "once the price row exists and is listed under mail_type_prices, the Snap Pack can be ordered")
-    check(set(mc.usable(designs, o, mail.Vendor())) == set(every),
+          "a product with no price row in this account (a bi-fold, 9) is refused with a plain problem")
+    st_priced = dict(st_np, mail_type_prices={9: 1.30})
+    check("A3" in mc.usable(d_np, mc.options(st_priced), mail.vendor_for(policy.Stage("t", "mailcadence", "ops", "plan", "", [], [], st_priced))),
+          "once the price row exists and is listed under mail_type_prices, the product can be ordered")
+    check(set(mc.usable(d_np, mc.options(st_np), mail.Vendor())) == {d.id for d in d_np},
           "an outside vendor's file is not held to SiftMail's price table")
+    _three_formats(check)
 
     # ------------------------------------------------------------------ the probate table
     print("  probate table")

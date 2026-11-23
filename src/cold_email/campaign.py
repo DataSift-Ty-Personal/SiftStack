@@ -10,8 +10,10 @@
 Campaign settings follow the course: Monday to Friday 9 to 5 Eastern, every sending inbox, stop on
 reply, open and link tracking off, plain text only, new leads first, 10 minutes between sends, one
 step with three versions (emailcopy.py), no unsubscribe link (the opt-out is by reply). The postal
-address line comes from .env. Loading writes output/cold_email/ledger.json so no owner or address
-is ever loaded twice; Instantly's own skip_if_in_workspace backs that up.
+address line comes from .env. Loading writes ledger.json in the state folder (coldstate.py: the brain's
+volume on the box, output/cold_email on a workstation) so no owner or address is ever loaded twice;
+Instantly's own skip_if_in_workspace backs that up. A load runs only on the install home.json names,
+and the ledger is written whole, because the reply watcher reads it while a load writes it.
 """
 from __future__ import annotations
 
@@ -24,11 +26,12 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
+import coldstate  # noqa: E402
 import emailcopy  # noqa: E402
-from instantly import ROOT, Instantly, InstantlyError  # noqa: E402
+from instantly import Instantly, InstantlyError  # noqa: E402
 from setup_accounts import env  # noqa: E402
 
-LEDGER = ROOT / "output" / "cold_email" / "ledger.json"
+LEDGER = coldstate.state_dir() / "ledger.json"
 # Instantly's schedule takes 102 fixed zones and America/New_York is not one of them (HTTP 400,
 # read off api.instantly.ai/openapi/api_v2.json 2026-11-16). America/Detroit keeps Eastern time.
 TZ = "America/Detroit"
@@ -154,8 +157,7 @@ def load(api: Instantly, name: str, leads_path: Path) -> None:
         for l in chunk:
             ledger["owners"][l["owner"]] = {"email": l["email"], "record": l["record"], "campaign": c["id"], "day": day}
             ledger["emails"][l["email"]] = l["owner"]
-        LEDGER.parent.mkdir(parents=True, exist_ok=True)
-        LEDGER.write_text(json.dumps(ledger, indent=1), encoding="utf-8")
+        coldstate.write_json(LEDGER, ledger)
 
 
 def preview(name: str, leads_path: Path, n: int) -> None:
@@ -179,6 +181,8 @@ def main() -> int:
     ap.add_argument("--n", type=int, default=5)
     ap.add_argument("--yes", action="store_true", help="required to launch")
     a = ap.parse_args()
+    if a.action == "load":
+        coldstate.require("load leads into %s" % a.name, LEDGER.parent)
     api = Instantly()
     if a.action == "create":
         create(api, a.name)
@@ -193,7 +197,7 @@ def main() -> int:
         if a.action == "launch" and not a.yes:
             raise SystemExit("launch sends email to real people: re-run with --yes once Ty has said go")
         (api.activate if a.action == "launch" else api.pause)(c["id"])
-        hold = ROOT / "output" / "cold_email" / "hold.json"
+        hold = coldstate.state_dir() / "hold.json"
         if a.action == "launch" and hold.exists():
             hold.unlink()                       # a pause on purpose ends when the campaign runs again
         print(a.action, "done:", c["id"], "status now", (api.call("GET", f"/campaigns/{c['id']}") or {}).get("status"))

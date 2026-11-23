@@ -50,9 +50,15 @@ NOT_VISIBLE = [
     "carriers' delivery callbacks: delivered, refused, and the reason given.",
     "Smarter Contact campaigns: each campaign's report in Smarter Contact shows its delivered, undelivered and opted-out "
     "contacts. Those texts never reach DataSift's log.",
-    "Spam labels on a caller ID: carriers never report them. The caller-reputation-monitor skill reads each line's answer "
-    "rate from the dialer's own call log; the line table here is the same signal from the account log.",
+    "Caller ID number health (spam labels, which lines to rest): read in the team's own number tool, not here. Ty, "
+    "2026-11-15: caller ID checks are a dated tactic for SiftStack (AGENTS_OUTREACH_LINES=1 brings the line table back).",
 ]
+
+
+def lines_on() -> bool:
+    """The caller ID line table and its "rest the line" advice: OFF unless AGENTS_OUTREACH_LINES=1.
+    It is a number-reputation tactic, and Ty does not want caller ID checks in SiftStack (2026-11-15)."""
+    return (os.environ.get("AGENTS_OUTREACH_LINES") or "0").strip() == "1"
 
 
 def _now() -> datetime:
@@ -221,7 +227,8 @@ def run(task: dict) -> dict:
     tz = getattr(pol, "tz", "") or TZ
     now = _now()
     since = now - timedelta(days=st["days"])
-    r = {"workflow": WORKFLOW, "day": now.astimezone(ZoneInfo(tz)).date().isoformat(), "lines": line_health(since, now, st),
+    r = {"workflow": WORKFLOW, "day": now.astimezone(ZoneInfo(tz)).date().isoformat(),
+         "lines": line_health(since, now, st) if lines_on() else [],
          "limits": limits_section(now, tz), "audit": audit_section(pol, now), "scrub": scrub_section(pol),
          "batches": batches_section(now, tz), "not_visible": NOT_VISIBLE, "files": [], "run_dir": "", "quiet": False}
     from ..autopilot import activity
@@ -245,15 +252,16 @@ def _write(task: dict, r: dict) -> Path:
     d.mkdir(parents=True, exist_ok=True)
     md = ["# Outreach health, %s" % _day(r["day"]), ""]
     md += ["## Needs a person", ""] + (["- %s" % f for f in r["findings"]] or ["Nothing."]) + [""]
-    md += ["## Caller ID lines, last %d days" % settings()["days"], "",
-           "| Line | Dials | Answered | Answer rate | Average answered call | Reading |", "|---|---|---|---|---|---|"]
-    md += ["| %s | %d | %d | %d%% | %d s | %s |" % (x["line"], x["dials"], x["answered"], x["answer_rate"], x["avg_talk_s"],
-                                                  x["state"] + (": " + x["why"] if x["why"] else "")) for x in r["lines"]]
-    if not r["lines"]:
-        md.append("| none | | | | | the log copy holds no outbound dial in these days |")
-    if not r["log_through"]:
-        md.append("")
-        md.append("The call log copy has never been read on this box, so the table is empty for that reason.")
+    if lines_on():
+        md += ["## Caller ID lines, last %d days" % settings()["days"], "",
+               "| Line | Dials | Answered | Answer rate | Average answered call | Reading |", "|---|---|---|---|---|---|"]
+        md += ["| %s | %d | %d | %d%% | %d s | %s |" % (x["line"], x["dials"], x["answered"], x["answer_rate"], x["avg_talk_s"],
+                                                      x["state"] + (": " + x["why"] if x["why"] else "")) for x in r["lines"]]
+        if not r["lines"]:
+            md.append("| none | | | | | the log copy holds no outbound dial in these days |")
+        if not r["log_through"]:
+            md.append("")
+            md.append("The call log copy has never been read on this box, so the table is empty for that reason.")
     lim = r["limits"]
     md += ["", "## Outreach limits", ""]
     if lim["day"]:
@@ -305,7 +313,9 @@ def render(task: dict, result: dict) -> str:
     waiting = len(result.get("batches") or [])
     parts = ["%d limit(s) broken %s" % (broken, _day(lim["day"])) if lim.get("day") else "no limits check yet",
              "touch audit %s" % ("%d finding(s)" % audit if audit else "clean"),
-             "%d caller ID line(s) to rest" % len(rest), "%d batch(es) waiting" % waiting]
+             "%d batch(es) waiting" % waiting]
+    if lines_on():
+        parts.insert(2, "%d caller ID line(s) to rest" % len(rest))
     lines = [":satellite_antenna: *Outreach health, %s*: %s." % (_day(result["day"]), ", ".join(parts))]
     f = result.get("findings") or []
     if f:

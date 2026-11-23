@@ -450,7 +450,9 @@ def book(crm, record_uuid: str, start, *, minutes: int = 60, assignee: str = "",
         return {"ok": False, "say": "That time has already passed."}
     rec = crm.record(record_uuid)
     cfg = getattr(pol, "gate", None) or gate.GateConfig()
-    v = gate.check(rec, "task", cfg=cfg, allow={"lead", "deceased", "unknown_status", "in_research", "exhausted", "listed"})
+    # A person asked for this visit: a research hold (the status or a tag such as Tax Sale Redemption) does not stop it.
+    v = gate.check(rec, "task", cfg=cfg, allow={"lead", "deceased", "unknown_status", "in_research", "research_tag",
+                                                 "exhausted", "listed"})
     if not v.ok:
         return {"ok": False, "say": "Not booked: %s." % v.reason()}
     street = addr(rec)

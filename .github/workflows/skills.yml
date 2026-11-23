@@ -21,6 +21,13 @@ on:
       - ".env.skills.example"
       - "README.md"
       - "docs/setup/**"
+      - "src/mls_offers.py"
+      - "src/mls_offers_api.py"
+      - "src/mortgage_model.py"
+      - "src/siftmap_standalone.py"
+      - "data/us_counties.csv"
+      - "tools/sync_mls_offers_skill.py"
+      - "tests/test_mls_offers_skill_sync.py"
       - ".github/workflows/skills.yml"
   pull_request:
     paths:
@@ -35,6 +42,13 @@ on:
       - ".env.skills.example"
       - "README.md"
       - "docs/setup/**"
+      - "src/mls_offers.py"
+      - "src/mls_offers_api.py"
+      - "src/mortgage_model.py"
+      - "src/siftmap_standalone.py"
+      - "data/us_counties.csv"
+      - "tools/sync_mls_offers_skill.py"
+      - "tests/test_mls_offers_skill_sync.py"
   workflow_dispatch: {}
 
 permissions:
@@ -50,6 +64,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
+      - name: The MLS offer skill carries the engine as it is in src/
+        # skills/mls-offer-engine/scripts/ is a COPY of src/ (tools/sync_mls_offers_skill.py). An engine
+        # change that skipped the sync would ship users an older engine with no visible diff.
+        run: python tests/test_mls_offers_skill_sync.py
 
       - name: Every skill declares a name and a description
         # A SKILL.md with no frontmatter is silently undiscoverable: Claude has

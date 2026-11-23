@@ -4,7 +4,9 @@ board, worked through five full attempts on consecutive business days.
     Research   a probate or obituary record waits here until research names a decision maker with
                a number a caller may dial (Dial First or Second); the research queue takes it
     Day 1..5   one full attempt a business day: that day's call and that day's text (the call alone
-               when the owner has no mobile a text may go to, or while the county texts are not live)
+               when the owner has no mobile a text may go to, while the county texts are not live, or
+               when Smarter Contact texted every one of the owner's numbers before, so no opening
+               text can be staged for them)
     Exhausted  five full attempts and no contact: the follow-up texts and the monthly mail begin
 
 WHY A BOARD. The county records (foreclosures, probates, obituaries, liens, everything the county
@@ -94,7 +96,10 @@ DEFAULTS = {
     "dm_fields": ["Decision Maker"],     # a custom field research fills when it names who signs
     "off_board_tags": ["Wrong House"],   # research found the house is not the one to market
     "text_days": [1, 2, 3],              # the days whose full attempt includes a text (the opening texts)
-    "require_text": "auto",              # auto: only while text_stage is live on a live box; always; never
+    # auto: only while text_stage would act on this box, by the rule sweep.run applies to it (live in the
+    # playbook, and config.stage_live with its own spend class and id: a live box, or a free box that
+    # names it in AGENTS_LIVE_STAGES); always; never
+    "require_text": "auto",
     "text_stage": "ftm_texts",
     "call_alone_lanes": ["hot_auction"],  # foreclosure urgency: the round moves on the call alone, as that lane always counted it
     "lead_column": "",                   # empty: a lead's card leaves the board; a column title moves it there instead
@@ -328,6 +333,15 @@ def numbers(ctx: Ctx, rec: dict, row: dict | None, channel: str, lane: str) -> l
     return keep
 
 
+def texted_before(nums: list) -> bool:
+    """Has Smarter Contact texted every one of these numbers before (limits.sc_texted, 2026-11-19)? The
+    text lane gives text 1 only to a number with no thread there, so an owner whose every number a
+    text may use is remembered is never staged an opening text: the lane closes its opening texts
+    (textlane.SC_CLOSED_WHY). A card must not wait on a text that cannot come."""
+    want = {gate.digits(n.get("number") if isinstance(n, dict) else n) for n in nums or []} - {""}
+    return bool(want) and want <= limits.sc_texted(want)
+
+
 def record_state(ctx: Ctx, rec: dict, o: dict, custom: dict | None = None) -> tuple[str, str]:
     """(lead | gone | research | exhausted | work | unknown, why) for one full record.
 
@@ -360,6 +374,9 @@ def record_state(ctx: Ctx, rec: dict, o: dict, custom: dict | None = None) -> tu
     if s == "exhausted":
         return "exhausted", "status Exhausted"
     if "in_research" in codes:
+        if codes["in_research"]:
+            # A research tag (gate.research_tags, such as Tax Sale Redemption) holds the card, not the status.
+            return "research", "held for research (%s): no outreach until the tag comes off" % codes["in_research"]
         return "research", "status Deep Prospecting: research is running (clear the status when it is done)"
     if "mail_only" in codes:
         return "research", "no number left after every trace (Mail Only)"
@@ -396,7 +413,7 @@ def placement(ctx: Ctx, rec: dict, row: dict | None, o: dict, custom: dict | Non
 # ---------------------------------------------------------------------- what other stages ask
 def board_live(pol, sid: str) -> bool:
     st = (getattr(pol, "stages", None) or {}).get(sid)
-    return bool(st is not None and st.kind == KIND and st.mode == "live" and config.live())
+    return bool(st is not None and st.kind == KIND and st.mode == "live" and config.stage_live(st.spend, st.id))
 
 
 def follows(ctx: Ctx, lane: str) -> str:
@@ -601,9 +618,10 @@ class Run:
         self.held: Counter = Counter()
         self.short: Counter = Counter()
         self.off: Counter = Counter()
+        self.sc_free: set = set()     # cards whose day's text counts as done: Smarter Contact texted every number before
         st = ctx.policy.stages.get(str(o["text_stage"])) if hasattr(ctx.policy, "stages") else None
         self.text_live = {"always": True, "never": False}.get(
-            str(o["require_text"]), bool(st is not None and st.mode == "live" and config.live()))
+            str(o["require_text"]), bool(st is not None and st.mode == "live" and config.stage_live(st.spend, st.id)))
 
     # ---- reading
     def sync(self) -> None:
@@ -891,16 +909,30 @@ class Run:
         if column_no(p.get("column") or "") == 0 or (marks_of(rec) & _low(self.o["research_first"])):
             custom = custom_of(self.ctx, u, self.reads)
         state, why = record_state(self.ctx, rec, self.o, custom)
+        mob = numbers(self.ctx, rec, row, "text", lane)
         p = dict(p, lane=lane, owner=(rec.get("owner") or {}).get("uuid") or p.get("owner") or "",
-                 callable=bool(numbers(self.ctx, rec, row, "call", lane)),
-                 mobile=bool(numbers(self.ctx, rec, row, "text", lane)),
+                 callable=bool(numbers(self.ctx, rec, row, "call", lane)), mobile=bool(mob), sc_before=texted_before(mob),
                  dm=dm_named(rec, custom, self.o), checked=self.ctx.now.isoformat(timespec="seconds"))
         return state, why, p
 
-    def _needs_text(self, p: dict):
+    def _opened(self, p: dict) -> bool:
+        """Was an opening text handed over to this owner since the card's round began? Then texts 2 and 3
+        follow that thread, whatever Smarter Contact said since about the number, and are owed as usual."""
+        owner = p.get("owner") or ""
+        return bool(owner) and bool(limits.touches(owner, self.today_s, since_day=_since(p, self.today), series="opening",
+                                                   released_only=True))
+
+    def _needs_text(self, u: str, p: dict):
         if not self.text_live or p.get("lane") in self.o["call_alone_lanes"] or not p.get("mobile"):
             return lambda n: False
         days = set(self.o["text_days"])
+        if p.get("sc_before") and not self._opened(p):
+            # Smarter Contact texted every number this owner may get a text on before, and the text lane
+            # gives text 1 only to a number with no thread there: no opening text will ever be staged, so
+            # the card does not wait on one. The day's call alone completes it, and the run says so.
+            if 1 <= column_no(p.get("column") or "") <= max(days or {0}):
+                self.sc_free.add(u)
+            return lambda n: False
         return lambda n: n in days
 
     def _evidence(self, p: dict, since: date) -> tuple[set, set]:
@@ -951,7 +983,7 @@ class Run:
                 if state == "exhausted":
                     self.move(u, p, EXHAUSTED, why)
                     return
-            earned, misses = judge(n, due, until, calls, texts, self._needs_text(p), self.days)
+            earned, misses = judge(n, due, until, calls, texts, self._needs_text(u, p), self.days)
             if earned > n:
                 self.move(u, p, column_title(earned), "the full attempt on %s" % _nice(max(judged)))
                 return
@@ -979,7 +1011,7 @@ class Run:
             self.short["no number a caller may dial yet"] += 1
             return
         calls, texts = self._evidence(p, due)
-        need = self._needs_text(p)(n)
+        need = self._needs_text(u, p)(n)
         called = self.today in calls
         texted = any(due <= t <= self.today for t in texts)
         if called and (texted or not need):
@@ -1065,8 +1097,9 @@ class Run:
             owner = (rec.get("owner") or {}).get("uuid") or ""
             if self.create(u, owner, title, why, lane, int(rec.get("predictivecall_attempts") or 0)):
                 p = self.pos.get(u) or {}
-                p.update(callable=bool(numbers(self.ctx, rec, row, "call", lane)),
-                         mobile=bool(numbers(self.ctx, rec, row, "text", lane)), dm=dm_named(rec, custom, o))
+                mob = numbers(self.ctx, rec, row, "text", lane)
+                p.update(callable=bool(numbers(self.ctx, rec, row, "call", lane)), mobile=bool(mob),
+                         sc_before=texted_before(mob), dm=dm_named(rec, custom, o))
                 self._save(u, p)
 
     def research_waits(self) -> list[str]:
@@ -1171,6 +1204,10 @@ def _report(ctx: Ctx, r: Run) -> None:
     if not r.text_live and str(r.o["require_text"]) == "auto":
         ctx.out.line("The county texts are not live yet, so a day's call alone completes it; once %s is live, Days %s also "
                      "need that day's text." % (r.o["text_stage"], ", ".join(str(d) for d in r.o["text_days"]) or "none"))
+    if r.sc_free:
+        ctx.out.line("%d card(s) count the day's text as done: Smarter Contact had texted every number they could get text 1 "
+                     "on before, so no opening text will be staged for them, and the day's call alone completes it."
+                     % len(r.sc_free))
     hot = sum(1 for p in r.pos.values() if p.get("column") == EXHAUSTED and p.get("lane") == "hot_auction")
     if hot:
         ctx.out.line("%d card(s) in Exhausted are hot auctions: their lane keeps a call task every few days until the sale."

@@ -24,8 +24,12 @@
     python src/agents/cli.py schedule [--next 3]         # when every scheduled workflow fires next
 
 AGENTS_MODE=dry (default) spends nothing and writes nothing to the CRM; AGENTS_MODE=live spends
-within AGENTS_RUN_CAP_USD / AGENTS_DAILY_CAP_USD and writes back. An autopilot stage acts only
-when its playbook mode is live AND the box runs AGENTS_MODE=live.
+within AGENTS_RUN_CAP_USD / AGENTS_DAILY_CAP_USD (research within its own AGENTS_RESEARCH_DAILY_CAP_USD)
+and writes back. An autopilot stage acts only
+when its playbook mode is live AND the box runs AGENTS_MODE=live. AGENTS_MODE=free is the step
+between: a stage marked live whose kind spends nothing acts on its schedule (or any stage named in
+AGENTS_LIVE_STAGES), every workflow and webhook research run stays dry, and a staged batch is
+released only where its stage would act that way (agents/release.py).
 """
 from __future__ import annotations
 
@@ -52,8 +56,9 @@ def cmd_status(a) -> int:
     from datetime import datetime, timezone
     store.init()
     day = datetime.now(timezone.utc).isoformat()[:10]
-    print("mode %s | tasks %s | spent today $%.2f of $%.0f" % (
-        config.MODE, store.counts(), store.spent(day=day), config.DAILY_CAP_USD))
+    print("mode %s | tasks %s | spent today $%.2f of the team's $%.0f, research $%.2f of its own $%.0f" % (
+        config.MODE, store.counts(), store.spent(day=day, research=False), config.DAILY_CAP_USD,
+        store.spent(day=day, research=True), config.RESEARCH_DAILY_CAP_USD))
     for t in store.recent(10):
         print("  #%s %s %-14s %-8s %s" % (t["id"], t["created"][:16], t["workflow"], t["status"],
                                          (t["error"] or "")[:80]))

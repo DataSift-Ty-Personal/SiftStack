@@ -19,6 +19,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 # client falls back to the standalone Api-Key path when there is no Deal Room
 # checkout on disk, which there never is here.
 COPY src/sms_agent ./sms_agent
+# Which model does which job (src/model_registry.py); config.py imports it.
+COPY src/model_registry.py ./model_registry.py
 
 # The SQLite event log lives on the mounted volume so it survives a redeploy.
 ENV SMS_AGENT_DATA_DIR=/data \

@@ -39,11 +39,13 @@ REGISTRY: dict[str, str] = {
     "offer_sheet": "offer_sheet",        # the one-tab wholesale offer from a saved pack and a walk
     "deal_buyers": "deal_buyers",        # the top buyers for one contracted house, with the decision maker
     "lender_package": "lender_package",  # the eight-piece private lender set from a deal spec
+    "mls_offers": "mls_offers",          # every active listing in a market: a cash and a creative offer, the agent to call
     # Atlas, Analysis (wave 4, 2026-11-13)
     "market_report": "market_report",  # Market Finder over the documented API, scored, the county workbook
     "idle_records": "idle_records",    # one list's idle records ranked, with the owners who hold several
     "list_pull": "list_pull",          # ids pulled in by id: quoted first, the first record read back
     "land_desk": "land_desk",          # the Builder Land Desk rendered from a finished analysis on the box
+    "buildable_lots": "buildable_lots",  # vacant lots screened for buildability, owners, offers, a pull list (2026-11-23)
     "account_setup": "account_setup",  # the blueprint planned, checked or applied on the install's own key
     # Diggs, Research (wave 4, 2026-11-13)
     "skip_trace": "skip_trace",                # the autopilot's own retrace waterfall, scoped to one ask

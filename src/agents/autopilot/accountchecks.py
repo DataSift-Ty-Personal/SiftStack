@@ -417,11 +417,19 @@ BY_HAND, UNSEEN = "by hand", "older than the log copy"
 
 
 def _makers(made: Counter) -> tuple[str, bool]:
-    """('Call New Lead 46, [NEW] Nurture New Lead 29, by hand 3', whether any sequence made them)."""
+    """('made by Call New Lead 46, [NEW] Nurture New Lead 29, by hand 3; 2 too old for the log to show',
+    whether any sequence made them). Tasks older than the log copy have no maker to name, so they are
+    said as a count of their own, never as if 'older than the log copy' were who made them."""
     seq = [(k, v) for k, v in made.most_common() if k not in (BY_HAND, UNSEEN)]
     parts = ["%s %d" % kv for kv in seq[:3]]
-    parts += ["%s %d" % (k, made[k]) for k in (BY_HAND, UNSEEN) if made.get(k)]
-    return ", ".join(parts), bool(seq)
+    if made.get(BY_HAND):
+        parts.append("%s %d" % (BY_HAND, made[BY_HAND]))
+    said = ("made by " + ", ".join(parts)) if parts else ""
+    if made.get(UNSEEN):
+        old = "%d too old for the log to show who made them" % made[UNSEEN] if not parts else \
+              "%d too old for the log to show" % made[UNSEEN]
+        said = "%s; %s" % (said, old) if said else old
+    return said, bool(seq)
 
 
 def default_fits(stage) -> dict[str, set]:
@@ -503,7 +511,7 @@ def check_tasks(ctx: Ctx, reads: dict, recs: dict, leads: set[str]) -> dict:
             fix = "Point the sequences that make them at a caller on the list" if by_sequence else "Give them to a caller on the list"
             ctx.out.tally["open tasks with someone who is not a caller"] += h["open"]
             ctx.out.problem("Open tasks sit with %s, who is not on the callers list: %d, %d of them past their date. "
-                            "%s (made by %s)" % (h["name"], h["open"], h["late"], fix, makers))
+                            "%s (%s)" % (h["name"], h["open"], h["late"], fix, makers))
         elif h["late"] >= int(setting(st, "overdue_bulk")):
             out["problems"] += 1
             ctx.out.problem("Tasks pile up past their date for %s: %d overdue, the oldest due %s" % (h["name"], h["late"], oldest))

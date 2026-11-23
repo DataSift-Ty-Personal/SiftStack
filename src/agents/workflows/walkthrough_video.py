@@ -57,6 +57,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from .. import attachments, config, store
+import model_registry
 from . import quick_screen as qs
 
 log = logging.getLogger(__name__)
@@ -135,8 +136,8 @@ def settings() -> dict:
             "keep_mb": float(s("AGENTS_VIDEO_KEEP_MB", 100.0)), "keep_total_mb": float(s("AGENTS_VIDEO_KEEP_TOTAL_MB", 300.0)),
             "work_dir": str(s("AGENTS_VIDEO_WORK_DIR", str(Path(tempfile.gettempdir()) / "siftstack-video"))),
             "work_hours": float(s("AGENTS_VIDEO_WORK_HOURS", 24.0)), "dry_paid": bool(s("AGENTS_VIDEO_DRY_PAID", False)),
-            "audio_model": str(s("AGENTS_VIDEO_AUDIO_MODEL", "google/gemini-2.5-flash")),
-            "vision_model": str(s("AGENTS_VIDEO_VISION_MODEL", "claude-haiku-5-5")),
+            "audio_model": str(s("AGENTS_VIDEO_AUDIO_MODEL", model_registry.model("audio_to_text"))),
+            "vision_model": str(s("AGENTS_VIDEO_VISION_MODEL", model_registry.model("reading_images"))),
             "workers": max(1, int(s("AGENTS_VIDEO_VISION_WORKERS", 4))), "private": bool(s("AGENTS_VIDEO_PRIVATE_ROUTING", True))}
 
 

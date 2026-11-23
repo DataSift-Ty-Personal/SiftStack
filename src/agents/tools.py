@@ -26,6 +26,8 @@ import json
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
+from datasift_links import record_url      # src/ is on the path: PYTHONPATH in the image, cli.py locally
+
 from . import bus, router, store
 from .team import SPEND_LABEL
 
@@ -85,7 +87,7 @@ def compact_record(rec: dict) -> dict:
     phones = o.get("phones") or rec.get("phones") or []
     keep = ("estimate_value", "equity_percent", "last_sold", "last_sale_price", "rental_value", "bedrooms",
             "bathrooms", "sqft", "year", "lot_size", "structure_type", "investor_score", "realtor_score")
-    out = {"uuid": rec.get("uuid", ""),
+    out = {"uuid": rec.get("uuid", ""), "link": record_url(rec.get("uuid", "")),
            "address": ", ".join(x for x in (a.get("street"), a.get("city"), a.get("state"), a.get("postal_code")) if x),
            "county": a.get("county", ""), "vacant": a.get("vacant"),
            "owner": " ".join(x for x in (o.get("first_name"), o.get("last_name")) if x) or o.get("company", ""),
@@ -111,7 +113,7 @@ def find_record(query: str) -> tuple[dict | None, str]:
     if not hits:
         return None, "No record in this account matches %r." % q
     if len(hits) > 1:
-        lines = ["%s  %s" % (h.get("uuid", ""), compact_record(h)["address"]) for h in hits]
+        lines = ["%s  %s  %s" % (h.get("uuid", ""), compact_record(h)["address"], record_url(h.get("uuid", ""))) for h in hits]
         return None, "Several records match %r; ask which one, or use its uuid:\n%s" % (q, "\n".join(lines))
     uuid = hits[0].get("uuid", "")
     return (crm.get_record(uuid) or hits[0]), ""
@@ -204,9 +206,10 @@ def spend_report_tool(ctx: RunContext) -> Tool:
             "scope": scope, "total_usd": round(sum(float(r.get("usd") or 0) for r in rows), 4),
             "tasks": len({r.get("task_id") for r in rows}), "items": items,
             "note": "Read from the brain's ledger. Your own turn right now is added when it ends. Caps: "
-                    "$%.2f a turn ($%.2f with files), $%.0f a run, $%.0f a day." % (
+                    "$%.2f a turn ($%.2f with files), $%.0f a run, $%.0f a day for the team's own work; research "
+                    "(the deep prospects) has its own $%.0f a day." % (
                         config.AGENT_BUDGET_USD, max(config.AGENT_BUDGET_USD, config.FILE_TURN_USD),
-                        config.RUN_CAP_USD, config.DAILY_CAP_USD)}, default=str))
+                        config.RUN_CAP_USD, config.DAILY_CAP_USD, config.RESEARCH_DAILY_CAP_USD)}, default=str))
 
     return Tool("spend_report", "What the team has spent, read from the brain's own ledger: each Claude turn by model "
                 "and every paid vendor call (skip trace, phone scores, Zillow, research). scope: thread (this job, "
@@ -284,11 +287,20 @@ def workflow_tool(ctx: RunContext, wf) -> Tool:
     if wf.spend == "records":
         props["approved"] = {"type": "boolean", "description": "True only after the operator said yes in this thread"}
     required = [k for k in (wf.inputs or {})]
+    on_box = getattr(wf, "on_box", False)
     tail = (" Queues the job; it posts its own result in this thread when it finishes." if wf.live else
-            " Not wired into the team yet: calling it returns how it runs by hand today.")
+            " Runs on its own every day on another machine: calling it returns that machine's reports today."
+            if on_box else " Not wired into the team yet: calling it returns how it runs by hand today.")
     desc = "%s Spend: %s.%s" % (wf.summary, SPEND_LABEL[wf.spend], tail)
 
     async def handler(args: dict) -> dict:
+        if on_box:
+            # 2026-11-18: this used to answer "not wired, so nothing ran, it runs by hand", and Atlas
+            # repeated it on a morning the box had uploaded 29 notices.
+            from . import relay
+            where = (wf.manual or "").split(". ")[0].strip().rstrip(".")
+            return _text("%s runs on its own every day on another machine, so nobody runs it by hand and the team "
+                         "does not start it%s. %s" % (wf.name, (" (%s)" % where) if where else "", relay.ftm_summary()))
         if not wf.live:
             return _text("%s is not wired into the team yet, so nothing ran. Today it runs by hand: %s" % (
                 wf.name, wf.manual or "see the SiftStack docs"), error=True)
@@ -337,6 +349,8 @@ def build(ctx: RunContext) -> list[Tool]:
     tools += script_tools(ctx)
     from . import sandbox                 # run_python and export_data (the locked code sandbox)
     tools += sandbox.sandbox_tools(ctx)
+    from . import skilltools              # a skill worked as in Claude Code: comps_data, publish_sheet
+    tools += skilltools.skill_tools(ctx)
     # A tool name is used once: the roster's run_script entry is reached through the run_script tool
     # above, and two tools with one name would break the employee's whole tool list.
     taken = {t.name for t in tools}

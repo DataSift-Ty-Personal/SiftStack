@@ -7,9 +7,11 @@ should not contact.
 Per record, in this order (the cheap checks first, so a skipped owner costs nothing):
   1. the search row: status and do-not-mail flags (gate.check_row), entity owners out (people only),
      an owner already on this list or loaded before (ledger.json) out
-  2. the full record: the same gate every other channel uses, on the mail channel (do not market,
+  2. the full record: the same gate every other channel uses, on its own email channel (do not market,
      litigator, opted out, DNC list, sold, deceased or obituary, a lead, a finished status, listed,
-     not single family, mail only, do not mail). Returned postal mail does not stop an email.
+     not single family, do not mail, held for research by its status or by a research tag the
+     playbook names, such as Tax Sale Redemption). Returned postal mail does not stop an email; a
+     Mail Only tag does not either (it means no calls and no texts).
   3. one address: the first whose name part carries the owner's first or last name. Skip-traced
      emails are a loose list (median 5 per owner, many belong to other people), so an owner with no
      name match is left out rather than guessed.
@@ -17,8 +19,14 @@ Then with --verify: ZeroBounce with Verify+ on every address, keep "valid" only;
 other properties are read, and any that is a lead, opted out, finished, or in an in-house lane
 (first to market, Top 1,000, obituary, heirs, hot auction) takes the owner off the list.
 
-Writes output/cold_email/lists/<slug>/ (gitignored: it holds owner emails). Resumable. Read only
-against DataSift; the only spend is ZeroBounce credits under --verify.
+Writes lists/<slug>/ in the state folder (coldstate.py: output/cold_email on a workstation, gitignored
+because it holds owner emails; the brain's volume on the box). Resumable. Read only against DataSift;
+the only spend is ZeroBounce credits under --verify, which runs only on the install home.json names.
+
+Past 10,000 rows: the records search refuses an offset past its 10,000-row window, and the Agency queue
+holds about 20,000 records, so a preset that large is read in slices of its own `created` dates (each
+under the window, newest first; the search honors `created: [from, to]` in dates or datetimes). The
+slices are worked out once per list and kept in its state, so a resumed build reads on where it stopped.
 """
 from __future__ import annotations
 
@@ -29,6 +37,7 @@ import re
 import sys
 import time
 from collections import Counter
+from datetime import datetime, timedelta
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -40,21 +49,26 @@ for p in (str(SRC), str(HERE)):
 
 from agents.autopilot import gate, lanes as lanes_mod  # noqa: E402
 from agents.autopilot.crm import CRM, search_shape  # noqa: E402
+import coldstate  # noqa: E402
 import deep_prospect_batch  # noqa: E402
 
 _spec = importlib.util.spec_from_file_location("touches", SRC / "sms_agent" / "knowledge" / "touches.py")
 touches = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(touches)
 
-LISTS = ROOT / "output" / "cold_email" / "lists"
-LEDGER = ROOT / "output" / "cold_email" / "ledger.json"
+LISTS = coldstate.state_dir() / "lists"
+LEDGER = coldstate.state_dir() / "ledger.json"
 # Records ruled out (gate, no named email, a dead address, another property) are not read again for
 # this many days, so the nightly top-up spends its DataSift reads on records it has not judged yet.
-REJECTED = ROOT / "output" / "cold_email" / "rejected.json"
+REJECTED = coldstate.state_dir() / "rejected.json"
 REJECT_DAYS = 30
-EMAIL_IGNORES = {"return_mail"}          # postal problems that say nothing about an email address
+CHANNEL = "email"                        # the gate's own channel (2026-11-20; it borrowed "mail" before)
 IN_HOUSE = {"lead", "heirs", "hot_auction", "ftm", "obituary", "top1000"}
 UPPER_KEEP = {"N", "S", "E", "W", "NE", "NW", "SE", "SW", "US", "TN", "II", "III", "IV"}
+WINDOW = 10000                           # the records search refuses offset + limit past this
+PAGE = 250
+CREATED_FLOOR = datetime(2010, 1, 1)     # older than any record in an account
+MIN_SLICE = timedelta(minutes=1)         # a bulk pull can land 15,000 records in a day: split down to the minute
 # Where "a local buyer in <city>" is true. Set by --states (default TN, Knox and Blount's state).
 STATES: set[str] = {"TN"}
 
@@ -114,22 +128,89 @@ def pick_email(owner: dict, emails: list[str]) -> str:
     return ""
 
 
+PLAYBOOK = ROOT / "team" / "autopilot.yaml"
+_GATE: list = []
+
+
+def gate_cfg() -> gate.GateConfig:
+    """The gate's defaults plus the research holds the account's playbook names (gate.research_tags): a
+    former owner who can still redeem a tax sale house (Tax Sale Redemption) is held out of every outreach
+    channel until a lawyer okays it, an email included (2026-11-20). Only that one setting is taken; the
+    rest of this lane runs on the defaults it was measured on. No playbook means no holds of that kind; a
+    playbook that cannot be read stops the build rather than email around the hold."""
+    if _GATE:
+        return _GATE[0]
+    cfg = gate.GateConfig()
+    if PLAYBOOK.is_file():
+        import yaml
+        try:
+            block = (yaml.safe_load(PLAYBOOK.read_text(encoding="utf-8")) or {}).get("gate") or {}
+        except Exception as exc:  # noqa: BLE001
+            raise SystemExit("the playbook's gate settings could not be read (%s); no list was built" % exc)
+        tags = block.get("research_tags") or []
+        if not isinstance(tags, list):
+            raise SystemExit("gate.research_tags in the playbook must be a list; no list was built")
+        cfg.research_tags = [str(t) for t in tags]
+    _GATE.append(cfg)
+    return cfg
+
+
 def email_verdict(rec: dict, row: dict | None = None) -> gate.Verdict:
-    v = gate.check(rec, "mail", row=row)
-    v.reasons = [r for r in v.reasons if r[0] not in EMAIL_IGNORES]
-    v.ok = not v.reasons
-    return v
+    return gate.check(rec, CHANNEL, row=row, cfg=gate_cfg())
+
+
+def _pair(lo: datetime, hi: datetime) -> list[str]:
+    """A created window as the search takes it: two dates when both ends fall on midnight, else two
+    datetimes (a window is never written half in dates and half in datetimes)."""
+    if all((t.hour, t.minute, t.second) == (0, 0, 0) for t in (lo, hi)):
+        return [lo.strftime("%Y-%m-%d"), hi.strftime("%Y-%m-%d")]
+    return [lo.strftime("%Y-%m-%dT%H:%M:%S"), hi.strftime("%Y-%m-%dT%H:%M:%S")]
+
+
+def created_slices(crm, must: dict, total: int, now: datetime | None = None) -> list[list]:
+    """The preset cut into windows of its records' created dates, each holding no more than the search's
+    10,000-row window, newest first: [[from, to, count], ...]. A preset that already fits, or that filters
+    on created itself, is one window [None, None, total]. A window that cannot be cut further (one minute)
+    is kept and read to its first 10,000 rows."""
+    if total <= WINDOW or "created" in (must or {}):
+        return [[None, None, total]]
+    out: list[list] = []
+
+    def count(lo: datetime, hi: datetime) -> int:
+        return crm.search(dict(must, created=_pair(lo, hi)), limit=1)[0]
+
+    def split(lo: datetime, hi: datetime, n: int) -> None:
+        if n <= WINDOW or hi - lo <= MIN_SLICE:
+            if n:
+                out.append(_pair(lo, hi) + [n])
+            return
+        mid = lo + (hi - lo) / 2
+        mid = mid.replace(microsecond=0) if hi - lo <= timedelta(days=2) else datetime(mid.year, mid.month, mid.day)
+        if not lo < mid < hi:
+            mid = lo + (hi - lo) / 2
+            mid = mid.replace(microsecond=0)
+        newer = count(mid, hi)
+        split(mid, hi, newer)
+        split(lo, mid, count(lo, mid))
+
+    end = (now or datetime.now()) + timedelta(days=1)
+    split(CREATED_FLOOR, datetime(end.year, end.month, end.day), total)
+    return out
 
 
 def pull(crm: CRM, preset: str, want: int, state: dict, ledger: dict, out_dir: Path) -> None:
     must = search_shape(crm.preset_must(preset))
     total, _ = crm.search(must, limit=1)
     state["preset_total"] = total
+    if not state.get("slices"):
+        state["slices"] = created_slices(crm, must, total)
+        state["slice"], state["offset"] = 0, 0       # a list begun before the slices starts its reading over
+    slices = state["slices"]
     seen, owners = set(state["seen"]), {c["owner"] for c in state["candidates"]}
     loaded_owners = set(ledger.get("owners", {}))
     loaded_emails = set(ledger.get("emails", {}))
     skip = Counter(state["skipped"])
-    offset = state.get("offset", 0)
+    si, offset = int(state.get("slice", 0)), int(state.get("offset", 0))
     reads_since_save = 0
     rejected = load_json(REJECTED, {})
     cutoff = time.strftime("%Y-%m-%d", time.localtime(time.time() - REJECT_DAYS * 86400))
@@ -138,13 +219,23 @@ def pull(crm: CRM, preset: str, want: int, state: dict, ledger: dict, out_dir: P
     def reject(u: str, why: str) -> None:
         skip[why] += 1
         rejected[u] = today
-    print(f"{preset}: {total:,} records; collecting {want} candidates", flush=True)
-    while len(state["candidates"]) < want and offset < min(total, 10000):
-        _, rows = crm.search(must, limit=250, offset=offset)
+    print(f"{preset}: {total:,} records in {len(slices)} slice(s); collecting {want} candidates", flush=True)
+    while len(state["candidates"]) < want and si < len(slices):
+        lo, hi, n = slices[si]
+        if offset >= min(n, WINDOW):
+            si, offset = si + 1, 0
+            continue
+        part = must if lo is None else dict(must, created=[lo, hi])
+        _, rows = crm.search(part, limit=PAGE, offset=offset)
         if not rows:
-            break
+            si, offset = si + 1, 0
+            continue
+        whole_page = True
         for row in rows:
             if len(state["candidates"]) >= want:
+                # Stopped partway: the next run reads this page again (the rows done are in `seen`). Moving
+                # on a whole page here skipped the rest of it for good in a resumed build.
+                whole_page = False
                 break
             u = row.get("uuid")
             if not u or u in seen:
@@ -155,7 +246,7 @@ def pull(crm: CRM, preset: str, want: int, state: dict, ledger: dict, out_dir: P
                 continue
             ow = row.get("owner") or {}
             ou = ow.get("uuid") or ""
-            v = gate.check_row(row, "mail")
+            v = gate.check_row(row, CHANNEL)
             if not v.ok:
                 skip["row: " + v.code] += 1
                 continue
@@ -198,13 +289,14 @@ def pull(crm: CRM, preset: str, want: int, state: dict, ledger: dict, out_dir: P
             })
             owners.add(ou)
             if reads_since_save >= 50:
-                state.update(seen=sorted(seen), skipped=dict(skip), offset=offset)
+                state.update(seen=sorted(seen), skipped=dict(skip), slice=si, offset=offset)
                 save_json(out_dir / "state.json", state)
                 save_json(REJECTED, rejected)
                 reads_since_save = 0
                 print(f"  {len(state['candidates'])} candidates after {len(seen)} rows", flush=True)
-        offset += 250
-    state.update(seen=sorted(seen), skipped=dict(skip), offset=offset)
+        if whole_page:
+            offset += PAGE
+    state.update(seen=sorted(seen), skipped=dict(skip), slice=si, offset=offset)
     save_json(out_dir / "state.json", state)
     save_json(REJECTED, rejected)
 
@@ -238,7 +330,7 @@ def siblings(crm: CRM, state: dict, out_dir: Path) -> None:
         for row in rows:
             if row.get("uuid") == c["record"]:
                 continue
-            v = gate.check_row(row, "mail")
+            v = gate.check_row(row, CHANNEL)
             # Another house of theirs that sold or is listed says nothing about the house we are
             # asking about (34 of 570 owners were held for exactly that on the first run).
             v.reasons = [r for r in v.reasons if r[0] not in ("sold", "listed")]
@@ -299,6 +391,8 @@ def main() -> int:
     ap.add_argument("--slug", default="")
     ap.add_argument("--states", default="TN", help="comma list of states where the copy's 'local buyer' is true")
     a = ap.parse_args()
+    if a.verify:
+        coldstate.require("build and check a cold email list", LISTS.parent)
     STATES.clear()
     STATES.update(s.strip().upper() for s in a.states.split(",") if s.strip())
     slug = a.slug or re.sub(r"[^a-z0-9]+", "_", a.preset.lower()).strip("_") + "_" + time.strftime("%Y%m%d")
@@ -318,7 +412,7 @@ def main() -> int:
     siblings(crm, state, out_dir)
     final = finish(state, out_dir)
     print("result:", json.dumps(state["result"]), "| ZeroBounce credits used:", state.get("zb_credits_used"))
-    print("leads file:", (out_dir / "leads.json").relative_to(ROOT))
+    print("leads file:", out_dir / "leads.json")    # the brain's state folder is not under the repo
     return 0 if final else 2
 
 

@@ -88,11 +88,12 @@ def _checks(check, sent: list) -> None:
 
     print("  the rewrite, guarded")
     config.SLACK_VOICE, config.ANTHROPIC_API_KEY = "ty", ""
-    good = FakeAsk("The obituary site was down.\nWe could not check owners today.\nIt tries again soon.\nNothing for you to do.")
+    good = FakeAsk("The county death check could not reach the obituary site.\nOwners were not checked today.\n"
+                   "It tries again soon.\nNothing for you to do.")
     voice.ASK, voice.CHECK = good, (lambda source, written: True)
     t = store.enqueue("ops", "touch_audit", "", subject="test", source="schedule")[0]
     out = voice.issue_text("ftm_death_screen", "the obituary index did not answer; those records will be tried again", t)
-    check(out.startswith("The obituary site was down") and good.calls == 1 and store.spent(task_id=t) > 0,
+    check(out.startswith("The county death check could not reach") and good.calls == 1 and store.spent(task_id=t) > 0,
           "an issue is rewritten in plain words, and its small cost is booked against the task that posted it")
     again = voice.issue_text("ftm_death_screen", "the obituary index did not answer; those records will be tried again", t)
     check(again == out and good.calls == 1, "the same post is not rewritten twice: the first rewrite is kept")
@@ -112,9 +113,9 @@ def _checks(check, sent: list) -> None:
     check(voice.update_text("ftm_auction", "4 sale(s) this week", []) == "Auction calendar: 4 sales this week" and capped.calls == 0,
           "past the daily cap the model is not asked at all")
     config.SLACK_VOICE_DAILY = 400
-    voice.ASK = FakeAsk("The site was down. We will try again. Nothing for you to do.")
+    voice.ASK = FakeAsk("The x stage check found the site down. We will try again. Nothing for you to do.")
     split = voice.issue_text("x_stage", "the site was down; it will be tried again")
-    check(split == "The site was down.\nWe will try again.\nNothing for you to do.",
+    check(split == "The x stage check found the site down.\nWe will try again.\nNothing for you to do.",
           "an issue is one short sentence a line, even when the model runs them together")
     voice.ASK = FakeAsk("Nobody was called yesterday.")
     voice.CHECK = lambda source, written: False
@@ -132,6 +133,35 @@ def _checks(check, sent: list) -> None:
                         else "The site was slow at night.")
     check(voice.update_text("x_stage", "the site was slow at night", []) == "X stage: the site was slow at night",
           "a second look that cannot be made counts as a no: the cleaned post goes out")
+
+    print("  what the code refuses even when the second look passes (2026-11-18)")
+    voice.CHECK = lambda source, written: True
+    tag_src = "there is no 'Tax Sale Redemption' tag in this account, so nothing is read from it"
+    voice.ASK = FakeAsk("There is no Tax Sale Redemption tag in this account.\nNothing is read from it.\n"
+                        "The post does not say what happens next or what to do.\nSo I will not add a next step.")
+    check(voice.issue_text("research_queue", tag_src) == "Research queue: " + tag_src,
+          "a rewrite that talks about the post or its own instructions is refused")
+    lim_src = "3: an owner's number was dialed more than once in the day (the number ending 1679, 2 times)"
+    voice.ASK = FakeAsk("Check failed: the outreach limit.\nThree owner numbers were called twice in one day.")
+    check(voice.issue_text("outreach_limits", lim_src) == "Outreach limits: " + lim_src,
+          "a finding is never reported as a failed check")
+    voice.ASK = FakeAsk("The outreach limit check found 3 owner numbers called twice in a day.\nNothing for you to do.")
+    check(voice.issue_text("outreach_limits", lim_src) == "Outreach limits: " + lim_src,
+          "'Nothing for you to do.' is refused on a post that never says it will be tried again")
+    voice.ASK = FakeAsk("The outreach limits check found 3 owner numbers called more than once in a day.")
+    check(voice.issue_text("outreach_limits", lim_src).startswith("The outreach limits check found 3"),
+          "the same finding said plainly goes through")
+    voice.ASK = FakeAsk("The property check stopped before it finished.\nIt runs again at its next scheduled time.")
+    check(voice.issue_text("research_queue", "it stopped partway; it runs again at its next scheduled time")
+          == "Research queue: it stopped partway; it runs again at its next scheduled time",
+          "an issue that does not name the check it came from is refused (the research queue went out as the property check)")
+    import hashlib
+    base = voice.clean("Research queue: " + tag_src)
+    store.kv_set("voice:%s" % hashlib.sha256(("issue\n%s" % base).encode("utf-8")).hexdigest()[:24],
+                 "There is no tag.\nThe post does not say what to do.")
+    voice.ASK = FakeAsk("The research queue has no Tax Sale Redemption tag to read.\nNothing is read from it.")
+    check(voice.issue_text("research_queue", tag_src) == "The research queue has no Tax Sale Redemption tag to read.\nNothing is read from it.",
+          "a kept rewrite that fails today's checks is written again, never posted from the cache")
     config.SLACK_VOICE = "plain"
     voice.ASK = voice.CHECK = None
 

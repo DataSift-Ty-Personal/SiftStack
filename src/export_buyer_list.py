@@ -347,7 +347,9 @@ _CORP_RE = re.compile(r"\b(?:INC|INCORPORATED|CORP|CORPORATION)\b", re.IGNORECAS
 
 SEARCH_DELAY_MIN = 0.5
 SEARCH_DELAY_MAX = 1.0
-LLM_MODEL = "claude-haiku-4-5-20251001"
+import model_registry  # noqa: E402
+
+LLM_MODEL = model_registry.model("extraction")
 LLM_MAX_TOKENS = 256
 
 ENTITY_SYSTEM_PROMPT = (
@@ -550,13 +552,9 @@ def _parse_with_llm(entity_name: str, entity_type: str,
 
     try:
         client = anthropic.Anthropic(api_key=api_key)
-        response = client.messages.create(
-            model=LLM_MODEL,
-            max_tokens=LLM_MAX_TOKENS,
-            system=ENTITY_SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        result_text = response.content[0].text.strip()
+        import llm_client
+        result_text = llm_client.ask_text(client, model=LLM_MODEL, system=ENTITY_SYSTEM_PROMPT, prompt=prompt,
+                                          max_tokens=LLM_MAX_TOKENS)
         result_text = re.sub(r"^```(?:json)?\s*", "", result_text)
         result_text = re.sub(r"\s*```$", "", result_text)
         brace_match = re.search(r"\{[^{}]*\}", result_text)

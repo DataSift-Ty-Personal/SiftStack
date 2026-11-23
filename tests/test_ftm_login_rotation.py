@@ -152,13 +152,18 @@ class TestSubscriptionWarning:
         assert len(res.warnings) == 1
         assert "2026-12-11" in res.warnings[0] and "2 days" in res.warnings[0]
 
-    def test_silent_mid_term_on_the_auto_renewing_30_day_product(self, monkeypatch):
-        # Ten days out on a 30-day term is an ordinary day, not a warning.
+    def test_three_days_out_is_the_notice_sites_first_warning_day(self, monkeypatch):
+        # The notice site auto-renews (Ty, 2026-11-11), so its window stays 3 days; since 2026-11-19
+        # the 8am post says the warning in its own line instead of hiding it as amber.
         from datetime import datetime
+        assert ftm_runner.SUBSCRIPTION_WARN_DAYS == 3
         monkeypatch.setattr(scraper, "SUBSCRIPTION", {"expires": "2026-12-11"})
         res = self._res()
-        ftm_runner._subscription_warning(res, today=datetime(2026, 12, 1))
-        assert res.warnings == []
+        ftm_runner._subscription_warning(res, today=datetime(2026, 12, 8))
+        assert len(res.warnings) == 1 and "3 days left" in res.warnings[0]
+        res = self._res()
+        ftm_runner._subscription_warning(res, today=datetime(2026, 12, 7))
+        assert res.warnings == [], "four days out is an ordinary day"
 
     def test_silent_outside_the_window(self, monkeypatch):
         from datetime import datetime

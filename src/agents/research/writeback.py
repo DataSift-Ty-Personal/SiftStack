@@ -23,6 +23,14 @@ Two kinds of rule, on purpose:
                                           verified person, nobody else; and the owner's deceased
                                           mark and the Owner Deceased field are held back when the
                                           owner on the record is a person the research shows living.
+  CORRECTS what the record says. On by default: each uses a write this chain already makes (tags,
+  custom fields), and each only takes away something false. (2026-11-19, 8026 Example Pike.)
+      AGENTS_DP_DEATH_TAGS      1         once the owner is marked deceased: the tag deceased goes on, and
+                                          living and Verify Deceased come off (the gate holds the record
+                                          on either death tag, so no hold is lifted)
+      AGENTS_DP_STALE_DM        1         a Decision Maker field the record already carries that names a
+                                          person the research shows dead is replaced, even when this run
+                                          names no one (an empty field never writes, so it used to stand)
   ADDS a write this chain has never made on a real record. Off until one record proves it.
       AGENTS_DP_LEVEL           0         the research level, 1 to 4, in a custom field
       AGENTS_DP_LEVEL_FIELD     Research Level
@@ -68,9 +76,12 @@ LITIGATOR_NOTE = ("A number on this owner belongs to a known TCPA litigator. Do 
                   "record this owner holds.")
 THIRD_MODES = ("reserve", "person", "never", "always")
 ORDERS = ("trace_first", "free_first")
+DEATH_TAG = "deceased"
+UNSETTLED_TAGS = ("living", "Verify Deceased")   # what the deceased tag replaces once the death is settled
 SETTING_NAMES = ("AGENTS_DP_THIRD_TIER", "AGENTS_DP_VERIFIED_ONLY", "AGENTS_DP_LEVEL", "AGENTS_DP_LEVEL_FIELD",
                  "AGENTS_DP_HEIR_TAG", "AGENTS_DP_SKIPTRACE_COUNTER", "AGENTS_DP_LITIGATOR", "AGENTS_DP_DOCUMENT",
-                 "AGENTS_DP_OWNER_SWAP", "AGENTS_DP_ORDER", "AGENTS_DEED_DIR")
+                 "AGENTS_DP_OWNER_SWAP", "AGENTS_DP_ORDER", "AGENTS_DEED_DIR", "AGENTS_DP_DEATH_TAGS",
+                 "AGENTS_DP_STALE_DM")
 
 # A signer line that names a role or a group, not a person (the same test the signer guard uses).
 STRUCTURAL = re.compile(r"\b(trust|trustee|estate|heirs?|beneficiar\w*|successor|if any|unknown|guardian|"
@@ -108,6 +119,8 @@ def settings(env=None) -> dict:
             "litigator": _switch(e.get("AGENTS_DP_LITIGATOR"), False),
             "document": _switch(e.get("AGENTS_DP_DOCUMENT"), False),
             "owner_swap": _switch(e.get("AGENTS_DP_OWNER_SWAP"), False),
+            "death_tags": _switch(e.get("AGENTS_DP_DEATH_TAGS"), True),
+            "stale_dm": _switch(e.get("AGENTS_DP_STALE_DM"), True),
             "order": order if order in ORDERS else "trace_first",
             "deed_dir": str(e.get("AGENTS_DEED_DIR") or Path(data_dir) / "deeds")}
 
@@ -689,6 +702,73 @@ def owner_deceased_field(fields: dict, held: list, an: dict, deceased: tuple) ->
     return fields, held
 
 
+def _titles(tags) -> list[str]:
+    out = []
+    for t in tags or []:
+        s = str((t.get("title") if isinstance(t, dict) else t) or "").strip()
+        if s:
+            out.append(s)
+    return out
+
+
+def death_tags(tags) -> tuple[list[str], list[str]]:
+    """Once the owner of record has been marked deceased: (tags to put on, tags to take off), by the
+    titles the record holds them under. A record kept "living" beside an owner marked dead (8026
+    Example Pike), and "Verify Deceased" asks a person to check a death that is now settled. The
+    gate holds a record on the tag deceased exactly as it does on Verify Deceased, so nothing is
+    released by the swap."""
+    have = {t.lower(): t for t in _titles(tags)}
+    add = [] if DEATH_TAG.lower() in have else [DEATH_TAG]
+    drop = [have[t.lower()] for t in UNSETTLED_TAGS if t.lower() in have]
+    return add, drop
+
+
+def dead_names(an: dict) -> list[str]:
+    """Everyone the analysis says has died: the owner whose death the guard confirmed, and every person
+    it marks Deceased (the skip trace's flags included, researcher.guard_flagged_people)."""
+    out = []
+    death = (an or {}).get("death") or {}
+    if death.get("owner_deceased") and plain(death.get("decedent")):
+        out.append(plain(death["decedent"]))
+    for p in (an or {}).get("people") or []:
+        nm = plain(p.get("name"))
+        if p.get("living") == "Deceased" and nm and not any(same_name(nm, x) for x in out):
+            out.append(nm)
+    return out
+
+
+def stale_dm(fields: dict, held: list, an: dict, current: dict | None, day: str = "") -> tuple[dict, list]:
+    """The Decision Maker field the record ALREADY carries, when it names a person this research shows
+    dead, is replaced. This run's own decision maker fields still win; only when it names nobody did
+    the old value stand, because an empty field never writes. On 8026 Example Pike a re-run that
+    named no signer left "Harold D. Whitlock / Owner, surviving husband" on the record of a man who had
+    died. `current` is the record's custom fields as label -> value, read just before writing."""
+    fields, held = dict(fields or {}), list(held or [])
+    if str(fields.get(DM_FIELDS[0]) or "").strip():
+        return fields, held
+    now = str((current or {}).get(DM_FIELDS[0]) or "").strip()
+    if not now:
+        return fields, held
+    said = _ROLE_OF.sub(" ", now)
+    gone = next((d for d in dead_names(an) if named_in(said, d) and _generation(said) in ("", _generation(d))), "")
+    if not gone:
+        return fields, held
+    living = plain((an or {}).get("decision_maker"))
+    if living and any(same_name(living, d) for d in dead_names(an)):
+        living = ""
+    if living:
+        fields[DM_FIELDS[0]] = living
+        rel = next((p.get("relationship") or "" for p in (an or {}).get("people") or []
+                    if same_name(plain(p.get("name")), living)), "")
+        fields[DM_FIELDS[1]] = rel or "See the research note"
+    else:
+        fields[DM_FIELDS[0]] = "Undetermined: %s has died. Heirs to confirm with the family%s" % (
+            gone, " (research %s)" % day if day else "")
+        fields[DM_FIELDS[1]] = "See the research note"
+    held.append("%s replaced: the record named %s, who has died" % (DM_FIELDS[0], gone))
+    return fields, held
+
+
 # ------------------------------------------------------------ skip trace counter --
 
 def trace_key(ledger: dict | None) -> str:
@@ -735,6 +815,18 @@ def owner_records(api, owner_uuid: str, cap: int = 250) -> list[str]:
     return out[:cap]
 
 
+def _said(api, uuid: str, rec: dict) -> str:
+    """A record's old notes field plus its message board, where notes go since the add-notes route
+    was retired (2026-11-18). A board that cannot be read counts as empty, so the note is posted."""
+    try:
+        got = api.call("/api/internal/property/%s/message/?limit=100" % uuid) or []
+        rows = got.get("results") if isinstance(got, dict) else got
+        board = [str(m.get("message") or "") for m in rows or [] if isinstance(m, dict)]
+    except Exception:  # noqa: BLE001
+        board = []
+    return "\n".join([str((rec or {}).get("notes") or "")] + board)
+
+
 def suppress_litigator(api, uuid: str, owner_uuid: str) -> dict:
     """A litigator's number is a RECORD problem (plan 0.3, decision D22): this record and every
     other record the same owner holds get Litigator and Do Not Market, with one note. Marking only
@@ -755,8 +847,8 @@ def suppress_litigator(api, uuid: str, owner_uuid: str) -> dict:
             continue
         for t in need:
             api.call("/api/internal/property/%s/add-tags/" % u, "POST", {"tags": t})
-        if LITIGATOR_NOTE not in str(rec.get("notes") or ""):
-            api.call("/api/internal/property/%s/add-notes/" % u, "POST", {"notes": LITIGATOR_NOTE})
+        if LITIGATOR_NOTE not in _said(api, u, rec):
+            api.call("/api/internal/property/%s/message/" % u, "POST", {"message": LITIGATOR_NOTE})
         tagged.append({"uuid": u, "added": need})
     return {"records": len(targets), "tagged": tagged, "problems": problems}
 
@@ -817,7 +909,7 @@ def swap_owner(api, uuid: str, plan: dict) -> dict:
     if took and now.get("deceased") and now.get("uuid"):
         api.call("/api/internal/owner/%s/" % now["uuid"], "PATCH", {"deceased": False})
     if took:
-        api.call("/api/internal/property/%s/add-notes/" % uuid, "POST", {"notes": plan["note"]})
+        api.call("/api/internal/property/%s/message/" % uuid, "POST", {"message": plan["note"]})
     return {"ok": took, "owner_uuid": now.get("uuid") or "", "same_owner": now.get("uuid") == plan["before"].get("uuid"),
             "skiptrace_attempts": int(now.get("skiptrace_attempts") or 0)}
 

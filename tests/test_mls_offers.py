@@ -248,11 +248,12 @@ def test_screen_reasons():
 def test_offer_text_is_plain_and_honest():
     row = {**listing(), "cash_offer": 120_000, "lane": "Subject-to", "creative_price": 200_000, "cash_to_seller": 8_000,
            "seller_carry": None, "agent": "J. Sam Agent"}
-    t = m.offer_text(row)
+    t = m.offer_text(row, "Ty")
     assert t.startswith("Hi Sam, this is Ty, a local investor.")
     assert "Or I can pay $200,000" in t and t.count("?") == 1
-    assert "—" not in t and "–" not in t and "pre-approved" not in t.lower()
+    assert chr(0x2014) not in t and chr(0x2013) not in t and "pre-approved" not in t.lower()
     only = m.offer_text({**row, "lane": ""})
+    assert only.startswith("Hi Sam, I'm a local investor.")          # nobody named unless a sender is set
     assert only.endswith("Would your seller consider it?")
 
 

@@ -708,7 +708,9 @@ def _round_trip(check, store, root: Path) -> None:
     files_dir = sb.run_dir_for(task) / "files"
     check(res["ran"] and res["run"] == 1 and res["exit_code"] == 0 and res["ended"] == "finished",
           "a run that finished says so, with its number and exit code")
-    check(res["inputs"] == [{"given": "inbox/C2-1/01-list.csv", "as": "in/01-list.csv", "bytes": 46}] and
+    # The file's own size: Windows writes each newline as two bytes, so a fixed 46 failed on Linux (2026-11-18).
+    size = (ws / "01-list.csv").stat().st_size
+    check(res["inputs"] == [{"given": "inbox/C2-1/01-list.csv", "as": "in/01-list.csv", "bytes": size}] and
           ex.seen["in"] == ["01-list.csv"], "the file it was given is in in/ under its own name")
     check((files_dir / "summary.csv").read_text() == "total\n7\n" and (files_dir / "chart.png").is_file(),
           "what the code wrote to out/ is kept in the turn's run folder (files/)")

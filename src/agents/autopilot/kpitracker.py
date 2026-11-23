@@ -147,7 +147,7 @@ DEFAULTS = {
     "mail_stages": [],                   # [] reads every mail, heir and obituary stage that is not off
     "not_callers": [],                   # F15: names left out of the caller tables (the owner's own logins)
     "ledger_streets": False,             # F4: the ledgers show record links only, never a street
-    "record_url": "https://app.reisift.io/records/%s",
+    "record_url": "https://app.reisift.io/records/properties/%s",   # /records/<uuid> is the list route (datasift_links)
     "tab_runs": {"Direct Mail": ["morning", "evening"], "Lists": ["morning"], "Costs": ["morning"]},
 }
 

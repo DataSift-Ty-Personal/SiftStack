@@ -4,14 +4,16 @@
 # No browser: every vendor the employees touch (DataSift, SiftMap, SmartSkip, Trestle, Tracerfy,
 # the county tax API, Claude) is plain HTTP. The Claude Agent SDK ships its own Claude Code binary,
 # so there is no Node install. ffmpeg is here for ffprobe, which measures call recordings so a
-# transcript can be checked against the real audio length.
+# transcript can be checked against the real audio length. curl is here for mortgage_model (MLS
+# offers), which fetches HMDA, Freddie Mac and the Census geocoder with it: the HMDA host answers
+# Python's own HTTP client 403, and the slim image ships without curl.
 FROM python:3.12-slim
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1
 
-RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg \
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg curl \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -29,6 +31,9 @@ COPY skills/ ./skills/
 COPY data/master_materials_locked_37914.json ./data/
 # The deal-odds model the Top 1,000 and the agency file rank on (src/deal_odds.py reads it here).
 COPY data/deal_odds_model.json ./data/
+# The county table MLS offers turns "Knox, TN" or a FIPS code into a market with
+# (mls_offers_api.resolve_market); without it every county ask is refused.
+COPY data/us_counties.csv ./data/
 
 # State lives on the volume; the container has no .env, every key is a Fly secret.
 #   AGENTS_WORKSPACES_DIR  each employee's runtime workspace, outside /app so nothing unrelated loads

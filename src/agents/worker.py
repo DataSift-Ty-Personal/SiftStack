@@ -74,6 +74,76 @@ def _route(task: dict, posts: list, emp, roster) -> None:
             task["slack_channel"] = channel
 
 
+def _boards() -> bool:
+    """The boards layout (AGENTS_SLACK_LAYOUT=boards, 2026-11-19): one message per department a day."""
+    return (getattr(config, "SLACK_LAYOUT", "") or "classic").strip().lower() == "boards"
+
+
+def _deliver(task: dict, plan: dict, emp, roster) -> None:
+    """Carry out one stage run's boards plan (sweep.board_plan): its section and its setup to-dos onto
+    today's board, the board drawn again only where something changed, then one post for each alert in
+    the department's channel and one for each new cause of breakage in #issues."""
+    from . import board
+    dept, stage = plan.get("dept") or "ops", plan.get("stage") or task.get("workflow") or ""
+    who = getattr(emp, "display_name", "") or ""
+    touched = set()
+    sec = plan.get("section")
+    if sec:
+        board.put(dept, stage, title=plan.get("title") or stage, who=who, head=sec.get("head") or "",
+                  lines=sec.get("lines") or [], entry=sec.get("entry") or "",
+                  rank=500 if plan.get("rank") is None else int(plan["rank"]))
+        touched.add(dept)
+    if plan.get("setup") is not None and board.set_setup(stage, plan.get("title") or stage, who, plan["setup"]):
+        touched.add("ops")
+    for d in sorted(touched):
+        board.flush(d)
+    for text in plan.get("replies") or []:
+        board.reply(dept, text, emp)
+    for a in plan.get("alerts") or []:
+        said = voice.once(stage, a["text"]) if a.get("rule") == "once" else voice.first_today(stage, a["text"])
+        if said:
+            channel = slack_app.channel_for(dept, emp, roster)
+            ts = slack_app.post(channel, voice.alert_text(stage, a["text"], task["id"]), employee=emp)
+            if ts and not task.get("slack_channel"):
+                store.set_slack(task["id"], channel, ts)
+                task["slack_channel"] = channel
+    for i in plan.get("issues") or []:
+        if voice.first_today("cause", i["key"]):        # one cause, once a business day, whichever stage hit it
+            slack_app.post(slack_app.channel_for("issues", emp, roster), voice.issue_text(stage, i["text"], task["id"]),
+                           employee=emp)
+
+
+def _brief(text: str, limit: int = 170) -> str:
+    """A long result's first two lines as one board line ("Deep prospect: 100 Example St (Research agent,
+    live). Owner living, two numbers to call")."""
+    rows = [voice.clean(x).strip() for x in str(text or "").splitlines()]
+    rows = [r for r in rows if r][:2]
+    t = ". ".join(r.rstrip(".") for r in rows)
+    return t if len(t) <= limit else t[:limit - 3].rstrip(" ,;:") + "..."
+
+
+def _board_result(task: dict, text: str, emp) -> bool:
+    """In the boards layout, the result of work a stage queued (a deep prospect the research queue handed
+    on, comps for an appointment) goes in full into its department's board thread, and one line onto the
+    board. A reply there with no name goes to the employee who did the work. False when this task is not
+    one of those, or the thread could not be reached (the caller then posts as before)."""
+    if not _boards() or task.get("slack_thread") or not str(task.get("source") or "").startswith("autopilot:"):
+        return False
+    from . import board, channels
+    from .autopilot import sweep
+    dept = channels.task_department(task, sweep.kind_and_block)
+    ts = board.reply(dept, text, emp)
+    if not ts:
+        return False
+    board.put(dept, "results:%s" % task["workflow"], title=voice.stage_name(task["workflow"]),
+              who=getattr(emp, "display_name", "") or "", entry=_brief(text), rank=600)
+    board.flush(dept)
+    today = board.today(dept)
+    if today.get("channel") and today.get("ts"):
+        store.set_slack(task["id"], today["channel"], today["ts"])
+    return True
+
+
 def _fail(task: dict, roster, err: str) -> None:
     store.finish(task["id"], "failed", error=err)
     emp = _employee(roster, task["agent"])
@@ -123,11 +193,15 @@ def _direct(task: dict, roster) -> dict | None:
     store.finish(task["id"], "done", result=result)
     if _routed(task):
         from .autopilot import sweep
-        _route(task, sweep.posts(task, result), _employee(roster, task["agent"]), roster)
+        if _boards():
+            _deliver(task, sweep.board_plan(task, result), _employee(roster, task["agent"]), roster)
+        else:
+            _route(task, sweep.posts(task, result), _employee(roster, task["agent"]), roster)
         return result
     text = render(task, result)
     if text:  # a quiet scheduled run renders nothing and posts nothing
-        _post(task, text, _employee(roster, task["agent"]), roster)
+        if not _board_result(task, text, _employee(roster, task["agent"])):
+            _post(task, text, _employee(roster, task["agent"]), roster)
     return result
 
 
@@ -182,10 +256,10 @@ def run_task(task: dict) -> dict | None:
     return _agent(task, roster)
 
 
-def loop(stop: threading.Event, idle_s: float = 3.0) -> None:
+def loop(stop: threading.Event, idle_s: float = 3.0, lane: str = "") -> None:
     store.init()
     while not stop.is_set():
-        task = store.claim_next()
+        task = store.claim_next(lane)
         if not task:
             stop.wait(idle_s)
             continue
@@ -195,8 +269,11 @@ def loop(stop: threading.Event, idle_s: float = 3.0) -> None:
         time.sleep(0.2)
 
 
-def start_thread() -> tuple[threading.Thread, threading.Event]:
+def start_thread(lane: str = "", name: str = "agents-worker") -> tuple[threading.Thread, threading.Event]:
+    """One worker thread on a claim lane (store.CLAIM_LANES). The brain runs two: the schedule's,
+    and the people's, so an ask never waits behind a stage run that is already going. One task per
+    thread at a time: two employee turns still never run at once."""
     stop = threading.Event()
-    t = threading.Thread(target=loop, args=(stop,), name="agents-worker", daemon=True)
+    t = threading.Thread(target=loop, args=(stop, 3.0, lane), name=name, daemon=True)
     t.start()
     return t, stop

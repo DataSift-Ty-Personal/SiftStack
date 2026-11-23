@@ -17,7 +17,9 @@ the records it asked for: scoping is where this API family has bitten before.
 
 Open Letter product ids, as the app labels them: 13 Postcard 4x6, 14 Postcard 6x9, 15 Postcard 6x11,
 5 Personal Letter, 1 Professional Letter (windowed), 3 Professional Letter, 9 Bi-fold, 11 Tri-fold,
-16 Real Penned Letter. Envelopes: 5 A6 White, 7 A6 Grey Herringbone, 1 Windowed, 3 Non-Windowed.
+16 Real Penned Letter, 18 Snap Pack (one pressure-sealed sheet, no envelope, First-Class; live in DataSift
+from 2026-11-20). Envelopes: 5 A6 White, 7 A6 Grey Herringbone, 1 Windowed, 3 Non-Windowed, 16 A6 Lavender
+and 17 A6 Navy (Real Penned). A Snap Pack or a postcard carries no envelope code.
 """
 from __future__ import annotations
 
@@ -27,10 +29,10 @@ from .mail import Vendor
 
 # prod-account's live SiftMail price table (GET /accounting/direct-mail-pricing/, business plan, read
 # 2026-11-11): 13 Postcard 4x6 $0.67, 14 6x9 $0.74, 15 6x11 $1.01, 5 Personal Letter $1.23,
-# 1 Professional Letter $1.10, 3 $1.22, 11 Tri-fold $1.18, 16 Real Penned $1.89. Used only to price a
-# plan and to hold the caps; a launch is checked against DataSift's own quote.
+# 1 Professional Letter $1.10, 3 $1.22, 11 Tri-fold $1.18, 16 Real Penned $1.89; 18 Snap Pack $1.15 from
+# 2026-11-20. Used only to price a plan and to hold the caps; a launch is checked against DataSift's own quote.
 SIFTMAIL_PRICES = {"handwritten_letter": 1.89, "family_postcard": 0.67, "soft_offer_check": 1.23,
-                   "check_letter": 1.10, "postcard": 0.67, "letter": 1.23}
+                   "check_letter": 1.10, "postcard": 0.67, "letter": 1.23, "snap_pack": 1.15}
 
 
 def _first(d: dict, *keys):

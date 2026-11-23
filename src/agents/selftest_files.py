@@ -160,7 +160,7 @@ def run(check, tmp) -> None:
         check("inbox/" in prompt and "01-kitchen.jpg" in prompt and "every photo" in prompt,
               "the employee is told where each photo is and to look at every one before answering")
         check(runner.budget_now(files=True) == min(max(config.AGENT_BUDGET_USD, config.FILE_TURN_USD),
-                                                   config.DAILY_CAP_USD - store.spent(day=store.today()))
+                                                   config.DAILY_CAP_USD - store.spent(day=store.today(), research=False))
               and runner.budget_now() <= config.AGENT_BUDGET_USD,
               "a turn carrying photos gets the photo cap; a plain turn keeps the plain cap")
 

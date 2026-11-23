@@ -37,6 +37,12 @@ import argparse
 import base64
 import concurrent.futures
 import json
+import sys as _sys
+from pathlib import Path as _Path
+
+if str(_Path(__file__).resolve().parents[1]) not in _sys.path:   # src/, for model_registry
+    _sys.path.insert(0, str(_Path(__file__).resolve().parents[1]))
+import model_registry  # noqa: E402
 import os
 import re
 import sys
@@ -49,7 +55,7 @@ ROOT = Path(__file__).resolve().parents[2]
 OUT_DIR = ROOT / "output" / "call_coaching"
 REC_DIR = OUT_DIR / "recordings"
 TR_DIR = OUT_DIR / "transcripts"
-MODEL = os.environ.get("CALL_COACHING_TRANSCRIBE_MODEL") or "google/gemini-2.5-flash"
+MODEL = model_registry.model("audio_to_text")
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 WORKERS = 4
 # The one network call to OpenRouter, replaceable: the brain's selftest puts a fake here so no

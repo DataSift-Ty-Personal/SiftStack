@@ -311,6 +311,7 @@ def run(check, tmp: Path) -> None:
         _caps(check, store, newhire, claude)
         _day_timing(check, store, newhire)
         _refusals(check, store, newhire, cc, claude)
+        _free_box(check, store, newhire, claude)
         _hygiene(check)
     finally:
         (cc.FETCH, cc.TRANSCRIBE, cc.CLASSIFY, cc.CLAUDE, newhire.POLICY, slack_app._http) = hooks
@@ -725,6 +726,35 @@ def _refusals(check, store, newhire, cc, claude) -> None:
     out = _sweep("nh_mo", pol, evening(30), task=_task(store, stage="nh_mo"))
     check(not TRANSCRIBED and not claude.calls and out.batch and ledger.spent(ledger.day(evening(30)), "nh_mo") == 0,
           "a call call coaching already graded on the same rubric is used as it is, and nothing is paid for it again")
+
+
+def _free_box(check, store, newhire, claude) -> None:
+    """On a box in AGENTS_MODE=free the week pays only when AGENTS_LIVE_STAGES names the stage (2026-11-19).
+    The stage grades through call coaching's grade_one on its own run's rule (ctx.live, config.stage_live)
+    and never through the workflow's run(), so the check that kept the workflow dry there is not on its path."""
+    from .autopilot import activity, ledger, policy
+    print("  a free box grades a new hire's day only when AGENTS_LIVE_STAGES names the stage")
+    nia = {"name": "Nia", "role": "caller", "start": "2026-12-01"}
+    activity._store([call_ev("n1", et(12, 1, 10, 0), "own-1", "Nia", 240, REC % "n1")])
+    TRANSCRIPTS["n1"] = T1
+    pol = policy.parse(playbook([nia], stage="nh_nia"), EMPLOYEES)
+    newhire.POLICY = pol
+    keep = (config.MODE, config.LIVE_STAGES)
+    try:
+        config.MODE, config.LIVE_STAGES = "free", frozenset()
+        TRANSCRIBED.clear()
+        claude.calls.clear()
+        out = _sweep("nh_nia", pol, evening(1, 12), task=_task(store, stage="nh_nia"))
+        check(not out.live and not TRANSCRIBED and not claude.calls and not ledger.batches(stage="nh_nia")
+              and out.head.startswith("Would grade up to 1 of Nia's calls"),
+              "on a free box a live new hire week that AGENTS_LIVE_STAGES does not name only plans: nothing paid or staged")
+        config.LIVE_STAGES = frozenset({"nh_nia"})
+        out = _sweep("nh_nia", pol, evening(1, 12), task=_task(store, stage="nh_nia"))
+        check(out.live and TRANSCRIBED == ["n1"] and len(claude.calls) == 1 and out.batch
+              and ledger.batch(out.batch)["kind"] == "newhire",
+              "named in AGENTS_LIVE_STAGES the same week grades the day on that box and stages the notes for the owner")
+    finally:
+        config.MODE, config.LIVE_STAGES = keep
 
 
 def _hygiene(check) -> None:

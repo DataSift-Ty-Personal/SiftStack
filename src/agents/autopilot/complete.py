@@ -57,6 +57,9 @@ TAG = "Incomplete Data"
 LIFE_TAG = "Life Estate"
 VERDICT = "complete_verdict"
 QUEUE_KEY = "autopilot:complete:trace_queue"
+MISS_KEY = "autopilot:complete:trace_misses"   # uuid -> nights its trace batch found it off the clean tab
+MISS_LIMIT = 3
+STILL_INCOMPLETE = "still incomplete after the name was completed (an address part is missing)"
 WALL = 9900
 DEFAULTS = {"per_run": 300, "read_cap": 400, "siftmap_cap": 150, "trusts": "hold", "life_estates": "complete",
             "trace": True, "min_batch": 20, "trace_cap": 1000, "names_rows": 30000, "names_max_age_days": 30,
@@ -415,6 +418,13 @@ def run_complete(ctx) -> None:
         try:
             rec = ctx.crm.record(u)
         except Exception as exc:  # noqa: BLE001
+            if getattr(exc, "code", 0) == 404 or "HTTP 404" in str(exc):
+                # Deleted or merged away in DataSift; the search index still lists it for a while.
+                # Remembered like a verdict, so it is not read and reported every night (two such
+                # records posted "could not read" to the issues channel on 2026-11-18).
+                ctx.out.tally["gone from DataSift (the search still lists it)"] += 1
+                ledger.set_fact(u, VERDICT, {"gone": True})
+                continue
             ctx.out.problem("could not read an incomplete record (%s)" % str(exc)[:100])
             continue
         hold = record_hold(rec)
@@ -540,16 +550,49 @@ def _trace(ctx, st: dict) -> str:
     batch = q[:int(st["trace_cap"])]
     if not ctx.live:
         return "Would skip trace %d completed record(s), scoped to exactly those." % len(batch)
-    est = ctx.crm.skiptrace_scoped(batch, dry_run=True)
-    n = est.get("number_of_records", est.get("count", est.get("expected_count"))) if isinstance(est, dict) else None
-    if n != len(batch):
-        ctx.out.problem("DataSift's dry run covers %r records, not the %d completed ones, so nothing was traced" % (n, len(batch)))
-        return ""
-    ctx.write("skip trace", ctx.crm.skiptrace_scoped, batch, False, [TAG])
-    store.kv_set(QUEUE_KEY, json.dumps(q[len(batch):]))
+    # The trace scope is the clean tab. A record can stay incomplete after its name is completed (a
+    # missing mailing street or ZIP, measured 10 of 100 on 2026-11-20) or reach the clean tab a minute
+    # late, and one such record made the dry run disagree and stopped the whole batch every night. So
+    # only the records the search counts clean go; the rest wait, and after MISS_LIMIT nights go to a person.
+    clean = {r.get("uuid") for r in ctx.crm.rows({"properties": batch, "property_type": "clean"}, cap=len(batch))}
+    ready = [u for u in batch if u in clean]
+    try:
+        misses = json.loads(store.kv_get(MISS_KEY) or "{}")
+    except ValueError:
+        misses = {}
+    dropped, holds = set(), []
     for u in batch:
+        if u in clean:
+            misses.pop(u, None)
+            continue
+        misses[u] = int(misses.get(u, 0)) + 1
+        if misses[u] >= MISS_LIMIT:
+            dropped.add(u)
+            misses.pop(u, None)
+            holds.append({"record": u, "owner": "", "why": STILL_INCOMPLETE})
+    store.kv_set(MISS_KEY, json.dumps(misses))
+    _write_holds(holds)
+    rest = [u for u in q if u not in dropped]
+    store.kv_set(QUEUE_KEY, json.dumps(rest))
+    note = ""
+    if len(batch) - len(ready):
+        note = " %d completed record(s) are not on the clean tab yet, so they wait%s." % (
+            len(batch) - len(ready), (" (%d still incomplete after %d nights went to a person)" % (len(dropped), MISS_LIMIT))
+            if dropped else "")
+    if len(ready) < int(st["min_batch"]):
+        return ("%d completed record(s) on the clean tab wait for a skip trace (it runs at %d).%s" % (
+            len(ready), int(st["min_batch"]), note)) if (ready or note) else ""
+    est = ctx.crm.skiptrace_scoped(ready, dry_run=True)
+    n = est.get("number_of_records", est.get("count", est.get("expected_count"))) if isinstance(est, dict) else None
+    if n != len(ready):
+        ctx.out.problem("DataSift's dry run covers %r records, not the %d completed ones, so nothing was traced" % (n, len(ready)))
+        return note.strip()
+    ctx.write("skip trace", ctx.crm.skiptrace_scoped, ready, False, [TAG])
+    sent = set(ready)
+    store.kv_set(QUEUE_KEY, json.dumps([u for u in rest if u not in sent]))
+    for u in ready:
         ledger.event(ctx.run_id, ctx.stage.id, u, "native_trace", {"scope": "completed"}, now=ctx.now, tz=ctx.policy.tz)
-    return "Asked DataSift to skip trace %d completed record(s), free on this plan." % len(batch)
+    return "Asked DataSift to skip trace %d completed record(s), free on this plan.%s" % (len(ready), note)
 
 
 def _write_holds(holds: list) -> None:

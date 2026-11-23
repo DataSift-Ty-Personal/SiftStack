@@ -8,7 +8,7 @@ published reference documents (developers.datasift.ai, DataSift API 2.0, read 20
   * status      POST /property/{uuid}/status/        {"status": ...}
   * tags        POST /property/{uuid}/add-tags/ and remove-tags/   {"tags": "<one title>"}, one per
                 call: a comma string would create one tag with the commas in its name
-  * notes       POST /property/{uuid}/add-notes/     {"notes": ...}
+  * notes       POST /property/{uuid}/message/       {"message": ...} (add-notes is gone, 2026-11-18)
   * phones      POST /owner/{uuid}/upsert-phones/    {"phones": [full phone objects]}
   * skip trace  POST /property/skip-trace/           {"query": ..., "dry_run" | "expected_count"}
 
@@ -47,6 +47,24 @@ _HINT = re.compile(r"available in ([0-9]+)", re.I)
 # An edit in DataSift takes effect within this window.
 PRESET_TTL_S = float(os.environ.get("AUTOPILOT_PRESET_TTL_S") or 600)
 _PRESET_CACHE: dict = {"at": 0.0, "index": None, "musts": {}}
+
+
+OWN_NOTES = ("[Deep prospecting v5]", "Possible death: ")     # notes we write, never read back as words
+
+
+def record_said(crm, uuid: str, rec: dict | None = None) -> str:
+    """What a record says, notes field plus message board (CRM.said), for any client: one without
+    a `said` method (a test double, an older client) falls back to the notes field alone."""
+    try:
+        said = getattr(crm, "said", None)
+    except Exception:  # noqa: BLE001  (a strict test double raises on any name it does not know)
+        said = None
+    if callable(said):
+        try:
+            return said(uuid, rec)
+        except Exception:  # noqa: BLE001
+            pass
+    return str((rec or {}).get("notes") or "")
 
 
 def rows_of(r) -> list:
@@ -353,11 +371,34 @@ class CRM:
         return self.call("/api/internal/owner/%s/" % owner_uuid, "PATCH", dict(fields)) or {}
 
     def message(self, uuid: str, text: str, pin: bool = False) -> str:
-        """A provenance note on the record, through the documented add-notes route. (The property
-        message board with pinning is a mirror the reference no longer lists; the documented board
-        is the owner's, keyed by an owner id the record does not expose.)"""
-        self.call("/api/internal/property/%s/add-notes/" % uuid, "POST", {"notes": text[:4000]})
-        return ""
+        """A provenance note on the record, on the property message board (the notes on the property
+        page): POST /property/{uuid}/message/ {"message": ...}, pinned through .../{msg}/pin/ when
+        asked. The add-notes route this used went away by 2026-11-18 (it answers DataSift's HTML Not
+        Found page and the published reference no longer lists it, while the property message routes
+        are documented again). Returns the message uuid, or "" when the answer carries none."""
+        got = self.call("/api/internal/property/%s/message/" % uuid, "POST", {"message": text[:4000]}) or {}
+        mu = str(got.get("uuid") or "") if isinstance(got, dict) else ""
+        if pin and mu:
+            self.call("/api/internal/property/%s/message/%s/pin/" % (uuid, mu), "POST", {})
+        return mu
+
+    def said(self, uuid: str, rec: dict | None = None) -> str:
+        """Everything written on a record: its old notes field plus its message board. Notes go on the
+        board since 2026-11-18, and DataSift does not copy them into the notes field (read back on
+        seven records on 2026-11-19), so any code that reads a record's notes for words or for a
+        read-back reads this instead. One extra request per record. A board that cannot be read
+        counts as empty."""
+        rec = rec if rec is not None else (self.record(uuid) or {})
+        said = [str((rec or {}).get("notes") or "")]
+        try:
+            got = self.call("/api/internal/property/%s/message/?limit=100" % uuid) or []
+            rows = got.get("results") if isinstance(got, dict) else got
+            said += [str(m.get("message") or "") for m in rows or [] if isinstance(m, dict)]
+        except Exception:  # noqa: BLE001
+            pass
+        # Our own research and death-screen notes are not the record's words: the screen would
+        # otherwise read its own "Possible death" note, or the research note's wording, as a notice.
+        return "\n".join(s for s in said if s and not any(mark in s for mark in OWN_NOTES))
 
     def skiptrace_all(self) -> dict:
         """DataSift's own skip trace over the WHOLE account. The reference requires select_all for an

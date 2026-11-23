@@ -131,7 +131,7 @@ walk_*.json
 *_boundary.json
 
 # Property photos and video from walkthroughs (141MB, and they show real homes).
-158 Old State/
+158 Example State/
 *.MOV
 *.jpg
 *.jpeg

@@ -553,8 +553,8 @@ def phase_trace(c: Client, commit: bool, limit: int, entities_only: bool):
                        sale.get("sale_price") or "?",
                        " CASH" if sale.get("is_cash_sale") else "",
                        how or "deed"))
-            c.internal("/api/internal/property/%s/add-notes/" % uuid,
-                       "POST", {"notes": note[:2000]})
+            c.internal("/api/internal/property/%s/message/" % uuid,
+                       "POST", {"message": note[:2000]})
             # Tags ACCUMULATE onto the record and the owner is left alone.
             # (Was an address-upsert on POST /property/; that Open API route
             # 403s for everyone since 2026-09-01, and we hold the uuid anyway.)

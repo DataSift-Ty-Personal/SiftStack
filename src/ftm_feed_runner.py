@@ -167,7 +167,11 @@ def unread_searches(spec: Spec, stats: dict) -> list[str]:
 # ── default wiring (every piece can be replaced in a test) ─────────────
 
 
-def _default_scrape(searches, since, seen, proxy_url, max_notices):
+def _default_scrape(searches, since, seen, proxy_url, max_notices, explicit=False):
+    """The real scrape. `since` is this feed's own last good day unless a person passed --since
+    (explicit): a stored day still searches the scraper's full daily window, because a notice
+    can reach the site days after its publication date and a window of only the last day or
+    two drops it for good (and on a weekend reads no rows at all)."""
     import config
     from scraper import scrape_all
 
@@ -175,6 +179,7 @@ def _default_scrape(searches, since, seen, proxy_url, max_notices):
     return asyncio.run(scrape_all(
         mode="daily", searches=objs, proxy_url=proxy_url,
         llm_api_key=config.ANTHROPIC_API_KEY or None, since_date_override=since,
+        since_explicit=explicit,
         max_notices=max_notices, seen_ids=seen, persist_state=False, raise_on_login_failure=True))
 
 
@@ -292,7 +297,11 @@ def run(args, stage: str, *, next_suffix=None, resolve_proxy=None, scrape=None, 
     from captcha_solver import NoticeAccessBlocked
     from scraper import LoginFailed, SubscriptionExpired
 
-    scrape = scrape or _default_scrape
+    if scrape is None:
+        explicit = bool(getattr(args, "since", None))
+
+        def scrape(searches_, since_, seen_, proxy_url_, max_notices_):
+            return _default_scrape(searches_, since_, seen_, proxy_url_, max_notices_, explicit=explicit)
     notices = None
     attempts = 1 if no_proxy else LOGIN_EGRESS_ATTEMPTS
     for attempt in range(1, attempts + 1):

@@ -42,6 +42,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from .. import config, store
+import model_registry
 from . import activity, budget, lanes, ledger
 from .stages import Ctx, addr
 
@@ -86,7 +87,7 @@ DEFAULTS = {
     "months_listed": 6,          # "listed in the last six months" (L14.115)
     "max_photos": 4,
     "photo_width": 768,          # the listing photo size asked for: about 500 input tokens a photo
-    "model": "claude-haiku-5-5",
+    "model": model_registry.model("reading_images"),
     "zillow_call_usd": None,     # None: AGENTS_ZILLOW_CALL_USD, the price quick_screen books, else $0.01
     "sync": True,
     "sync_calls": 60,            # log pages read to bring the status copy up to date first

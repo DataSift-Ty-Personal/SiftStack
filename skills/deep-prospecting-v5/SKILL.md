@@ -15,7 +15,7 @@ Deep prospecting is the process for identifying and verifying the heirs/decision
 > - **Cost.** For a 100-owner batch with 682 relatives: SmartSkip plus Tracerfy = **$15.90**. The Enformion equivalent = **$78.20**. That is **4.9x**.
 > - **Precision.** On the validation record, SmartSkip returned exactly 3 relatives and **all 3 appeared in the published obituary**. Enformion returned 50 (a capped blob) plus out-of-state numbers that looked like wrong-person bleed.
 >
-> What did NOT change: the research layer. SmartSkip is **wrong about death** (Gotcha 1). The obituary and web pass is now mandatory, not optional.
+> What did NOT change: the research layer. SmartSkip **misses deaths** (Gotcha 1). The obituary and web pass is now mandatory, not optional.
 
 ## The v5 stack
 
@@ -35,8 +35,12 @@ Typical single record: **about $0.24 all in.**
 
 ## THE GOTCHAS. Read these before running anything.
 
-### 1. SmartSkip's `Deceased` flag is unreliable, and there is NO date-of-death column
-Live proof: SmartSkip returned `Deceased = false` for a man who died 12/06/2025 and whose obituary was published by a funeral home. SmartSkip carries a `Deceased` boolean and **no DOD field at all**. Never let SmartSkip decide who is alive. **Date of death comes from the obituary and web pass, always.**
+### 1. SmartSkip's `Deceased` flag: trust a TRUE, never a FALSE. There is NO date-of-death column.
+**A `Deceased = true` flag is your starting point.** Treat that person as deceased and go straight to the heirs. Do not spend research re-proving the death, and never set the flag aside by guessing it sits on the wrong person. Live proof: a 90-year-old owner flagged deceased was written up as living because his wife's obituary, nine months earlier, named him as her surviving husband. A survivors list only shows the person was alive on the day that obituary ran. Six days after that write-up, his daughter texted that both parents had died with no will, while the record still told callers to ask for him. Confirm the death gently with the family on the first call.
+
+**A `Deceased = false` proves nothing.** SmartSkip returned `Deceased = false` for a man who died 12/06/2025 and whose obituary was published by a funeral home. SmartSkip misses deaths far more often than it invents them. Never let SmartSkip tell you someone is alive.
+
+SmartSkip carries the `Deceased` boolean and **no DOD field at all**, so **the date of death comes from the obituary and web pass, always.**
 
 ### 2. THE SPOUSE-OBITUARY TRAP. An obituary on the record does NOT mean the owner died.
 This is the highest-value check in the skill and it is easy to miss.

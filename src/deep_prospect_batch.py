@@ -392,7 +392,8 @@ def run_batch(args) -> int:
     if getattr(args, "order", ""):
         env["AGENTS_DP_ORDER"] = args.order
     if args.daily_cap:
-        env["AGENTS_DAILY_CAP_USD"] = str(args.daily_cap)
+        # The research counts against its own day cap since 2026-11-19, so the override sets that one too.
+        env["AGENTS_DAILY_CAP_USD"] = env["AGENTS_RESEARCH_DAILY_CAP_USD"] = str(args.daily_cap)
     py = str(ROOT / ".venv" / "Scripts" / "python.exe")
     py = py if Path(py).exists() else sys.executable
     print("%d record(s), %s, %s research engine, %d at a time, stop at $%.2f"
@@ -512,7 +513,9 @@ def main(argv=None) -> int:
                    help="trace_first is today's order; free_first reads the free facts and researches before any "
                         "paid trace (unset: whatever AGENTS_DP_ORDER says)")
     r.add_argument("--max-usd", type=float, default=25.0, help="stop starting records once the batch has spent this")
-    r.add_argument("--daily-cap", type=float, default=0.0, help="override AGENTS_DAILY_CAP_USD for this batch")
+    r.add_argument("--daily-cap", type=float, default=0.0,
+                   help="override the day caps for this batch (AGENTS_RESEARCH_DAILY_CAP_USD, which research counts "
+                        "against, and AGENTS_DAILY_CAP_USD)")
     r.add_argument("--redo", action="store_true", help="run records a batch already finished")
     r.add_argument("--force", action="store_true",
                    help="skip the last check (auction passed, sold, listed) before each record")

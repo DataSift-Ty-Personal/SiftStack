@@ -63,6 +63,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from .. import config, store
+import model_registry
 from . import activity, budget, lanes, ledger
 from .stages import addr
 
@@ -133,7 +134,7 @@ DEFAULTS = {
     "max_mb": 40,
     "audio_per_min": 0.003,         # transcription estimate; the bill OpenRouter returns is what is booked
     "extract_usd": 0.003,           # the notes estimate; the tokens Claude reports are what is booked
-    "model": "claude-haiku-5-5",
+    "model": model_registry.model("call_review"),
     "max_tokens": 3000,
     "max_tries": 3,                 # a recording that will not open, a reply with no answers
     "recording_grace_hours": 24,    # a recording that is gone this soon is tried again

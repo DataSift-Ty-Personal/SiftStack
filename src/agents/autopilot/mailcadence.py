@@ -78,9 +78,9 @@ auction sees about 7 new records a week. A piece whose group is under min_batch 
 waits, and the run says how many and for how long. One piece's records are never split into jobs
 under the floor. Lowering min_batch is Ty's call (SPEC 10.7).
 
-A PIECE THAT CANNOT BE ORDERED (the Snap Pack, product 18, has no price row in this account and is
-blocked in DataSift's builder) is refused with a plain problem; its fallback piece goes instead when
-it names one, otherwise its slot goes to the next piece.
+A PIECE THAT CANNOT BE ORDERED (its product has no row in this account's SiftMail price table: the
+Snap Pack, product 18, was one until DataSift priced it on 2026-11-20) is refused with a plain problem;
+its fallback piece goes instead when it names one, otherwise its slot goes to the next piece.
 
 STAGED, NEVER SENT. Live, the pieces become a batch of kind mail, the shape mail.release already
 releases; a person releases it. At release mail.deliver must ask at_release() below: a person may
@@ -121,11 +121,13 @@ FILED_FACT = "mailcadence:filed"      # a probate record's open date, where it w
 WAIT_FACT = "mailcadence:wait"        # since when a record's piece has waited on the SiftMail floor
 SALE_FACT = "mailcadence:sale"        # the sale date a record was last timed against (a later one is a postponement)
 
-# prod-account's SiftMail price table, read 2026-11-16 (SPEC section 1): business plan rows by mail type, which
-# is the ENVELOPE code for a letter and the product id for a card or self-mailer. A piece whose mail
-# type has no row cannot be ordered. The Snap Pack (product 18) has none: it is blocked in DataSift's
-# builder. When DataSift adds the row, list it under mail_type_prices in the stage's block.
-MAIL_TYPE_PRICES = {1: 1.10, 3: 1.22, 5: 1.23, 7: 1.23, 11: 1.18, 13: 0.67, 14: 0.74, 15: 1.01, 16: 1.89, 17: 1.89}
+# prod-account's SiftMail price table, read 2026-11-16 and again 2026-11-20 (SPEC section 1): business plan rows by
+# mail type, which is the ENVELOPE code for a letter and the product id for a card or self-mailer. A piece
+# whose mail type has no row cannot be ordered; a row DataSift adds later goes under mail_type_prices in the
+# stage's block until it is listed here. 18 is the Snap Pack (pressure-sealed, no envelope, First-Class),
+# priced on 2026-11-20 when DataSift took it out of the builder's disallowed products.
+MAIL_TYPE_PRICES = {1: 1.10, 3: 1.22, 5: 1.23, 7: 1.23, 11: 1.18, 13: 0.67, 14: 0.74, 15: 1.01, 16: 1.89, 17: 1.89,
+                    18: 1.15}
 
 AUCTION_CLOCK = {"anchor_field": "Foreclosure Date", "first": "on_entry", "gap_days": 6, "final_window_days": 10,
                  "final_gap_days": 3, "latest_in_home_days_before": 2, "lead_calendar_days": 7, "delivery_days": 3,
@@ -314,12 +316,11 @@ def usable(designs: list[Design], o: dict, mailer, out=None) -> dict:
         if fb is not None and orderable(fb):
             res[d.id] = fb
             if out is not None:
-                out.problem("Piece %s cannot be ordered: SiftMail has no price for mail type %s in this account (the Snap Pack, "
-                            "product 18, is blocked in DataSift's builder). Its fallback %s goes in its place." % (d.id, d.mail_type, fb.id))
+                out.problem("Piece %s cannot be ordered: SiftMail has no price for mail type %s in this account. Its fallback %s "
+                            "goes in its place." % (d.id, d.mail_type, fb.id))
         elif out is not None:
-            out.problem("Piece %s cannot be ordered: SiftMail has no price for mail type %s in this account (the Snap Pack, "
-                        "product 18, is blocked in DataSift's builder). It is left out and its slot goes to the next piece; "
-                        "once DataSift has the price row, add it under mail_type_prices." % (d.id, d.mail_type))
+            out.problem("Piece %s cannot be ordered: SiftMail has no price for mail type %s in this account. It is left out and its "
+                        "slot goes to the next piece; once DataSift has the price row, add it under mail_type_prices." % (d.id, d.mail_type))
     return res
 
 

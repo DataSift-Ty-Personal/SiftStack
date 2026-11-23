@@ -22,9 +22,9 @@ the walk says a reconfiguration was verified. A stated repair in the notes is ca
 workbook as operator notes; the walk JSON is where it changes a number.
 
 The house can be a DataSift record (uuid or street line) or, for rehab only, an address that is not
-one yet when the notes give its square footage. Comps are the quick screen's: SiftMap deeds first
-(free, capped), the Zillow pull when asked in Slack (paid, AGENTS_COMPS_DAILY_USD). Nothing is written
-to DataSift.
+one yet when the notes give its square footage. Comps are the quick screen's: SiftMap deeds (free,
+capped at AGENTS_UNDERWRITE_DEED_READS a run); the Zillow pull only when AGENTS_ZILLOW_COMPS=1 (off since
+2026-11-17). Nothing is written to DataSift.
 """
 from __future__ import annotations
 
@@ -123,7 +123,7 @@ def run(task: dict) -> dict:
         return out
     budget = Budget(task.get("id") or 0, float(setting("AGENTS_DEALS_RUN_CAP_USD", 2.0)))
     try:
-        got = comps_for(task, subj, area, budget, cap=int(setting("AGENTS_UNDERWRITE_DEED_READS", 25)))
+        got = comps_for(task, subj, area, budget, cap=int(setting("AGENTS_UNDERWRITE_DEED_READS", 40)))   # 25 with Zillow on
     except MissingKey as exc:
         out["why"] = str(exc)
         return out

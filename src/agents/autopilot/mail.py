@@ -43,7 +43,7 @@ LIST_WORDS = re.compile(
     r"behind on (your )?(payment|mortgage|taxes)|pre-?foreclosure|trustee sale|distress\w*|default)\b", re.I)
 PIECE_LABEL = {"handwritten_letter": "handwritten letter", "family_postcard": "family postcard",
                "soft_offer_check": "soft-offer check", "check_letter": "check letter", "postcard": "postcard",
-               "letter": "letter"}
+               "letter": "letter", "snap_pack": "Snap Pack"}
 
 
 def _clean_first(raw: str) -> str:
@@ -188,7 +188,7 @@ class Vendor:
 
     def __init__(self, prices: dict | None = None):
         self.prices = {"handwritten_letter": 3.00, "family_postcard": 0.75, "soft_offer_check": 1.25,
-                       "check_letter": 1.25, "postcard": 0.75, "letter": 1.25}
+                       "check_letter": 1.25, "postcard": 0.75, "letter": 1.25, "snap_pack": 1.25}
         self.prices.update(prices or {})
 
     def configured(self) -> bool:

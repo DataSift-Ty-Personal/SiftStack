@@ -195,6 +195,7 @@ photos:      photo_importer.py (OpenCV -> OCR -> llm_parser.py);  dropbox_watche
 | `deal_analyzer.py` | MAO, ROI and financing scenarios (defaults: hard money 12%, 2 points; conventional 7%; closing 2.5%) |
 | `lender_package.py`, `lender_docs.py` | The private lender workbook and letters from one spec (`deals/EXAMPLE_lender_spec.json`) |
 | `buyer_sweep.py`, `dispo_skiptrace.py`, `deal_package.py`, `deal_buyer_match.py`, `deal_buyer_dp.py`, `dispo_buyers.py` | Deed-verified buyers, three-source contact resolution, buyer workbooks, the dispo buyer registry |
+| `mls_offers.py`, `mls_offers_api.py`, `mortgage_model.py` | A cash and a creative offer on every active listing in a market, on the install's own Open API key ([docs/mls-offers.md](docs/mls-offers.md)); the skill `mls-offer-engine` carries copies (`tools/sync_mls_offers_skill.py`) |
 
 Rules the engines enforce:
 
@@ -209,6 +210,9 @@ Rules the engines enforce:
 - **A saved pack is a snapshot.** Recompute rehab from the walk (`build_rehab_matrix`) and let explicit CLI values (`--arv`, `--as-is`) win; `offer_sheet._hydrate` revives serialized comps.
 - **Workbooks are live formulas off defined names.** Verify by recalculating with the `formulas` package (assert the answer and zero formula errors), set column widths after `_polish`, and write to a `_PENDING_` name then swap, because Excel holds an exclusive lock on an open file.
 - **Degrade, never fail:** no CRM, no key, no buyer sweep each render a stated reason in place of the section.
+- **MLS offers read details only for records in the account.** SiftMap search runs in volume (the screen, investor sales by price band, rent by band); `GET /properties/detail/` runs only on listings already in the account, because acceptable use allows volume details on nothing else. Adding the rest is quoted first (`/properties/add-properties-by-query/quote/`) and happens only with `--add --commit`. Paced at 80 calls a minute.
+- **A modeled loan says where its rate came from.** "HMDA match" is the actual rate (one HMDA loan on year, tract, type, $10K band and term); otherwise Freddie Mac in the lock week plus the spread the market's own HMDA shows ("local spread"), or "Freddie Mac week" alone when no HMDA was loaded. Credit lines and construction loans stay out of the payment and the loan-to-list ratio. The HMDA host refuses Python's HTTP client, so `curl` fetches it.
+- **After an engine edit, run `python tools/sync_mls_offers_skill.py`**, then `python tools/build_skills.py --marketplace --build --manifest`; `tests/test_mls_offers_skill_sync.py` fails on any drift.
 
 ## Research: deep prospecting
 
@@ -330,7 +334,9 @@ The prospecting lifecycle run as stages (`src/agents/autopilot/`, playbook `team
 
 **Adding a stage kind:** one module in `src/agents/autopilot/` plus one line in `registry.py` (`kind: (module, run function, spend class, needs a preset, always reports)`). `policy.parse` runs the kind's `block_problems`, so a mistyped block is refused when the playbook loads.
 
-**Account tools** that change presets, filters or structure (`preset_patch.py`, `feeder_audit.py` / `feeder_apply.py`, `restructure.py`, `pipelines.py`, `top1000.py`) follow one pattern: `plan` reads, proves each filter by count and writes a change list; `apply` is dry unless BOTH `--commit` and the tool's env switch (`PRESET_PATCH_ALLOW`, `FEEDER_APPLY_ALLOW`, `RESTRUCTURE_ALLOW`, `PIPELINES_ALLOW`, `TOP1000_ALLOW`) are set, sends exactly what the plan recorded, and reads each object back. `feeder_apply.py`, `restructure.py` and `pipelines.py` keep an apply log that `undo --log <file>` replays backwards. Back up the presets before applying.
+**Account tools** that change presets, filters or structure (`preset_patch.py`, `feeder_audit.py` / `feeder_apply.py`, `restructure.py`, `pipelines.py`, `flows.py`, `top1000.py`) follow one pattern: `plan` reads, proves each filter by count and writes a change list; `apply` is dry unless BOTH `--commit` and the tool's env switch (`PRESET_PATCH_ALLOW`, `FEEDER_APPLY_ALLOW`, `RESTRUCTURE_ALLOW`, `PIPELINES_ALLOW`, `FLOWS_ALLOW`, `TOP1000_ALLOW`) are set, sends exactly what the plan recorded, and reads each object back. `feeder_apply.py`, `restructure.py`, `pipelines.py` and `flows.py` keep an apply log that `undo --log <file>` replays backwards. Back up the presets before applying.
+
+`flows.py` lays the presets out as three marketing flows, in folder order: foreclosures (first-to-market records on the Foreclosure list: texts from day 0, the call round, a mail piece every week until the sale), estates (courthouse probates and obituary records, each worked to the person who can sign), then the Top 1,000 and the agency. The first-to-market call and mail presets keep their titles, because every stage reads presets by title; they are narrowed with `all_lists` (which ANDs, so a filter's own `any_lists` either-or keeps its meaning) and new presets are built from their filters. A record on two flows' lists goes to the estate flow. The estate call presets read the probate notice tag OR a tag ("Obituary 30+ Days") that goes on an obituary record once its death is 30 days old: a preset's keys AND, and the app reads a date window only on the include side (a window under `must_not` works for the API and silently vanishes in the app), so the hold is a tag that `flows.py ready` and the obituary lane's `ready_tag` keep current.
 
 **Proofs** (`autopilot/proofs.py list | run --key-env STAGING_DATASIFT_KEY --record <uuid> [--commit]`) try each unproven write on ONE record of a staging account, read it back and restore it. The account is named by the env var holding its key; the production key is refused.
 
@@ -365,7 +371,8 @@ The prospecting lifecycle run as stages (`src/agents/autopilot/`, playbook `team
 | `mls_offers.py`, `mortgage_model.py` | A cash and a creative offer on every active listing, with the seller's mortgage modeled (sends nothing) |
 | `deal_odds.py`, `deal_odds_train.py` | The odds an investor buys a house within six months; `data/deal_odds_model.json` holds the weights the brain ranks on |
 | `opensearch_mcp.py` | Read-only client for an `opensearch` MCP server configured in `~/.claude.json` with writes disabled; the property-index tools (`deal_odds_train.py`, `builder_land.py`, `mls_offers.py`) need it, and a regular DataSift account does not have it |
-| `builder_land.py`, `land_market.py`, `vacant_land.py` | Builder buy boxes from deeds, land market sizing, buildable-lot screening |
+| `builder_land.py`, `land_market.py` | Builder buy boxes from deeds and land market sizing (they need the opensearch MCP; the team's `land_desk` renders a finished analysis) |
+| `vacant_land.py` | Buildable-lot screening for a county set up in `COUNTIES`: county GIS for the parcel, SiftMap search for the land rows, USGS 3DEP for slope, owners from records already in the account (no SiftMap detail pull: DataSift's acceptable use forbids them in volume), offers off real lot sales, a mail list and a pull list. In the team it is Atlas's `buildable_lots`: it runs in the background and posts the files; the pull list goes through `list_pull`, which quotes before adding anything |
 | `extract_market_finder.py`, `market_analyzer.py`, `county_market_report.py` | Market Finder pull and ZIP scoring workbook |
 | `phone_validator.py` | Trestle scoring into Dial First (81-100), Dial Second (61-80), Dial Third (41-60), Dial Fourth (21-40), Drop (0-20) |
 

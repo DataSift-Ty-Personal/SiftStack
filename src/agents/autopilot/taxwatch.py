@@ -89,6 +89,11 @@ PERSON_FILE = "for_a_person.csv"
 PERSON_COLS = ["record", "street", "city", "county", "why"]
 CENT = 0.005
 COUNTY_PAUSE_S = 0.5                # between county requests: a public site asked a burst by one client blocks it
+# One dropped request must not stop the county for the whole run: the stage runs weekly, so a single
+# timeout on 2026-11-22 left 7,398 records a week behind. A connection error, a timeout or a gateway
+# status (502, 503, 504) is asked again after these waits; any other status stops the county at once.
+ROLL_RETRY_WAITS_S = (10.0, 30.0)
+ROLL_RETRY_STATUS = {502, 503, 504}
 # A weekly slot can fire a few seconds earlier than last week's, which would read a 7-day recheck as 6 days
 # and 23 hours and skip the lead for a week. Half a day of slack keeps the cadence the schedule sets.
 GRACE = timedelta(hours=12)
@@ -291,13 +296,21 @@ def _fetch(url: str, pause: float = COUNTY_PAUSE_S):
     if pause:
         time.sleep(pause)
     req = urllib.request.Request(url, headers={"Accept": "application/json", "User-Agent": ROLL_AGENT})
-    try:
-        with urllib.request.urlopen(req, timeout=ROLL_TIMEOUT_S) as r:
-            body = r.read().decode("utf-8", "replace")
-    except urllib.error.HTTPError as exc:
-        if exc.code == 404:
-            return None
-        raise OSError("the county answered HTTP %s" % exc.code)
+    waits = list(ROLL_RETRY_WAITS_S)
+    while True:
+        try:
+            with urllib.request.urlopen(req, timeout=ROLL_TIMEOUT_S) as r:
+                body = r.read().decode("utf-8", "replace")
+            break
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                return None
+            if exc.code not in ROLL_RETRY_STATUS or not waits:
+                raise OSError("the county answered HTTP %s" % exc.code)
+        except OSError:                 # a dropped connection or a timeout (URLError, socket timeouts)
+            if not waits:
+                raise
+        time.sleep(waits.pop(0))
     try:
         data = json.loads(body or "{}")
     except ValueError:
@@ -342,11 +355,66 @@ def delinquent(bills: list) -> dict:
     return {"amount": round(amount, 2), "years": sorted(years)}
 
 
-def county_tax(street: str, county: str, fetch=None, pause: float = COUNTY_PAUSE_S) -> dict | None:
+_OWNER_NOISE = {"AND", "THE", "LLC", "INC", "CO", "TRUST", "TR", "TRS", "TRUSTEE", "ETAL", "ET", "AL", "JR", "SR",
+                "II", "III", "IV", "LIVING", "REVOCABLE", "FAMILY", "ESTATE", "EST", "OF", "LIFE", "MRS", "MR"}
+
+
+def owner_tokens(name) -> set:
+    """The words of an owner's name that can match the roll's owner (case and noise words aside)."""
+    return {w for w in re.findall(r"[A-Z]{2,}", str(name or "").upper()) if w not in _OWNER_NOISE}
+
+
+def lookup_owner(rec: dict) -> str:
+    """The record owner's name, as county_tax's owner hint."""
+    o = rec.get("owner") if isinstance(rec.get("owner"), dict) else {}
+    return " ".join(str(o.get(k) or "") for k in ("first_name", "last_name", "company")).strip()
+
+
+def call_lookup(lookup, street: str, county: str, owner: str = ""):
+    """county_tax with the owner hint when the lookup takes one (a test's fake may not)."""
+    try:
+        import inspect
+        takes = "owner" in inspect.signature(lookup).parameters
+    except (TypeError, ValueError):
+        takes = False
+    return lookup(street, county, owner=owner) if takes and owner else lookup(street, county)
+
+
+def _choose(answered: dict, owner: str) -> str:
+    """The account to read when more than one at the house answers, or "" when it cannot be told.
+
+    Measured 2026-11-18 on the seven houses the encumbrance check could not read, every one of them
+    because a second account sits at the same street: a business at the address (Knox's business
+    accounts answer the bill route with no bills), a parcel split off in a subdivision, a second parcel
+    owned by the same people. So: an account with no bills says nothing about the house; real-estate
+    bills outrank a business account's; when every account gives the same answer (nearly always
+    nothing delinquent) there is nothing to choose between; and when they differ, the account in the
+    record owner's name is the record's. Two that still differ are refused, never guessed."""
+    pool = {a: v for a, v in answered.items() if v[0]} or dict(answered)
+    real = {a for a, v in pool.items() if any(str(b.get("bill_type") or "").lower() == "real" for b in v[0] if isinstance(b, dict))}
+    if real and len(real) < len(pool):
+        pool = {a: pool[a] for a in real}
+    want = owner_tokens(owner)
+    mine = [a for a, v in pool.items() if want and want & owner_tokens(v[2])]
+    if len(pool) == 1:
+        return next(iter(pool))
+    answers = {(r["amount"], tuple(r["years"])) for r in (delinquent(v[0]) for v in pool.values())}
+    if len(answers) == 1:
+        if len(mine) == 1:
+            return mine[0]
+        return max(pool, key=lambda a: len(pool[a][0]))      # the same answer: report the main account
+    if len(mine) == 1:
+        return mine[0]
+    return ""
+
+
+def county_tax(street: str, county: str, fetch=None, pause: float = COUNTY_PAUSE_S, owner: str = "") -> dict | None:
     """Delinquent county tax at exactly this street: {"amount", "years", "account", "address"}, or None
     when the roll has no parcel at that house. NoRoll for a county with no roll read here, Unreadable when
-    the house is found but no account there answers with bills, Ambiguous when two or more do, OSError
-    when the roll does not answer (worth trying again later). The parcel row's amount_due is never read.
+    the house is found but no account there answers with bills, Ambiguous when two or more accounts give
+    different answers and none is in the owner's name (see _choose), OSError when the roll does not
+    answer (worth trying again later). The parcel row's amount_due is never read. `owner` is the record
+    owner's name, used only to choose between accounts at the same house.
 
     The same contract as the encumbrance stage's client, so one ctx.sources["county_tax"] serves both."""
     fetch = fetch or partial(_fetch, pause=pause)
@@ -373,11 +441,13 @@ def county_tax(street: str, county: str, fetch=None, pause: float = COUNTY_PAUSE
             if account not in tried:
                 tried[account] = _bills(fetch("%s/due/PPT/%s?detail_level=public" % (base, urllib.parse.quote(account))))
             if tried[account] is not None:
-                answered[account] = (tried[account], str(p.get("parcel_address") or ""))
-        if len(answered) > 1:
-            raise Ambiguous("%d county accounts at that house answer with bills" % len(answered))
+                answered[account] = (tried[account], str(p.get("parcel_address") or ""), str(p.get("owner") or ""))
         if answered:
-            account, (bills, roll_address) = next(iter(answered.items()))
+            account = _choose(answered, owner)
+            if not account:
+                raise Ambiguous("%d county accounts at that house give different answers and none is in the "
+                                "owner's name" % len(answered))
+            bills, roll_address, _ = answered[account]
             out = delinquent(bills)
             out.update(account=account, address=roll_address)
             return out
@@ -764,7 +834,7 @@ def _one(ctx: Ctx, st: dict, key: str, u: str, c: dict, state: dict) -> None:
         res["waiting on the county site"] += 1
         return
     try:
-        found = state["lookup"](street, county)
+        found = call_lookup(state["lookup"], street, county, lookup_owner(rec))
     except budget.BudgetExhausted:
         raise
     except Ambiguous as exc:

@@ -1258,7 +1258,7 @@ def phase_writeback(args) -> None:
 # ------------------------------------------------- call list export (Dial 1/2)
 
 LIST_ROWS_PATH = os.path.join(OUT, "list_rows.json")
-CRM_URL = "https://app.reisift.io/records/%s"     # d4d_call_list convention
+CRM_URL = "https://app.reisift.io/records/properties/%s"     # the record page (datasift_links)
 CALL_TIERS = ("Dial First", "Dial Second")
 PHONE_SLOTS = 6
 

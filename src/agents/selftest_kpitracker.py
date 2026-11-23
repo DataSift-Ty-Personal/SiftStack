@@ -267,16 +267,17 @@ PLAYBOOK = {
     },
 }
 # The two campaigns timed from a date (stage kind mailcadence), added to the playbook for their own check:
-# pieces keyed by id, one the SiftMail account cannot order (product 18), a SiftMail floor of 20.
+# pieces keyed by id, one the SiftMail account cannot order (a bi-fold, product 9), a SiftMail floor of 20.
 CADENCE = {
     "auction_mail": {"kind": "mailcadence", "owner": "ops", "mode": "plan", "schedule": "09:45 Mon-Fri", "lane": "ftm",
                      "anchor": "sale_date", "vendor": "siftmail", "internal_routes": True, "send": "staged",
                      "scope": {"lists": ["Foreclosure"], "tags": ["FTM"]}, "min_batch": 20,
                      "clock": {"fill": {"first": "A1", "middle": ["A2", "A3"], "last": ["A4"]}},
-                     "prices": {"handwritten_letter": 1.89, "options_letter": 1.23, "snap_pack": 1.28, "postcard": 0.74},
+                     "prices": {"handwritten_letter": 1.89, "options_letter": 1.23, "bifold": 1.30, "postcard": 0.74},
                      "pieces": [{"id": "A1", "piece": "handwritten_letter", "product_id": 16, "envelope": 16, "design": ""},
                                 {"id": "A2", "piece": "options_letter", "product_id": 5, "envelope": 5, "design": ""},
-                                {"id": "A3", "piece": "snap_pack", "product_id": 18, "design": "", "fallback": "A4"},
+                                # a bi-fold (product 9) has no row in the account's price table; the Snap Pack (18) has one since 2026-11-20
+                                {"id": "A3", "piece": "bifold", "product_id": 9, "design": "", "fallback": "A4"},
                                 {"id": "A4", "piece": "postcard", "product_id": 14, "design": ""}]},
     "probate_mail": {"kind": "mailcadence", "owner": "ops", "mode": "plan", "schedule": "10:15 Mon-Fri", "lane": "ftm",
                      "anchor": "filed_date", "vendor": "siftmail", "internal_routes": True, "send": "staged",
@@ -942,7 +943,7 @@ def _cadence_mail(check, kt, cat) -> None:
           "A3, a piece SiftMail cannot order, reads cannot be ordered yet, never a row of zeros: %r" % a3)
     pb1 = _row(dm, "Probate", "PB1")
     check(pb1[7:9] == [0, 1] and pb1[10] == 1.1, "PB1: mailed in October, so none this month and one to date: %r" % pb1)
-    check("Auction A3 (snap pack) cannot be ordered yet: SiftMail has no price for mail type 18 in this account, so its "
+    check("Auction A3 (bifold) cannot be ordered yet: SiftMail has no price for mail type 9 in this account, so its "
           "fallback A4 goes in its place." in dm["note"], "the piece that cannot be ordered is a note that names its fallback")
     check("Auction pieces waiting on SiftMail's floor of 20 records a campaign: A1 2 records, the longest since Mon Nov 16."
           in dm["note"] and "Probate pieces waiting on SiftMail's floor of 20 records a campaign: PB1 1 record, the longest "

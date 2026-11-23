@@ -34,6 +34,7 @@ from pathlib import Path
 import anthropic
 
 from .. import config
+import model_registry
 
 if str(config.ROOT / "src") not in sys.path:
     sys.path.insert(0, str(config.ROOT / "src"))
@@ -118,8 +119,12 @@ You are the Research agent for a real estate investing team. You do the research
 prospector does by hand, for ONE property, and you never invent anything.
 
 Hard rules, each one a real failure seen on live records:
-1. A death is a fact only with a published obituary, funeral home page or court record you
-   opened in this run. SmartSkip's deceased flag is advisory and often wrong in both directions.
+1. A death is a fact on any of these: an obituary, funeral home page or court record you opened
+   in this run; an obituary index row that matches on name and age; the skip trace (SmartSkip)
+   flagging the person deceased, which the team takes as its starting point and never re-proves
+   (see skip_trace_says in the brief); or the family telling the team, in a reply quoted in the
+   CRM board notes. SmartSkip saying NOT deceased proves nothing: it misses many deaths. The date
+   of death comes from an obituary, memorial or index row when one turns up.
 2. THE SPOUSE-OBITUARY TRAP: an obituary attached to a record does not mean the OWNER died. Match
    the decedent's name to the owner of record before treating the record as an heir case. A
    widow who still owns the house is a living owner to call gently, not an heir case.
@@ -178,6 +183,9 @@ def record_brief(run, row) -> dict:
         "crm_board_notes": [_trim(m.get("message"), 500) for m in (x.get("messages") or [])[:10]],
         "context": row.get("context"),
     }
+    said = skip_trace_says(run)
+    if said:
+        brief["skip_trace_says"] = said
     # Only where the chain built a free look (AGENTS_DP_ORDER=free_first). In today's order the
     # file does not exist and the brief is exactly what it was.
     look = run.load("free_look.json")
@@ -257,7 +265,12 @@ def free_look(x: dict, row: dict, *, lookup=None, deed: dict | None = None, toda
     today = today or _date.today()
     rec = (x or {}).get("record") or {}
     ow = rec.get("owner") or {}
-    notes = str(rec.get("notes") or "")
+    # Notes go on the message board since 2026-11-18 and DataSift does not copy them into the notes
+    # field, so the notice's words come from both. Our own research note is left out: it is not the
+    # notice, and its words ("deceased per skip trace") would read back as if the notice said them.
+    board = [str(m.get("message") or "") for m in (x or {}).get("messages") or [] if isinstance(m, dict)]
+    board = [b for b in board if b and "[Deep prospecting v5]" not in b and "Possible death: " not in b]
+    notes = "\n".join([str(rec.get("notes") or "")] + board).strip()
     out = {"built": today.isoformat(), "notice_text": notes[:NOTICE_CHARS],
            "notice_mentions": sorted({m.group(0).lower() for m in DEATH_WORDS.finditer(notes)}),
            "obituary_index": {"covered": "knox" in str((rec.get("address") or {}).get("county") or "").lower(),
@@ -426,7 +439,7 @@ def _structured(client, usage: Usage, schema: dict, prompt: str) -> dict:
            + json.dumps(schema, separators=(",", ":")))
     messages = [{"role": "user", "content": ask}]
     for attempt in range(2):
-        msg = _stream(client, usage, model=config.MODEL, max_tokens=32000, system=_system(),
+        msg = _stream(client, usage, model=model_registry.model("research_claude"), max_tokens=32000, system=_system(),
                       output_config={"effort": "medium"}, messages=messages)
         text = _text(msg)
         try:
@@ -462,7 +475,7 @@ def research(run, row) -> tuple[dict, float]:
     used = 0
     msg = None
     for _ in range(20):
-        msg = _stream(client, usage, model=config.MODEL, max_tokens=64000, system=_system(),
+        msg = _stream(client, usage, model=model_registry.model("research_claude"), max_tokens=64000, system=_system(),
                       tools=tools, output_config={"effort": "high"}, messages=messages)
         seen |= _urls_seen(msg.content)
         if msg.stop_reason == "pause_turn":
@@ -493,7 +506,7 @@ def research(run, row) -> tuple[dict, float]:
         "add nothing the memo does not say. `searches_run` lists the searches and pages used.\n\n"
         "URLS VISITED IN THIS RUN:\n%s\n\nMEMO:\n%s" % (slug, "\n".join(sorted(seen)), memo)))
     shaped["slug"] = slug
-    shaped = enforce_sources(shaped, seen)
+    shaped = guard_flagged_owners(enforce_sources(shaped, seen), run)
     run.save("research/%s.json" % slug, shaped)
     run.save("research/%s_urls.json" % slug, sorted(seen))
     return shaped, usage.usd
@@ -548,6 +561,127 @@ def enforce_sources(r: dict, seen: set[str]) -> dict:
         if p.get("source_url") and not visited(p["source_url"]):
             p["source_url"] = ""
     r["unresolved"] = unresolved
+    return r
+
+
+def flagged_people(run) -> list[dict]:
+    """Everyone the skip trace flags as deceased: {"name", "age", "title_holder"}. Title holders are
+    SmartSkip's subject rows for this record; everyone else came back as a relative."""
+    groups = run.load("people.json") or []
+    out, seen = [], set()
+    for p in (groups[0].get("people") if groups else None) or []:
+        if not p.get("ss_deceased"):
+            continue
+        name = " ".join(str(x) for x in (p.get("first"), p.get("middle"), p.get("last")) if x).strip()
+        key = _first_last(name)
+        if not name or key == ("", "") or key in seen:
+            continue
+        seen.add(key)
+        out.append({"name": name, "age": p.get("age"), "title_holder": bool(p.get("is_subject"))})
+    return out
+
+
+def flagged_owners(run) -> list[str]:
+    """The title holders the skip trace flags as deceased (SmartSkip's subject rows for this record)."""
+    return [p["name"] for p in flagged_people(run) if p["title_holder"]]
+
+
+def _first_last(name: str) -> tuple[str, str]:
+    toks = [t for t in re.split(r"[^a-z]+", (name or "").lower()) if t and t not in ("jr", "sr", "ii", "iii", "iv")]
+    return (toks[0], toks[-1]) if len(toks) >= 2 else ("", "")
+
+
+SKIP_TRACE_RULE = (
+    "The skip trace (SmartSkip) is the team's starting point on deaths. A person it flags as deceased IS deceased "
+    "for this research: do not spend searches proving or disproving the death, and never set the flag aside by "
+    "guessing it sits on the wrong person. Spend the searches on what the family needs: the obituary and date of "
+    "death if one turns up quickly, who inherits (a spouse, the children, and the children of any child who died "
+    "first), any will, trust or estate filing, and who is handling the house. A flag of NOT deceased proves "
+    "nothing: SmartSkip misses many deaths.")
+
+
+def skip_trace_says(run) -> dict:
+    """What the brief tells every researcher, the referee and the analysis about the skip trace's
+    deaths, before any search is spent. Empty when nobody is flagged."""
+    flagged = flagged_people(run)
+    if not flagged:
+        return {}
+    say = lambda p: "%s%s" % (p["name"], " (age %s)" % p["age"] if p.get("age") else "")  # noqa: E731
+    out = {"how_to_use": SKIP_TRACE_RULE}
+    holders = [say(p) for p in flagged if p["title_holder"]]
+    kin = [say(p) for p in flagged if not p["title_holder"]]
+    if holders:
+        out["title_holders_flagged_deceased"] = holders
+    if kin:
+        out["relatives_flagged_deceased"] = kin
+    return out
+
+
+def owner_of_record(run) -> str:
+    owner = ((run.load("records.json") or [{}])[0].get("record") or {}).get("owner") or {}
+    if (owner.get("company") or "").strip() and not (owner.get("first_name") or "").strip():
+        return ""
+    return " ".join(str(owner.get(k) or "").strip() for k in ("first_name", "last_name")).strip()
+
+
+def guard_flagged_owners(r: dict, run) -> dict:
+    """A title holder the skip trace flags as deceased ships as DECEASED (Ty, 2026-11-19: "we can always use
+    smart skip as a starting point and no need to recheck").
+
+    What it fixes (8026 Example Pike, 2026-11-19): a 90-year-old owner SmartSkip flagged deceased was
+    called Living on his wife's obituary from nine months earlier, which named him her surviving husband; on
+    the re-run the referee kept him Unknown, because the old standard took a death only from an obituary or a
+    court record, although SmartSkip, a Find a Grave memorial matching his birth date and his wife, and his
+    daughter's text all said he had died. The record told callers to ask for him and named no signer.
+
+    So the flag settles it in code, whatever the memos concluded: the person goes into the decedents with the
+    skip trace as the source, is never listed as living, and when the person is the owner of record the owner
+    status is Deceased. Anything the research found that pointed the other way stays visible as a red flag, and
+    the first call confirms the death gently with the family."""
+    flagged = [p for p in flagged_people(run) if p["title_holder"]]
+    if not flagged:
+        return r
+    owner_key = _first_last(owner_of_record(run))
+    research_said = str(r.get("owner_status") or "").strip()
+    flags = list(r.get("red_flags") or [])
+    # The old guard's note, on a file written before this rule, says the opposite of what follows.
+    flags = [f for f in flags if not str(f).startswith("VERIFY BEFORE CALLING: the skip trace flags")]
+    decedents = list(r.get("decedents") or [])
+    names = []
+    for f in flagged:
+        key = _first_last(f["name"])
+        names.append(f["name"])
+        was_living = False
+        for p in r.get("people") or []:
+            if _first_last(p.get("name") or "") != key:
+                continue
+            was_living = was_living or p.get("living") is True
+            p["living"] = False
+            rel = re.sub(r"^STATUS UNVERIFIED[^.]*\.\s*", "", p.get("relationship_to_owner") or "")
+            if not rel.startswith("DECEASED per the skip trace"):
+                p["relationship_to_owner"] = ("DECEASED per the skip trace (the team's starting point; confirm gently "
+                                              "with the family). " + rel).strip()
+        if not any(_first_last(d.get("name") or "") == key for d in decedents):
+            decedents.append({"name": f["name"], "relationship_to_owner": (
+                "Owner of record" if key == owner_key else "Co-owner on title"), "dob": "", "dod": "",
+                "age_at_death": int(f["age"]) if str(f.get("age") or "").isdigit() else 0,
+                "obituary_url": "", "funeral_home": "", "survivors_verbatim": "",
+                "source": "skip trace (SmartSkip deceased flag)"})
+        if was_living or (key == owner_key and research_said == "Living"):
+            note = ("The research called %s living, but the skip trace flags them deceased. The team treats the flag as "
+                    "settled: never ask for them, and confirm with the family on the first call." % f["name"])
+            if note not in flags:
+                flags.append(note)
+    r["decedents"] = decedents
+    if owner_key in {_first_last(n) for n in names}:
+        r["owner_status"] = "Deceased"
+        r["owner_status_confidence"] = ("the skip trace flags %s as deceased; the team takes that as settled "
+                                        "(research said %s)" % (", ".join(names), research_said or "nothing"))
+    note = ("DECEASED PER SKIP TRACE: SmartSkip flags %s as deceased. Never ask for them. Work the estate with the "
+            "family, and confirm the death gently on the first call." % ", ".join(names))
+    if note not in flags:
+        flags.insert(0, note)
+    r["red_flags"] = flags
     return r
 
 
@@ -613,11 +747,66 @@ def enforce_analysis(a: dict, run, research_json: dict) -> dict:
     seen = {_norm(u) for u in run.load("research/%s_urls.json" % a["slug"], []) or []}
     backed = bool(death.get("obituary_url")) and _norm(death["obituary_url"]) in seen
     same_person = len(_tokens(death.get("decedent")) & _tokens(owner)) >= 2
-    if death.get("owner_deceased") and not (death.get("confirmed") and backed and same_person):
+    flagged = flagged_people(run)
+    primary = owner_of_record(run)
+    primary_key = _first_last(primary)
+    owner_flagged = primary_key != ("", "") and any(
+        p["title_holder"] and _first_last(p["name"]) == primary_key for p in flagged)
+    if owner_flagged:
+        # The skip trace settles the owner's death (guard_flagged_owners), so the analysis says what the
+        # research says. An obituary the model found for this same person stays as the source; a death the
+        # model hung on someone else (a co-owner, whose name shares the title line) does not stand in for it.
+        if _first_last(death.get("decedent") or "") != primary_key:
+            death = {"decedent": primary, "dod": "", "obituary_url": ""}
+        death.update(owner_deceased=True, confirmed=True)
+        death["source"] = "obituary" if backed and death.get("obituary_url") else "skip trace (SmartSkip deceased flag)"
+        a["owner_status"] = "Deceased"
+        a["crm_fields"]["Owner Deceased"] = "yes"
+    elif death.get("owner_deceased") and not (death.get("confirmed") and backed and same_person):
         death["owner_deceased"] = False
         a.setdefault("open_items", []).append(
             "Owner NOT marked deceased: the death needs an obituary opened this run whose decedent "
             "matches the owner of record (%s)." % owner)
         a["crm_fields"].pop("Owner Deceased", None)
     a["death"] = death
+    return guard_flagged_people(a, run)
+
+
+def guard_flagged_people(a: dict, run) -> dict:
+    """Nobody the skip trace flags as deceased is presented as living, as a signer, or as someone to
+    trace. The skip trace is the team's starting point on deaths (Ty, 2026-11-19), for relatives as well
+    as owners: a flagged child cannot sign, and that child's own children may inherit the share."""
+    groups = run.load("people.json") or []
+    flagged_ss = {p.get("key") for p in (groups[0]["people"] if groups else []) if p.get("ss_deceased")}
+    flag_keys = {_first_last(p["name"]) for p in flagged_people(run)} - {("", "")}
+    if not flag_keys:
+        return a
+    dead = []
+    for p in a.get("people") or []:
+        if (p.get("ss_key") and p.get("ss_key") in flagged_ss) or _first_last(p.get("name") or "") in flag_keys:
+            p["living"] = "Deceased"
+            if p.get("role") in ("signer", "decision maker"):
+                p["role"] = "none"
+            p["trace"] = False
+            if p.get("name"):
+                dead.append(p["name"])
+    dead_keys = {_first_last(n) for n in dead} | flag_keys
+    keep, items = [], list(a.get("open_items") or [])
+    for m in a.get("must_sign") or []:
+        who = re.sub(r"\(.*?\)", " ", str(m.get("who") or ""))
+        parts = [x.strip() for x in re.split(r",|;|&|\band\b", who) if _first_last(x) != ("", "")]
+        if parts and all(_first_last(x) in dead_keys for x in parts):
+            items.append("%s was listed to sign, but the skip trace flags them deceased; removed from the signers."
+                         % (m.get("who") or "").strip())
+            continue
+        keep.append(m)
+    a["must_sign"], a["open_items"] = keep, items
+    if _first_last(a.get("decision_maker") or "") in dead_keys:
+        a["decision_maker"] = ""
+    flags = list(a.get("signing_flags") or [])
+    for n in dead:
+        note = "%s is flagged deceased by the skip trace and cannot sign; their children may inherit their share." % n
+        if _first_last(n) != _first_last(owner_of_record(run)) and note not in flags:
+            flags.append(note)
+    a["signing_flags"] = flags
     return a

@@ -197,6 +197,42 @@ async def smartercontact_hook(request: Request, background: BackgroundTasks) -> 
     return _ingest("smartercontact", sc_inbound.normalize(payload), background)
 
 
+def _load_ok(request: Request) -> bool:
+    """The brain's bearer token. In a header, never the path: the access log prints every path,
+    and a path secret there is a secret in the log (seen 2026-11-18 on the first test of this route)."""
+    import hmac
+
+    auth = request.headers.get("authorization", "")
+    token = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
+    return bool(config.SC_LOAD_SECRET and token) and hmac.compare_digest(token, config.SC_LOAD_SECRET)
+
+
+@app.post("/hooks/scload")
+async def scload_hook(request: Request) -> Any:
+    """A released text batch from the brain, loaded into Smarter Contact on a thread (sc_load.py).
+    Answers at once; the brain reads the result from the GET below. `?dry=1` plans only."""
+    if not _load_ok(request):
+        return Response(status_code=status.HTTP_404_NOT_FOUND)
+    try:
+        load = await request.json()
+    except Exception:  # noqa: BLE001
+        return Response(status_code=status.HTTP_400_BAD_REQUEST)
+    from . import sc_load
+
+    res = sc_load.accept(load, dry=request.query_params.get("dry") == "1")
+    return res if res.get("accepted") else Response(status_code=status.HTTP_400_BAD_REQUEST,
+                                                    content=str(res.get("why") or "refused"))
+
+
+@app.get("/hooks/scload/{batch}")
+def scload_status(batch: int, request: Request, dry: int = 0) -> Any:
+    if not _load_ok(request):
+        return Response(status_code=status.HTTP_404_NOT_FOUND)
+    from . import sc_load
+
+    return sc_load.dry_status(batch) if dry else sc_load.status(batch)
+
+
 @app.get("/health")
 def health() -> dict:
     """Liveness only. Deliberately does NOT touch the database.

@@ -312,7 +312,7 @@ def lead_from_record(det: dict, custom_fields: dict | None = None, messages: lis
         "address": address or addr.get("street") or "",
         "uuid": uuid,
         "dataflik_id": det.get("dataflik_id"),
-        "url": f"https://app.reisift.io/records/{uuid}",
+        "url": f"https://app.reisift.io/records/properties/{uuid}",   # the record page (datasift_links)
         "street": addr.get("street") or address,
         "city": addr.get("city") or city,
         "state": addr.get("state") or "",

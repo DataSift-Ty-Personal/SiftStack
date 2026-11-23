@@ -36,7 +36,9 @@ THE PERIOD (Tennessee law, read 2026-11-15; the period on each row comes first):
   * Never more than one year after the order, and the window starts at the ORDER, not the sale.
     The order (the decree confirming the sale) is a scanned image, so its date is a setting
     (confirmed). Without it the window is counted from the sale date, which ends it a few weeks
-    early: an owner is never told the right is open after it has closed.
+    early: an owner is never told the right is open after it has closed. When the Trustee posts the
+    decree and its sale has no date under `confirmed`, the run asks a person to read the decree and
+    set it (Tax Sale 25: sold Jun 2, 2026, the decree ENTERED Jun 30, 2026, read off its first page).
 
 BUYING THE RIGHT. The research note that "an investor can buy their interest and redeem it" runs
 into 67-5-2701(b)(2): a court denies a motion to redeem by a transferee who is speculating or
@@ -52,8 +54,10 @@ right; the instrument number and bidder number in the middle; and the address cu
 at the first street type ("Avenue A" and "Drive E" are real Knoxville streets, so a lone letter
 after the type stays with the street). Every reading is checked against the printed totals: rows
 that do not add up to the totals line are a loud problem, because a partial parse looks exactly
-like a sale with fewer parcels. A text file beside the PDF (the same name, .txt) is read first, so
-a person can fix a bad reading by hand.
+like a sale with fewer parcels. "Add up" allows the rounding of the printed cents (half a cent a
+row): the real Tax Sale 25 results read all 195 rows, bid and excess to the cent, and the minimum
+bid column 4 cents off its printed total, which a to-the-cent test called broken. A text file
+beside the PDF (the same name, .txt) is read first, so a person can fix a bad reading by hand.
 
 Records that are not in the account are listed for a person, never created. People only: a company
 or a trust is listed, not tagged. A lead belongs to the lead manager and is listed. Every record
@@ -63,8 +67,24 @@ When a window closes, the tag this stage put on comes off. Every write goes thro
 records its before-value for undo; what the stage learns (the parse, the window on a record) is
 kept in plan mode too, because the research queue ranks on it.
 
-The archive this reads is the one knox_tax_sale.capture writes (tax_sale_docs.json and a folder of
-PDFs named by content hash). The first-to-market box keeps it; this box reads a copy at archive_dir.
+THE ARCHIVE is the one knox_tax_sale.capture writes (tax_sale_docs.json and a folder of PDFs named
+by content hash). With `fetch: true` this box captures it itself at the start of every run, with
+that same code: the Trustee's page is a static site (Amazon S3 behind CloudFront) that answered a
+plain request from a workstation on 2026-11-20, every PDF included. The same day the first-to-market
+box's datacenter address got a 403 from knoxcounty.org (where two of the menu's forms live; those
+are no longer fetched), so the playbook sets `fetch_via: residential`: the plain request first, then
+Scrapfly's residential addresses for a request that was refused, as the first-to-market box fetches,
+and the run says how many went that way. A refusal Scrapfly cannot clear is a loud problem, with the
+last way round it (an archive captured on a workstation with `python src/knox_tax_sale.py
+--capture-only`, copied to archive_dir). The page also announces each sale's date, which the results
+PDF does not print, so the date the page gave a document's sale number is the sale date when no
+setting and no text says otherwise. Capturing is this box's own knowledge, so a plan run captures too.
+
+THE PERSON'S LIST. Every run writes every open window to one file, nearest deadline first, with the
+record link and what happens to it (tagged for research, listed for a person and why, held by the
+gate and why). The research queue takes the tagged ones (its scope_tags), and the gate holds a
+tagged owner out of every outreach channel (gate.research_tags) until a person takes the tag off,
+which is the lawyer's okay in practice.
 """
 from __future__ import annotations
 
@@ -101,12 +121,21 @@ DOCS = "tax_sale_docs.json"       # knox_tax_sale.DOCS: the archive's index, key
 ARCHIVE = "tax_sale_archive"      # the archive's folder of PDFs
 MIN_ROWS = 5                      # a results table with fewer rows than this was not really read
 COVERAGE = 0.95                   # rows must account for this share of the tax ids in the text
+LIST_FILE = "Tax_Sale_Redemption_Open_Windows.csv"
+FETCH_TIMEOUT_S = 60
+UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+      "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")
+DECREE_RX = re.compile(r"decree|confirm", re.I)
 
-# Tests swap these for fakes. In production: readings() and county_parcel() below.
+# Tests swap these for fakes. In production: readings(), county_parcel() and the getter below.
 READ = None
 lookup_parcel = None
+FETCH = None
 
 DEFAULTS = {
+    "fetch": False,                 # read the Trustee's page on this box at the start of every run (knox_tax_sale.capture)
+    "page": "",                     # default: KNOX_TAX_SALE_PAGE, else the Trustee's tax sale page
+    "fetch_via": "direct",          # direct | residential (Scrapfly, only when the plain request is refused)
     "archive_dir": "",              # default: the box's data folder, knox (the archive's own layout)
     "county": "Knox",
     "tag": TAG,
@@ -188,6 +217,8 @@ def options(st) -> dict:
     o["sale_dates"] = {str(k).strip().lower(): iso_day(v) for k, v in dict(o["sale_dates"] or {}).items()}
     o["government_bidders"] = [str(x) for x in _list(o["government_bidders"])]
     o["period_rule"] = str(o["period_rule"] or "shorter").strip().lower()
+    o["fetch_via"] = str(o["fetch_via"] or "direct").strip().lower()
+    o["page"] = str(o["page"] or "").strip()
     return o
 
 
@@ -244,6 +275,13 @@ def block_problems(st) -> list[str]:
         p.append("stage %s: max_records must be a whole number, 1 or more" % sid)
     if st.get("tag") is not None and not str(st.get("tag") or "").strip():
         p.append("stage %s: tag must name the tag the research queue reads" % sid)
+    if st.get("fetch") is not None and not isinstance(st.get("fetch"), bool):
+        p.append("stage %s: fetch must be true or false" % sid)
+    if st.get("fetch_via") is not None and str(st.get("fetch_via")).strip().lower() not in ("direct", "residential"):
+        p.append("stage %s: fetch_via must be direct or residential" % sid)
+    page = st.get("page")
+    if page and not re.match(r"^https?://\S+$", str(page).strip()):
+        p.append("stage %s: page must be the Trustee's page address, http(s)://..." % sid)
     return p
 
 
@@ -450,17 +488,27 @@ def parse_text(text: str) -> dict:
     return {"rows": rows, "totals": totals, "pins": len(pins)}
 
 
+def rounding_cents(n_rows: int) -> int:
+    """How far a column of printed cents may sit from its printed total: each row is rounded to the cent
+    (half a cent either way) and so is the total. The real Tax Sale 25 minimum bid column summed to 4
+    cents over its printed total on 195 rows that were all read. A missing or misread row is off by
+    dollars, never by this."""
+    return max(1, n_rows // 2 + 1)
+
+
 def check_totals(rows: list[dict], totals: list | None) -> str:
-    """confirmed (the rows add up to the printed totals, to the cent), broken (they do not),
-    unconfirmed (no totals line), or none (no rows). The excess total is the last figure printed on
-    the totals line; the bid and minimum totals precede it when they are printed."""
+    """confirmed (the rows add up to the printed totals, within the rounding of the printed cents),
+    broken (they do not), unconfirmed (no totals line), or none (no rows). The excess total is the
+    last figure printed on the totals line; the bid and minimum totals precede it when they are
+    printed."""
     if not rows:
         return "none"
     if not totals:
         return "unconfirmed"
     sums = [sum(int(round(r[k] * 100)) for r in rows) for k in ("bid", "minimum", "excess")]
     tot = [int(round(t * 100)) for t in totals][-3:]
-    return "confirmed" if all(a == b for a, b in zip(sums[3 - len(tot):], tot)) else "broken"
+    slack = rounding_cents(len(rows))
+    return "confirmed" if all(abs(a - b) <= slack for a, b in zip(sums[3 - len(tot):], tot)) else "broken"
 
 
 # ---------------------------------------------------------------------- the archive
@@ -533,7 +581,7 @@ def parse_doc(sha: str, doc: dict, arc: Path, now: datetime) -> dict:
     """One results document read into rows, with the reading that added up best."""
     base = {"sha": sha, "label": str(doc.get("label") or ""), "url": str(doc.get("url") or ""), "file": _file_name(doc),
             "first_seen": str(doc.get("first_seen") or ""), "parsed_at": now.isoformat(timespec="seconds"),
-            "expects_table": _expects_table(doc)}
+            "expects_table": _expects_table(doc), "page_sale": str(doc.get("sale_date_page") or "")}
     path = _pdf_path(doc, arc, sha)
     texts = (READ or readings)(path)
     if not texts:
@@ -563,6 +611,17 @@ def parse_doc(sha: str, doc: dict, arc: Path, now: datetime) -> dict:
                 pins=pins, doc_sale=doc_sale)
 
 
+def rejudge(s: dict) -> None:
+    """A document read on an earlier run, judged again by today's rules (the totals check, the coverage)
+    without opening the PDF: the parse is kept, the verdict on it is not."""
+    if s.get("status") not in ("table", "broken"):
+        return
+    rows, pins = s.get("rows") or [], int(s.get("pins") or 0)
+    s["check"] = check_totals(rows, s.get("totals"))
+    s["status"] = "broken" if s["check"] == "broken" or (pins and len({r.get("pin_key") for r in rows}) < COVERAGE * pins) \
+        else "table"
+
+
 def load_sale(sha: str) -> dict | None:
     f = state_dir() / ("sale_%s.json" % sha)
     try:
@@ -580,12 +639,106 @@ def save_sale(s: dict) -> None:
 
 
 def sale_day(s: dict, o: dict) -> str:
-    """The sale date: the setting for this file (or its label) first, then the document's own."""
+    """The sale date: the setting for this file (or its label) first, then the document's own, then the
+    date the Trustee's page announced for the document's sale number (knox_tax_sale.capture keeps it).
+    A results document comes after its sale, so a page date later than the day the document was first
+    archived belongs to some other sale and is not used."""
     for key in (s.get("file") or "", s.get("label") or ""):
         got = o["sale_dates"].get(key.strip().lower())
         if got:
             return got
-    return iso_day(s.get("doc_sale"))
+    own = iso_day(s.get("doc_sale"))
+    if own:
+        return own
+    page, seen = iso_day(s.get("page_sale")), iso_day(s.get("first_seen"))
+    return page if page and (not seen or page <= seen) else ""
+
+
+def sale_number(s: dict) -> str:
+    """The sale's number the document's link or file name gives ("Tax Sale 25"), or ''."""
+    try:
+        import knox_tax_sale
+        return knox_tax_sale.sale_number(s.get("label") or "", s.get("url") or s.get("file") or "")
+    except Exception:  # noqa: BLE001  (without the module a decree is tied to its sale by its own date only)
+        return ""
+
+
+def decrees(sales: list[dict], o: dict) -> list[tuple[str, dict]]:
+    """(sale date, document) for every decree confirming a sale in the archive. A scanned decree has no
+    text, so its sale is its own setting or page date, else the sale of the results table that names the
+    same sale number."""
+    by_number: dict[str, str] = {}
+    for s in sales:
+        n, day = sale_number(s), sale_day(s, o)
+        if n and day and s.get("status") in ("table", "broken"):
+            by_number.setdefault(n, day)
+    out = []
+    for s in sales:
+        if DECREE_RX.search("%s %s" % (s.get("label") or "", s.get("file") or "")):
+            out.append((sale_day(s, o) or by_number.get(sale_number(s), ""), s))
+    return out
+
+
+# ---------------------------------------------------------------------- reading the Trustee's page
+def direct_get(url: str, timeout: int = FETCH_TIMEOUT_S) -> bytes:
+    """One plain request, the way the Trustee's site answered a workstation on 2026-11-20. A refusal
+    raises with its status, and the run says so."""
+    import requests
+    r = requests.get(url, headers={"User-Agent": UA}, timeout=timeout)
+    r.raise_for_status()
+    return r.content
+
+
+def getter(o: dict, refused: list | None = None):
+    """How this box reads the page: the test's fake, the plain request, or the first-to-market box's own
+    fetch (knox_condemnations.http_get: the plain request first, then Scrapfly's residential addresses
+    when SCRAPFLY_KEY is set and the plain request was refused, about 25 credits a fetch). Every address
+    the plain request was refused at is added to `refused`, so the run can say what went the paid way."""
+    if FETCH is not None:
+        return FETCH
+    if o["fetch_via"] != "residential":
+        return direct_get
+    from knox_condemnations import http_get
+
+    def get(url: str, timeout: int = FETCH_TIMEOUT_S) -> bytes:
+        def direct(u):
+            try:
+                return direct_get(u, timeout)
+            except Exception:
+                if refused is not None:
+                    refused.append(u)
+                raise
+        return http_get(url, timeout, direct=direct)
+    return get
+
+
+def fetch_documents(ctx, o: dict, arc: Path, today: date) -> dict:
+    """Read the Trustee's tax sale page and archive every document it links that is new or due a recheck,
+    with knox_tax_sale.capture (the archive's own code). Every failure is a problem said with its reason:
+    a page that cannot be read otherwise looks exactly like "no sale was held"."""
+    refused: list = []
+    try:
+        import knox_tax_sale
+        Path(arc).mkdir(parents=True, exist_ok=True)
+        got = knox_tax_sale.capture(str(arc), http_get=getter(o, refused), today=today.isoformat(), page=o["page"] or None)
+    except Exception as exc:  # noqa: BLE001  (the run still reads whatever archive the box already holds)
+        got = {"new": [], "docs": {}, "problems": ["the capture stopped (%s: %s)" % (type(exc).__name__, str(exc)[:100])]}
+    for p in got.get("problems") or []:
+        ctx.out.problem("Knox tax sale documents: %s" % p)
+    if refused:
+        # A refusal the residential way could not clear is a problem above; this line only counts them.
+        ctx.out.line("The Trustee's site refused this box's plain request %d time%s; with SCRAPFLY_KEY set, %s tried "
+                     "again from a residential address (Scrapfly credits)." % (
+                         len(refused), "" if len(refused) == 1 else "s", "it was" if len(refused) == 1 else "each was"))
+    if any("page could not be read" in p for p in got.get("problems") or []):
+        ctx.out.line("If the Trustee's site refuses this box, fetch_via: residential sends a refused request through "
+                     "Scrapfly (SCRAPFLY_KEY on the box); otherwise capture on a workstation with python "
+                     "src/knox_tax_sale.py --capture-only --scratch <folder> and copy that folder to archive_dir.")
+    new = got.get("new") or []
+    if new:
+        ctx.out.line("%d new document%s on the Knox Trustee's tax sale page: %s" % (
+            len(new), "" if len(new) == 1 else "s", "; ".join(str(d.get("label") or "")[:60] for d in new[:4])))
+    return got
 
 
 # ---------------------------------------------------------------------- the record
@@ -811,6 +964,31 @@ def note_text(r: dict, sale: str, start: date, until: date, p: tuple, src: str, 
 
 
 # ---------------------------------------------------------------------- files for a person
+LIST_COLUMNS = ["Redeem by", "Days left", "Address", "Former owner (report)", "Parcel", "Sale date", "Window counted from",
+                "Period", "Winning bid", "Excess proceeds", "What happens", "DataSift record"]
+
+
+def write_list(path: Path, open_windows: list[dict], fate: dict) -> Path:
+    """Every open window in one file, nearest deadline first: the person's list. The money is shown only
+    when the document's rows added up to its printed totals (the note's own rule), and a record link only
+    where the row was matched to a record. Nothing here contacts anyone: the lawyer line is in each note."""
+    from datasift_links import record_url
+    with Path(path).open("w", encoding="utf-8", newline="") as fh:
+        out = csv.writer(fh)
+        out.writerow(LIST_COLUMNS)
+        for w in sorted(open_windows, key=lambda x: (x["until"], x["r"]["pin"])):
+            r, s = w["r"], w["s"]
+            what, uuid_ = fate.get((w["sale"], w["key"]), ("not looked at this run", ""))
+            money = s.get("check") == "confirmed"
+            frm = ("the order of %s" % nice(w["start"])) if w["order"] else "the sale date (the order's date is not set)"
+            out.writerow([w["until"].isoformat(), w["left"], (r.get("address") or "").title(),
+                          " ".join([(r.get("owner") or ""), (r.get("wrapped") or "")]).strip().title(), r["pin"], w["sale"],
+                          frm, "%s (%s)" % (period_words(w["p"]), "printed on the report" if w["src"] == "report" else "the statute"),
+                          ("%.2f" % float(r["bid"])) if money else "", ("%.2f" % float(r["excess"])) if money else "",
+                          what, record_url(uuid_)])
+    return Path(path)
+
+
 def files_dir(ctx) -> Path:
     """RUNS_DIR/<stage>-<task id>/files, which the brain serves by a signed link (Summary.run_dir)."""
     d = Path(config.RUNS_DIR) / ("%s-%s" % (ctx.stage.id, ctx.task_id or "cli")) / "files"
@@ -842,17 +1020,25 @@ def run_taxsale(ctx) -> None:
     today = ctx.now.astimezone(ZoneInfo(ctx.policy.tz)).date()
     stamp = ctx.now.isoformat(timespec="seconds")
     arc = archive_dir(o)
+    got = fetch_documents(ctx, o, arc, today) if o["fetch"] else None
     docs = load_docs(arc)
     if docs is None:
+        if got is not None:
+            # The capture's problems say why; the head must not read like a quiet day.
+            ctx.out.head = "No Knox tax sale results could be read: the Trustee's page was not captured on this box."
+            return
         ctx.out.head = "No Knox tax sale results have reached this box yet."
-        ctx.out.line("The first-to-market box archives them; this stage reads a copy of that archive (archive_dir).")
+        ctx.out.line("Set fetch: true to read the Trustee's page on this box, or copy an archive to archive_dir.")
         if ctx.live:
             ctx.out.problem("there is no Knox tax sale archive on this box, so no results were read (archive_dir)")
         return
     results = sorted(((sha, d) for sha, d in docs.items() if isinstance(d, dict) and d.get("kind") == "results"),
                      key=lambda kv: (str(kv[1].get("first_seen") or ""), kv[0]))
     if not results:
-        ctx.out.head = "No tax sale results have been posted yet; the Trustee posts them after each sale."
+        if got is not None and got.get("problems"):
+            ctx.out.head = "No Knox tax sale results were read this run: the Trustee's page was read, its documents were not."
+        else:
+            ctx.out.head = "No tax sale results have been posted yet; the Trustee posts them after each sale."
         return
 
     # ---- read every results document once (a reading that could not be made is tried again)
@@ -864,6 +1050,10 @@ def run_taxsale(ctx) -> None:
             save_sale(s)
             if s["status"] in ("table", "broken"):
                 fresh.append(sha)
+        else:
+            rejudge(s)
+        # The page's date for this document's sale can arrive after the document was read.
+        s["page_sale"] = str(d.get("sale_date_page") or s.get("page_sale") or "")
         sales.append(s)
     tables = [s for s in sales if s.get("status") in ("table", "broken")]
     for s in sales:
@@ -875,14 +1065,20 @@ def run_taxsale(ctx) -> None:
     if not tables and any(s.get("expects_table") and s.get("status") == "no_table" for s in sales):
         ctx.out.problem("the Knox tax sale results hold no readable table (a scanned image, or the layout changed); "
                         "a text copy beside the PDF is read instead")
+    for day, s in decrees(sales, o):
+        if day and day not in o["confirmed"]:
+            # The window runs from the order. The decree is a scanned image, so a person reads its date once.
+            ctx.out.problem("the Trustee posted the decree confirming the Knox tax sale of %s (%s); read the date the "
+                            "court entered it and set `confirmed` on the stage, so each window runs from the order"
+                            % (nice(day), s.get("file") or s.get("label")))
 
     # ---- every sold parcel once: a later document for the same sale replaces an earlier one
     rows: dict = {}
     for s in tables:
         sale = sale_day(s, o)
         if not sale:
-            ctx.out.problem("the sale date could not be read from the tax sale results %s; set it under sale_dates by "
-                            "that file name" % (s.get("file") or s.get("label")))
+            ctx.out.problem("the sale date could not be read from the tax sale results %s; set `sale_dates` on the "
+                            "stage by that file name" % (s.get("file") or s.get("label")))
             continue
         for r in s.get("rows") or []:
             rows[(sale, r["pin_key"])] = (s, r, sale)
@@ -917,10 +1113,12 @@ def run_taxsale(ctx) -> None:
 
     reads = rolls = 0
     to_tag, untagged, listed, held = [], [], [], Counter()
+    fate: dict = {}         # (sale, parcel) -> (what happens to an open window, the record it is on), for the list
     for w in work:
         s, r, key = w["s"], w["r"], w["key"]
         res = (s.setdefault("resolved", {})).get(key) or {}
         uuid_ = res.get("record") or ""
+        wkey = (w["sale"], key)
         if w["left"] < 0:
             # Closed: the right has ended. Only a tag this stage put on comes off.
             mark = ledger.fact(uuid_, MARK) if uuid_ else None
@@ -941,6 +1139,7 @@ def run_taxsale(ctx) -> None:
         cached = str(res.get("verdict") or "")
         if cached in ("tagged", "had the tag") and uuid_:
             ctx.out.tally["already tagged"] += 1
+            fate[wkey] = ("carries the %s tag: held from outreach, queued for research" % tag, uuid_)
             continue
         if cached and not _stale(res.get("verdict_at") or "", ctx.now, int(o["recheck_days"])) \
                 and (cached in ("listed", "held") or (cached == "tag" and not ctx.live)):
@@ -948,15 +1147,19 @@ def run_taxsale(ctx) -> None:
             # a record it is about to tag, because the gate runs when a record is picked up.
             if cached == "tag":
                 to_tag.append(dict(w, uuid=uuid_))
+                fate[wkey] = ("would be tagged %s for research" % tag, uuid_)
             elif cached == "listed":
                 listed.append(dict(w, why=res.get("why") or ""))
+                fate[wkey] = ("for a person: %s" % (res.get("why") or "listed"), uuid_)
             else:
                 held[res.get("why") or "held back"] += 1
+                fate[wkey] = (res.get("why") or "held back", uuid_)
             ctx.out.tally[{"tag": "would tag (checked earlier this week)", "listed": "listed for a person",
                            "held": "held back (checked earlier this week)"}[cached]] += 1
             continue
         if reads >= int(o["max_records"]):
             ctx.out.tally["left for the next run (%d records a run)" % int(o["max_records"])] += 1
+            fate[wkey] = ("not looked up yet: the next run reads it", uuid_)
             continue
         reads += 1
         why = ""
@@ -985,6 +1188,7 @@ def run_taxsale(ctx) -> None:
             res.update(verdict="listed", verdict_at=stamp, why=why or "not in the account")
             listed.append(dict(w, why=res["why"]))
             ctx.out.tally["listed: %s" % res["why"]] += 1
+            fate[wkey] = ("for a person: %s" % res["why"], "")
             continue
         rec = ctx.crm.record(uuid_)
         verdict, why = "tag", ""
@@ -1016,19 +1220,23 @@ def run_taxsale(ctx) -> None:
         if verdict == "listed":
             listed.append(dict(w, why=why, uuid=uuid_))
             ctx.out.tally["listed: %s" % why] += 1
+            fate[wkey] = ("for a person: %s" % why, uuid_)
             continue
         if verdict == "held":
             held[why] += 1
             ctx.out.tally[why] += 1
+            fate[wkey] = (why, uuid_)
             continue
         if tag.strip().lower() in {t.strip().lower() for t in tag_titles(rec)}:
             ctx.out.tally["already carries the %s tag" % tag] += 1
             res.update(verdict="tagged" if ledger.fact(uuid_, MARK) else "had the tag")
+            fate[wkey] = ("carries the %s tag: held from outreach, queued for research" % tag, uuid_)
             continue
         if not tag_ok:
             ctx.out.tally["waiting for the %s tag to exist" % tag] += 1
             if ctx.live:
                 ctx.out.problem("there is no %r tag in this account, so no former owner was tagged; create it first" % tag)
+            fate[wkey] = ("waiting for the %s tag to exist" % tag, uuid_)
             continue
         ctx.change(uuid_, "add_tags", [], [tag])
         ctx.write("tax sale redemption tag", ctx.crm.add_tags, uuid_, [tag], rec)
@@ -1041,6 +1249,7 @@ def run_taxsale(ctx) -> None:
                          now=ctx.now, tz=ctx.policy.tz)
             res["verdict"] = "tagged"
         to_tag.append(dict(w, uuid=uuid_, street=addr(rec)))
+        fate[wkey] = (("tagged %s for research" if ctx.live else "would be tagged %s for research") % tag, uuid_)
     for s in tables:
         save_sale(s)
 
@@ -1098,16 +1307,10 @@ def run_taxsale(ctx) -> None:
             ctx.out.problem("the research queue does not read the %s tag, so the former owners tagged here are not researched" % tag)
     if not tag_ok and to_tag:
         ctx.out.line("The %s tag does not exist in this account yet; create it before this stage goes live." % tag)
-    if listed:
-        f = files_dir(ctx) / "Tax_Sale_Redemption_For_A_Person.csv"
-        with f.open("w", encoding="utf-8", newline="") as fh:
-            out = csv.writer(fh)
-            out.writerow(["Parcel", "Address", "Former owner", "Sale date", "Redeem by", "Days left", "Why"])
-            for w in sorted(listed, key=lambda x: x["left"]):
-                out.writerow([w["r"]["pin"], (w["r"]["address"] or "").title(), (w["r"]["owner"] or "").title(), w["sale"],
-                              w["until"].isoformat(), w["left"], w.get("why") or ""])
-        ctx.out.line("%d former owner%s who can still redeem need a person: %s" % (
-            len(listed), "" if len(listed) == 1 else "s", _link(ctx, f)))
+    open_ = [w for w in work if w["left"] >= 0]
+    if open_:
+        f = write_list(files_dir(ctx) / LIST_FILE, open_, fate)
+        ctx.out.line("Every open window, nearest deadline first (%d need a person): %s" % (len(listed), _link(ctx, f)))
 
     opened = sum(i["open"] for i in by_sale.values())
     ctx.out.acted = len(to_tag) + len(untagged)

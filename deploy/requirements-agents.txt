@@ -27,3 +27,4 @@ beautifulsoup4>=4.12   # property_lookup (probate_property): parses the county p
 pypdfium2>=4.30        # returned_mail: splits a scanned PDF into page images
 pdfminer.six>=20221105 # tax_sale_results: reads the Trustee's results PDF one printed row at a time
 websockets>=15.0    # Slack Socket Mode (src/agents/slack_socket.py); the brain starts without it
+shapely>=2.0        # buildable_lots: vacant_land.py's parcel geometry (2.1.2 is what the tests ran on)

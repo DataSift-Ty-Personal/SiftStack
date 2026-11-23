@@ -222,10 +222,12 @@ SPECS: dict[str, dict] = {
         "description": (
             "What the team and the autopilot did, from the brain's own tables, with no DataSift request: each "
             "stage's last run and what it found (stages, or one stage), tasks by status and the recent failures, "
-            "batches staged for a person to release, and spend by workflow and by stage. Example, which stages "
-            "ran today and what they found: about=stages."),
+            "batches staged for a person to release, spend by workflow and by stage, and the first-to-market box's "
+            "own reports for the day (its run report stage by stage and its 8am digest by feed: about=ftm). "
+            "Examples: which stages ran today and what they found, about=stages; did first-to-market run and "
+            "what came in, about=ftm."),
         "inputs": {
-            "about": (_enum("stages", "stage", "tasks", "batches", "spend"), "What to report"),
+            "about": (_enum("stages", "stage", "tasks", "batches", "spend", "ftm"), "What to report"),
             "stage": (STR, "A stage id from the playbook, with about=stage"),
             "since": (STR, "Tasks and spend from this business day: " + DATE_HELP + " (default today)"),
             "only": (_enum("today", "problems", "all"), "Stages: those that ran today (default), those whose last "
@@ -796,7 +798,9 @@ def compact_row(r: dict) -> dict:
     """A search row as an employee may see it. Built field by field: the row also carries the owner's
     name, one phone number and that number's do-not-call flag, none of which may leave."""
     a = r.get("address") or {}
-    return {"uuid": r.get("uuid") or "", "street": a.get("street") or "", "city": a.get("city") or "",
+    from datasift_links import record_url
+    return {"uuid": r.get("uuid") or "", "link": record_url(r.get("uuid") or ""), "street": a.get("street") or "",
+            "city": a.get("city") or "",
             "zip": str(a.get("zip5") or a.get("postal_code") or "")[:5], "status": status_word(r.get("status")),
             "lists": r.get("list_count"), "tags": r.get("tag_count"), "has_phones": r.get("has_phones")}
 
@@ -851,6 +855,11 @@ def records_query(args: dict) -> dict:
         # last asked day is sent as the day after it.
         ask[key] = [d_lo.isoformat() if d_lo else floor, (d_hi + timedelta(days=1)).isoformat()]
         applied[key] = [d_lo.isoformat() if d_lo else "any", d_hi.isoformat()]
+        if key == "created":
+            limits.append("created counts only records that were new to the account in that window. A record that "
+                          "already existed and only gained a list, a tag or a notice is not in it (most first-to-market "
+                          "foreclosures land on records already in the account); team_query about=ftm has the "
+                          "first-to-market box's own counts.")
     for field, key in (("call_attempts", "predictivecall_attempts"), ("text_attempts", "sms_attempts")):
         if field in a:
             ask[key] = _counter(a[field], field)
@@ -1333,6 +1342,8 @@ def team_query(args: dict) -> dict:
             if lr.get("head"):
                 row["head"] = str(lr["head"])[:500]
             row["problem_lines"] = [str(p)[:240] for p in (lr.get("problems") or [])][:5]
+            # Every line the run listed (a Slack report shows six; this is where the rest are).
+            row["lines"] = [str(x)[:300] for x in (lr.get("lines") or [])]
             if st is not None:
                 row["summary"] = getattr(st, "summary", "")
                 row["schedule"] = getattr(st, "schedule", [])
@@ -1414,6 +1425,21 @@ def team_query(args: dict) -> dict:
                        for r in rows]
         out["by_status"] = totals
         limits.append("A staged batch waits for a person: release batch N in Slack, or cli.py autopilot release.")
+    elif about == "ftm":
+        from . import relay
+        items = relay.ftm_reports()
+        todays = [i for i in items if i.get("day") == today.isoformat()]
+        out["reported_today"] = bool(todays)
+        out["reports"] = [{"what": relay.FTM_LABEL.get(i.get("what"), i.get("what")), "at": _stamp(i.get("at")),
+                           "dry_run": bool(i.get("dry")), "text": str(i.get("text") or "")}
+                          for i in (todays or items[-3:])]
+        if not todays:
+            limits.append("No report from the first-to-market box has reached the team today yet: it runs at 6:30am, "
+                          "reports by about 7am, and its digest posts at 8am. The reports shown are the latest it sent.")
+        limits.append("These are the first-to-market box's own words. The pull runs on its own every day on that box; "
+                      "nobody runs it by hand. A dry run wrote nothing.")
+        limits.append("A records_query count of records created today counts only records new to the account. A notice "
+                      "that landed on a record already in the account is in these reports but not in that count.")
     else:
         since = _date(a.get("since") or "today", "since", today)
         rows = store.spend_detail(since_day=since.isoformat())

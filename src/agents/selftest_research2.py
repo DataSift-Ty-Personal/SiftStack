@@ -193,7 +193,12 @@ def env(**values):
 
 
 def _wipe(store) -> None:
-    """An empty autopilot memory, so a record id or a day's handoffs from an earlier check cannot leak in."""
+    """An empty autopilot memory, so a record id or a day's handoffs from an earlier check cannot leak in.
+    Only ever on a temp database: anything else is refused before a row is touched."""
+    import tempfile
+    db = str(Path(config.DB_PATH).resolve()).lower()
+    if not db.startswith(str(Path(tempfile.gettempdir()).resolve()).lower()):
+        raise RuntimeError("refusing to wipe %s: a selftest wipes only a database in the temp folder" % config.DB_PATH)
     with store._LOCK, store._db() as c:
         for table in ("ap_events", "ap_facts", "ap_changes", "ap_batches", "ap_owner_lane", "ap_log", "ap_phones"):
             c.execute("DELETE FROM " + table)
@@ -203,9 +208,13 @@ def _wipe(store) -> None:
 def run(check, tmp: Path) -> None:
     from . import store
     keep = (config.DATA_DIR, config.DAILY_CAP_USD, config.RUN_CAP_USD, config.RESEARCH_DAILY_CAP_USD, config.MODE,
-            config.RUNS_DIR)
+            config.RUNS_DIR, config.DB_PATH)
     saved_env = {k: os.environ.get(k) for k in ENGINE_ENV}
     saved_presets = dict(PRESETS)
+    # Its own database, always. Run on its own (outside selftest.main), a section that wipes the autopilot
+    # tables wipes the workstation's real agents.db: the re-open section did exactly that on 2026-11-19,
+    # and an earlier standalone run had left a probate fixture batch ("pn_due") in it.
+    config.DB_PATH = tmp / "selftest_research2.db"
     config.DATA_DIR, config.DAILY_CAP_USD, config.RUN_CAP_USD = tmp, 100000.0, 5.0
     config.RESEARCH_DAILY_CAP_USD = 100000.0
     config.MODE = "live"
@@ -224,7 +233,7 @@ def run(check, tmp: Path) -> None:
             if saved_env[k] is not None:
                 os.environ[k] = saved_env[k]
         (config.DATA_DIR, config.DAILY_CAP_USD, config.RUN_CAP_USD, config.RESEARCH_DAILY_CAP_USD, config.MODE,
-         config.RUNS_DIR) = keep
+         config.RUNS_DIR, config.DB_PATH) = keep
         config.MODE = "dry"
 
 

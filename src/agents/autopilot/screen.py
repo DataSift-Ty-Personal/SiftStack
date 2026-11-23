@@ -135,7 +135,9 @@ def run_screen(ctx: Ctx) -> None:
         else:
             first = " ".join(str(ow.get("first_name") or "").split()).split(" ")[0]
             last = " ".join(str(ow.get("last_name") or "").split())
-            notes = str(rec.get("notes") or "")
+            # The notice's words live on the message board since 2026-11-18, not in the notes field.
+            from .crm import record_said
+            notes = record_said(ctx.crm, u, rec)
             m = DEATH_WORDS.search(notes)
             county = str((rec.get("address") or {}).get("county") or "").lower()
             if m:
@@ -169,9 +171,21 @@ def run_screen(ctx: Ctx) -> None:
             ctx.out.line("%s: %s" % (addr(rec), result["detail"]))
             if on_hit == "tag" and tag.lower() not in tags:
                 ctx.change(u, "add_tags", None, [tag])
-                ctx.write("verify deceased", ctx.crm.add_tags, u, [tag], rec)
-                ctx.write("verify deceased note", ctx.crm.message, u,
-                          "Possible death: %s. Not confirmed. Hold all outreach until research says who died." % result["detail"])
+                # One record a write refuses (2026-11-18: add-notes answered 404 on one Top 1,000 record
+                # after the tag had landed) must not stop the screen. The tag is the hold: when it landed,
+                # a failed note is reported and the record counts as screened; when the tag itself failed,
+                # the record stays unscreened, so no text goes to it before it is screened again.
+                tagged = False
+                try:
+                    ctx.write("verify deceased", ctx.crm.add_tags, u, [tag], rec)
+                    tagged = True
+                    ctx.write("verify deceased note", ctx.crm.message, u,
+                              "Possible death: %s. Not confirmed. Hold all outreach until research says who died." % result["detail"])
+                except Exception as exc:  # noqa: BLE001
+                    ctx.out.problem("could not %s on %s (%s)" % ("write the research note" if tagged else "tag for research",
+                                                                  addr(rec) or u[:8], str(exc)[:90]))
+                    if not tagged:
+                        continue
                 if ctx.live:
                     ledger.event(ctx.run_id, st.id, u, "screen", {"hit": result["hit"]}, now=ctx.now, tz=ctx.policy.tz)
         # A screen result is knowledge about the record, not an action on it: it is remembered in
