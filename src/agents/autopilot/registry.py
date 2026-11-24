@@ -17,6 +17,7 @@ import importlib
 EXTRA: dict[str, tuple[str, str, str, bool, bool]] = {
     # data, lists and hygiene (plan phase 5)
     "laddercheck": ("laddercheck", "run_laddercheck", "free", False, True),
+    "dpdlive": ("dpdlive", "run_dpdlive", "free", False, True),
     "conventions": ("conventions", "run_conventions", "free", False, True),
     # text lane and outreach limits (plan 1.3, 1.4, 4.5, 4.6, 0.22)
     "scrub": ("scrub", "run_scrub", "free", True, False),

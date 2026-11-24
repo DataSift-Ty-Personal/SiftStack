@@ -24,6 +24,7 @@ Every agent on docs/agents.json (the public org chart), the team workflow that r
 | ftm_auction | autopilot stage | none: not on the org chart yet |
 | ftm_reactivate | autopilot stage | none: not on the org chart yet |
 | ladder_check | autopilot stage | none: not on the org chart yet |
+| dpd_live | autopilot stage | none: not on the org chart yet |
 | conventions_check | autopilot stage | none: not on the org chart yet |
 | hot_auction_tasks | autopilot stage | none: not on the org chart yet |
 | second_chances | autopilot stage | none: not on the org chart yet |

@@ -263,7 +263,7 @@ BOARD_RANK = {
     "curative": 48, "leadcheck": 50, "leadtasks": 55, "audit": 60, "limits": 65, "capture": 70, "goals": 75, "alarms": 80,
     # marketing
     "textlane": 10, "coldreplies": 15, "ftmpipeline": 20, "mail": 30, "mailcadence": 35, "obituary": 40,
-    "heirlane": 45, "agencyexport": 50, "coldtopup": 52, "agencyscore": 55, "top1000": 60, "contactrate": 70,
+    "heirlane": 45, "agencyexport": 50, "coldtopup": 52, "agencyscore": 55, "dpdlive": 58, "top1000": 60, "contactrate": 70,
     "coldstats": 72, "cadence": 75, "revoke": 80,
     # ops
     "digest": 5, "researchqueue": 20, "screen": 30, "skipscreen": 35, "score": 40, "native_trace": 45, "retrace": 50, "handoff": 55,

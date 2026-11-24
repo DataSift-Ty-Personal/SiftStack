@@ -202,6 +202,8 @@ Before the first deploy, put your saved searches in `SAVED_SEARCHES` in `src/con
 
 Every agent in the system is described once, in [`docs/agents.json`](docs/agents.json), and rendered two ways: [the interactive map](https://learn.datasift.ai/agent-org-chart) and [`docs/AGENT-MAP.md`](docs/AGENT-MAP.md). Each entry gives the trigger, the steps, where a person signs off, what comes out, and the trap it exists to avoid. Everything else in `src/` (comps, offer sheets, lender packages, the buyer registry) runs from the clone, and the map says what each piece does.
 
+To keep the County List Playbook's doors per deal current for your counties from your own API key, and see which lists to work first right now, run [`src/dpd_live.py`](docs/dpd-live.md).
+
 What broke in production, why, and what changed is in [`docs/lessons-learned.md`](docs/lessons-learned.md). The issue fixer (`tools/issue_fixer/`) writes a lesson with every fix it ships, and each fix is published to this repository as soon as it ships.
 
 ## Working on a skill

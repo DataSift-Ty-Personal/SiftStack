@@ -856,9 +856,31 @@ stages:
     max_lists: 10
     min_deals: 5                # fewer sales than this on a list and no rate is read from it
     skip_lists: ["Dispo - "]    # buyer lists hold every investor purchase by construction
+    # A list counts for a sale only when the house's own log shows it attached before the month it sold, and
+    # a house that came in on a buyer or sold list is left out (2026-11-24: of the 36 Knox and Blount
+    # purchases that were records before their sale month, 24 were investor-owned when they came in and all
+    # ten Blount July sales picked up their lists a month after they sold). One log read per such record.
+    max_log_reads: 400
     reached_preset: ""          # a saved preset that holds reached records; empty leaves reach unmeasured
     feeders: true               # compare the Priority 1 rungs with the SiftMap feeders
     layers: []                  # optional standing counts
+
+  # The best lists, live (Ty, 2026-11-24: "as real-time data as we possibly can using the sold property data
+  # and the API ... Anything that we can't pull in, we can just use the Doors per Deal data itself"). Each
+  # night: every rung's doors counted, the market's speed read off the sold-property search, and the
+  # first run of a month saves every rung's members so later sales are matched to the lists that held them
+  # before they sold (src/dpd_live.py). Writes DATA_DIR/dpd_live/, which top1000_refresh reads (live_lists).
+  dpd_live:
+    kind: dpdlive
+    owner: analysis
+    mode: "live"
+    schedule: "00:05"           # before the Top 1,000 on the 1st; the 1st's run saves the month's members (about 430 searches)
+    summary: The County List Playbook's ladder for Knox and Blount kept current every night from the sold-property data, with the best lists to work now.
+    counties:
+      - {fips: "47093", name: Knox, state: TN}
+      - {fips: "47009", name: Blount, state: TN}
+    max_searches: 1200          # SiftMap searches a run; a normal night uses about 70, the month's first about 500
+    top: 5                      # how many lists each county's line names
 
   conventions_check:
     kind: conventions
@@ -2303,6 +2325,10 @@ stages:
     # deals, against 10 for the old Dream score's core and 4 for the Priority 1 combinations.
     # score: dream100 puts the old points back for comparison.
     score: deal_odds
+    # Paired with the live Doors per Deal ladder (Ty, 2026-11-24: "pair that with the framework to use for the
+    # top 1,000"): each house's odds times how much better or worse its list sells now than the published
+    # ladder says (dpd_live). 1.0 for every house until a list has measured sales of its own.
+    live_lists: true
     min_room: 15000               # a house with under $15,000 of discount room has no room for a fee
     individuals_only: true        # people only, no companies or trusts (the owner's rule, 2026-11-14); the agency file inherits it
     # The pool: the agency track's own rows (owner and status of each house), plus the records that

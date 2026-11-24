@@ -155,6 +155,12 @@ DEFAULTS = {
     "recent_days": 30,
     "include_reads": 250,
     "include_recheck_days": 14,
+    # The live Doors per Deal ladder paired with the deal odds (Ty, 2026-11-24: "pair that with the framework
+    # to use for the top 1,000"): each house's odds times how much better or worse its list is selling now
+    # than the published ladder says (dpdlive.list_factors). The odds stay the ranking (on the 2026-05
+    # back-test they found 17 deals in their top 1,000 houses against 4 for the Priority 1 lists); a list's
+    # measured sales move its houses up or down. 1.0 for every house until a list has sales of its own.
+    "live_lists": False,
 }
 # A hold that closes only one channel keeps no always-in house out: mail only (it is still mailed) and
 # the call round being over (it stays in the lane). Every other reason the gate gives against assigning
@@ -208,7 +214,7 @@ def block_problems(st) -> list[str]:
     job = st.get("job")
     if job is not None and str(job).strip().lower() not in ("", "include"):
         out.append("stage %s: job is include (the daily county-feed pass) or left out (the monthly ranking)" % st.id)
-    for key in ("always_on_top", "always_people_only"):
+    for key in ("always_on_top", "always_people_only", "live_lists"):
         v = st.get(key)
         if v is not None and not isinstance(v, bool):
             out.append("stage %s: %s is true or false" % (st.id, key))
@@ -379,9 +385,10 @@ class _Asked:
 
 
 def _sweep_slice(ctx, asked: _Asked, county: dict, filters: dict, lo: int, hi: int, page: int, out: dict,
-                 stats: Counter) -> bool:
+                 stats: Counter, members: set | None = None) -> bool:
     """Every row in one county and one value band, bisected until a band holds fewer than SPLIT_AT
-    rows. False when the run's search allowance ran out first."""
+    rows. False when the run's search allowance ran out first. With `members`, only each row's record
+    id is kept there (a flag's members, see _rebuild_flags)."""
     from agents.autopilot import laddercheck
     f = dict(filters, value_min=int(lo), value_max=int(hi))
     offset, total, got = 0, None, 0
@@ -397,8 +404,8 @@ def _sweep_slice(ctx, asked: _Asked, county: dict, filters: dict, lo: int, hi: i
             if total > SPLIT_AT and hi - lo >= 2:
                 mid = (int(lo) + int(hi)) // 2
                 stats["value bands split"] += 1
-                return (_sweep_slice(ctx, asked, county, filters, lo, mid, page, out, stats)
-                        and _sweep_slice(ctx, asked, county, filters, mid + 1, hi, page, out, stats))
+                return (_sweep_slice(ctx, asked, county, filters, lo, mid, page, out, stats, members)
+                        and _sweep_slice(ctx, asked, county, filters, mid + 1, hi, page, out, stats, members))
             if total > SEARCH_WALL:
                 stats["rows past the search wall, not read"] += total - SEARCH_WALL
         rows = r.get("data") or []
@@ -407,12 +414,42 @@ def _sweep_slice(ctx, asked: _Asked, county: dict, filters: dict, lo: int, hi: i
             if not (row.get("saved") or u) or not u:
                 stats["rows not in the account"] += 1
                 continue
+            if members is not None:
+                members.add(u)
+                continue
+            if "distressors" in row:
+                stats["rows carrying flags"] += 1
             out[u] = slim_row(row)
         got += len(rows)
         offset += len(rows)        # the next page starts after the rows read, whatever size a page is
         if not rows or got >= min(total, SEARCH_WALL):
             stats["rows read"] += got
             return True
+
+
+def _rebuild_flags(ctx, asked: _Asked, o: dict, filters: dict, rows: dict, stats: Counter) -> bool:
+    """SiftMap stopped returning each search row's flags, presets and AI scores (rows read 2026-11-14
+    carried them; rows read from 2026-11-23 on do not, from the workstation and the brain alike), while
+    its filters still work. So the flags the deal-odds model reads (deal_odds.MODEL_FLAGS: vacancy and tax
+    delinquency carry most of its weight) are rebuilt by filter: one in-account search per flag, each
+    member's row marked. A month's sweep made without them would rank every house as flag-free, silently.
+    False when the run's search allowance ran out first."""
+    import deal_odds
+    for c in o["counties"]:
+        for key in deal_odds.MODEL_FLAGS:
+            got: set = set()
+            f = dict(filters, distressors_include=key, distressors_include_min_match=1)
+            if not _sweep_slice(ctx, asked, c, f, BUY_BOX["value_min"], BUY_BOX["value_max"], o["page_size"], {}, stats, got):
+                return False
+            for u in got & rows.keys():
+                fl = rows[u].setdefault("flags", [])
+                if key not in fl:
+                    fl.append(key)
+                    fl.sort()
+                stats["flags rebuilt by filter"] += 1
+    stats["flags searched by filter"] += len(deal_odds.MODEL_FLAGS) * len(o["counties"])
+    ctx.out.tally["house flags rebuilt by filter (SiftMap rows no longer carry them)"] = stats["flags rebuilt by filter"]
+    return True
 
 
 def sweep_exclusions(ctx) -> list[str]:
@@ -457,6 +494,10 @@ def month_sweep(ctx, o: dict) -> dict | None:
                 ctx.out.problem("the SiftMap sweep needs more than %d searches (raise max_searches); it starts again "
                                 "next run" % asked.cap)
                 return None
+        if rows and not stats["rows carrying flags"] and not _rebuild_flags(ctx, asked, o, filters, rows, stats):
+            ctx.out.problem("the SiftMap sweep needs more than %d searches to rebuild the houses' flags (raise "
+                            "max_searches); it starts again next run" % asked.cap)
+            return None
     except Exception as exc:  # noqa: BLE001  (a SiftMap error is said; the next run starts the sweep again)
         ctx.out.problem("the SiftMap search failed (%s); the sweep starts again next run" % str(exc)[:160])
         return None
@@ -656,7 +697,7 @@ def cached_pool(ctx, o: dict, path: Path, presets, tag_titles=(), list_titles=()
 # ---------------------------------------------------------------------- the score
 # The run's deal-odds model, set by scoring() and cleared by restore(), so candidates() and
 # owner_score() (shared with the agency export) see the same model without a new argument.
-_ODDS: dict = {"model": None, "min_room": 0.0}
+_ODDS: dict = {"model": None, "min_room": 0.0, "live": {}}
 # The run's owner rules, set by scoring() for either score and reset by restore().
 _RULES: dict = {"individuals_only": True}
 
@@ -684,14 +725,28 @@ def scoring(o: dict):
             raise RuntimeError("the deal-odds model could not be read (%s); fit it with python src/deal_odds_train.py, "
                                "or set score: dream100 on the stage" % str(exc)[:120])
         _ODDS["min_room"] = float(o.get("min_room") if o.get("min_room") is not None else DEFAULTS["min_room"])
+        if o.get("live_lists"):
+            from agents.autopilot import dpdlive
+            _ODDS["live"] = dpdlive.list_factors([str(c.get("fips") or "") for c in o.get("counties") or []])
     return build
 
 
 def restore(build) -> None:
     import dream100
     dream100.apply_weights(dream100.DEFAULT_WEIGHTS, build)
-    _ODDS["model"], _ODDS["min_room"] = None, 0.0
+    _ODDS["model"], _ODDS["min_room"], _ODDS["live"] = None, 0.0, {}
     _RULES["individuals_only"] = True
+
+
+def live_odds(odds: float, s: dict | None, r: dict) -> float:
+    """A house's odds times its list's live factor (the live_lists option), the list and factor kept on the
+    house for the ranking file. Never above 0.99: a factor moves a chance, it does not make one certain."""
+    got = (_ODDS.get("live") or {}).get(str((s or {}).get("id") or ""))
+    if not got:
+        return odds
+    factor, label = got
+    r["list_now"] = {"list": label, "factor": factor}
+    return min(0.99, float(odds) * float(factor))
 
 
 def odds_reach(model: dict, word: str) -> float:
@@ -914,7 +969,7 @@ def candidates(ctx, build, sift: dict, pool: dict, target: str, d4d: dict, skip=
             import deal_odds
             facts = deal_odds.with_bands(deal_odds.facts_from_search_row(s), p.get("ten"), p.get("yb"))
             r["facts"] = facts
-            r["odds"] = deal_odds.prob(model, facts)
+            r["odds"] = live_odds(deal_odds.prob(model, facts), s, r)
         r["holds"] = bool(p.get("holds"))
         r["city"] = p.get("city") or ""
         owners.setdefault(key, {"houses": []})["houses"].append(r)
@@ -971,7 +1026,7 @@ def always_house(ctx, build, u: str, s: dict | None, rec: dict, p: dict, d4d: di
         import deal_odds
         facts = deal_odds.with_bands(deal_odds.facts_from_search_row(s), p.get("ten"), p.get("yb"))
         r["facts"] = deal_odds.facts_from_record(rec, facts, today=ctx.now.date())
-        r["odds"] = deal_odds.prob(model, r["facts"])
+        r["odds"] = live_odds(deal_odds.prob(model, r["facts"]), s, r)
     r["holds"], r["city"], r["always"] = bool(p.get("holds")), p.get("city") or "", True
     return r
 
@@ -1442,7 +1497,7 @@ def _work(ctx, o, build, tag, sift, pool, state, spath) -> None:
             for h in houses:
                 if h["uuid"] == rec.get("uuid") and h.get("facts") is not None:
                     h["facts"] = deal_odds.facts_from_record(rec, h["facts"], today=ctx.now.date())
-                    h["odds"] = deal_odds.prob(model, h["facts"])
+                    h["odds"] = live_odds(deal_odds.prob(model, h["facts"]), sift.get(h["uuid"]), h)
         pts, words = reach_of(build, rec)
         final[key] = {"houses": houses, "score": owner_score(build, houses, pts, words), "reach": words}
     # The always-in owners take their slots first; the ranking fills the rest.

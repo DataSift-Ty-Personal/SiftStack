@@ -42,7 +42,7 @@ def price() -> tuple[float, float]:
     return PRICES.get(config.SLACK_VOICE_MODEL, DEFAULT_PRICE)
 
 NAMES = {
-    "autopilot_digest": "Morning update", "ftm_pipeline": "County board", "top1000_refresh": "Top 1,000",
+    "autopilot_digest": "Morning update", "ftm_pipeline": "County board", "top1000_refresh": "Top 1,000", "dpd_live": "Best lists",
     "agency_export": "Agency file", "ftm_death_screen": "County death check", "top1000_death_screen": "Top 1,000 death check",
     "ftm_skip_screen": "County SmartSkip check", "curative_pipeline": "Curative title board",
     "estate_owner_swap": "Estate owner swap",

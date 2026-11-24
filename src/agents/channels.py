@@ -39,7 +39,7 @@ KIND_DEPARTMENT = {
     "agencyexport": "marketing", "agencyscore": "marketing", "dialexport": "marketing",
     "obituary": "marketing", "heirlane": "marketing", "top1000": "marketing", "suppression": "marketing",
     "cadence": "marketing", "contactrate": "marketing", "revoke": "marketing", "lanes": "marketing",
-    "ftmpipeline": "marketing",
+    "ftmpipeline": "marketing", "dpdlive": "marketing",
     "coldreplies": "marketing", "coldtopup": "marketing", "coldhealth": "marketing", "coldstats": "marketing",
     # ops: county data, research, scoring, the account's own upkeep
     "screen": "ops", "score": "ops", "native_trace": "ops", "retrace": "ops", "handoff": "ops",

@@ -11,6 +11,20 @@ broke.
 
 <!-- new lessons go here -->
 
+## 2026-11-24: Search results stopped carrying each house's flags
+
+- **What happened:** SiftMap's property search began returning rows without their distress flags, presets and AI scores, though the published contract still shows them. Counts and filters kept working, so nothing failed.
+- **Why:** A change on the data side between November 14 and 23. A ranking that read flags off the rows would have treated every house as having none: the Top 1,000's December sweep would have lost vacancy and tax delinquency, the two signals its model weighs most.
+- **The fix:** When the rows come back without flags, the sweep searches for each flag the model reads and marks its members (`src/agents/autopilot/top1000.py`). Check that a field is present before trusting an empty one.
+- **Found by:** building the live Doors per Deal ladder, fixed by hand.
+
+## 2026-11-24: A list got credit for houses that sold before they joined it
+
+- **What happened:** The monthly ladder check was about to report doors per deal for lists from houses that were added to the account, or to the list, after an investor bought them.
+- **Why:** Of 927 investor purchases in six months, 890 are records now but only 36 were before the month they sold. 24 of those came in already owned by an investor, and a later list pull attached lists to houses that had sold the month before.
+- **The fix:** A list counts for a sale only when the house's own history shows it attached before the month of the sale, and houses that came in on a buyer or sold list are left out (`src/agents/autopilot/laddercheck.py`).
+- **Found by:** checking the idea against live data before building on it, fixed by hand.
+
 ## 2026-11-23: A card move read as a failure because the account moved it again
 
 - **What happened:** The lead clock moved a card to its next column and then reported that the card did not move.

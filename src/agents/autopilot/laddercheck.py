@@ -260,9 +260,54 @@ def list_index(crm) -> dict:
     return out
 
 
-def read_deals(rows: list, kept: set, lists: dict, skip: tuple) -> dict:
-    """What the kept months' deals say about the account's lists."""
-    total = in_before = in_late = 0
+# A house that came into the account because an investor already owned it (the buyer pulls, the sold
+# backlog) is not a lead that sold: measured 2026-11-24, 24 of the 36 Knox and Blount purchases that were
+# records before their sale month sat on a Dispo or Recently Sold list.
+BUYER_LISTS = ("Dispo - ", "Recently Sold")
+
+
+def attach_dates(crm, rows: list, kept: set, lists: dict, cap: int = 400) -> dict:
+    """record uuid -> {list uuid: the first day its own log shows the list attached}, for every kept sale of
+    a record that was in the account before its month. A list counts for a sale only when it was on the
+    house before that month began (measured 2026-11-24: all ten Blount July sales that were records
+    earlier picked up their lists in the August pulls, a month after they sold), and a list DataSift
+    attaches by itself leaves no entry, so it never counts. None for a record whose log could not be read."""
+    by_title = {}
+    for u, info in lists.items():
+        by_title.setdefault(str(info.get("title") or "").strip().lower(), u)
+    out: dict = {}
+    for label, first, row in rows:
+        u = row.get("saved_uuid")
+        saved = _when(row.get("saved_date"))
+        if label not in kept or not u or saved is None or saved >= first or u in out:
+            continue
+        if len(out) >= cap:
+            break
+        try:
+            logs = crm.record_logs(u, ["property.lists.added"])
+        except Exception as exc:  # noqa: BLE001  (one unreadable log costs that record its lists, said in the tally)
+            log.info("the log of %s could not be read: %s", u, str(exc)[:100])
+            out[u] = None
+            continue
+        got: dict = {}
+        for e in logs or []:
+            if e.get("event_type") not in (None, "property.lists.added"):
+                continue
+            when = _when(e.get("timestamp"))
+            p = e.get("payload") or {}
+            for t in list(p.get("lists") or []) + list(p.get("system_lists") or []):
+                lu = by_title.get(str(t).strip().lower())
+                if lu and when and (lu not in got or when < got[lu]):
+                    got[lu] = when
+        out[u] = got
+    return out
+
+
+def read_deals(rows: list, kept: set, lists: dict, skip: tuple, attached: dict | None = None) -> dict:
+    """What the kept months' deals say about the account's lists. With `attached` (attach_dates), a list
+    counts for a sale only when the house's own log shows it attached before the month the house sold,
+    and a house that came in on a buyer or sold list is left out."""
+    total = in_before = in_late = buyers = late_marks = 0
     on, waits, unknown = Counter(), defaultdict(list), 0
     account_fields = lists_given = False
     for label, first, row in rows:
@@ -277,9 +322,6 @@ def read_deals(rows: list, kept: set, lists: dict, skip: tuple) -> dict:
         if saved is None or saved >= first:
             in_late += 1                      # added the month it sold, or after: it was not a lead first
             continue
-        in_before += 1
-        if isinstance(row.get("saved_lists"), list):
-            lists_given = True                # an empty list is "on no list"; a missing one is "not told"
         mid = first + timedelta(days=14)
         titles = set()
         for u in row.get("saved_lists") or []:
@@ -289,13 +331,25 @@ def read_deals(rows: list, kept: set, lists: dict, skip: tuple) -> dict:
                 unknown += 1
                 continue
             titles.add(u)
+        if attached is not None and any(lists[u]["title"].lower().startswith(p.lower()) for u in titles for p in BUYER_LISTS):
+            buyers += 1                       # an investor owned it when it came in
+            continue
+        in_before += 1
+        if isinstance(row.get("saved_lists"), list):
+            lists_given = True                # an empty list is "on no list"; a missing one is "not told"
         for u in titles:
             if any(lists[u]["title"].lower().startswith(p.lower()) for p in skip):
                 continue
+            if attached is not None:
+                when = (attached.get(row.get("saved_uuid")) or {}).get(u)
+                if when is None or when >= first:
+                    late_marks += 1           # attached the month it sold or later, or with no entry at all
+                    continue
             on[u] += 1
             waits[u].append((mid - saved).days / 30.44)
     return {"deals": total, "in_account_before": in_before, "added_after": in_late, "on": on, "waits": waits,
-            "lists_gone": unknown, "account_fields": account_fields, "lists_given": lists_given}
+            "lists_gone": unknown, "account_fields": account_fields, "lists_given": lists_given,
+            "buyers": buyers, "late_marks": late_marks}
 
 
 def _pct(n: int, d: int) -> str:
@@ -369,7 +423,13 @@ def run_laddercheck(ctx: Ctx) -> None:
         verdicts = shard_guard.judge(got["counts"], [m[0] for m in months])
         kept = {v["label"] for v in verdicts if v["kept"]}
         window = shard_guard.window_line(verdicts)
-        facts = read_deals(got["rows"], kept, lists, skip)
+        attached = attach_dates(ctx.crm, got["rows"], kept, lists, int(st.get("max_log_reads", 400)))
+        facts = read_deals(got["rows"], kept, lists, skip, attached)
+        if facts["late_marks"]:
+            ctx.out.tally["list marks attached after the sale, or by DataSift with no entry (not counted)"] += facts["late_marks"]
+        if any(v is None for v in attached.values()):
+            ctx.out.tally["sold records whose log could not be read (their lists not counted)"] += sum(
+                1 for v in attached.values() if v is None)
         found += facts["deals"]
         cres = result["counties"].setdefault(c["name"], {})
         cres.update(window=window, deals=facts["deals"], counts=dict(zip([m[0] for m in months], got["counts"])),
@@ -383,9 +443,11 @@ def run_laddercheck(ctx: Ctx) -> None:
             ctx.out.problem("%s: the sold rows carried no account fields, so the share of deals per list could not be "
                             "measured" % c["name"])
             continue
-        ctx.out.line("%s: %s investor deal(s) in %s. %s (%s) were records here before they sold; %s were added after." % (
+        ctx.out.line("%s: %s investor deal(s) in %s. %s (%s) were records here before they sold; %s were added after%s." % (
             c["name"], _n(facts["deals"]), window, _n(facts["in_account_before"]),
-            _pct(facts["in_account_before"], facts["deals"]), _n(facts["added_after"])))
+            _pct(facts["in_account_before"], facts["deals"]), _n(facts["added_after"]),
+            ("; %s came in already owned by an investor (a buyer or sold list) and are left out" % _n(facts["buyers"]))
+            if facts["buyers"] else ""))
         if facts["in_account_before"] and not facts["lists_given"]:
             # "On no list" and "the row did not say" must not read the same.
             ctx.out.problem("%s: the sold rows did not say which lists each record is on, so the share of deals per list "

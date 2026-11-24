@@ -26,7 +26,7 @@ curative caller; letters are a file a person uploads to the mail house. A text t
 house still in the family reads as a pitch to people who may not know the rest of their family has
 been contacted.
 
-LOGAN FULLMER'S ORDER, which every task carries: research every heir first; call 1 is discovery (no
+THE CALL ORDER, which every task carries: research every heir first; call 1 is discovery (no
 price, say plainly that we are local buyers, ask each relative who is who and who wants out); the
 offer comes on call 2; walk away when someone who will not sell lives in the house; mail is last.
 

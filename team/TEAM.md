@@ -37,6 +37,7 @@ The whole team also listens in #ai-team.
 | ftm_auction | Auction Soon kept true on every courthouse foreclosure, so the Hot Auction preset is the real hot list. | schedule (07:45 daily), ask in Slack | free | live |
 | ftm_reactivate | Not-interested first-to-market records whose wait is over handed back to a caller. | schedule (Mon 08:15), ask in Slack | free | live |
 | ladder_check | The lists checked against real investor sales once a month, and the Priority 1 feeders against the ladder. | schedule (1st 03:10), ask in Slack | free | live |
+| dpd_live | The County List Playbook's ladder for Knox and Blount kept current every night from the sold-property data, with the best lists to work now. | schedule (00:05), ask in Slack | free | live |
 | conventions_check | The account's naming rules checked once a week; what breaks one is listed and nothing is changed. | schedule (Sun 03:40), ask in Slack | free | live |
 | hot_auction_tasks | Hot auctions closed out the day after the sale; 45 days later a borrower still on the roll moves to the long-term pool. | schedule (08:05 Mon-Fri), ask in Slack | free | live |
 | second_chances | Every Not Interested record gets a task to call its Correct number again, on the clock its list sets. | schedule (08:40 Mon-Fri), ask in Slack | free | live |

@@ -5,7 +5,7 @@
   "package": 1,
   "paid": 13,
   "retired": 17,
-  "runnable": 51,
+  "runnable": 52,
   "wired": 31,
   "writes": 20
  },
@@ -2599,6 +2599,76 @@
    "workflows": [
     "buyer_registry"
    ],
+   "writes": ""
+  },
+  "dpd_live": {
+   "args": [
+    {
+     "flags": [
+      "--fips"
+     ],
+     "help": "a county's 5-digit FIPS (repeat for more)",
+     "kind": "value",
+     "required": true
+    },
+    {
+     "choices": [
+      "ladder",
+      "snapshot",
+      "all"
+     ],
+     "default": "ladder",
+     "flags": [
+      "--phase"
+     ],
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--force"
+     ],
+     "help": "take this month's snapshot again",
+     "kind": "switch"
+    },
+    {
+     "choices": [
+      "ai",
+      "lists"
+     ],
+     "flags": [
+      "--variant"
+     ],
+     "help": "which published ladder (default: ai where the county has one)",
+     "kind": "value"
+    },
+    {
+     "default": 2000,
+     "flags": [
+      "--max-searches"
+     ],
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "default": 10,
+     "flags": [
+      "--top"
+     ],
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "flags": [
+      "--table"
+     ],
+     "help": "print every rung",
+     "kind": "switch"
+    }
+   ],
+   "class": "runnable",
+   "cli": "argparse",
+   "complete": true,
+   "summary": "Live Doors per Deal: the County List Playbook's ladder for a county, kept current from the Open API.",
    "writes": ""
   },
   "dream100": {

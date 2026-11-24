@@ -115,6 +115,7 @@ EXTRA_SECTIONS: list[tuple[str, str]] = [
     ("three pipelines", "selftest_pipeline"),
     ("three marketing flows", "selftest_flows"),
     ("deal odds", "selftest_deal_odds"),
+    ("live doors per deal: the best lists from the sold-property data", "selftest_dpdlive"),
     ("the Top 1,000's always-in records", "selftest_always"),
     ("slack channels and voice", "selftest_slack_split"),
     ("slack relay for the first-to-market jobs", "selftest_relay"),

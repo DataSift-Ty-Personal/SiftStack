@@ -255,7 +255,22 @@ def _ladder_crm():
         r["lists"] = ["Tax Delinquent"] + (["Vacant"] if i < 5 else [])
         r["reached"] = i in (0, 1, 2, 7)
         recs.append(r)
-    return DataCRM(recs, lists=account_lists(), system_lists=[lst("Absentee Owners", 5000, uuid="sys-absentee")])
+    crm = DataCRM(recs, lists=account_lists(), system_lists=[lst("Absentee Owners", 5000, uuid="sys-absentee")])
+    crm.rec_logs = sold_logs()
+    return crm
+
+
+def sold_logs(rows=None) -> dict:
+    """Each sold record's own log: its lists attached the day it was saved, as an upload attaches them.
+    A list the account no longer has keeps its old title, which matches nothing."""
+    titles = {l["uuid"]: l["title"] for l in account_lists()}
+    titles["sys-absentee"] = "Absentee Owners"
+    out = {}
+    for r in rows if rows is not None else sold_rows():
+        if r.get("saved") and r.get("lists"):
+            out["rec-" + r["id"]] = [{"event_type": "property.lists.added", "timestamp": r["saved"] + " 12:00:00",
+                                      "payload": {"lists": [titles.get(u, "A Retired List") for u in r["lists"]]}}]
+    return out
 
 
 def _ladder(check, store, laddercheck, policy, registry, sweep) -> None:
@@ -288,8 +303,10 @@ def _ladder(check, store, laddercheck, policy, registry, sweep) -> None:
           "every sold search asks for investor purchases of single family houses")
     check("Alder: 208 investor deal(s) in 5 complete months, September left out: it reads 4, far below the 41 a month around it." in text,
           "a month far below the months around it is left out, said, and its deals are not counted: %s" % s.lines[:3])
-    check("45 (21.6%) were records here before they sold; 5 were added after." in text,
-          "a record counts only when it was in the account before the month it sold")
+    check("40 (19.2%) were records here before they sold; 5 were added after; 5 came in already owned by an investor "
+          "(a buyer or sold list) and are left out." in text,
+          "a record counts only when it was in the account before the month it sold, and one that came in on a buyer "
+          "or sold list is left out: %s" % [ln for ln in s.lines if "records here" in ln])
     check("Alder, share of deals by list: Tax Delinquent 14.4% (30); Vacant 4.8% (10); Absentee Owners 2.4% (5) [follows today's owner]." in text,
           "each list's share of the deals is said, and a list DataSift keeps current is marked as following today's owner")
     check("Dispo" not in text, "a buyer list is never read as a seller list: it holds every investor purchase by construction")
@@ -455,6 +472,42 @@ def _ladder(check, store, laddercheck, policy, registry, sweep) -> None:
           "a layer whose filter changes nothing is called out: an unknown key is answered as if it were not there")
     check(crm_l.asked == [] and json.loads(store.kv_get("autopilot:ladder:2026-11"))["counties"]["Alder"]["layers"]["built by 2010"] == 11,
           "with the other parts switched off only the layers are counted, and they are kept")
+
+    # a list counts for a sale only when the house's own log shows it there before the month it sold
+    lists = {"list-tax delinquent": {"title": "Tax Delinquent", "size": 600, "kept_current": False},
+             "list-probate": {"title": "Probate", "size": 60, "kept_current": False},
+             "list-dispo - flip buyers": {"title": "Dispo - Flip Buyers", "size": 2000, "kept_current": False}}
+    june = date(2026, 6, 1)
+
+    def sale(i, lst_ids, saved="2026-01-10"):
+        return ("2026-06", june, {"id": "z%d" % i, "saved": True, "saved_uuid": "rec-z%d" % i, "saved_date": saved + "T12:00:00Z",
+                                  "saved_lists": list(lst_ids)})
+    rows = [sale(1, ["list-tax delinquent", "list-probate"]), sale(2, ["list-tax delinquent"]),
+            sale(3, ["list-tax delinquent", "list-dispo - flip buyers"]), sale(4, ["list-probate"])]
+    crm_a = _ladder_crm()
+    crm_a.rec_logs = {
+        "rec-z1": [{"event_type": "property.lists.added", "timestamp": "2026-02-01 09:00:00", "payload": {"lists": ["Tax Delinquent"]}},
+                   {"event_type": "property.lists.added", "timestamp": "2026-08-16 09:00:00", "payload": {"lists": ["Probate"]}}],
+        "rec-z2": [{"event_type": "property.lists.added", "timestamp": "2026-05-30 09:00:00", "payload": {"system_lists": ["tax delinquent"]}}],
+        "rec-z3": [{"event_type": "property.lists.added", "timestamp": "2026-02-01 09:00:00", "payload": {"lists": ["Tax Delinquent"]}}],
+    }
+    att = laddercheck.attach_dates(crm_a, rows, {"2026-06"}, lists)
+    check(att["rec-z1"] == {"list-tax delinquent": date(2026, 2, 1), "list-probate": date(2026, 8, 16)}
+          and att["rec-z2"] == {"list-tax delinquent": date(2026, 5, 30)} and att["rec-z4"] == {},
+          "each list's first attach day is read off the record's own log, by title in any case, system lists included")
+    facts = laddercheck.read_deals(rows, {"2026-06"}, lists, ("Dispo - ",), att)
+    check(facts["on"] == {"list-tax delinquent": 2} and facts["buyers"] == 1 and facts["late_marks"] == 2
+          and facts["in_account_before"] == 3,
+          "a list attached after the sale (Probate on z1) or with no entry (z4) earns no deal, and a house that came in on "
+          "a buyer list is left out: %s" % {k: facts[k] for k in ("on", "buyers", "late_marks", "in_account_before")})
+
+    class NoLog(DataCRM):
+        def record_logs(self, u, event_types=None, limit=250):
+            raise RuntimeError("HTTP 500 on the log")
+    broken = NoLog([], lists=account_lists())
+    att2 = laddercheck.attach_dates(broken, rows[:1], {"2026-06"}, lists)
+    check(att2 == {"rec-z1": None} and laddercheck.read_deals(rows[:1], {"2026-06"}, lists, (), att2)["on"] == {},
+          "a log that cannot be read credits that record's lists with nothing, never with everything")
 
     # nothing here can add a record or change a feeder
     code = Path(laddercheck.__file__).read_text(encoding="utf-8")
