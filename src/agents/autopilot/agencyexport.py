@@ -286,7 +286,7 @@ def _work(ctx, o, build, sift, pool, sent, unknown, promoted, state, spath) -> N
         ctx.out.head = "Reading the top owners for this month's agency file: %d record(s) still to read." % left
         return
     import agency_call_list as acl
-    kb = acl.kb
+    import agency_rules as rules     # the agency file's rules (slim record, callable numbers), shared with acl
     final: dict = {}
     gone: Counter = Counter()
     registry_out = 0
@@ -318,11 +318,11 @@ def _work(ctx, o, build, sift, pool, sent, unknown, promoted, state, spath) -> N
             continue
         sc = top1000.owner_score(build, houses, top1000.reach_of(build, (houses[0].get("rec") or {}))[0])
         main = next(h for h in houses if h["uuid"] == sc["best"])
-        slim = kb._slim(main["rec"])
+        slim = rules.slim(main["rec"])
         why = acl.held_reason(slim)
         took = registry_hold(o, [slim], ctx.policy)
         registry_out += took
-        phones, _ = kb.clean_phones(slim)
+        phones, _ = rules.clean_phones(slim)
         if not why and not phones:
             why = "every number is on the do-not-call registry (mail only)" if took else "no callable number"
         if why:
@@ -348,7 +348,7 @@ def _work(ctx, o, build, sift, pool, sent, unknown, promoted, state, spath) -> N
             s = sift.get(h["uuid"]) or {}
             entries.append({"dataflik_id": h["uuid"], "rank": rank, "realtor_score": s.get("r"),
                             "investor_off_market_score": s.get("i"), "rung": segment_of(pool.get(h["uuid"]) or {})})
-            records[h["uuid"]] = kb._slim(h["rec"])
+            records[h["uuid"]] = rules.slim(h["rec"])
     registry_hold(o, list(records.values()), ctx.policy)   # with the registry rule on, the file carries no flagged number (D32)
     if registry_out:
         ctx.out.tally["numbers held out of the file: on the do-not-call registry (D32, mail only)"] = registry_out

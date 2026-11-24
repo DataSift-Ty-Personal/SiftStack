@@ -3,11 +3,11 @@
  "counts": {
   "browser": 23,
   "package": 1,
-  "paid": 14,
+  "paid": 15,
   "retired": 17,
-  "runnable": 53,
+  "runnable": 54,
   "wired": 31,
-  "writes": 21
+  "writes": 22
  },
  "scripts": {
   "_debug_login": {
@@ -79,14 +79,14 @@
      "flags": [
       "--target"
      ],
-     "help": "allowlisted account email, token in REISIFT_TARGET_JWT_FILE",
+     "help": "staff only: an allowlisted account by a pasted token (see pull_by_ids)",
      "kind": "value"
     },
     {
      "flags": [
       "--key-env"
      ],
-     "help": "env var holding another account's Open API key",
+     "help": "env var holding another account's Open API key (default: REISIFT_API_KEY)",
      "kind": "value"
     },
     {
@@ -142,46 +142,113 @@
   "ai_pools": {
    "args": [
     {
-     "choices": "dynamic",
      "flags": [
-      "--market"
+      "--county"
      ],
+     "help": "a county, e.g. \"Knox, TN\" or 47093 (repeat for more)",
      "kind": "value",
      "required": true
     },
     {
-     "default": 1.5,
      "flags": [
-      "--margin"
+      "--pool"
      ],
-     "help": "candidates per slot fetched before the overlap split (two-pool markets)",
+     "help": "investor:<count> or realtor:<count> (one or two)",
      "kind": "value",
-     "type": "float"
+     "required": true
+    },
+    {
+     "flags": [
+      "--name"
+     ],
+     "help": "the folder the pools go in (default: the counties)",
+     "kind": "value"
     },
     {
      "choices": [
-      "ladder",
-      "ai"
+      "ai",
+      "ladder"
      ],
-     "default": "ladder",
+     "default": "ai",
      "flags": [
       "--rank"
      ],
-     "help": "investor pool: the doors-per-deal ladder, or investor AI score top-down",
+     "help": "the investor pool: AI score, or the Doors per Deal ladder",
+     "kind": "value"
+    },
+    {
+     "default": "1-700000",
+     "flags": [
+      "--value"
+     ],
+     "help": "the value band, e.g. 100000-700000",
+     "kind": "value"
+    },
+    {
+     "default": "2023-01-01",
+     "flags": [
+      "--since"
+     ],
+     "help": "leave out houses that sold on or after this day ('' keeps them)",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--exclude-zips"
+     ],
+     "help": "comma list of ZIP codes to leave out",
      "kind": "value"
     },
     {
      "flags": [
       "--exclude"
      ],
-     "help": "ids never to pick (a JSON list, or a dict keyed by id), e.g. owners an account already marked do-not-market; the pools refill past them",
+     "help": "ids never to pick (a JSON list, or a dict keyed by id); the pools refill past them",
      "kind": "value"
+    },
+    {
+     "flags": [
+      "--prior"
+     ],
+     "help": "a list already sent (ids JSON): the summary counts how many pool houses were on it",
+     "kind": "value"
+    },
+    {
+     "default": 1.5,
+     "flags": [
+      "--margin"
+     ],
+     "help": "candidates per slot before the overlap split (two pools)",
+     "kind": "value",
+     "type": "float"
+    },
+    {
+     "default": 4000,
+     "flags": [
+      "--max-searches"
+     ],
+     "help": "stop the run past this many searches",
+     "kind": "value",
+     "type": "int"
     }
    ],
    "class": "wired",
    "cli": "argparse",
    "complete": true,
-   "summary": "Ranked, buy-boxed, non-overlapping record pools from the properties index (read through the opensearch MCP).",
+   "paid_deeper": [
+    "Claude",
+    "Enformion",
+    "Firecrawl",
+    "Google Maps",
+    "OpenRouter",
+    "Scrapfly",
+    "SerpApi",
+    "Serper",
+    "Tracerfy",
+    "Trestle",
+    "Zillow (OpenWeb Ninja)"
+   ],
+   "summary": "Ranked, buy-boxed, non-overlapping record pools for a calling agency, built on the install's own Open API key.",
    "why": "runs inside list_pull (Atlas)",
    "workflows": [
     "list_pull"
@@ -1902,6 +1969,13 @@
    "class": "wired",
    "cli": "argparse",
    "complete": true,
+   "paid_deeper": [
+    "Enformion",
+    "Firecrawl",
+    "OpenRouter",
+    "Serper",
+    "Tracerfy"
+   ],
    "summary": "Create the DataSift custom fields, select options and lists this pull needs.",
    "why": "runs inside account_setup (Atlas)",
    "workflows": [
@@ -2893,7 +2967,8 @@
    "paid_deeper": [
     "Firecrawl",
     "OpenRouter",
-    "Serper"
+    "Serper",
+    "Trestle"
    ],
    "siftmap_reads": [
     "autocomplete",
@@ -3215,39 +3290,40 @@
   "enformion_ftm": {
    "args": [
     {
+     "default": "Foreclosure",
      "flags": [
-      "--csv"
+      "--list"
      ],
-     "help": "FTM master CSV (default: latest *_sfr.csv)",
+     "help": "the DataSift list whose records are searched",
      "kind": "value"
     },
     {
      "flags": [
-      "--addr"
+      "--csv"
      ],
-     "help": "comma list of address substrings to limit to (e.g. a re-run on specific records)",
+     "help": "search the rows of this file instead of the account's list",
      "kind": "value"
+    },
+    {
+     "flags": [
+      "--all"
+     ],
+     "help": "every record on the list (default: only those with no phone)",
+     "kind": "switch"
     },
     {
      "flags": [
       "--no-phone-only"
      ],
-     "help": "only records still with no phones",
+     "help": "the default; kept so older commands still run",
      "kind": "switch"
     },
     {
      "flags": [
-      "--finish"
+      "--addr"
      ],
-     "help": "merge found phones into reisift (over the API)",
-     "kind": "switch"
-    },
-    {
-     "flags": [
-      "--browser"
-     ],
-     "help": "merge through the browser upload wizard instead of the API (the fallback)",
-     "kind": "switch"
+     "help": "comma list of address pieces to limit to (a re-run on named records)",
+     "kind": "value"
     },
     {
      "default": 0,
@@ -3256,6 +3332,37 @@
      ],
      "kind": "value",
      "type": "int"
+    },
+    {
+     "flags": [
+      "--commit",
+      "--finish"
+     ],
+     "help": "run the searches (billed per match) and merge the numbers onto the records",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--score"
+     ],
+     "help": "with --commit: Trestle-score the new numbers into dial tiers",
+     "kind": "switch"
+    },
+    {
+     "default": 25.0,
+     "flags": [
+      "--max-usd"
+     ],
+     "help": "refuse a run that could cost more than this at rack rate",
+     "kind": "value",
+     "type": "float"
+    },
+    {
+     "flags": [
+      "--browser"
+     ],
+     "help": "staff only: merge through the browser upload wizard instead of the API",
+     "kind": "switch"
     },
     {
      "flags": [
@@ -3273,16 +3380,18 @@
    "complete": true,
    "paid": [
     "Enformion",
-    "Tracerfy"
+    "Tracerfy",
+    "Trestle"
    ],
    "paid_deeper": [
     "Firecrawl",
     "OpenRouter",
     "Serper"
    ],
-   "summary": "Layer 3b - Enformion (Endato) Person Search skip-trace for FTM foreclosure records, then merge the found numbers back into reisift. A THIRD phone source stacked on top of DataSift (free, at upload) + ",
+   "summary": "Enformion (Endato) Person Search re-skip for the records on a DataSift list, then the numbers merged onto those records and, if asked, scored and tiered. A third phone source on top of DataSift's own ",
    "why": "drives a browser (playwright, sift_upload_wizard), and the brain has none",
    "write_flags": [
+    "--commit",
     "--finish"
    ],
    "writes": "commit"
@@ -5978,7 +6087,7 @@
    "paid": [
     "smrtPhone"
    ],
-   "summary": "Route B MMS sender: drives the smrtPhone web-app Inbox to text each foreclosure homeowner their auction-notice screenshot + the personalized message.",
+   "summary": "Route B MMS sender: drives the smrtPhone web-app Inbox to text each foreclosure homeowner their auction-notice screenshot + the personalized message. Staff-only: it runs on the team's own workstation ",
    "why": "drives a browser (datasift_core, playwright), and the brain has none",
    "write_flags": [
     "--commit"
@@ -6716,6 +6825,66 @@
    ],
    "writes": ""
   },
+  "phone_tiers": {
+   "args": [
+    {
+     "flags": [
+      "--list"
+     ],
+     "help": "every record on this DataSift list",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--uuids"
+     ],
+     "help": "comma list of record uuids",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--commit"
+     ],
+     "help": "score (paid) and write the tiers; dry without it",
+     "kind": "switch"
+    },
+    {
+     "default": 4,
+     "flags": [
+      "--workers"
+     ],
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "default": 10,
+     "flags": [
+      "--readback"
+     ],
+     "help": "owners read back after the write",
+     "kind": "value",
+     "type": "int"
+    }
+   ],
+   "class": "runnable",
+   "cli": "argparse",
+   "complete": true,
+   "paid": [
+    "Trestle"
+   ],
+   "paid_deeper": [
+    "Enformion",
+    "Firecrawl",
+    "OpenRouter",
+    "Serper",
+    "Tracerfy"
+   ],
+   "summary": "Trestle-score the numbers on a set of DataSift records and write one dial tier on each phone, on the account's own Open API key.",
+   "write_flags": [
+    "--commit"
+   ],
+   "writes": "commit"
+  },
   "post_walkthrough": {
    "args": [
     {
@@ -7139,14 +7308,14 @@
      "flags": [
       "--target"
      ],
-     "help": "allowlisted account email, token in REISIFT_TARGET_JWT_FILE",
+     "help": "staff only: an allowlisted account email, token in REISIFT_TARGET_JWT_FILE",
      "kind": "value"
     },
     {
      "flags": [
       "--key-env"
      ],
-     "help": "env var holding another account's Open API key (default: prod-account)",
+     "help": "env var holding another account's Open API key (default: REISIFT_API_KEY)",
      "kind": "value"
     },
     {
@@ -7194,6 +7363,14 @@
      ],
      "help": "pull: land and read back one new id, then stop",
      "kind": "switch"
+    },
+    {
+     "flags": [
+      "--approve"
+     ],
+     "help": "pull: the most new records the quote may say this adds (default: the ids to pull)",
+     "kind": "value",
+     "type": "int"
     },
     {
      "default": 250,
@@ -9215,30 +9392,56 @@
   "tracerfy_ftm": {
    "args": [
     {
+     "default": "Foreclosure",
+     "flags": [
+      "--list"
+     ],
+     "help": "the DataSift list whose records are traced",
+     "kind": "value"
+    },
+    {
      "flags": [
       "--csv"
      ],
+     "help": "trace the rows of this file instead of the account's list",
      "kind": "value"
     },
     {
      "flags": [
       "--all"
      ],
-     "help": "trace ALL FTM records (default: only no-phone ones)",
+     "help": "every record on the list (default: only those with no phone)",
      "kind": "switch"
     },
     {
      "flags": [
+      "--commit",
       "--finish"
      ],
-     "help": "merge found phones into reisift (over the API)",
+     "help": "buy the traces and merge the numbers onto the records (dry without it)",
      "kind": "switch"
+    },
+    {
+     "flags": [
+      "--score"
+     ],
+     "help": "with --commit: Trestle-score the new numbers into dial tiers",
+     "kind": "switch"
+    },
+    {
+     "default": 25.0,
+     "flags": [
+      "--max-usd"
+     ],
+     "help": "refuse a trace that could cost more than this",
+     "kind": "value",
+     "type": "float"
     },
     {
      "flags": [
       "--browser"
      ],
-     "help": "merge through the browser upload wizard instead of the API (the fallback)",
+     "help": "staff only: merge through the browser upload wizard instead of the API",
      "kind": "switch"
     },
     {
@@ -9256,7 +9459,8 @@
    "cli": "argparse",
    "complete": true,
    "paid": [
-    "Tracerfy"
+    "Tracerfy",
+    "Trestle"
    ],
    "paid_deeper": [
     "Enformion",
@@ -9264,9 +9468,10 @@
     "OpenRouter",
     "Serper"
    ],
-   "summary": "Layer 3: Tracerfy re-skip for FTM records, then merge found numbers back into reisift.",
+   "summary": "Tracerfy re-skip for the records on a DataSift list, then the numbers merged onto those records and, if asked, scored and tiered. On the account's own Open API key, with your own Tracerfy key (TRACERF",
    "why": "drives a browser (playwright, sift_upload_wizard), and the brain has none",
    "write_flags": [
+    "--commit",
     "--finish"
    ],
    "writes": "commit"

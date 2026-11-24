@@ -28,3 +28,8 @@ jobs:
 
       - name: Nothing personal in the tree or in the downloadable archives
         run: python tools/public_scan.py . --quiet-words
+
+      # Every shipped workflow runs on an install's own Open API key: no folder on one machine, no import
+      # nothing installs, no staff-only source behind an agent the org chart calls live (unless labelled).
+      - name: Every workflow runs for the person who installs it
+        run: python tools/workflow_audit.py .

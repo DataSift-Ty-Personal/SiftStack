@@ -771,37 +771,11 @@ def phase_qa(args) -> None:
 # orders or drops a number here; what comes off is only what prod-account itself
 # already knows is dead or must not be called.
 EXPORT_CACHE = os.path.join(OUT, "export_records.json")
-BAD_PHONE_STATUSES = {"WRONG", "DEAD", "DNC", "CORRECT_DNC", "WRONG_DNC"}
-LITIGATOR_TAG = "DNC"          # d4d_call_list convention: a prior litigator hit
-LIVE_LEAD_STATUSES = {"new_lead", "No Contact New Lead", "Cold Lead", "Warm Lead",
-                      "Hot Lead", "Ghosting Lead", "follow_up"}
-MAX_PHONES = 10
-
-
-def _slim(d: dict) -> dict:
-    ow = d.get("owner") or {}
-    a = d.get("address") or {}
-    m = ow.get("address") or {}
-    sec = d.get("secondary_owners") or []
-    st = d.get("status")
-    return {"uuid": d.get("uuid"), "dataflik_id": str(d.get("dataflik_id") or ""),
-            "status": st.get("title") if isinstance(st, dict) else st,
-            "street": a.get("street"), "city": a.get("city"), "state": a.get("state"),
-            "zip": (a.get("postal_code") or "")[:5], "county": a.get("county"),
-            "vacant": a.get("vacant"),
-            "owner_uuid": ow.get("uuid"), "first": ow.get("first_name"),
-            "last": ow.get("last_name"), "company": ow.get("company"),
-            "deceased": ow.get("deceased"), "dnc": ow.get("dnc"),
-            "opt_out": ow.get("opt_out"), "skiptraced": ow.get("skiptraced"),
-            "m_street": m.get("street"), "m_city": m.get("city"),
-            "m_state": m.get("state"), "m_zip": (m.get("postal_code") or "")[:5],
-            "phones": ow.get("phones") or [], "emails": ow.get("emails") or [],
-            "owner2": " ".join(x for x in ((sec[0].get("first_name") or ""),
-                                           (sec[0].get("last_name") or "")) if x).strip()
-            if sec and isinstance(sec[0], dict) else "",
-            "value": d.get("estimate_value"), "equity": d.get("equity_percent"),
-            "year": d.get("year"), "beds": d.get("bedrooms"), "baths": d.get("bathrooms"),
-            "sqft": d.get("sqft")}
+# The agency file rules live in agency_rules.py (agency_call_list.py reads the same ones); the old names
+# stay so this module reads as it always did.
+from agency_rules import (BAD_PHONE_STATUSES, LITIGATOR_TAG, LIVE_LEAD_STATUSES, MAX_PHONES,  # noqa: E402,F401
+                          ENTITY as _ENTITY, addr_key as _addr_key, church_as_person as _church_as_person,
+                          clean_phones, display_name as _name, num as _num, slim as _slim)
 
 
 def _uuids(sel: dict, need_new: bool) -> dict:
@@ -844,83 +818,6 @@ def phase_harvest(args) -> None:
                 f"{k:,}", f"{len(todo):,}", rate, (len(todo) - k) / rate / 60))
         time.sleep(0.25)
     _save(EXPORT_CACHE, cache)
-
-
-def clean_phones(r: dict) -> tuple[list, dict]:
-    """Callable numbers, mobiles first, DataSift's order otherwise."""
-    why = {}
-    keep, seen = [], set()
-    for p in r["phones"]:
-        tags = [t.get("title") if isinstance(t, dict) else t for t in p.get("tags") or []]
-        digits = "".join(c for c in str(p.get("number") or "") if c.isdigit())
-        if len(digits) == 11 and digits.startswith("1"):
-            digits = digits[1:]
-        reason = ""
-        if len(digits) != 10 or digits[0] in "01":
-            reason = "invalid number"
-        elif (p.get("status") or "").upper() in BAD_PHONE_STATUSES:
-            reason = "dispositioned %s" % p["status"].upper()
-        elif LITIGATOR_TAG in tags:
-            reason = "prior litigator flag"
-        elif p.get("is_connected") is False:
-            reason = "disconnected"
-        elif digits in seen:
-            reason = "duplicate"
-        if reason:
-            why[reason] = why.get(reason, 0) + 1
-            continue
-        seen.add(digits)
-        keep.append((digits, (p.get("type") or "").title()))
-    keep.sort(key=lambda x: x[1] != "Mobile")
-    return keep, why
-
-
-def _name(s) -> str:
-    s = (s or "").strip()
-    return s.title() if s.isupper() or s.islower() else s
-
-
-_ENTITY = re.compile(
-    r"\b(llc|llp|lp|inc|incorporated|corp|co|company|trust|tr|trustee|revocable|"
-    r"irrevocable|living|est|estate|church|partners|partnership|properties|holdings|"
-    r"investments?|enterprises?|enteprise|homes|rentals?|construction|development|"
-    r"realty|mortgage|fund|series|acquis\w*|acquistion|restoration|habitat|solutions|"
-    r"supply|management|manafement|group)\b", re.I)
-_PLACEISH = re.compile(r"(-|wood|lawn|towne?|ville|view|side|land|field|ridge|grove|"
-                       r"hill|park|creek|valley)$", re.I)
-
-
-def _church_as_person(first, last) -> bool:
-    return ((last or "").strip().lower() in ("church", "chapel", "ministries")
-            and bool(_PLACEISH.search((first or "").strip()) or "-" in (first or "")))
-
-
-_SUFFIX = {"street": "st", "avenue": "ave", "drive": "dr", "road": "rd", "lane": "ln",
-           "court": "ct", "circle": "cir", "boulevard": "blvd", "place": "pl",
-           "highway": "hwy", "parkway": "pkwy", "trail": "trl", "terrace": "ter",
-           "north": "n", "south": "s", "east": "e", "west": "w"}
-_UNIT = {"apt", "unit", "ste", "suite", "lot", "bldg", "#"}
-
-
-def _addr_key(s) -> str:
-    """'3703 Example View Dr # B' and '3703 Example View Drive' -> one key."""
-    out = []
-    for t in "".join(c if c.isalnum() or c == "#" else " " for c in (s or "").lower()).split():
-        if t in _UNIT or t.startswith("#"):
-            break
-        out.append(_SUFFIX.get(t, t))
-    return " ".join(out)
-
-
-def _num(v, places: int = 0):
-    """352000.00 -> 352000, 1.0 -> 1, 80.57 stays 80.57; None -> ''."""
-    if v in (None, ""):
-        return ""
-    try:
-        f = round(float(v), places)
-    except (TypeError, ValueError):
-        return v
-    return int(f) if f == int(f) else f
 
 
 def phase_export(args) -> None:

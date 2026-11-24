@@ -14,8 +14,8 @@ Who survives into the file, by situation (see obituary_campaign.py):
   unresolved         nothing
   entity_owner       nothing, a trust cannot be mailed
 
-Associates (neighbours) are never mailed. Research drops, like Betty Calloway's
-third son who does not appear in her obituary, are honoured here too.
+Associates (neighbours) are never mailed. Research drops, like a third son who
+does not appear in his mother's obituary, are honoured here too.
 
 Usage:
   python src/obituary_mail_export.py

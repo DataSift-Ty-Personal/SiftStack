@@ -605,8 +605,8 @@ def main():
             from generate_report import create_xlsx_report
             report_file = create_xlsx_report(results, errors, tiers, args.output)
             print(f"  ✓ XLSX report:         {report_file}")
-        except ImportError:
-            print("  ⚠ XLSX report skipped (openpyxl not installed)")
+        except ImportError as exc:
+            print(f"  ⚠ XLSX report skipped ({exc}); the report needs openpyxl: pip install openpyxl")
 
     # Print quick summary
     tag_counts = Counter(r["assigned_tag"] for r in results)

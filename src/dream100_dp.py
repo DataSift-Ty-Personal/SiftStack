@@ -59,7 +59,10 @@ FULL = ROOT / "output/dream100/full_records.json"
 VENDOR_GLOB = "output/visual_distress/job_*.jsonl"
 D4D_SCORES = ROOT / "output/d4d_call_list/phone_scores.json"
 SKILL_SCRIPTS = ROOT / "skills/deep-prospecting-v5/scripts"
-API_CLIENTS = Path(r"C:\Users\you\OneDrive\Desktop\Deal Room Coaching Call\_api\clients")
+# The Deal Room checkout is an opt-in for the team's own workstation (SIFTSTACK_DEAL_ROOM_CLIENTS, as in
+# post_walkthrough); everywhere else the same reads go over the Open API key alone (_crm_clients).
+API_CLIENTS = Path(os.environ["SIFTSTACK_DEAL_ROOM_CLIENTS"]) if os.environ.get("SIFTSTACK_DEAL_ROOM_CLIENTS") else None
+LOGO = ROOT / "data" / "brand" / "datasift-logo-dark.png"     # the DataSift wordmark on the pack and the workbook
 TAXAPI = "https://knox-tn.mygovonline.com/api/v2/parcels/%s?detailLevel=public&start=0&length=25"
 SV_META = "https://maps.googleapis.com/maps/api/streetview/metadata"
 SV_IMAGE = "https://maps.googleapis.com/maps/api/streetview"
@@ -179,17 +182,18 @@ def top_rows(n: int) -> list[dict]:
 # ------------------------------------------------------------------ records --
 
 def _crm_clients():
-    if not API_CLIENTS.exists():
+    if API_CLIENTS is None or not API_CLIENTS.exists():
         # Off the workstation (the agents box on Fly, a customer install): the same reads over
         # the Open API key alone, no Deal Room checkout, no password.
         import crm_key_client as kc            # noqa: E402
         from siftmap_standalone import SiftMapClient as KeySiftMap  # noqa: E402
         return kc.from_env(), KeySiftMap(), kc.resolve_actor, kc.summarize_activity_log
+    # staff-only: the Deal Room checkout, opted into with SIFTSTACK_DEAL_ROOM_CLIENTS on the team's workstation
     sys.path.insert(0, str(API_CLIENTS))
     os.environ["REISIFT_ACCOUNT"] = "datasift-apikey"
-    from crm_api import CRMClient            # noqa: E402
-    from siftmap_api import SiftMapClient    # noqa: E402
-    from dossier import resolve_actor, summarize_activity_log  # noqa: E402
+    from crm_api import CRMClient            # noqa: E402  staff-only
+    from siftmap_api import SiftMapClient    # noqa: E402  staff-only
+    from dossier import resolve_actor, summarize_activity_log  # noqa: E402  staff-only
     return CRMClient(), SiftMapClient(), resolve_actor, summarize_activity_log
 
 
@@ -1278,7 +1282,7 @@ def render_pdf(md_path: Path, pdf_path: Path, photo: Path | None = None) -> str:
     margin = 0.6 * inch
     avail = letter[0] - 2 * margin
     story = []
-    logo = Path(r"C:\Users\you\OneDrive\Desktop\datasift-design-system\assets\datasift-logo-dark.png")
+    logo = LOGO
     head = []
     if logo.exists():
         head.append(RLImage(str(logo), width=1.35 * inch, height=1.35 * inch * 179 / 506))
@@ -1649,7 +1653,7 @@ def build_workbook(data: list[dict], path: Path, *, redact: bool, audit: dict, l
     ws = wb.active
     ws.title = "Summary"
     S = Sheet(ws, [5, 20, 18, 42, 28, 13, 11, 26], red)
-    logo = Path(r"C:\Users\you\OneDrive\Desktop\datasift-design-system\assets\datasift-logo-dark.png")
+    logo = LOGO
     if logo.exists():
         img = XLImage(str(logo))
         img.width, img.height = 150, int(150 * 179 / 506)

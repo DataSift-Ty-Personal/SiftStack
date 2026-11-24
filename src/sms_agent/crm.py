@@ -27,6 +27,9 @@ _UNAVAILABLE = ""
 def _load():
     """Import the Deal Room client modules once. Returns (reisift_auth, CRMClient)."""
     global _UNAVAILABLE
+    if config.DEALROOM_API is None:     # staff-only opt-in; unset, the key client below is the one used
+        _UNAVAILABLE = "no Deal Room checkout (DEALROOM_API_PATH is unset)"
+        return None, None
     clients = config.DEALROOM_API / "clients"
     if not clients.exists():
         _UNAVAILABLE = f"Deal Room clients not found at {clients} (set DEALROOM_API_PATH)"

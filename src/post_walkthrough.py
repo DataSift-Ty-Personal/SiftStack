@@ -488,7 +488,7 @@ def load_lead_dossier(address: str, city: str = "", zip_code: str = "",
         return out
     sys.path.insert(0, str(clients))
     try:
-        from dossier import build_dossier  # noqa: E402
+        from dossier import build_dossier  # noqa: E402  staff-only: the opt-in Deal Room checkout
     except Exception as exc:  # noqa: BLE001 - any import problem is non-fatal
         out["reason"] = f"could not import the CRM clients: {exc}"
         return out

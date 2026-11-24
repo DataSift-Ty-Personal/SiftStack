@@ -60,9 +60,6 @@ from collections import defaultdict
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-os.environ.setdefault("REISIFT_ACCOUNT", "datasift-apikey")
-_API_CLIENTS = Path(r"C:\Users\you\OneDrive\Desktop\Deal Room Coaching Call\_api\clients")
-sys.path.insert(0, str(_API_CLIENTS))
 
 from datasift_api_upload import Api, attach_to_record  # noqa: E402
 
@@ -423,7 +420,7 @@ def load_trace_state() -> dict:
 
 
 def phase_trace(c: Client, commit: bool, limit: int, entities_only: bool):
-    from siftmap_api import SiftMapClient  # noqa: E402  (Deal Room _api)
+    from siftmap_standalone import SiftMapClient  # noqa: E402  (the Open API key)
     import enformion_business  # noqa: E402
     from enformion_heir import person_search, first_match  # noqa: E402
     from enformion_ftm import enf_phones, clean_owner_name  # noqa: E402
@@ -819,7 +816,7 @@ def phase_flippers(c: Client, limit: int, months: int = 24):
     about who is buying today).
     """
     from datetime import date, timedelta
-    from siftmap_api import SiftMapClient  # noqa: E402
+    from siftmap_standalone import SiftMapClient  # noqa: E402  (the Open API key)
     sm = SiftMapClient()
     since = (date.today() - timedelta(days=months * 30)).isoformat()
     out = defaultdict(lambda: {"n": 0, "sales": [], "counties": set()})

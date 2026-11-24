@@ -2,7 +2,7 @@
 
 *Every agent, what triggers it, what it touches, where a human still signs off, and the specific trap each one exists to avoid*
 
-100 agents across 9 divisions. Generated from [`docs/agents.json`](agents.json) by `tools/agent_map.py`. Build 1.0.97, 2026-11-24.
+100 agents across 9 divisions. Generated from [`docs/agents.json`](agents.json) by `tools/agent_map.py`. Build 1.0.98, 2026-11-24.
 
 Do not hand-edit this file. Edit `docs/agents.json` and re-run the generator.
 
@@ -596,11 +596,11 @@ Unmasks the human behind an LLC, trust, or corporation.
 
 #### Tracerfy Skip Trace
 
-`src/tracerfy_skip_tracer.py, src/tracerfy_ftm.py` &middot; phase 1 &middot; live
+`src/tracerfy_skip_tracer.py, src/tracerfy_ftm.py, src/enformion_ftm.py, src/phone_tiers.py` &middot; phase 1 &middot; live
 
 Cheap batch phone and email fill at about two cents a record.
 
-**Trigger.** Any record or relative missing contact data.
+**Trigger.** Any record or relative missing contact data: python src/tracerfy_ftm.py (dry), then --commit.
 
 **Does.**
 
@@ -613,15 +613,15 @@ Cheap batch phone and email fill at about two cents a record.
 
 **Touches.** Tracerfy
 
-> **The trap this exists to avoid.** DataSift MERGES phones rather than replacing them, so Tracerfy and Enformion accumulate. Run them sequentially, then re-score and re-tag. One live run went from 109 to 302 phones across 33 records.
+> **The trap this exists to avoid.** DataSift MERGES phones rather than replacing them, so Tracerfy and Enformion accumulate. Each re-skip reads the account's own list, quotes the most it can cost and buys nothing without --commit; phone_tiers.py (or --score) then scores only the numbers with no tier. One live run went from 109 to 302 phones across 33 records.
 
 #### Phone Validator
 
-`src/phone_validator.py` &middot; phase 1 &middot; live
+`src/phone_validator.py, src/phone_tiers.py` &middot; phase 1 &middot; live
 
 Scores every number and sorts the call list into dial tiers.
 
-**Trigger.** After every skip-trace pass.
+**Trigger.** After every skip-trace pass: python src/phone_tiers.py --list <list> (dry), then --commit.
 
 **Does.**
 
@@ -1399,7 +1399,7 @@ Reads each builder's buy box off their own deeds, then matches the lots on the g
 
 **Touches.** opensearch MCP, SiftMap
 
-> **The trap this exists to avoid.** A lot wholesaled at 1.5 times before the build reads as the builder's purchase plus the new-home sale unless the exit is priced like a finished house, which misattributes the builder and hides the middleman. Knox and Blount came out yes; Union County OH no, because its repeat buyers are production builders.
+> **The trap this exists to avoid.** Staff only: the buy boxes are read off the read-only properties index (the opensearch MCP), which a user's key cannot reach; on a user's install buildable_lots works the lots instead. A lot wholesaled at 1.5 times before the build reads as the builder's purchase plus the new-home sale unless the exit is priced like a finished house, which misattributes the builder and hides the middleman.
 
 ### Outreach & Marketing
 
@@ -1530,23 +1530,27 @@ Texts each foreclosure homeowner the actual auction notice image.
 
 #### Obituary Mail Campaign
 
-`src/obituary_campaign.py, src/obituary_mail_export.py` &middot; phase 2 &middot; live
+`src/agents/autopilot/obituary.py` &middot; phase 2 &middot; live
 
-Builds and validates the direct mail drop for the obituary list.
+Works the Obituary list on a clock: holds each record a month, sends one soft letter before month three, then a letter a month to The <Surname> Family until research settles the heirs.
 
-**Trigger.** After the obituary opportunity ranking.
+**Trigger.** The obituary_lane stage (agents brain), 09:40 Mon-Fri.
 
 **Does.**
 
-- Export, validate addresses, produce the mail file
+- Holds a new obituary record for a month
+- One soft letter before month three, research at three months
+- A letter a month to The <Surname> Family until the heirs are known
+- Matches each death against the county's probate filings
+- Tags a record Obituary 30+ Days, which puts it in the estate call presets
 
 **Human checkpoint.**
 
-- Operator approves the drop
+- Releases each staged batch of letters
 
 **Outputs.** Validated mail export
 
-**Touches.** DataSift API, Address validation
+**Touches.** DataSift Open API key
 
 > **The trap this exists to avoid.** Never name the list. Foreclosure, probate, inherited, tax, lien: none of those words appear in outreach copy, because the seller should feel found, not targeted.
 
@@ -1601,11 +1605,11 @@ Owner-bound number pool so a callback reaches the person who claimed to text.
 
 #### Obituary Mail Export
 
-`src/obituary_mail_export.py` &middot; phase 2 &middot; gated
+`src/agents/autopilot/obituary.py, src/agents/release.py` &middot; phase 2 &middot; gated
 
-Turns the ranked obituary opportunity list into a validated mail file.
+Prints the obituary lane's letters as a file for an outside printer, never through DataSift's own mail, which would print the owner of record's name, and that may be the person who died.
 
-**Trigger.** After obituary_opportunity ranks the list.
+**Trigger.** A staged obituary_mail batch, released by a person (confirm N uploaded once the file has gone to the printer).
 
 **Does.**
 
@@ -1615,11 +1619,11 @@ Turns the ranked obituary opportunity list into a validated mail file.
 
 **Human checkpoint.**
 
-- Approves the drop and the spend
+- Approves the drop and the spend, and confirms the upload
 
 **Outputs.** Mail export CSV
 
-**Touches.** DataSift API, Smarty
+**Touches.** DataSift Open API key
 
 > **The trap this exists to avoid.** Every row ships a must-verify note. Whether the person who died is the owner of record is NOT verifiable from CRM data, and the spouse-obituary trap is live on every single row: an obituary on the record does not mean the OWNER died.
 
@@ -1825,7 +1829,7 @@ Creates custom fields, select options, and lists. Idempotent, dry-run by default
 
 **Outputs.** CRM schema
 
-**Touches.** DataSift internal API
+**Touches.** DataSift Open API key
 
 > **The trap this exists to avoid.** Dry run by default is the right posture for anything that mutates an account's schema. Creating a select custom field REQUIRES its options in the same POST.
 
@@ -2118,9 +2122,9 @@ Turns the visual distress ranking into a dialer-ready list: every row a record, 
 
 #### Doors Per Deal Ladder Pull
 
-`src/knox_blount_top15k.py, src/franklin_top30k.py` &middot; phase 1 &middot; live
+`src/knox_blount_top15k.py, src/franklin_top30k.py` &middot; phase 1 &middot; retired
 
-Walks a county's market share ladder rung by rung and pulls the top N records into an account.
+RETIRED 2026-11-24. Walked a county's market share ladder rung by rung and pulled the top N records into one account: the October Knox and Blount and September Franklin one-off pulls.
 
 **Trigger.** python src/knox_blount_top15k.py or python src/franklin_top30k.py
 
@@ -2139,22 +2143,23 @@ Walks a county's market share ladder rung by rung and pulls the top N records in
 
 **Touches.** County List Playbook, SiftMap, DataSift API
 
-> **The trap this exists to avoid.** The read-back probe must be a record NEW to the account. An existing one reads as saved at once, before the async job attaches the list, so it passes whether or not the pull worked.
+> **The trap this exists to avoid.** Retired because it ran on the team's own accounts and the properties index only. Agency Test Pools (ai_pools.py --rank ladder) walks the same ladder on any account's own key. Kept for its lesson: the read-back probe must be a record NEW to the account, since an existing one reads as saved before the async job attaches the list.
 
 #### Agency Test Pools
 
-`src/ai_pools.py, src/pull_by_ids.py, src/agency_call_list.py` &middot; phase 1 &middot; live
+`src/ai_pools.py, src/pull_by_ids.py, src/agency_call_list.py, src/agency_rules.py` &middot; phase 1 &middot; live
 
-Builds ranked, non-overlapping record pools from the properties index and hands a calling agency one row per owner.
+Builds ranked, buy-boxed, non-overlapping record pools from SiftMap's search on the account's own key and hands a calling agency one row per owner.
 
-**Trigger.** python src/ai_pools.py --market <market>, then pull_by_ids.py and agency_call_list.py
+**Trigger.** python src/ai_pools.py --county "<County, ST>" --pool investor:<count> [--pool realtor:<count>], then pull_by_ids.py and agency_call_list.py
 
 **Does.**
 
-- Reads the properties index through the read-only opensearch MCP
-- Ranks by realtor or investor AI score under the buy box, with no overlap between pools
-- Pulls by id so DataSift's own skip trace fills the phones
-- Exports callable numbers only, mobiles first
+- Ranks by the investor or realtor AI score one point at a time, or by the county's Doors per Deal ladder
+- Buy box: single family, the value band, not listed, no sale since a date, no company owner
+- Two pools never share a house: each goes where it ranks higher
+- pull_by_ids.py prices the pull on DataSift's published quote, then pulls it in by id
+- agency_call_list.py builds one row per owner with only the numbers the CRM has not ruled out
 
 **Human checkpoint.**
 
@@ -2162,9 +2167,9 @@ Builds ranked, non-overlapping record pools from the properties index and hands 
 
 **Outputs.** Pools in the account, Calling agency call list
 
-**Touches.** opensearch MCP, DataSift API
+**Touches.** SiftMap search, DataSift Open API key
 
-> **The trap this exists to avoid.** No Trestle and no do-not-call scrub on purpose: the agency scrubs the registry and litigators itself. The opensearch client refuses to start unless the server runs read-only, because its default configuration allows writes to the production cluster.
+> **The trap this exists to avoid.** Search rows carry no AI score, so each score point is its own filter, proven by count; and the scores are a per-county add-on, so a county the account cannot see is said so at the start instead of reading as an empty market. No Trestle and no do-not-call scrub on purpose: the agency scrubs the registry and litigators itself.
 
 #### Buildable Lot Finder
 

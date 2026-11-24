@@ -6,6 +6,8 @@ first, so re-running never duplicates. Run with --commit to actually write.
     python src/datasift_schema_setup.py            # show the plan
     python src/datasift_schema_setup.py --commit   # apply it
 
+Runs on the account's own Open API key (REISIFT_API_KEY in .env), or the uploader's login where one is set.
+
 Discovery notes that shaped this (verified live 2026-08-03):
   * "Tax delinquency amount" (money) and "Number of years tax-linked" (number)
     ALREADY EXIST. Reused, not recreated.
@@ -22,12 +24,8 @@ import argparse
 import os
 import sys
 
-_API = r"C:\Users\you\OneDrive\Desktop\Deal Room Coaching Call\_api"
-sys.path.insert(0, _API)
-sys.path.insert(0, os.path.join(_API, "clients"))
-os.environ.setdefault("REISIFT_ACCOUNT", "datasift-apikey")
-
-from clients.crm_api import CRMClient  # noqa: E402
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import datasift_api_upload as up  # noqa: E402
 
 # label -> field_type. Only what this pull needs and the account lacks.
 NEW_FIELDS = [
@@ -49,9 +47,14 @@ NOTICE_TYPE_OPTIONS = ["lien", "trustee_deed", "eviction",
 NEW_LISTS = ["Condemned", "Trustee Deed", "Public Sale", "Court Order"]
 
 
-def fetch(c, path, **params):
-    r = c._request(path, method="GET", params={"limit": 999, **params})
-    return r.get("results") or []
+def fetch(c, path) -> list:
+    r = c.call(path + "?limit=999")
+    return (r.get("results") if isinstance(r, dict) else r) or []
+
+
+def post(c, path, body) -> dict:
+    r = c.call(path, "POST", body)
+    return r if isinstance(r, dict) else {}
 
 
 def main() -> int:
@@ -59,7 +62,7 @@ def main() -> int:
     ap.add_argument("--commit", action="store_true")
     a = ap.parse_args()
     tag = "COMMIT" if a.commit else "DRY RUN"
-    c = CRMClient()
+    c = up.Api()
 
     fields = fetch(c, "/api/internal/custom-fields/")
     by_label = {f.get("label"): f for f in fields}
@@ -94,7 +97,7 @@ def main() -> int:
         if ftype in ("select", "multiselect"):
             body["options"] = [{"label": o, "value": o}
                                for o in FIELD_OPTIONS.get(label, [])]
-        r = c._request("/api/internal/custom-fields/", method="POST", body=body)
+        r = post(c, "/api/internal/custom-fields/", body)
         by_label[label] = r
         print("  created  %-26s %s -> %s" % (label, ftype, r.get("uuid") or r.get("id")))
 
@@ -116,8 +119,7 @@ def main() -> int:
             if not a.commit:
                 print("  ADD OPT  %-26s %s" % (label, o))
                 continue
-            c._request(f"/api/internal/custom-fields/{fid}/option/",
-                       method="POST", body={"label": o, "value": o})
+            post(c, f"/api/internal/custom-fields/{fid}/option/", {"label": o, "value": o})
             print("  added    %-26s %s" % (label, o))
 
     print("\n--- LISTS ---")
@@ -128,7 +130,7 @@ def main() -> int:
         if not a.commit:
             print("  CREATE   %s" % title)
             continue
-        r = c._request("/api/internal/list/", method="POST", body={"title": title})
+        r = post(c, "/api/internal/list/", {"title": title})
         print("  created  %-20s -> %s" % (title, r.get("uuid")))
 
     print("\nReused, NOT recreated: 'Liens' list, 'Tax delinquency amount', "

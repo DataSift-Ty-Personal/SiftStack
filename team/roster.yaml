@@ -134,9 +134,9 @@ workflows:
     spend: records
     triggers: [slack]
     inputs: {ids: "The dataflik ids: comma-separated, or the file name of a JSON or CSV of rows with dataflik_id that an earlier task left on the box", list: "The DataSift list the records go on (created if missing)", approved_count: "How many NEW records the operator approved from this workflow's own quote; 0 asks for the quote only"}
-    manual: python src/pull_by_ids.py with an ai_pools or ladder export.
+    manual: python src/pull_by_ids.py --ids <ai_pools pool.json> --list "<list>" (the quote), then --commit.
     sources: [agents.workflows.list_pull, pull_by_ids, ai_pools, knox_blount_top15k, franklin_top30k]
-    covers: [ladderpull, aipools]
+    covers: [aipools]
   idle_records:
     owner: analysis
     summary: Idle records on one list worth working again, ranked (AI scores, lists, attempts, no recent sale), with the owners who hold several.
@@ -168,7 +168,7 @@ workflows:
     covers: [schema, presets, sequences, bpexport, bpapply, wizard]
   land_desk:
     owner: analysis
-    summary: Buildable lots and land tracts matched to the builders who buy them, rendered from a finished analysis on the box.
+    summary: "Staff only: buildable lots and land tracts matched to the builders who buy them, rendered from an analysis staff built on a workstation that reads DataSift's internal property index; on any account, buildable_lots works the lots."
     status: live
     spend: free
     triggers: [slack]

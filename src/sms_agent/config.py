@@ -134,9 +134,9 @@ NUMBERS_FILE = Path(
 )
 
 # ---------------------------------------------------------------- reisift
-DEALROOM_API = Path(
-    _env("DEALROOM_API_PATH", r"C:\Users\you\OneDrive\Desktop\Deal Room Coaching Call\_api")
-)
+# The Deal Room checkout's CRM client is an opt-in for the team's own workstation (DEALROOM_API_PATH); unset,
+# the app uses the self-contained client on REISIFT_API_KEY, as the production box always has.
+DEALROOM_API = Path(_env("DEALROOM_API_PATH", "")) if _env("DEALROOM_API_PATH", "") else None
 SIFT_ACCOUNT = _env("SMS_AGENT_SIFT_ACCOUNT", "datasift-apikey")
 SIFT_IMPERSONATE = _env("SMS_AGENT_SIFT_IMPERSONATE", "")  # e.g. you@example.com
 # No-expiry Open API key. This is what lets the agent run on a cloud box with no

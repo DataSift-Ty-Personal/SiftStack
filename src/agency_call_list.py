@@ -1,16 +1,22 @@
 """Calling-agency call list for a pool pulled with pull_by_ids.py: one row per owner, callable numbers only.
 
-The same file the calling agency took in October (knox_blount_top15k.py phase export), for any pool and any
-account: Record ID, owner and Owner 2, property and mailing address, Phone 1-10 with type (mobiles first),
-Email 1-3, Segment, value / equity / specs, Vacant / Absentee / Deceased and the owner's other properties on
-the list, then List Rank and both AI scores at the end so the agency's October column mapping still fits.
-No Trestle and no DNC scrub on purpose: the agency scrubs the DNC registry and litigators itself. A number
-comes off only for what the CRM already knows (invalid, a wrong / dead / DNC disposition, a prior litigator
-tag, disconnected, a repeat). Owners the agency should not dial go to Held out with the reason: owner do not
-call or opted out, an entity or nameless owner of record, a live lead, upside down.
+The file a calling agency takes: Record ID, owner and Owner 2, property and mailing address, Phone 1-10 with type
+(mobiles first), Email 1-3, Segment, value / equity / specs, Vacant / Absentee / Deceased and the owner's other
+properties on the list, then List Rank and both AI scores at the end. No Trestle and no DNC scrub on purpose: the
+agency scrubs the DNC registry and litigators itself. A number comes off only for what the CRM already knows
+(invalid, a wrong / dead / DNC disposition, a prior litigator tag, disconnected, a repeat). Owners the agency
+should not dial go to Held out with the reason: owner do not call or opted out, a company, trust or nameless owner
+of record, a live lead, upside down, a lot with no house. The rules are in agency_rules.py.
 
-  python src/agency_call_list.py --pool output/ai_pools/franklin/realtor.json \
-      --list "Franklin OH - Realtor AI Top 20K" --target data-staging@example.com --phase all --about "..."
+The whole chain, on your own account (REISIFT_API_KEY in .env):
+
+  python src/ai_pools.py --county "Knox, TN" --pool investor:20000 --name knox
+  python src/pull_by_ids.py --ids output/ai_pools/knox/investor.json --list "Knox - Investor AI 20K"   # dry
+  python src/pull_by_ids.py --ids output/ai_pools/knox/investor.json --list "Knox - Investor AI 20K" --commit
+  python src/agency_call_list.py --pool output/ai_pools/knox/investor.json --list "Knox - Investor AI 20K"       --phase all --about "Knox single family, investor AI order, no sale since 2023"
+
+Another account: --key-env NAME (its Open API key in .env) on both pull_by_ids and here, since the pull's
+state is kept per account.
 
 harvest  reads every record once (resumable, about 3 a second): the full phone list is only on the record,
          a list search carries one representative number. Pool ids map to record uuids through the
@@ -35,14 +41,14 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from datasift_api_upload import ApiError  # noqa: E402
 import d4d_call_list as d4d  # noqa: E402
-import knox_blount_top15k as kb  # noqa: E402
+import agency_rules as rules  # noqa: E402
 import pull_by_ids as pb  # noqa: E402
 
 OUT = Path("output/agency_call_lists")
 COLS = (["Record ID", "First Name", "Last Name", "Owner 2", "Property Address", "Property City",
          "Property State", "Property ZIP", "County", "Mailing Address", "Mailing City", "Mailing State",
          "Mailing ZIP"]
-        + [c for n in range(1, kb.MAX_PHONES + 1) for c in ("Phone %d" % n, "Phone %d Type" % n)]
+        + [c for n in range(1, rules.MAX_PHONES + 1) for c in ("Phone %d" % n, "Phone %d Type" % n)]
         + ["Email 1", "Email 2", "Email 3", "Segment", "Estimated Value", "Equity %", "Year Built", "Beds",
            "Baths", "SqFt", "Vacant", "Absentee Owner", "Owner Deceased", "Other Properties on This List",
            "List Rank", "Realtor AI Score", "Investor AI Score"])
@@ -73,7 +79,7 @@ def phase_harvest(args, run: Path) -> None:
     t0 = time.time()
     for k, u in enumerate(todo, 1):
         try:
-            cache[u] = kb._slim(d4d._call(api, "/api/internal/property/%s/" % u, min_gap=args.gap) or {})
+            cache[u] = rules.slim(d4d._call(api, "/api/internal/property/%s/" % u, min_gap=args.gap) or {})
         except ApiError as e:
             if e.code != 404:
                 raise
@@ -100,7 +106,7 @@ def relink(args, api, m, ids: list, um: dict, cache: dict, run: Path) -> None:
         if not nu or nu in taken:  # still the dead uuid, or another pool row's record: nothing new to read
             continue
         try:
-            rec = kb._slim(d4d._call(api, "/api/internal/property/%s/" % nu, min_gap=args.gap) or {})
+            rec = rules.slim(d4d._call(api, "/api/internal/property/%s/" % nu, min_gap=args.gap) or {})
         except ApiError as e:
             if e.code != 404:
                 raise
@@ -120,19 +126,19 @@ def people(r: dict, phones: list) -> set:
 
 
 def held_reason(r: dict) -> str:
-    """knox_blount_top15k's hold rules, worded for whichever account the list lives in."""
+    """Why an owner is held out of the agency file, worded for whichever account the list lives in."""
     if r.get("dnc") or r.get("opt_out"):
         return "owner do not call / opted out"
     if not (r.get("first") and r.get("last")):
         co = r.get("company") or ""
         if not co:
             return "no owner name in the CRM"
-        if kb._ENTITY.search(co) or co[:1].isdigit() or co.lower().startswith("the "):
+        if rules.ENTITY.search(co) or co[:1].isdigit() or co.lower().startswith("the "):
             return "entity owner in the CRM: %s" % co
         return "person name stored as a company in the CRM: %s" % co
-    if kb._church_as_person(r.get("first"), r.get("last")):
+    if rules.church_as_person(r.get("first"), r.get("last")):
         return "entity owner in the CRM: %s %s" % (r["first"], r["last"])
-    if r.get("status") in kb.LIVE_LEAD_STATUSES:
+    if r.get("status") in rules.LIVE_LEAD_STATUSES:
         return "live lead in the CRM (%s)" % r["status"]
     if r.get("equity") not in (None, "") and float(r["equity"]) < 0:
         return "upside down (equity under 0%)"
@@ -151,17 +157,17 @@ def is_lot(r: dict) -> bool:
 
 def line(x: dict) -> list:
     r, p = x["r"], x["pool"]
-    ph = x["phones"][:kb.MAX_PHONES] + [("", "")] * (kb.MAX_PHONES - len(x["phones"][:kb.MAX_PHONES]))
-    absentee = bool(r.get("m_street")) and (kb._addr_key(r.get("m_street")) != kb._addr_key(r.get("street"))
+    ph = x["phones"][:rules.MAX_PHONES] + [("", "")] * (rules.MAX_PHONES - len(x["phones"][:rules.MAX_PHONES]))
+    absentee = bool(r.get("m_street")) and (rules.addr_key(r.get("m_street")) != rules.addr_key(r.get("street"))
                                             or (r.get("m_zip") or r.get("zip")) != r.get("zip"))
     emails = [e if isinstance(e, str) else (e.get("email") or "") for e in r["emails"]][:3]
     emails += [""] * (3 - len(emails))
-    return ([r["uuid"], kb._name(r.get("first")), kb._name(r.get("last")), kb._name(r.get("owner2")),
+    return ([r["uuid"], rules.display_name(r.get("first")), rules.display_name(r.get("last")), rules.display_name(r.get("owner2")),
              r["street"], r["city"], r["state"], r["zip"], r["county"],
              r.get("m_street"), r.get("m_city"), r.get("m_state"), r.get("m_zip")]
             + [c for q in ph for c in q] + emails
-            + [x["segment"], kb._num(r.get("value")), kb._num(r.get("equity"), 1), kb._num(r.get("year")),
-               kb._num(r.get("beds")), kb._num(r.get("baths"), 1), kb._num(r.get("sqft")),
+            + [x["segment"], rules.num(r.get("value")), rules.num(r.get("equity"), 1), rules.num(r.get("year")),
+               rules.num(r.get("beds")), rules.num(r.get("baths"), 1), rules.num(r.get("sqft")),
                "Yes" if r.get("vacant") else "", "Yes" if absentee else "", "Yes" if r.get("deceased") else "",
                "; ".join(x["others"]), p.get("rank"), p.get("realtor_score"), p.get("investor_off_market_score")])
 
@@ -201,7 +207,7 @@ def phase_export(args, run: Path) -> None:
         seg = ("P%s %s" % (p["priority"], p["rung"])) if p.get("priority") else (p.get("rung") or "")
         key = r.get("owner_uuid") or r["uuid"]
         key = alias.get(key, key)
-        phones, why_drop = kb.clean_phones(r)
+        phones, why_drop = rules.clean_phones(r)
         twins = people(r, phones)
         other = elsewhere.get(key) or next((twins_elsewhere[t] for t in sorted(twins) if t in twins_elsewhere), "")
         why = ("owner already on the %s call list" % other) if other else held_reason(r)
@@ -244,14 +250,14 @@ def phase_export(args, run: Path) -> None:
             w.writerow(COLS)
             for x in rows:
                 w.writerow(line(x))
-    shown = [x["phones"][:kb.MAX_PHONES] for x in calls.values()]
+    shown = [x["phones"][:rules.MAX_PHONES] for x in calls.values()]
     summary = {"list": args.list_name, "pool_ids": len(pool), "not_harvested": missing, "gone": gone,
                "found_under_new_record_id": moved, "pool_ids_on_a_shared_record": shared,
                "same_person_merged": merged, "second_parcel_same_address": same_address, "rows": len(calls),
                "properties_covered": sum(1 + len(x["others"]) for x in calls.values()),
                "no_phone_rows": len(quiet), "held": held, "phones": sum(len(s) for s in shown),
                "mobiles": sum(1 for s in shown for q in s if q[1] == "Mobile"), "phone_drops": drops,
-               "rows_over_phone_cap": sum(1 for x in calls.values() if len(x["phones"]) > kb.MAX_PHONES),
+               "rows_over_phone_cap": sum(1 for x in calls.values() if len(x["phones"]) > rules.MAX_PHONES),
                "deceased_rows": sum(1 for x in calls.values() if x["r"].get("deceased")),
                "file": str(base.with_suffix(".csv"))}
     d4d._save(run / "export_summary.json", summary)
@@ -265,9 +271,9 @@ def phase_export(args, run: Path) -> None:
 def write_xlsx(path: Path, args, rows: list, no_phone: list, held: list, s: dict) -> None:
     from openpyxl import Workbook
     from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
-    head = Font(bold=True, color=kb.NAVY)
-    fill = PatternFill("solid", start_color=kb.SOFT, end_color=kb.SOFT)
-    rule = Border(bottom=Side(style="thin", color=kb.LINE))
+    head = Font(bold=True, color=rules.NAVY)
+    fill = PatternFill("solid", start_color=rules.SOFT, end_color=rules.SOFT)
+    rule = Border(bottom=Side(style="thin", color=rules.LINE))
     wb = Workbook()
     ws = wb.active
     ws.title = "Read me"
@@ -297,7 +303,7 @@ def write_xlsx(path: Path, args, rows: list, no_phone: list, held: list, s: dict
         if isinstance(v, bool):
             ws.append([text])
             if v:
-                ws.cell(ws.max_row, 1).font = Font(bold=True, size=14, color=kb.NAVY)
+                ws.cell(ws.max_row, 1).font = Font(bold=True, size=14, color=rules.NAVY)
         else:
             ws.append([text, v])
             ws.cell(ws.max_row, 2).number_format = "#,##0"
@@ -330,8 +336,8 @@ def main() -> int:
     ap.add_argument("--pool", required=True, help="pool JSON from ai_pools.py (rank order, dataflik_id)")
     ap.add_argument("--list", dest="list_name", required=True, help="the DataSift list the pool was pulled onto")
     ap.add_argument("--about", default="", help="one sentence for the Read me: what the pool is, its buy box")
-    ap.add_argument("--target", default="", help="allowlisted account email, token in REISIFT_TARGET_JWT_FILE")
-    ap.add_argument("--key-env", default="", help="env var holding another account's Open API key")
+    ap.add_argument("--target", default="", help="staff only: an allowlisted account by a pasted token (see pull_by_ids)")
+    ap.add_argument("--key-env", default="", help="env var holding another account's Open API key (default: REISIFT_API_KEY)")
     ap.add_argument("--expect-email", default="")
     ap.add_argument("--phase", required=True, choices=["harvest", "export", "all"])
     ap.add_argument("--gap", type=float, default=0.3, help="harvest: minimum seconds between record reads")

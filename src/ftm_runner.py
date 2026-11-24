@@ -542,8 +542,8 @@ def _stage_county(args) -> StageResult:
     """Knox FTM county pull (liens, condemnations).
 
     Degrades with a stated reason rather than failing the whole run: it needs
-    the SiftMap client for the buy-box enrichment, and that lives in the Deal
-    Room checkout, which a cloud box does not have.
+    the SiftMap client (siftmap_standalone, on the Open API key) for the
+    buy-box enrichment.
     """
     res = StageResult(name="county")
     t0 = time.time()
@@ -556,19 +556,12 @@ def _stage_county(args) -> StageResult:
         return res
 
     try:
-        # Either client will do: knox_ftm_pull falls back to the standalone one,
-        # which needs nothing but REISIFT_API_KEY.
-        try:
-            from clients.siftmap_api import SiftMapClient  # noqa: F401
-        except Exception:
-            from siftmap_standalone import SiftMapClient  # noqa: F401
+        # knox_ftm_pull's buy-box enrichment runs on the self-contained client, which needs nothing but
+        # REISIFT_API_KEY.
+        from siftmap_standalone import SiftMapClient  # noqa: F401
     except Exception:
         res.status = "skipped"
-        res.detail = (
-            "SiftMap client not importable (Deal Room _api checkout absent). "
-            "The county pull needs it for buy-box enrichment; run this stage "
-            "from the workstation until the client is vendored."
-        )
+        res.detail = "SiftMap client not importable (siftmap_standalone); the county pull needs it for buy-box enrichment."
         return res
 
     out = config.OUTPUT_DIR / f"knox_ftm_pull_{datetime.now():%Y-%m-%d}.csv"

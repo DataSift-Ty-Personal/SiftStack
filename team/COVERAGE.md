@@ -2,7 +2,7 @@
 
 # Org chart coverage
 
-Every agent on docs/agents.json (the public org chart), the team workflow that runs it, and the employee who owns that workflow. 94 agents: 85 run by a workflow, 3 platform, 6 retired, 0 not yet assigned.
+Every agent on docs/agents.json (the public org chart), the team workflow that runs it, and the employee who owns that workflow. 94 agents: 84 run by a workflow, 3 platform, 7 retired, 0 not yet assigned.
 
 ## Atlas (Analysis)
 
@@ -12,7 +12,7 @@ Every agent on docs/agents.json (the public org chart), the team workflow that r
 | county_pull | own box, daily | Knox FTM Puller (knoxftm), Lien Resolver (lien), Foreclosure Consolidator (consolidate), API Uploader (apiupload) |
 | courthouse_import | by hand today | Courthouse Photo Importer (photo), PDF Importer (pdfimp), Dropbox Watcher (dropbox) |
 | market_report | live | Market Finder Extractor (finder), County Market Report Generator (report) |
-| list_pull | live | Doors Per Deal Ladder Pull (ladderpull), Agency Test Pools (aipools) |
+| list_pull | live | Agency Test Pools (aipools) |
 | idle_records | live | Obituary Opportunity Ranker (obitrank), Dream 100 Ranker (dream100), D4D Call List (d4dcalls) |
 | sold_cleanup | own box, daily | SiftMap Sold Tagger (siftmap) |
 | account_setup | live | Schema Setup (schema), Preset Manager (presets), Sequence Builder (sequences), Account Blueprint Export (bpexport), Account Blueprint Apply (bpapply), Upload Wizard Driver (wizard) |
@@ -164,6 +164,7 @@ Every agent on docs/agents.json (the public org chart), the team workflow that r
 | SiftStack Core (core) | the shared spine every workflow imports |
 | Operator (operator) | the person running the business |
 | Claude Orchestrator (orchestrator) | Claude itself, directing the team |
+| Doors Per Deal Ladder Pull (ladderpull) | retired |
 | Proof-of-Source Capture (shot) | retired |
 | County Owner Pull (soicounty) | retired |
 | Enformion Resolver (soienf) | retired |

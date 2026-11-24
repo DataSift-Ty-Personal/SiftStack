@@ -1,142 +1,200 @@
-"""Ranked, buy-boxed, non-overlapping record pools from the properties index (read through the opensearch MCP).
+"""Ranked, buy-boxed, non-overlapping record pools for a calling agency, built on the install's own Open API key.
 
-Built 2026-11-05 for agency test lists (Ty): each pool is pulled into data+staging by id with
-pull_by_ids.py, DataSift's unlimited skip trace fills the phones, no Trestle.
+The pools are chosen from SiftMap's search (the published route, read in volume as acceptable use allows);
+nothing is added to the account here. Pull a pool in afterwards and build the agency's file from it:
 
-  python src/ai_pools.py --market franklin      # 20,000 realtor AI + 20,000 investor ladder, zero overlap
-  python src/ai_pools.py --market knox_blount --rank ai \
-      --exclude output/ai_pools/knox_blount/exclude_account_do_not_market.json   # 30,000 by investor AI (Ty's pick)
+  python src/ai_pools.py --county "Knox, TN" --county "Blount, TN" --pool investor:30000 --name knox_blount
+  python src/ai_pools.py --county "Franklin, OH" --pool realtor:20000 --pool investor:20000 --rank ladder
+  python src/pull_by_ids.py --ids output/ai_pools/<name>/<pool>.json --list "<list name>"     # the quote; --commit pulls
+  python src/agency_call_list.py --pool output/ai_pools/<name>/<pool>.json --list "<list name>" --phase all
 
 Rankings
-  realtor   realtor_score high to low (ties: equity, then dataflik_id).
-  investor  the county's Doors per Deal `ai` ladder (learn.datasift.ai/capture-data/<st>.json) in work
-            order: the Priority 1 lists and the top investor AI band first, then down. An AI rung is a band
-            of investor_off_market_score (identical to investor_score on 100 of 100 sampled); a list rung
-            needs every one of its distressor_data flags active. preset_* rungs (negative/low equity, owner
-            occupied) are skipped for the equity goal, as in the Sep 2026 Franklin run. Inside a rung the
-            highest investor AI goes first; if the ladder runs dry, investor AI top-down fills the rest.
-            Two-county ladders merge on marginal doors/deal, each county keeping its own rung order.
-            --rank ai ranks the investor pool by investor_off_market_score alone, no list rungs (Ty chose
-            this for Knox/Blount 2026-11-05, where the ladder ran 17,747 of 30,000 deep into P3).
+  investor --rank ai      SiftMap's investor AI score, one point at a time from 100 down. Search rows do not
+                          carry the score, so each score is its own filter (investor_off_market_score_min and
+                          _max, whole numbers, proven by count).
+  investor --rank ladder  the county's Doors per Deal ladder (learn.datasift.ai/capture-data/<st>.json) in work
+                          order, each rung its own SiftMap filter (the same translation live Doors per Deal
+                          uses), preset rungs (equity and occupancy cuts) skipped, then the investor AI order
+                          for the rest. Two counties merge on marginal doors per deal, each keeping its own
+                          rung order.
+  realtor                 SiftMap's realtor AI score, one point at a time from 100 down.
+  Inside one score or rung, more equity first, then the SiftMap id.
 
-No overlap: a record in both Franklin pools goes to the pool where it ranks higher and the other pool
-refills from its next-best record, repeated until neither pool holds the other's records.
+The AI scores are a per-county add-on: a county whose scores this account cannot see is said so at the start. Its
+investor pool falls back to the ladder's list rungs; a realtor pool has no fallback there.
 
-Buy box (Ty, 2026-11-05): single family; off market AND not listed per MLS status (is_active_listing, and
-any MLS status other than Sold, both excluded); no deed or MLS sale since 2023-01-01; individuals only
-(not corporate, not trust); owner name present, since skip trace needs one. Franklin $1-700K with the 69
-Market Finder neighborhoods and ZIPs 43204 + 43211 out. Knox/Blount $100K-700K with the 18 rural ZIPs and
-44 neighborhoods of output/knox_blount_top15k/areas.json out. Every area cut is scoped to its own county.
+Buy box: single family; the value band (--value); not listed (extra_mls_status not_listed); no sale since --since
+(each band's houses that sold since are searched and taken out, so a house with no sale on record stays in); no
+company owner (each row's own corporateOwned); --exclude-zips; the ids in --exclude. A trust or a nameless owner
+is not visible before a pull: agency_call_list.py holds those out of the call file. A neighborhood is not on a
+search row, so a neighborhood cut is a ZIP cut here.
 
-Output: output/ai_pools/<market>/<pool>.json (ordered rows carrying the rung or score that put each record
-there) and summary.json.
+No overlap: a house in two pools goes to the pool where it ranks higher and the other pool refills from its
+next-best house, until neither holds the other's houses.
+
+Output: output/ai_pools/<name>/<pool>.json (ordered rows carrying the score or rung that put each house there)
+and summary.json. Searches are paced at about 80 a minute (SiftMap's limit is per account, shared by every tool
+on it) and capped by --max-searches; the summary counts them.
 """
 
 from __future__ import annotations
 
 import argparse
-import csv
 import json
 import os
+import re
 import sys
-import urllib.request
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from opensearch_mcp import OpenSearchMCP  # noqa: E402
+import dpd_live as D  # noqa: E402
 
-OUT = Path("output/ai_pools")
-SINCE = "2023-01-01"
-SHARD_URL = "https://learn.datasift.ai/capture-data/%s.json"
+OUT = Path(os.environ.get("AI_POOLS_DIR") or "output/ai_pools")
 INVESTOR = "investor_off_market_score"
-FIELDS = ["dataflik_id", "fips", "property_zip", "realtor_score", INVESTOR, "equity_percentage_est", "property_value"]
-SORT_INVESTOR = [{INVESTOR: "desc"}, {"equity_percentage_est": {"order": "desc", "missing": "_last"}},
-                 {"dataflik_id": "asc"}]
-SORT_REALTOR = [{"realtor_score": "desc"}, {"equity_percentage_est": {"order": "desc", "missing": "_last"}},
-                {"dataflik_id": "asc"}]
+REALTOR = "realtor_score"
+SCORE_KEYS = {"investor": INVESTOR, "realtor": REALTOR}
+BOX = {"type_single_family": True, "extra_mls_status": ["not_listed"]}
+PAGE = 250
+SPLIT_AT = 9000           # past 10,000 rows SiftMap refuses a page, so a bigger result is cut by value first
+ZIP_RX = re.compile(r"\b(\d{5})(?:-\d{4})?\s*$")
 
 
-def _franklin_areas():
-    rows = csv.DictReader(open("output/franklin_top30k/neighborhood_suppress.csv", encoding="utf-8"))
-    return {"39049": ["43204", "43211"]}, {"39049": [r["neighborhood"] for r in rows]}
+# ------------------------------------------------------------------------------------------ the search
+def members(s, c: dict, filters: dict, lo: int, hi: int, out: dict | None = None, cut: Counter | None = None) -> dict:
+    """id -> row for every house in one county matching `filters` with a value from lo to hi. A result bigger
+    than SPLIT_AT is cut in two by value until each part reads in full under the 10,000-row wall."""
+    out = {} if out is None else out
+    f = dict(filters, value_min=int(lo), value_max=int(hi))
+    offset, total = 0, None
+    while True:
+        r = s(D.body(c, f, offset, PAGE))
+        if total is None:
+            total = int(r.get("total_results") or 0)
+            if total > SPLIT_AT and hi - lo >= 2:
+                mid = (int(lo) + int(hi)) // 2
+                members(s, c, filters, lo, mid, out, cut)
+                members(s, c, filters, mid + 1, hi, out, cut)
+                return out
+            if total > D.WALL and cut is not None:
+                cut["over 10,000 houses at one value, only 10,000 read"] += total - D.WALL
+        rows = r.get("data") or []
+        for row in rows:
+            if row.get("id") is not None:
+                out[str(row["id"])] = row
+        offset += len(rows)
+        if not rows or offset >= min(total, D.WALL):
+            return out
 
 
-def _knox_blount_areas():
-    a = json.load(open("output/knox_blount_top15k/areas.json", encoding="utf-8"))["counties"]
-    return {f: v["zips_excluded"] for f, v in a.items()}, {f: v["nbhds_excluded"] for f, v in a.items()}
+def row_zip(row: dict) -> str:
+    m = ZIP_RX.search(str(row.get("address") or ""))
+    return m.group(1) if m else ""
 
 
-MARKETS = {
-    "franklin": {"fips": ["39049"], "value": (1, 700000), "areas": _franklin_areas, "shard": "39",
-                 "fallback": "output/franklin_top30k/capture-data-39.json",
-                 "pools": [("realtor", 20000), ("investor", 20000)],
-                 "prior": ("Franklin OH - Top 30K DPD (Sep 2026)", "output/franklin_top30k/selection.json")},
-    "knox_blount": {"fips": ["47093", "47009"], "value": (100000, 700000), "areas": _knox_blount_areas,
-                    "shard": "47", "fallback": "output/knox_blount_top15k/capture-data-47.json",
-                    "pools": [("investor", 30000)],
-                    "prior": ("Knox Blount - Top 15K DPD (Oct 2026, prod-account)", "output/knox_blount_top15k/selection.json")},
-}
-
-
-def _no_sale_since(field: str) -> dict:
-    return {"bool": {"should": [{"range": {field: {"lt": SINCE, "format": "yyyy-MM-dd"}}},
-                                {"bool": {"must_not": {"exists": {"field": field}}}}],
-                     "minimum_should_match": 1}}
-
-
-def buy_box(mk: dict, zips_out: dict, nbhds_out: dict, require_name: bool = True) -> dict:
-    lo, hi = mk["value"]
-    listed = {"bool": {"filter": [{"exists": {"field": "mls_data.status"}}],
-                       "must_not": [{"term": {"mls_data.status": "Sold"}}]}}
-    must_not = [{"term": {"is_active_listing": True}}, listed,
-                {"term": {"is_corporate_owned": True}}, {"term": {"is_trust_owned": True}}]
-    for fips, zips in zips_out.items():
-        must_not.append({"bool": {"filter": [{"term": {"fips": fips}}, {"terms": {"property_zip": zips}}]}})
-    for fips, names in nbhds_out.items():
-        must_not.append({"bool": {"filter": [{"term": {"fips": fips}}, {"terms": {"neighborhood.keyword": names}}]}})
-    flt = [{"terms": {"fips": mk["fips"]}}, {"term": {"property_type_group": "single_family_residence"}},
-           {"range": {"property_value": {"gte": lo, "lte": hi}}},
-           _no_sale_since("last_sale_date"), _no_sale_since("mls_data.last_sold_date")]
-    if require_name:
-        flt.append({"exists": {"field": "last_name"}})
-    return {"bool": {"filter": flt, "must_not": must_not}}
-
-
-def load_shard(st: str, fallback: str, run: Path) -> tuple:
+def _num(v):
     try:
-        req = urllib.request.Request(SHARD_URL % st, headers={"User-Agent": "Mozilla/5.0 siftstack"})
-        with urllib.request.urlopen(req, timeout=60) as r:
-            data, src = json.loads(r.read()), SHARD_URL % st
-    except Exception as e:  # noqa: BLE001
-        print("  shard fetch failed (%s); using %s" % (str(e)[:80], fallback))
-        data, src = json.load(open(fallback, encoding="utf-8")), fallback
-    (run / ("capture-data-%s.json" % st)).write_text(json.dumps(data), encoding="utf-8")
-    return data, src
+        return float(v)
+    except (TypeError, ValueError):
+        return None
 
 
-def rungs(county: dict, fips: str) -> list:
-    rows = county["variants"]["ai"]
-    bands = sorted({r["ai"] for r in rows if r.get("ai") is not None}, reverse=True)
+def _yes(v) -> bool:
+    return v is True or str(v).strip().lower() in ("true", "1", "yes")
+
+
+class Market:
+    """The counties, the buy box and the cuts, with every house it drops counted by reason."""
+
+    def __init__(self, s, counties: list[dict], value: tuple[int, int], since: str, exclude_zips=(), skip=()):
+        self.s, self.counties, self.value, self.since = s, counties, (int(value[0]), int(value[1])), since or ""
+        self.exclude_zips, self.skip = set(exclude_zips), {str(i) for i in skip}
+        self.dropped: Counter = Counter()
+        self._counted: set[str] = set()     # a house on several ladder lists is counted once
+
+    def count(self, c: dict, extra: dict | None = None) -> int:
+        return self.s.count(c, dict(BOX, value_min=self.value[0], value_max=self.value[1], **(extra or {})))
+
+    def take(self, c: dict, extra: dict) -> list[dict]:
+        """The houses in one county matching the buy box and `extra`, after the cuts, more equity first."""
+        got = members(self.s, c, dict(BOX, **extra), *self.value, cut=self.dropped)
+        sold = {}
+        if got and self.since:
+            sold = members(self.s, c, dict(BOX, extra_last_sale_date_min=self.since, **extra), *self.value)
+        rows = []
+        for i, r in got.items():
+            why = ("on the exclude list" if i in self.skip else
+                   "sold since %s" % self.since if i in sold else
+                   "company owner" if _yes(r.get("corporateOwned")) else
+                   "excluded ZIP" if row_zip(r) in self.exclude_zips else "")
+            if why:
+                if i not in self._counted:
+                    self._counted.add(i)
+                    self.dropped[why] += 1
+            else:
+                rows.append(r)
+        rows.sort(key=lambda r: (-(_num(r.get("equityPercent")) or 0), str(r.get("id"))))
+        return rows
+
+
+def slim(row: dict, c: dict, **more) -> dict:
+    i = str(row.get("id"))
+    return dict({"dataflik_id": int(i) if i.isdigit() else i, "fips": c["fips"], "property_zip": row_zip(row),
+                 "equity_percentage_est": _num(row.get("equityPercent")), "property_value": _num(row.get("estimatedValue")),
+                 "address": row.get("address")}, **more)
+
+
+def sees_scores(m: Market, c: dict, key: str) -> bool:
+    """True when this account sees the AI score in this county. Without the add-on the filter matches nothing;
+    a filter the search ignored would answer the whole county even at a perfect score."""
+    any_score = m.count(c, {key + "_min": 1})
+    return any_score > 0 and not (any_score == m.count(c) and m.count(c, {key + "_min": 100}) == any_score)
+
+
+# ------------------------------------------------------------------------------------------ rankings
+def by_score(m: Market, pool: str, need: int, taken: set, counties: list[dict] | None = None, out=print) -> list[dict]:
+    """One point of the pool's AI score at a time, from 100 down, every county at that score together."""
+    key = SCORE_KEYS[pool]
+    counties = m.counties if counties is None else counties
+    rows: list[dict] = []
+    for score in range(100, 0, -1):
+        if len(rows) >= need or not counties:
+            break
+        band = [slim(r, c, rung="%s AI %d" % (pool.title(), score), priority=None, **{key: score})
+                for c in counties for r in m.take(c, {key + "_min": score, key + "_max": score})
+                if str(r["id"]) not in taken]
+        band.sort(key=lambda x: (-(x["equity_percentage_est"] or 0), str(x["dataflik_id"])))
+        added = 0
+        for x in band:
+            if len(rows) >= need:
+                break
+            taken.add(str(x["dataflik_id"]))
+            rows.append(x)
+            added += 1
+        if band:
+            out("  %s AI %3d: %6d in the box, %6d taken, total %6d" % (pool, score, len(band), added, len(rows)))
+    return rows
+
+
+def ladder(c: dict, variant: str | None, fetch=None) -> list[dict]:
+    """The county's published ladder as SiftMap filters, in work order, preset rungs marked to skip."""
+    cap = D.shard("capture", c["fips"][:2], fetch).get(c["fips"])
+    if not cap:
+        raise SystemExit("the Doors per Deal ladder has no county %s (%s); use --rank ai" % (c["name"], c["fips"]))
+    _, rungs = D.ladder_rungs(cap, variant)
     out = []
-    for r in rows:
-        base = {"fips": fips, "label": r["label"], "priority": r.get("priority"), "dpd": r.get("marg_dpd"),
-                "list_size": r.get("list_size")}
-        if r.get("ai") is not None:
-            higher = [b for b in bands if b > r["ai"]]
-            base["clause"] = {"range": {INVESTOR: {"gte": r["ai"], "lte": (min(higher) - 1) if higher else 100}}}
-        elif any(k.startswith("preset_") for k in r["keys"]):
-            base["skip"] = "preset rung (equity goal)"
-        else:
-            base["clause"] = {"bool": {"filter": [{"term": {"distressor_data.%s.is_active" % k: True}}
-                                                  for k in r["keys"]]}}
-        out.append(base)
+    for r in rungs:
+        x = {"county": c, "label": r["label"], "priority": r["priority"], "dpd": r["shard"]["marg_dpd"],
+             "list_size": r["shard"]["size"], "filters": r["filters"]}
+        if r["ai"] is None and any(str(k).startswith("preset_") for k in r["keys"]):
+            x["skip"] = "preset rung (a pool is for equity)"
+        out.append(x)
     return out
 
 
-def merge_ladders(ladders: list) -> list:
-    """Merge on marginal doors/deal, each county keeping its own rung order."""
+def merge_ladders(ladders: list[list[dict]]) -> list[dict]:
+    """Merge on marginal doors per deal, each county keeping its own rung order."""
     idx, out = [0] * len(ladders), []
     while True:
         best = None
@@ -151,50 +209,47 @@ def merge_ladders(ladders: list) -> list:
         idx[best[1]] += 1
 
 
-def walk(c: OpenSearchMCP, box: dict, seq: list, need: int, skip: frozenset = frozenset()) -> tuple:
-    taken, rows, per = set(skip), [], []
+def by_ladder(m: Market, seq: list[dict], need: int, taken: set, fill_counties: list[dict], out=print) -> tuple[list, list]:
+    rows: list[dict] = []
+    per: list[dict] = []
     for r in seq:
         if len(rows) >= need:
             break
+        c = r["county"]
         if "skip" in r:
-            per.append({k: r[k] for k in ("fips", "label", "priority", "dpd")} | {"skipped": r["skip"]})
+            per.append({"fips": c["fips"], "label": r["label"], "priority": r["priority"], "skipped": r["skip"]})
             continue
-        q = {"bool": {"filter": [box, {"term": {"fips": r["fips"]}}, r["clause"]]}}
-        in_box, added = c.count(q), 0
-        if in_box:
-            for x in c.page(q, SORT_INVESTOR, FIELDS, in_box):
-                if x["dataflik_id"] in taken:
-                    continue
-                taken.add(x["dataflik_id"])
-                rows.append(dict(x, rung=r["label"], priority=r["priority"]))
-                added += 1
-                if len(rows) >= need:
-                    break
-        per.append({k: r[k] for k in ("fips", "label", "priority", "dpd")} | {"in_box": in_box, "added": added})
-        print("  %s P%s %-46s in box %6d  added %6d  total %6d" % (
-            r["fips"], r["priority"], r["label"][:46], in_box, added, len(rows)), flush=True)
-    if len(rows) < need:
-        added = 0
-        for x in c.page(box, SORT_INVESTOR, FIELDS, need * 3):
-            if x["dataflik_id"] not in taken:
-                taken.add(x["dataflik_id"])
-                rows.append(dict(x, rung="Fill: investor AI", priority=None))
-                added += 1
-                if len(rows) >= need:
-                    break
-        per.append({"label": "Fill: investor AI", "added": added})
-        print("  fill by investor AI: added %d  total %d" % (added, len(rows)), flush=True)
+        got, added = m.take(c, r["filters"]), 0
+        for x in got:
+            if len(rows) >= need:
+                break
+            if str(x["id"]) in taken:
+                continue
+            taken.add(str(x["id"]))
+            rows.append(slim(x, c, rung=r["label"], priority=r["priority"]))
+            added += 1
+        per.append({"fips": c["fips"], "label": r["label"], "priority": r["priority"], "dpd": r["dpd"],
+                    "in_box": len(got), "added": added})
+        out("  %s P%s %-46s in box %6d  added %6d  total %6d" % (c["fips"], r["priority"], r["label"][:46],
+                                                              len(got), added, len(rows)))
+    if len(rows) < need and fill_counties:
+        fill = by_score(m, "investor", need - len(rows), taken, fill_counties, out=out)
+        for x in fill:
+            x["rung"] = "Fill: investor AI %s" % x.get(INVESTOR)
+        rows += fill
+        per.append({"label": "Fill: investor AI", "added": len(fill)})
     return rows, per
 
 
-def disjoint(a: list, b: list, n: int) -> tuple:
-    """A record in both pools goes where it ranks higher (ties to a); the other pool refills."""
+def disjoint(a: list, b: list, na: int, nb: int) -> tuple:
+    """A house in both pools goes where it ranks higher (ties to a); the other pool refills. Only the houses each
+    pool will actually keep (its first na or nb) can collide."""
     pa = {x["dataflik_id"]: i for i, x in enumerate(a)}
     pb = {x["dataflik_id"]: i for i, x in enumerate(b)}
-    owner = {}
+    owner: dict = {}
     for _ in range(100):
-        fa = [x for x in a if owner.get(x["dataflik_id"]) != "b"][:n]
-        fb = [x for x in b if owner.get(x["dataflik_id"]) != "a"][:n]
+        fa = [x for x in a if owner.get(x["dataflik_id"]) != "b"][:na]
+        fb = [x for x in b if owner.get(x["dataflik_id"]) != "a"][:nb]
         both = {x["dataflik_id"] for x in fa} & {x["dataflik_id"] for x in fb}
         if not both:
             return fa, fb, Counter(owner.values())
@@ -203,110 +258,172 @@ def disjoint(a: list, b: list, n: int) -> tuple:
     raise SystemExit("GATE FAILED: overlap resolution did not converge")
 
 
-def prior_ids(path: str) -> set:
+# ------------------------------------------------------------------------------------------ inputs
+def id_set(path: str) -> set[str]:
+    """Ids from a JSON list of rows (dataflik_id / id), a list of ids, or a dict keyed by id."""
+    if not path:
+        return set()
     try:
         d = json.load(open(path, encoding="utf-8"))
     except (OSError, ValueError):
-        return set()
+        raise SystemExit("could not read the id file %s" % path)
     if isinstance(d, dict) and isinstance(d.get("claimed"), dict):
-        return {str(k) for k in d["claimed"]}  # franklin_top30k / knox_blount_top15k key the ids under claimed
+        return {str(k) for k in d["claimed"]}
     if isinstance(d, dict) and not any(isinstance(v, list) for v in d.values()):
-        return {str(k) for k in d}  # a dict keyed by id, e.g. id -> suppress reason
+        return {str(k) for k in d}
     rows = d if isinstance(d, list) else next((v for v in d.values() if isinstance(v, list)), [])
     return {str(r.get("dataflik_id") or r.get("id")) if isinstance(r, dict) else str(r) for r in rows}
 
 
-def describe(rows: list, prior: set) -> dict:
-    inv = [x[INVESTOR] for x in rows if x.get(INVESTOR) is not None]
-    rea = [x["realtor_score"] for x in rows if x.get("realtor_score") is not None]
+def describe(rows: list, prior: set, pool: str) -> dict:
+    key = SCORE_KEYS.get(pool, INVESTOR)
+    sc = [x[key] for x in rows if x.get(key) is not None]
     return {"records": len(rows),
-            "by_priority": dict(Counter("P%s" % x["priority"] if x.get("priority") else x["rung"] for x in rows)),
+            "by_priority": dict(Counter("P%s" % x["priority"] if x.get("priority") else str(x["rung"]).split(" AI ")[0]
+                                        for x in rows)),
             "top_rungs": Counter(x["rung"] for x in rows).most_common(12),
-            "investor_ai": [min(inv), max(inv)] if inv else None,
-            "realtor_ai": [min(rea), max(rea)] if rea else None,
+            "score_range": [min(sc), max(sc)] if sc else None,
             "by_county": dict(Counter(x["fips"] for x in rows)),
             "already_on_prior_list": sum(1 for x in rows if str(x["dataflik_id"]) in prior)}
 
 
-def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--market", required=True, choices=sorted(MARKETS))
-    ap.add_argument("--margin", type=float, default=1.5,
-                    help="candidates per slot fetched before the overlap split (two-pool markets)")
-    ap.add_argument("--rank", default="ladder", choices=["ladder", "ai"],
-                    help="investor pool: the doors-per-deal ladder, or investor AI score top-down")
-    ap.add_argument("--exclude", default="", help="ids never to pick (a JSON list, or a dict keyed by id), e.g. "
-                    "owners an account already marked do-not-market; the pools refill past them")
-    args = ap.parse_args()
-    skip = frozenset(int(i) for i in prior_ids(args.exclude) if str(i).isdigit()) if args.exclude else frozenset()
-    mk = MARKETS[args.market]
-    run = OUT / args.market
-    run.mkdir(parents=True, exist_ok=True)
-    zips_out, nbhds_out = mk["areas"]()
-    box = buy_box(mk, zips_out, nbhds_out)
-    c = OpenSearchMCP()
-    universe = c.count(box)
-    no_name = c.count(buy_box(mk, zips_out, nbhds_out, require_name=False)) - universe
-    print("%s buy box: %d records (%d more dropped for no owner name)" % (args.market, universe, no_name), flush=True)
+def parse_pools(specs: list[str]) -> list[tuple[str, int]]:
+    out = []
+    for sp in specs:
+        name, _, n = str(sp).partition(":")
+        name = name.strip().lower()
+        if name not in SCORE_KEYS or not n.strip().isdigit() or int(n) < 1:
+            raise SystemExit('a pool is "investor:<count>" or "realtor:<count>" (got %r)' % sp)
+        out.append((name, int(n)))
+    if not out or len(out) > 2 or len({p for p, _ in out}) != len(out):
+        raise SystemExit("name one or two pools: --pool investor:30000 [--pool realtor:20000]")
+    return out
 
-    src, seq, check = None, [], []
-    if args.rank == "ladder":
-        shard, src = load_shard(mk["shard"], mk["fallback"], run)
-        ladders = [rungs(shard[f], f) for f in mk["fips"]]
-        seq = ladders[0] if len(ladders) == 1 else merge_ladders(ladders)
-        check = [r for r in seq if "clause" in r][:4]
-        for r in check:  # does the flag translation reproduce the shard's own list sizes?
-            r["county_count"] = c.count({"bool": {"filter": [{"term": {"fips": r["fips"]}}, r["clause"]]}})
-            print("  check %-40s shard %6s  index %6d" % (r["label"][:40], r["list_size"], r["county_count"]),
-                  flush=True)
 
-    pools = dict(mk["pools"])
+def parse_value(v: str) -> tuple[int, int]:
+    m = re.fullmatch(r"\s*\$?([\d,]+)\s*-\s*\$?([\d,]+)\s*", str(v or ""))
+    if not m:
+        raise SystemExit("--value is a band like 100000-700000 (got %r)" % v)
+    lo, hi = int(m.group(1).replace(",", "")), int(m.group(2).replace(",", ""))
+    if hi <= lo:
+        raise SystemExit("--value: the top must be above the bottom")
+    return lo, hi
+
+
+def resolve_counties(specs: list[str]) -> list[dict]:
+    from curative_engine.counties import resolve
+    out = []
+    for sp in specs:
+        c = resolve(sp)
+        if not c.fips or not c.state:
+            raise SystemExit('no US county matches %r; name it with its state, like "Knox, TN", or give its FIPS code' % sp)
+        if c.fips not in {x["fips"] for x in out}:
+            out.append({"fips": c.fips, "name": c.name, "state": c.state})
+    return out
+
+
+# ------------------------------------------------------------------------------------------ the run
+def build(s, counties: list[dict], pools: list[tuple[str, int]], *, rank: str = "ai", value=(1, 700000),
+          since: str = "2023-01-01", exclude_zips=(), skip=(), margin: float = 1.5, shard_fetch=None, out=print) -> dict:
+    """Choose the pools with the search `s` (a dpd_live.Search). Returns {"pools": {name: rows}, "summary": {...}}."""
+    m = Market(s, counties, value, since, exclude_zips, skip)
+    box = {c["fips"]: m.count(c) for c in counties}
+    sees = {k: {c["fips"]: sees_scores(m, c, SCORE_KEYS[k]) for c in counties} for k, _ in pools}
+    if rank == "ladder" and "investor" not in sees:
+        sees["investor"] = {c["fips"]: sees_scores(m, c, INVESTOR) for c in counties}
+    blind = {k: [c["name"] for c in counties if not v[c["fips"]]] for k, v in sees.items()}
+    for k, names in blind.items():
+        if names:
+            out("NOTE: this account sees no %s AI scores in %s (a per-county add-on)%s" % (
+                k, ", ".join(names), "; the ladder's list rungs carry it" if k == "investor" and rank == "ladder" else ""))
     two = len(pools) == 2
-    picked, per_rung = {}, {}
-    if "realtor" in pools:
-        need = int(pools["realtor"] * (args.margin if two else 1))
-        picked["realtor"] = [dict(x, rung="Realtor AI %s" % x["realtor_score"], priority=None)
-                             for x in c.page(box, SORT_REALTOR, FIELDS, need + len(skip))
-                             if x["dataflik_id"] not in skip][:need]
-        print("realtor candidates: %d" % len(picked["realtor"]), flush=True)
-    need = int(pools["investor"] * (args.margin if two else 1))
-    if args.rank == "ai":
-        picked["investor"] = [dict(x, rung="Investor AI %s" % x[INVESTOR], priority=None)
-                              for x in c.page(box, SORT_INVESTOR, FIELDS, need + len(skip))
-                              if x["dataflik_id"] not in skip][:need]
-    else:
-        picked["investor"], per_rung["investor"] = walk(c, box, seq, need, skip)
-    c.close()
-
+    picked, per_rung, taken = {}, {}, {}
+    for name, n in pools:
+        need = int(n * (margin if two else 1))
+        taken[name] = set()
+        scored = [c for c in counties if sees[name][c["fips"]]]
+        if name == "investor" and rank == "ladder":
+            # the ladder's own choice of variant, unless this account cannot see the scores its AI rungs need
+            ladders = [ladder(c, None if sees["investor"][c["fips"]] else "lists", shard_fetch) for c in counties]
+            seq = ladders[0] if len(ladders) == 1 else merge_ladders(ladders)
+            picked[name], per_rung[name] = by_ladder(m, seq, need, taken[name], scored, out=out)
+        else:
+            if not scored:
+                raise SystemExit("this account sees no %s AI scores in %s, so a %s pool cannot be ranked there%s" % (
+                    name, ", ".join(c["name"] for c in counties), name,
+                    " (try --rank ladder)" if name == "investor" else ""))
+            picked[name] = by_score(m, name, need, taken[name], scored, out=out)
     split = None
     if two:
-        picked["realtor"], picked["investor"], moved = disjoint(picked["realtor"], picked["investor"],
-                                                                pools["realtor"])
-        split = {"overlaps_kept_by_realtor": moved.get("a", 0), "overlaps_kept_by_investor": moved.get("b", 0)}
-        ids = [{x["dataflik_id"] for x in picked[p]} for p in ("realtor", "investor")]
-        if ids[0] & ids[1]:
+        (a, na), (b, nb) = pools
+        picked[a], picked[b], moved = disjoint(picked[a], picked[b], na, nb)
+        split = {"overlaps_kept_by_%s" % a: moved.get("a", 0), "overlaps_kept_by_%s" % b: moved.get("b", 0)}
+        if {x["dataflik_id"] for x in picked[a]} & {x["dataflik_id"] for x in picked[b]}:
             raise SystemExit("GATE FAILED: the pools still overlap")
-    prior_label, prior_path = mk["prior"]
-    prior = prior_ids(prior_path)
-    summary = {"market": args.market, "rank": args.rank, "when": datetime.now().isoformat(timespec="seconds"),
-               "shard": src,
-               "buy_box_records": universe, "dropped_no_owner_name": no_name, "excluded_ids": len(skip),
-               "translation_check": [
-                   {"rung": r["label"], "shard": r["list_size"], "index": r["county_count"]} for r in check],
-               "overlap_split": split, "prior_list": prior_label, "pools": {}, "investor_rungs": per_rung.get("investor")}
-    for p, n in mk["pools"]:
-        rows = picked[p]
+    short = {}
+    for name, n in pools:
+        rows = picked[name][:n]
+        for i, x in enumerate(rows, 1):
+            x["rank"] = i
+        picked[name] = rows
         if len(rows) < n:
-            print("WARNING: %s pool holds %d of %d" % (p, len(rows), n))
-        for rank, x in enumerate(rows, 1):
-            x["rank"] = rank
+            short[name] = n - len(rows)
+            out("WARNING: the %s pool holds %d of the %d asked for: the buy box ran out" % (name, len(rows), n))
+    summary = {"when": datetime.now().isoformat(timespec="seconds"), "counties": counties, "rank": rank,
+               "value": list(m.value), "since": m.since, "exclude_zips": sorted(m.exclude_zips), "excluded_ids": len(m.skip),
+               "source": "SiftMap search on the account's own Open API key", "searches": s.n,
+               "buy_box_houses": box, "dropped": dict(m.dropped), "overlap_split": split, "short": short,
+               "ai_scores_visible": sees,
+               "not_checked_before_the_pull": "trusts, nameless owners and neighborhoods: agency_call_list.py holds a "
+                                              "trust, company or nameless owner of record out of the call file",
+               "investor_rungs": per_rung.get("investor"), "pools": {}}
+    return {"pools": picked, "summary": summary}
+
+
+def main(argv=None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("--county", action="append", required=True, help='a county, e.g. "Knox, TN" or 47093 (repeat for more)')
+    ap.add_argument("--pool", action="append", required=True, help="investor:<count> or realtor:<count> (one or two)")
+    ap.add_argument("--name", default="", help="the folder the pools go in (default: the counties)")
+    ap.add_argument("--rank", default="ai", choices=["ai", "ladder"], help="the investor pool: AI score, or the Doors per Deal ladder")
+    ap.add_argument("--value", default="1-700000", help="the value band, e.g. 100000-700000")
+    ap.add_argument("--since", default="2023-01-01", help="leave out houses that sold on or after this day ('' keeps them)")
+    ap.add_argument("--exclude-zips", default="", help="comma list of ZIP codes to leave out")
+    ap.add_argument("--exclude", default="", help="ids never to pick (a JSON list, or a dict keyed by id); the pools refill past them")
+    ap.add_argument("--prior", default="", help="a list already sent (ids JSON): the summary counts how many pool houses were on it")
+    ap.add_argument("--margin", type=float, default=1.5, help="candidates per slot before the overlap split (two pools)")
+    ap.add_argument("--max-searches", type=int, default=4000, help="stop the run past this many searches")
+    args = ap.parse_args(argv)
+    import datasift_api_upload as up
+    key = (os.environ.get("REISIFT_API_KEY") or up.env().get("REISIFT_API_KEY") or "").strip()
+    if not key:
+        raise SystemExit("REISIFT_API_KEY is not set: put your DataSift Open API key in .env at the repo root")
+    if args.since and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", args.since):
+        raise SystemExit("--since is a day like 2023-01-01")
+    counties = resolve_counties(args.county)
+    pools = parse_pools(args.pool)
+    name = re.sub(r"[^a-z0-9]+", "_", (args.name or "_".join(c["name"] for c in counties)).lower()).strip("_")
+    run = OUT / name
+    run.mkdir(parents=True, exist_ok=True)
+    s = D.Search(key=key, gap=0.75, cap=args.max_searches)
+    try:
+        res = build(s, counties, pools, rank=args.rank, value=parse_value(args.value), since=args.since,
+                    exclude_zips={z.strip() for z in args.exclude_zips.split(",") if z.strip()},
+                    skip=id_set(args.exclude), margin=args.margin)
+    except D.SearchError as exc:
+        raise SystemExit("stopped after %d searches: %s" % (s.n, exc))
+    prior = id_set(args.prior)
+    summary = res["summary"]
+    summary.update(market=name, prior_list=args.prior or None)
+    for p, rows in res["pools"].items():
         (run / ("%s.json" % p)).write_text(json.dumps(rows, indent=0), encoding="utf-8")
-        summary["pools"][p] = describe(rows, prior)
+        summary["pools"][p] = describe(rows, prior, p)
     (run / "summary.json").write_text(json.dumps(summary, indent=1, default=str), encoding="utf-8")
-    print(json.dumps({k: summary[k] for k in ("buy_box_records", "dropped_no_owner_name", "overlap_split")},
-                     default=str))
+    print(json.dumps({k: summary[k] for k in ("buy_box_houses", "dropped", "overlap_split", "searches")}, default=str))
     for p, d in summary["pools"].items():
         print(p, json.dumps(d, default=str))
+    first = run / ("%s.json" % pools[0][0])
+    print('Next: python src/pull_by_ids.py --ids %s --list "<list name>"   (the quote; --commit pulls them in)' % first)
     return 0
 
 

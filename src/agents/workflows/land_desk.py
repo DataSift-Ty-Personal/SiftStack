@@ -71,8 +71,10 @@ def find_market(market: str) -> Path | None:
 
 
 def workstation_steps(market: str) -> str:
-    return ("Build it on the workstation: python src/builder_land.py --market %s --fips <county fips> --phase all, "
-            "then copy output/builder_land/%s/analysis.json to %s/%s/analysis.json on the brain's volume."
+    return ("The land desk analysis is built by staff on a workstation that can read DataSift's internal property "
+            "index (python src/builder_land.py --market %s --fips <county fips> --phase all), then copied from "
+            "output/builder_land/%s/analysis.json to %s/%s/analysis.json on the brain's volume. An Open API key alone "
+            "cannot build it; for the lots themselves on any account, ask for buildable_lots."
             % (market or "<market>", market or "<market>", roots()[0], market or "<market>"))
 
 

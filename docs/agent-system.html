@@ -249,7 +249,7 @@ footer p { margin:0 0 6px; }
 <div class="mast">
   <div class="wrap mast-in">
     <p class="eyebrow">
-      <span>SiftStack</span><span class="sep">/</span><span>Build 1.0.97</span>
+      <span>SiftStack</span><span class="sep">/</span><span>Build 1.0.98</span>
       <span class="sep">/</span><span>2026-11-24</span>
     </p>
     <h1>SiftStack AI Agent Org Chart</h1>
@@ -258,7 +258,7 @@ footer p { margin:0 0 6px; }
     <div class="stats">
       <div class="stat"><b>100</b><span>agents</span></div>
       <div class="stat"><b>9</b><span>divisions</span></div>
-      <div class="stat"><b>86</b><span>live in production</span></div>
+      <div class="stat"><b>85</b><span>live in production</span></div>
       <div class="stat"><b>73</b><span>with a human gate</span></div>
     </div>
 
@@ -742,7 +742,7 @@ footer p { margin:0 0 6px; }
       <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>Entities cannot be name-traced. 35 of 321 vacant owners were LLCs or trusts, so filter them out of the consumer skip-trace batch up front or you burn the spend. The v1 BusinessSearch type is access-denied; only BusinessV2 works.</p></div>
     </div>
   </details>
-</article><article class="agent" data-dept="enrich" data-status="live" data-phase="1" data-human="no" data-search="tracerfy skip trace cheap batch phone and email fill at about two cents a record. src/tracerfy_skip_tracer.py, src/tracerfy_ftm.py datasift merges phones rather than replacing them, so tracerfy and enformion accumulate. run them sequentially, then re-score and re-tag. one live run went from 109 to 302 phones across 33 records. tracerfy">
+</article><article class="agent" data-dept="enrich" data-status="live" data-phase="1" data-human="no" data-search="tracerfy skip trace cheap batch phone and email fill at about two cents a record. src/tracerfy_skip_tracer.py, src/tracerfy_ftm.py, src/enformion_ftm.py, src/phone_tiers.py datasift merges phones rather than replacing them, so tracerfy and enformion accumulate. each re-skip reads the account&#x27;s own list, quotes the most it can cost and buys nothing without --commit; phone_tiers.py (or --score) then scores only the numbers with no tier. one live run went from 109 to 302 phones across 33 records. tracerfy">
   <details>
     <summary>
       <span class="dot dot-live" aria-hidden="true"></span>
@@ -752,14 +752,14 @@ footer p { margin:0 0 6px; }
         
       </span>
       <span class="agent-role">Cheap batch phone and email fill at about two cents a record.</span>
-      <code class="src">src/tracerfy_skip_tracer.py, src/tracerfy_ftm.py</code>
+      <code class="src">src/tracerfy_skip_tracer.py, src/tracerfy_ftm.py, src/enformion_ftm.py, src/phone_tiers.py</code>
     </summary>
     <div class="agent-body">
-      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">Any record or relative missing contact data.</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Batch submission</li><li>Merge found phones back by address upsert</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><div class="fact-v muted">Nobody. Runs unattended.</div></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Phone numbers, Emails</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">Tracerfy</span></div></div>
-      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>DataSift MERGES phones rather than replacing them, so Tracerfy and Enformion accumulate. Run them sequentially, then re-score and re-tag. One live run went from 109 to 302 phones across 33 records.</p></div>
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">Any record or relative missing contact data: python src/tracerfy_ftm.py (dry), then --commit.</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Batch submission</li><li>Merge found phones back by address upsert</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><div class="fact-v muted">Nobody. Runs unattended.</div></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Phone numbers, Emails</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">Tracerfy</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>DataSift MERGES phones rather than replacing them, so Tracerfy and Enformion accumulate. Each re-skip reads the account&#x27;s own list, quotes the most it can cost and buys nothing without --commit; phone_tiers.py (or --score) then scores only the numbers with no tier. One live run went from 109 to 302 phones across 33 records.</p></div>
     </div>
   </details>
-</article><article class="agent" data-dept="enrich" data-status="live" data-phase="1" data-human="no" data-search="phone validator scores every number and sorts the call list into dial tiers. src/phone_validator.py on a shared household line the owner rule wins: the number carries source and tier only, never a relationship tag, or the dial sheet labels the owner&#x27;s own landline &#x27;husband&#x27;. trestle iq">
+</article><article class="agent" data-dept="enrich" data-status="live" data-phase="1" data-human="no" data-search="phone validator scores every number and sorts the call list into dial tiers. src/phone_validator.py, src/phone_tiers.py on a shared household line the owner rule wins: the number carries source and tier only, never a relationship tag, or the dial sheet labels the owner&#x27;s own landline &#x27;husband&#x27;. trestle iq">
   <details>
     <summary>
       <span class="dot dot-live" aria-hidden="true"></span>
@@ -769,10 +769,10 @@ footer p { margin:0 0 6px; }
         
       </span>
       <span class="agent-role">Scores every number and sorts the call list into dial tiers.</span>
-      <code class="src">src/phone_validator.py</code>
+      <code class="src">src/phone_validator.py, src/phone_tiers.py</code>
     </summary>
     <div class="agent-body">
-      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">After every skip-trace pass.</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Trestle phone_intel scores activity and line type</li><li>Tiers: 81-100 dial first, 61-80 second, 41-60 third, 21-40 fourth, 0-20 drop</li><li>Litigator risk check</li><li>Writes phone tags back to DataSift</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><div class="fact-v muted">Nobody. Runs unattended.</div></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Tiered dial list, DataSift phone tags</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">Trestle IQ</span></div></div>
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">After every skip-trace pass: python src/phone_tiers.py --list &lt;list&gt; (dry), then --commit.</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Trestle phone_intel scores activity and line type</li><li>Tiers: 81-100 dial first, 61-80 second, 41-60 third, 21-40 fourth, 0-20 drop</li><li>Litigator risk check</li><li>Writes phone tags back to DataSift</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><div class="fact-v muted">Nobody. Runs unattended.</div></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Tiered dial list, DataSift phone tags</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">Trestle IQ</span></div></div>
       <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>On a shared household line the owner rule wins: the number carries source and tier only, never a relationship tag, or the dial sheet labels the owner&#x27;s own landline &#x27;Husband&#x27;.</p></div>
     </div>
   </details>
@@ -1283,7 +1283,7 @@ footer p { margin:0 0 6px; }
       <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>The buyer registry prices an exited flipper at the EXIT, the sale to the retail homebuyer, so its price band is a resale band. One operator read a $307,500 median on a book of $100,000 to $200,000 buys. The match recovers the buy from the deed before the exit.</p></div>
     </div>
   </details>
-</article><article class="agent" data-dept="dispo" data-status="gated" data-phase="2" data-human="yes" data-search="builder land desk reads each builder&#x27;s buy box off their own deeds, then matches the lots on the ground to the builders who would buy them. src/builder_land.py a lot wholesaled at 1.5 times before the build reads as the builder&#x27;s purchase plus the new-home sale unless the exit is priced like a finished house, which misattributes the builder and hides the middleman. knox and blount came out yes; union county oh no, because its repeat buyers are production builders. opensearch mcp siftmap">
+</article><article class="agent" data-dept="dispo" data-status="gated" data-phase="2" data-human="yes" data-search="builder land desk reads each builder&#x27;s buy box off their own deeds, then matches the lots on the ground to the builders who would buy them. src/builder_land.py staff only: the buy boxes are read off the read-only properties index (the opensearch mcp), which a user&#x27;s key cannot reach; on a user&#x27;s install buildable_lots works the lots instead. a lot wholesaled at 1.5 times before the build reads as the builder&#x27;s purchase plus the new-home sale unless the exit is priced like a finished house, which misattributes the builder and hides the middleman. opensearch mcp siftmap">
   <details>
     <summary>
       <span class="dot dot-gated" aria-hidden="true"></span>
@@ -1297,7 +1297,7 @@ footer p { margin:0 0 6px; }
     </summary>
     <div class="agent-body">
       <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">python src/builder_land.py --market &lt;name&gt; --fips &lt;codes&gt; --phase all</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Counts purchases by deed date, so a 13-lot takedown is one purchase</li><li>Buy box: where they buy, lot size, price paid, what they build and sell</li><li>A lot fits a builder when one of their own lots sits nearby at a size inside their range</li><li>Offer is what the fitting builders paid nearby, minus the fee</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>Decides which market to work and calls the builders</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Builder Land Desk workbook, Lot mail list</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">opensearch MCP</span><span class="chip">SiftMap</span></div></div>
-      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>A lot wholesaled at 1.5 times before the build reads as the builder&#x27;s purchase plus the new-home sale unless the exit is priced like a finished house, which misattributes the builder and hides the middleman. Knox and Blount came out yes; Union County OH no, because its repeat buyers are production builders.</p></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>Staff only: the buy boxes are read off the read-only properties index (the opensearch MCP), which a user&#x27;s key cannot reach; on a user&#x27;s install buildable_lots works the lots instead. A lot wholesaled at 1.5 times before the build reads as the builder&#x27;s purchase plus the new-home sale unless the exit is priced like a finished house, which misattributes the builder and hides the middleman.</p></div>
     </div>
   </details>
 </article></div>
@@ -1392,7 +1392,7 @@ footer p { margin:0 0 6px; }
       <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>smrtPhone has an API for TEXT but not for MMS, which is what forced the browser route. Replies carry no image, so the API is the right transport for conversation and the browser is only for the original screenshot send.</p></div>
     </div>
   </details>
-</article><article class="agent" data-dept="outreach" data-status="live" data-phase="2" data-human="yes" data-search="obituary mail campaign builds and validates the direct mail drop for the obituary list. src/obituary_campaign.py, src/obituary_mail_export.py never name the list. foreclosure, probate, inherited, tax, lien: none of those words appear in outreach copy, because the seller should feel found, not targeted. datasift api address validation">
+</article><article class="agent" data-dept="outreach" data-status="live" data-phase="2" data-human="yes" data-search="obituary mail campaign works the obituary list on a clock: holds each record a month, sends one soft letter before month three, then a letter a month to the &lt;surname&gt; family until research settles the heirs. src/agents/autopilot/obituary.py never name the list. foreclosure, probate, inherited, tax, lien: none of those words appear in outreach copy, because the seller should feel found, not targeted. datasift open api key">
   <details>
     <summary>
       <span class="dot dot-live" aria-hidden="true"></span>
@@ -1401,11 +1401,11 @@ footer p { margin:0 0 6px; }
         <span class="badge badge-live">Live</span>
         <span class="badge badge-gate">Human gate</span>
       </span>
-      <span class="agent-role">Builds and validates the direct mail drop for the obituary list.</span>
-      <code class="src">src/obituary_campaign.py, src/obituary_mail_export.py</code>
+      <span class="agent-role">Works the Obituary list on a clock: holds each record a month, sends one soft letter before month three, then a letter a month to The &lt;Surname&gt; Family until research settles the heirs.</span>
+      <code class="src">src/agents/autopilot/obituary.py</code>
     </summary>
     <div class="agent-body">
-      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">After the obituary opportunity ranking.</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Export, validate addresses, produce the mail file</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>Operator approves the drop</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Validated mail export</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">DataSift API</span><span class="chip">Address validation</span></div></div>
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">The obituary_lane stage (agents brain), 09:40 Mon-Fri.</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Holds a new obituary record for a month</li><li>One soft letter before month three, research at three months</li><li>A letter a month to The &lt;Surname&gt; Family until the heirs are known</li><li>Matches each death against the county&#x27;s probate filings</li><li>Tags a record Obituary 30+ Days, which puts it in the estate call presets</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>Releases each staged batch of letters</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Validated mail export</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">DataSift Open API key</span></div></div>
       <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>Never name the list. Foreclosure, probate, inherited, tax, lien: none of those words appear in outreach copy, because the seller should feel found, not targeted.</p></div>
     </div>
   </details>
@@ -1443,7 +1443,7 @@ footer p { margin:0 0 6px; }
       <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>THE POOL FELL BACK TO THE SELLER NUMBERS. pool() returned every number in the account when the owner had no pool of their own, so a dispo blast spread across all 24 numbers including the 19 acquisitions lines. Three things break at once: the 10DLC cap is counted per database so the other program&#x27;s budget is spent invisibly, one number carries two programs, and a callback rings the wrong flow. No numbers is a loud failure; the seller pool is a silent one.</p></div>
     </div>
   </details>
-</article><article class="agent" data-dept="outreach" data-status="gated" data-phase="2" data-human="yes" data-search="obituary mail export turns the ranked obituary opportunity list into a validated mail file. src/obituary_mail_export.py every row ships a must-verify note. whether the person who died is the owner of record is not verifiable from crm data, and the spouse-obituary trap is live on every single row: an obituary on the record does not mean the owner died. datasift api smarty">
+</article><article class="agent" data-dept="outreach" data-status="gated" data-phase="2" data-human="yes" data-search="obituary mail export prints the obituary lane&#x27;s letters as a file for an outside printer, never through datasift&#x27;s own mail, which would print the owner of record&#x27;s name, and that may be the person who died. src/agents/autopilot/obituary.py, src/agents/release.py every row ships a must-verify note. whether the person who died is the owner of record is not verifiable from crm data, and the spouse-obituary trap is live on every single row: an obituary on the record does not mean the owner died. datasift open api key">
   <details>
     <summary>
       <span class="dot dot-gated" aria-hidden="true"></span>
@@ -1452,11 +1452,11 @@ footer p { margin:0 0 6px; }
         <span class="badge badge-gated">Gated</span>
         <span class="badge badge-gate">Human gate</span>
       </span>
-      <span class="agent-role">Turns the ranked obituary opportunity list into a validated mail file.</span>
-      <code class="src">src/obituary_mail_export.py</code>
+      <span class="agent-role">Prints the obituary lane&#x27;s letters as a file for an outside printer, never through DataSift&#x27;s own mail, which would print the owner of record&#x27;s name, and that may be the person who died.</span>
+      <code class="src">src/agents/autopilot/obituary.py, src/agents/release.py</code>
     </summary>
     <div class="agent-body">
-      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">After obituary_opportunity ranks the list.</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Pulls the ranked records</li><li>Validates deliverable mailing addresses</li><li>Writes the mail-house export</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>Approves the drop and the spend</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Mail export CSV</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">DataSift API</span><span class="chip">Smarty</span></div></div>
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">A staged obituary_mail batch, released by a person (confirm N uploaded once the file has gone to the printer).</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Pulls the ranked records</li><li>Validates deliverable mailing addresses</li><li>Writes the mail-house export</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>Approves the drop and the spend, and confirms the upload</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Mail export CSV</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">DataSift Open API key</span></div></div>
       <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>Every row ships a must-verify note. Whether the person who died is the owner of record is NOT verifiable from CRM data, and the spouse-obituary trap is live on every single row: an obituary on the record does not mean the OWNER died.</p></div>
     </div>
   </details>
@@ -1586,7 +1586,7 @@ footer p { margin:0 0 6px; }
       <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>The Open API key CANNOT do this job. Custom fields do not exist anywhere in its 93-route surface and every write 401s. Only the minted user JWT reaches /api/internal/ where they do.</p></div>
     </div>
   </details>
-</article><article class="agent" data-dept="crm" data-status="live" data-phase="1" data-human="no" data-search="schema setup creates custom fields, select options, and lists. idempotent, dry-run by default. src/datasift_schema_setup.py dry run by default is the right posture for anything that mutates an account&#x27;s schema. creating a select custom field requires its options in the same post. datasift internal api">
+</article><article class="agent" data-dept="crm" data-status="live" data-phase="1" data-human="no" data-search="schema setup creates custom fields, select options, and lists. idempotent, dry-run by default. src/datasift_schema_setup.py dry run by default is the right posture for anything that mutates an account&#x27;s schema. creating a select custom field requires its options in the same post. datasift open api key">
   <details>
     <summary>
       <span class="dot dot-live" aria-hidden="true"></span>
@@ -1599,7 +1599,7 @@ footer p { margin:0 0 6px; }
       <code class="src">src/datasift_schema_setup.py</code>
     </summary>
     <div class="agent-body">
-      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">python src/datasift_schema_setup.py --commit</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Creates the field structure</li><li>Select fields require options in the same POST</li><li>Safe to re-run</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><div class="fact-v muted">Nobody. Runs unattended.</div></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">CRM schema</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">DataSift internal API</span></div></div>
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">python src/datasift_schema_setup.py --commit</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Creates the field structure</li><li>Select fields require options in the same POST</li><li>Safe to re-run</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><div class="fact-v muted">Nobody. Runs unattended.</div></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">CRM schema</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">DataSift Open API key</span></div></div>
       <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>Dry run by default is the right posture for anything that mutates an account&#x27;s schema. Creating a select custom field REQUIRES its options in the same POST.</p></div>
     </div>
   </details>
@@ -1814,24 +1814,24 @@ footer p { margin:0 0 6px; }
       <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>Pulling a record in by id skip traces it on its own, so the browser skip trace wizard was never needed. It was also broken: its list filter no longer matched, so it would have skip traced the whole account. That run was stopped at the Send To menu before it submitted.</p></div>
     </div>
   </details>
-</article><article class="agent" data-dept="market" data-status="live" data-phase="1" data-human="yes" data-search="doors per deal ladder pull walks a county&#x27;s market share ladder rung by rung and pulls the top n records into an account. src/knox_blount_top15k.py, src/franklin_top30k.py the read-back probe must be a record new to the account. an existing one reads as saved at once, before the async job attaches the list, so it passes whether or not the pull worked. county list playbook siftmap datasift api">
+</article><article class="agent" data-dept="market" data-status="retired" data-phase="1" data-human="yes" data-search="doors per deal ladder pull retired 2026-11-24. walked a county&#x27;s market share ladder rung by rung and pulled the top n records into one account: the october knox and blount and september franklin one-off pulls. src/knox_blount_top15k.py, src/franklin_top30k.py retired because it ran on the team&#x27;s own accounts and the properties index only. agency test pools (ai_pools.py --rank ladder) walks the same ladder on any account&#x27;s own key. kept for its lesson: the read-back probe must be a record new to the account, since an existing one reads as saved before the async job attaches the list. county list playbook siftmap datasift api">
   <details>
     <summary>
-      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="dot dot-retired" aria-hidden="true"></span>
       <span class="agent-name">Doors Per Deal Ladder Pull</span>
       <span class="agent-meta">
-        <span class="badge badge-live">Live</span>
+        <span class="badge badge-retired">Retired</span>
         <span class="badge badge-gate">Human gate</span>
       </span>
-      <span class="agent-role">Walks a county&#x27;s market share ladder rung by rung and pulls the top N records into an account.</span>
+      <span class="agent-role">RETIRED 2026-11-24. Walked a county&#x27;s market share ladder rung by rung and pulled the top N records into one account: the October Knox and Blount and September Franklin one-off pulls.</span>
       <code class="src">src/knox_blount_top15k.py, src/franklin_top30k.py</code>
     </summary>
     <div class="agent-body">
       <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">python src/knox_blount_top15k.py or python src/franklin_top30k.py</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Reads the County List Playbook ladder in its own work order</li><li>Each rung counts only the records the rungs above did not already reach</li><li>Re-sizes every rung under the buy box and dedupes</li><li>Stops at the target count and pulls by id</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>Picks the account and the target count</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Records in the account, Calling agency export</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">County List Playbook</span><span class="chip">SiftMap</span><span class="chip">DataSift API</span></div></div>
-      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>The read-back probe must be a record NEW to the account. An existing one reads as saved at once, before the async job attaches the list, so it passes whether or not the pull worked.</p></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>Retired because it ran on the team&#x27;s own accounts and the properties index only. Agency Test Pools (ai_pools.py --rank ladder) walks the same ladder on any account&#x27;s own key. Kept for its lesson: the read-back probe must be a record NEW to the account, since an existing one reads as saved before the async job attaches the list.</p></div>
     </div>
   </details>
-</article><article class="agent" data-dept="market" data-status="live" data-phase="1" data-human="yes" data-search="agency test pools builds ranked, non-overlapping record pools from the properties index and hands a calling agency one row per owner. src/ai_pools.py, src/pull_by_ids.py, src/agency_call_list.py no trestle and no do-not-call scrub on purpose: the agency scrubs the registry and litigators itself. the opensearch client refuses to start unless the server runs read-only, because its default configuration allows writes to the production cluster. opensearch mcp datasift api">
+</article><article class="agent" data-dept="market" data-status="live" data-phase="1" data-human="yes" data-search="agency test pools builds ranked, buy-boxed, non-overlapping record pools from siftmap&#x27;s search on the account&#x27;s own key and hands a calling agency one row per owner. src/ai_pools.py, src/pull_by_ids.py, src/agency_call_list.py, src/agency_rules.py search rows carry no ai score, so each score point is its own filter, proven by count; and the scores are a per-county add-on, so a county the account cannot see is said so at the start instead of reading as an empty market. no trestle and no do-not-call scrub on purpose: the agency scrubs the registry and litigators itself. siftmap search datasift open api key">
   <details>
     <summary>
       <span class="dot dot-live" aria-hidden="true"></span>
@@ -1840,12 +1840,12 @@ footer p { margin:0 0 6px; }
         <span class="badge badge-live">Live</span>
         <span class="badge badge-gate">Human gate</span>
       </span>
-      <span class="agent-role">Builds ranked, non-overlapping record pools from the properties index and hands a calling agency one row per owner.</span>
-      <code class="src">src/ai_pools.py, src/pull_by_ids.py, src/agency_call_list.py</code>
+      <span class="agent-role">Builds ranked, buy-boxed, non-overlapping record pools from SiftMap&#x27;s search on the account&#x27;s own key and hands a calling agency one row per owner.</span>
+      <code class="src">src/ai_pools.py, src/pull_by_ids.py, src/agency_call_list.py, src/agency_rules.py</code>
     </summary>
     <div class="agent-body">
-      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">python src/ai_pools.py --market &lt;market&gt;, then pull_by_ids.py and agency_call_list.py</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Reads the properties index through the read-only opensearch MCP</li><li>Ranks by realtor or investor AI score under the buy box, with no overlap between pools</li><li>Pulls by id so DataSift&#x27;s own skip trace fills the phones</li><li>Exports callable numbers only, mobiles first</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>Picks the market, the pool size and the account</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Pools in the account, Calling agency call list</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">opensearch MCP</span><span class="chip">DataSift API</span></div></div>
-      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>No Trestle and no do-not-call scrub on purpose: the agency scrubs the registry and litigators itself. The opensearch client refuses to start unless the server runs read-only, because its default configuration allows writes to the production cluster.</p></div>
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">python src/ai_pools.py --county &quot;&lt;County, ST&gt;&quot; --pool investor:&lt;count&gt; [--pool realtor:&lt;count&gt;], then pull_by_ids.py and agency_call_list.py</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Ranks by the investor or realtor AI score one point at a time, or by the county&#x27;s Doors per Deal ladder</li><li>Buy box: single family, the value band, not listed, no sale since a date, no company owner</li><li>Two pools never share a house: each goes where it ranks higher</li><li>pull_by_ids.py prices the pull on DataSift&#x27;s published quote, then pulls it in by id</li><li>agency_call_list.py builds one row per owner with only the numbers the CRM has not ruled out</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>Picks the market, the pool size and the account</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Pools in the account, Calling agency call list</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">SiftMap search</span><span class="chip">DataSift Open API key</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>Search rows carry no AI score, so each score point is its own filter, proven by count; and the scores are a per-county add-on, so a county the account cannot see is said so at the start instead of reading as an empty market. No Trestle and no do-not-call scrub on purpose: the agency scrubs the registry and litigators itself.</p></div>
     </div>
   </details>
 </article><article class="agent" data-dept="market" data-status="live" data-phase="2" data-human="yes" data-search="buildable lot finder finds every vacant lot of 0.20 to 2.00 acres in a county, screens out what cannot carry a house, prices an offer band and writes the mail plan. src/vacant_land.py, src/agents/workflows/buildable_lots.py the county&#x27;s vacant class lags construction. 2,185 vacant-class sales over 36 months had a median of $590,000 at 7.5 times land value: they were new houses. built-on is read from the dwelling year, the sale price against land value, and recent permits. county gis siftmap usgs 3dep datasift api">

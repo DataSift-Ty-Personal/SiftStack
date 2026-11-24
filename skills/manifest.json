@@ -54,9 +54,9 @@
         "scripts/clone_account.py"
       ],
       "file_count": 14,
-      "bytes": 471650,
+      "bytes": 471695,
       "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/account-blueprint.skill",
-      "sha256": "cfacff99ab8ab5d543bd11bbc77c86588d6d3a43577aaccdb3e7821e0c6b15b9",
+      "sha256": "cde6304b6600be1bdefddff98a009c6d1519f3558b45da8a8194543747208338",
       "requires": {
         "tier": "account",
         "accounts": [
@@ -811,13 +811,14 @@
         "references/datasift-phone-tags.md",
         "references/trestle-api-reference.md",
         "scripts/datasift_core.py",
+        "scripts/generate_report.py",
         "scripts/upload_phone_tags.py",
         "scripts/validate_phones.py"
       ],
-      "file_count": 6,
-      "bytes": 76925,
+      "file_count": 7,
+      "bytes": 82511,
       "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/phone-validator.skill",
-      "sha256": "c02cef785313d48a9d90e411e6f7a52afd2143f60bef597c0c8f38cd8ed131c8",
+      "sha256": "c2c38d38317f14cef310f6465e8c49f82beb37a657272f352508edcbe819eb2c",
       "requires": {
         "tier": "api",
         "env": [

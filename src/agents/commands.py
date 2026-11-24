@@ -170,7 +170,7 @@ DEAL_ROOM_MODULES = {"crm_api", "clients", "reisift_auth", "dossier", "mms_ledge
                      "smrtphone_login", "siftmap_client", "kpi_engine", "dial_kpis"}
 # Code that names a path on the owner's PC. A file that also names a key-only client falls back to
 # it, so the Deal Room is a preference there, not a need (the audit tool's rule).
-LOCAL_RX = re.compile(r"C:\\{1,2}Users|C:/Users/|OneDrive[\\/]{1,2}Desktop|Deal Room Coaching Call|_api[\\/]{1,2}clients")
+LOCAL_RX = re.compile(r"C:\\{1,2}Users|C:/Users/|OneDrive[\\/]{1,2}Desktop|Deal Room Coaching Call|_api[\\/]{1,2}clients")  # audit-pattern
 KEY_FALLBACK_RX = re.compile(r"crm_key_client|crm_standalone|siftmap_standalone")
 
 # Paid vendors, by the host a client calls or the SDK it imports. A module named config.py declares

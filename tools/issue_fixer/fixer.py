@@ -1,5 +1,6 @@
 """The issue fixer: each new post in the SiftStack issues channel sorted, and a bug in our code fixed,
-tested and shipped on its own (Ty, 2026-11-18: "Deploy on its own").
+tested and shipped on its own (Ty, 2026-11-18: "Deploy on its own"). Staff-only: it ships the team's own
+boxes and the public release; an install has no use for it.
 
 It runs on Ty's PC from a scheduled task every 15 minutes, because that machine already holds the Fly
 login, the keys and the repo. Each run:

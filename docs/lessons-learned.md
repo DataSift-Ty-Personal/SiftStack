@@ -11,6 +11,13 @@ broke.
 
 <!-- new lessons go here -->
 
+## 2026-11-24: Workflows listed as live that only ran on one machine
+
+- **What happened:** After the curative gap, every workflow on the org chart was checked against a fresh install. Several read fine and could not run anywhere but the team's own workstation: the calling agency pools read DataSift's internal property index through a staff-only tool; the schema setup and the dispo buyer phases loaded a client from one desktop folder; the Tracerfy and Enformion re-skips picked their records from a file only that machine made and pointed at a scoring step that drove a browser; the phone validator's `--full-report` imported a report file that never shipped; and the Dream 100 pack looked for its logo on one desktop.
+- **Why:** Each began as a tool for one account on one machine and was later listed as a workflow. Nothing checked what a workflow needs against what an install has.
+- **The fix:** Each now runs on a user's own Open API key. The agency pools are built from SiftMap's published search, one AI score point at a time (`src/ai_pools.py`, `docs/agency-call-list.md`); the pull prices itself on DataSift's published quote; the re-skips read the account's own list and buy nothing without `--commit`; `src/phone_tiers.py` writes the dial tiers on the key; the report and the logo ship in the repository. The one-off ladder pull is retired, the builder land desk is labelled staff only, and the obituary campaign entries now point at the obituary lane that replaced them. A new check, `tools/workflow_audit.py`, fails on any shipped folder path from one machine, any import nothing installs, and any staff-only source behind an agent the org chart calls live; it runs in pytest and on every push to the public repository.
+- **Found by:** an audit after a community member's report, fixed by hand.
+
 ## 2026-11-24: The curative board shipped without the research that feeds it
 
 - **What happened:** The Curative Title board and its loader were published, but the ranking that finds the houses and the heir research that names every heir and share were not. A community member who installed SiftStack found the loader and nothing for it to load.

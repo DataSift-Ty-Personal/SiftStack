@@ -362,8 +362,30 @@ _ALIASES = {"knox": "47093", "knox county": "47093", "knox, tn": "47093", "knox 
             "blount": "47009", "blount county": "47009", "blount, tn": "47009", "blount county, tn": "47009"}
 
 
+_TABLE: list | None = None
+
+
+def us_counties() -> list[dict]:
+    """Every US county (Census 2020: fips, state, county, name), from data/us_counties.csv in the repo."""
+    global _TABLE
+    if _TABLE is None:
+        _TABLE = []
+        p = C.ROOT / "data" / "us_counties.csv"
+        if p.exists():
+            with open(p, encoding="utf-8") as fh:
+                _TABLE = list(csv.DictReader(fh))
+    return _TABLE
+
+
+def _norm_county(s) -> str:
+    s = re.sub(r"\b(county|parish|borough|census area|municipality|city and borough)\b", " ", str(s or "").lower())
+    s = s.replace(".", "").replace("saint ", "st ")
+    return " ".join(re.sub(r"[^a-z0-9 ]", " ", s).split())
+
+
 def county_for(fips: str = "", name: str = "", state: str = "") -> County:
-    """The adapter for a county, or a bare one (no county sources) for any other county."""
+    """The adapter for a county, or a bare one (no county sources) for any other county. A county with no
+    built-in sources still gets its FIPS code from the US county table, which SiftMap's county search needs."""
     f = re.sub(r"\D", "", str(fips or ""))
     if f in COUNTIES:
         return COUNTIES[f]
@@ -371,8 +393,19 @@ def county_for(fips: str = "", name: str = "", state: str = "") -> County:
     for k in (key, str(name or "").strip().lower()):
         if k in _ALIASES and (not state or COUNTIES[_ALIASES[k]].state == C.state_code(state)):
             return COUNTIES[_ALIASES[k]]
+    st = C.state_code(state) or str(state or "").upper()
     nm = re.sub(r"\s+county$", "", str(name or "").strip(), flags=re.I).title() or "Unknown"
-    return County(f or "", nm, C.state_code(state) or str(state or "").upper())
+    table = us_counties()
+    if f:
+        hit = next((r for r in table if r.get("fips") == f.zfill(5)), None)
+        if hit:
+            return County(hit["fips"], hit["name"], hit["state"])
+    elif name and st:
+        want = _norm_county(name)
+        hit = next((r for r in table if r.get("state") == st and want in (_norm_county(r.get("name")), _norm_county(r.get("county")))), None)
+        if hit:
+            return County(hit["fips"], hit["name"], hit["state"])
+    return County(f or "", nm, st)
 
 
 def resolve(text: str) -> County:

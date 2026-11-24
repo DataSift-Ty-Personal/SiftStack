@@ -7,19 +7,22 @@ and 2026-09-30 on 30,000: add-properties-by-query with an ids-typed address list
 about 100-250 a minute on data+staging), attaches the list to ids that were already records, and the add
 skip traces new records on its own on the unlimited plan at $0.
 
-  python src/pull_by_ids.py --ids <pool.json> --list "<name>"                  # dry, prod-account
+  python src/pull_by_ids.py --ids <pool.json> --list "<name>"                  # dry: the quote, nothing written
   python src/pull_by_ids.py --ids <pool.json> --list "<name>" --commit         # probe one, send the rest, wait
   python src/pull_by_ids.py --ids <pool.json> --list "<name>" --phase qa       # list count, untraced count
   python src/pull_by_ids.py --ids <pool.json> --list "<name>" --phase phones   # read DataSift's phones back
 
 Which account
-  default          prod-account (the .env login or REISIFT_API_KEY)
+  default          your own: REISIFT_API_KEY in .env (the account the key belongs to)
   --key-env NAME   another account by its Open API key (.env NAME) plus --expect-email <the key owner's email>; the
                    search and the add route both take the key (verified 2026-11-05)
-  --target EMAIL   an allowlisted account by a pasted bearer token in REISIFT_TARGET_JWT_FILE; the token's
-                   email AND account id must match before anything is written
+  --target EMAIL   staff only: an allowlisted account by a pasted bearer token in REISIFT_TARGET_JWT_FILE; the
+                   token's email AND account id must match before anything is written
 
-pull    probe one new id with a read-back, then send the rest in chunks. Ids that were already records go
+pull    the dry run asks DataSift's documented quote how many new records the pull would add and how much of
+        the record allowance is left, and stops there. --commit refuses on that same quote (more than the
+        allowance left, a shortfall, more new records than --approve), then probes one new id with a
+        read-back and sends the rest in chunks. Ids that were already records go
         through the add route too (--existing add, the Sep 2026 route) or get the list one record at a
         time (--existing attach). Resumable: an id is never sent twice.
 qa      how many records the list holds and how many the skip trace has not reached yet. Read-only.
@@ -57,8 +60,8 @@ from d4d_call_list import Api, attach_to_record, env  # noqa: E402  (the uploade
 
 
 def _sp():
-    """siftmap_pull, loaded only by the command-line phases that use it (its allowance read is not a
-    published route; the team's list_pull workflow reads the allowance off the documented quote)."""
+    """siftmap_pull, loaded only for the staff --target path (a pasted token reaches SiftMap through its Map).
+    The allowance comes off the documented quote on every path."""
     import siftmap_pull  # noqa: PLC0415
     return siftmap_pull
 
@@ -180,6 +183,52 @@ def list_count(api, uuid: str, **must) -> int:
     return int(r.get("count", 0))
 
 
+QUOTE_PATH = "/properties/add-properties-by-query/quote/"   # documented: the add, priced, nothing added
+QUOTE_CHUNK = 250
+
+
+def quote(m, ids: list[str], list_name: str, tag: str) -> dict:
+    """The documented quote, chunk by chunk, on exactly the query the add will send."""
+    out = {"total": 0, "in_account": 0, "new": 0, "billable": 0, "allowance_left": None, "shortfall": 0,
+           "blocked": 0, "problem": ""}
+    for i in range(0, len(ids), QUOTE_CHUNK):
+        chunk = ids[i:i + QUOTE_CHUNK]
+        q = m._request(QUOTE_PATH, "POST", {"query": d4d.add_query_body(chunk, list_name, tag)["query"]}) or {}
+        if not isinstance(q, dict) or not isinstance(q.get("total"), int):
+            out["problem"] = "the quote came back without a total: %s" % str(q)[:160]
+            return out
+        if q["total"] != len(chunk):
+            out["problem"] = ("the quote counted %d of %d ids in one chunk, so the add would be cut short the "
+                              "same way; nothing was pulled" % (q["total"], len(chunk)))
+            return out
+        out["total"] += q["total"]
+        out["in_account"] += int(q.get("in_account") or 0)
+        out["new"] += int(q.get("new") or 0)
+        bill = q.get("billable")
+        out["billable"] += int(bill if isinstance(bill, int) else (q.get("new") or 0))
+        out["shortfall"] += int(q.get("shortfall") or 0) if isinstance(q.get("shortfall"), int) else 0
+        out["blocked"] += int(q.get("blocked_count") or 0) if isinstance(q.get("blocked_count"), int) else 0
+        left = (q.get("property_usage") or {}).get("allowance_left")
+        if isinstance(left, (int, float)):
+            out["allowance_left"] = left if out["allowance_left"] is None else min(out["allowance_left"], left)
+    return out
+
+
+def refusal(q: dict, approved: int) -> str:
+    """Why the pull must not run on this quote, or "". Each line is the overspend it prevents."""
+    if q.get("problem"):
+        return q["problem"]
+    if q["billable"] > approved:
+        return ("the quote says %d new records would use the allowance and %d were approved; nothing was pulled"
+                % (q["billable"], approved))
+    if q["allowance_left"] is not None and q["billable"] > q["allowance_left"]:
+        return ("the quote says %d new records and the account has %s left in its allowance; nothing was pulled"
+                % (q["billable"], q["allowance_left"]))
+    if q["shortfall"]:
+        return "the quote reports a shortfall of %d records; nothing was pulled" % q["shortfall"]
+    return ""
+
+
 def phase_pull(args, run: Path, tag: str) -> None:
     ids = load_ids(Path(args.ids))
     api, m = clients(args)
@@ -197,14 +246,22 @@ def phase_pull(args, run: Path, tag: str) -> None:
     else:
         existing = {i: u for i, u in saved.items() if i not in new}
     todo = [i for i in ids if i not in saved and i not in unknown and i not in sent]
-    used, limit = _sp().usage(api)
-    print("pull: %d ids, %d already records, %d to pull, %d unknown to SiftMap, %d sent before; allowance %s / %s"
-          % (len(ids), len(existing), len(todo), len(unknown), len(sent), used, limit), flush=True)
-    d4d.gate(used + len(todo) <= limit, "the pull would cross the record allowance")
+    send = todo + ([i for i in existing if i not in sent] if args.existing == "add" else [])
+    q = quote(m, send, args.list_name, tag) if send else None
+    print("pull: %d ids, %d already records, %d to pull, %d unknown to SiftMap, %d sent before" % (
+        len(ids), len(existing), len(todo), len(unknown), len(sent)), flush=True)
+    if q:
+        print("quote: %d ids priced, %d new records would use the allowance, %s left in it%s" % (
+            q["total"], q["billable"], "?" if q["allowance_left"] is None else "{:,}".format(int(q["allowance_left"])),
+            (", %d blocked" % q["blocked"]) if q["blocked"] else ""), flush=True)
+        d4d._save(run / "quote.json", dict(q, when=datetime.now().isoformat(timespec="seconds")))
+    why = refusal(q, args.approve if args.approve is not None else len(todo)) if q else ""
     if not args.commit:
-        print("DRY RUN. Would probe one id, pull %d, then put %d existing records on list %r + tag %r (%s). "
-              "Re-run with --commit." % (len(todo), len(existing), args.list_name, tag, args.existing))
+        print("DRY RUN. Would probe one id, pull %d, then put %d existing records on list %r + tag %r (%s). %s" % (
+            len(todo), len(existing), args.list_name, tag, args.existing,
+            ("It would refuse: " + why) if why else "Re-run with --commit."))
         return
+    d4d.gate(not why, why)
 
     def save(**more):
         d4d._save(run / "state.json", {**st, "new_uuids": new, "sent": sorted(sent), "existing": existing,
@@ -363,8 +420,8 @@ def main() -> int:
     ap.add_argument("--ids", required=True, help="JSON list of rows carrying dataflik_id")
     ap.add_argument("--list", dest="list_name", required=True, help="DataSift list the records go on")
     ap.add_argument("--tag", default="", help="tag to add (default: the list name)")
-    ap.add_argument("--target", default="", help="allowlisted account email, token in REISIFT_TARGET_JWT_FILE")
-    ap.add_argument("--key-env", default="", help="env var holding another account's Open API key (default: prod-account)")
+    ap.add_argument("--target", default="", help="staff only: an allowlisted account email, token in REISIFT_TARGET_JWT_FILE")
+    ap.add_argument("--key-env", default="", help="env var holding another account's Open API key (default: REISIFT_API_KEY)")
     ap.add_argument("--expect-email", default="",
                     help="with --key-env: the email of the user the key belongs to; writes refuse otherwise")
     ap.add_argument("--phase", default="pull", choices=["pull", "qa", "skiptrace", "phones"])
@@ -372,6 +429,8 @@ def main() -> int:
     ap.add_argument("--existing", default="add", choices=["add", "attach"],
                     help="how ids that are already records get the list")
     ap.add_argument("--probe-only", action="store_true", help="pull: land and read back one new id, then stop")
+    ap.add_argument("--approve", type=int, default=None,
+                    help="pull: the most new records the quote may say this adds (default: the ids to pull)")
     ap.add_argument("--chunk", type=int, default=250, help="ids per add call")
     ap.add_argument("--probe-wait", type=float, default=5.0, help="minutes to wait for the probe id")
     ap.add_argument("--wait-min", type=float, default=15.0, help="minutes to wait for the batch to land")

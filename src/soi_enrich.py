@@ -21,8 +21,7 @@ import sys
 import time
 from pathlib import Path
 
-os.environ.setdefault("REISIFT_ACCOUNT", "datasift-apikey")
-sys.path.insert(0, r"C:\Users\you\OneDrive\Desktop\Deal Room Coaching Call\_api\clients")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 STATE_PATH = Path("output/soi_enrich_state.json")
 
@@ -82,7 +81,7 @@ def main():
     ap.add_argument("--delay", type=float, default=0.5)
     args = ap.parse_args()
 
-    from siftmap_api import SiftMapClient, SiftMapError
+    from siftmap_standalone import SiftMapClient, SiftMapError
 
     statuses = set(args.status.split(","))
     matches = [r for r in json.load(open(args.matches, encoding="utf-8"))

@@ -1,7 +1,7 @@
 """Read-only SmrtPhone inbox snapshot - see how the foreclosure MMS threads are doing
 (which homeowners replied, what the list looks like). Loads the saved session, dismisses
 the mic modal, screenshots the inbox, and dumps the visible conversation-list text.
-Sends NOTHING. Safe to run anytime.
+Sends NOTHING. Safe to run anytime. Staff-only: it reads the team's own saved smrtPhone session.
 
   python src/mms_inbox_snapshot.py
 """

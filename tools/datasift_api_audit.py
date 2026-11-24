@@ -62,6 +62,7 @@ KNOWN = {
     "/api/internal/property/remove-tags/": ("replace", "POST /api/internal/property/{uuid}/remove-tags/ per record"),
     "/api/internal/siftline/property/{x}/card/": ("replace", "POST /api/internal/siftline/board/column/{column_uuid}/card/"),
     "/api/internal/siftline/board/{x}/column/": ("absent", "columns are not listed in the API; the board detail is GET /api/internal/siftline/board/{uuid}/"),
+    "/api/internal/siftline/board/{x}/column/{x}/": ("staff", "a board column's place, set only through siftline_columns on our own accounts' login when curative_setup orders the Curative Title board; the published API has no column route, so a user makes and orders the columns in the app"),
     "/properties/search-autocomplete/": ("replace", "POST /properties/search/ (Acceptable use: no volume through autocomplete)"),
     "/api/internal/sequence/": ("absent", "sequences are not in the API: build them in Sequence Builder"),
     "/api/internal/sequence/{x}/": ("absent", "sequences are not in the API: build them in Sequence Builder"),
@@ -89,7 +90,7 @@ AUTH_RX = {
     "impersonation": re.compile(r"/impersonate/"),
     # reisift_auth is the Deal Room auth store (it can hold the key account, but it lives there)
     "deal_room": re.compile(r"Deal Room Coaching Call|_api[\\/]clients|from crm_api|import crm_api|CRMClient\(|reisift_auth"),
-    "desktop_path": re.compile(r"C:\\{1,2}Users\\{1,2}|C:/Users/|OneDrive\\{1,2}Desktop|OneDrive/Desktop"),
+    "desktop_path": re.compile(r"C:\\{1,2}Users\\{1,2}|C:/Users/|OneDrive\\{1,2}Desktop|OneDrive/Desktop"),  # audit-pattern
 }
 PLAYWRIGHT = re.compile(r"sync_playwright|async_playwright|from playwright|import playwright")
 DATASIFT_APP = re.compile(r"app\.reisift\.io|datasift_core")
@@ -107,6 +108,15 @@ GATED = {
     },
     "src/datasift_api_upload.py": {
         "/api/token/": "password mint, used only when DATASIFT_EMAIL and DATASIFT_PASSWORD are set; the key otherwise",
+    },
+    # "login" is not a route: it marks a module whose password path runs only behind an opt-in, so the
+    # password marker is listed with the reason instead of graded.
+    "src/agents/autopilot/curative_setup.py": {
+        "/api/internal/siftline/board/{x}/column/{x}/": "the Curative Title board's column order, set only when this machine holds our own DataSift login; a key-only install orders the columns in the app",
+        "login": "the board's columns are made and ordered through siftline_columns only when DATASIFT_EMAIL and DATASIFT_PASSWORD are set (has_login); every other step runs on the key",
+    },
+    "src/agents/workflows/run_script.py": {
+        "login": "names DATASIFT_PASSWORD only to strip it from the environment a script runs in; the box carries no DataSift password",
     },
 }
 RISK_RX = {
@@ -134,12 +144,13 @@ REVIEWED = {
                    "POST /properties/search/, the add-properties-by-query quote, the add itself only on a live yes inside "
                    "AGENTS_MLS_ADD_MAX, and /properties/detail/ for shortlisted listings already in the account"),
     "buyer_search": ("ready on the key", "the autocomplete finding is deal_buyer_match's, reached through covers: [dealmatch]; this workflow calls only POST /properties/search/ (the sweep, and a map lookup around a geocoded point) and /properties/detail/ capped per run and inside the deal workflows' daily read budget, and reads a record through quick_screen.locate on the key"),
-    "list_pull": ("needs work", "the pull itself (workflows/list_pull, pull_by_ids) runs on published routes and the key; "
-                  "agency_call_list, knox_blount_top15k and franklin_top30k load the uploader, siftmap_pull's allowance "
-                  "read and SiftMap autocomplete at module scope"),
+    "list_pull": ("ready on the key", "the pull (workflows/list_pull, pull_by_ids) prices itself on the documented quote "
+                  "and adds by id on published routes; the covered pools (ai_pools) read only POST /properties/search/, and "
+                  "agency_call_list reads records on the key; pull_by_ids keeps a staff --target path (a pasted token) that "
+                  "no workflow takes (2026-11-24)"),
     "account_setup": ("needs work", "the install path (workflows/account_setup) runs on published routes and the key; "
-                      "the staff export and pasted-token apply (account_blueprint), datasift_schema_setup and the browser "
-                      "preset manager keep the covered agents off the key"),
+                      "the staff export and pasted-token apply (account_blueprint) and the browser preset manager keep the "
+                      "covered agents off the key; datasift_schema_setup runs on the key since 2026-11-24"),
     "courthouse_import": ("needs work", "uploads through the browser wizard with the password "
                           "(dropbox_watcher -> datasift_uploader); switch to datasift_api_upload.upload_csv as ftm_runner does"),
 }
@@ -272,9 +283,13 @@ def scan_module(p: Path) -> dict:
         auth.discard("jwt")
         auth.add("jwt_fallback")                # the key is the default, a password path remains
     rel = p.relative_to(ROOT).as_posix()
-    gated = {r: why for r, why in GATED.get(rel, {}).items() if r in routes}
-    if rel in GATED and "/api/token/" in gated:
+    opt_in = GATED.get(rel, {})
+    gated = {r: why for r, why in opt_in.items() if r in routes}
+    if "/api/token/" in gated or "login" in opt_in:
         auth.discard("jwt_fallback")
+        auth.discard("password")        # the same opt-in password path the gated entry explains
+    if "login" in opt_in:
+        gated["login"] = opt_in["login"]
     return {"routes": sorted(set(routes) - set(gated)), "gated": gated, "auth": sorted(auth),
             "risks": [k for k, rx in RISK_RX.items() if rx.search(t)]}
 

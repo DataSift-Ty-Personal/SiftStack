@@ -130,6 +130,12 @@ def test_resolve_counties():
     assert counties.resolve("47009").name == "Blount"
     other = counties.resolve("Polk County, FL")
     assert other.name == "Polk" and other.state == "FL" and not other.roll_key and not other.sources()
+    # any US county, from the Census table: the FIPS a SiftMap search needs, by name or by code
+    assert other.fips == "12105"
+    assert (counties.resolve("12105").name, counties.resolve("12105").state) == ("Polk", "FL")
+    assert counties.resolve("St. Louis, MO").fips == "29189"
+    assert counties.resolve("Franklin, OH").fips == "39049"
+    assert counties.resolve("Nowhere, TN").fips == ""
 
 
 def probate_csv(path):

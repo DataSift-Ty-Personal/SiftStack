@@ -183,7 +183,7 @@ def merge_phones(rows: list[dict], *, commit: bool = False, api=None, source_tag
     import datasift_api_upload as up
 
     stats = {"submitted": len(rows), "matched": 0, "not_in_account": 0, "no_new_numbers": 0, "phones": 0,
-             "failed": 0, "warnings": [], "stopped": "", "committed": commit}
+             "failed": 0, "warnings": [], "stopped": "", "committed": commit, "records": []}
     if not commit or not rows:
         return stats
     api = api or up.Api()
@@ -205,6 +205,7 @@ def merge_phones(rows: list[dict], *, commit: bool = False, api=None, source_tag
                 stats["no_new_numbers"] += 1
                 continue
             stats["phones"] += write_phones(api, rec, wanted, source_tag)
+            stats["records"].append(uuid)
             body = {}
             if list_name:
                 body["lists"] = [list_name]
@@ -225,3 +226,21 @@ def merge_phones(rows: list[dict], *, commit: bool = False, api=None, source_tag
                 stats["warnings"].append("%s: %s" % (str(row.get("Property Street Address") or "")[:30], str(exc)[:120]))
         time.sleep(sleep)
     return stats
+
+
+def account_targets(api, list_name: str, *, no_phone_only: bool = True) -> list[dict]:
+    """The records on a list in the account, shaped for a trace: uuid, street, city, state, ZIP and the owner's
+    names. With no_phone_only (the default) only records whose owner has no phone at all, read off the records
+    search's own phone flag."""
+    import phone_tiers  # noqa: PLC0415
+
+    rows = phone_tiers.list_rows(api, list_name, **({"phone": 0} if no_phone_only else {}))
+    out = []
+    for r in rows:
+        a, ow = r.get("address") or {}, r.get("owner") or {}
+        out.append({"uuid": r.get("uuid") or "", "address": (a.get("street") or "").strip(),
+                    "city": (a.get("city") or "").strip(), "state": (a.get("state") or "").strip(),
+                    "zip": str(a.get("zip5") or a.get("postal_code") or "")[:5],
+                    "first_name": (ow.get("first_name") or "").strip(), "last_name": (ow.get("last_name") or "").strip(),
+                    "company": (ow.get("company") or "").strip()})
+    return out

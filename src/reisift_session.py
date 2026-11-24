@@ -1,4 +1,5 @@
-"""In-process impersonation session for acting on a DataSift account.
+"""In-process impersonation session for acting on a DataSift account. Staff-only: it reads the team's own saved
+login on one workstation; a user connects with their own Open API key instead.
 
 Built for the staging-account staging build-out: the only live credential is the prod-account
 staff JWT in the Deal Room _api auth store, and staging-account's own token is expired.

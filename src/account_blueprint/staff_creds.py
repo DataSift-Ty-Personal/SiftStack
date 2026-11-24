@@ -1,4 +1,4 @@
-"""EXPORT-ONLY credential lookup against the Deal Room auth store.
+"""EXPORT-ONLY credential lookup against the Deal Room auth store. Staff-only: the store is on one workstation.
 
 Reads reisift_auth.json with a plain json.load, never imports the Deal Room
 client, never writes the store (so it cannot race the prod-account cron jobs). The

@@ -1,5 +1,6 @@
 """Route B MMS sender: drives the smrtPhone web-app Inbox to text each foreclosure
-homeowner their auction-notice screenshot + the personalized message.
+homeowner their auction-notice screenshot + the personalized message. Staff-only: it runs
+on the team's own workstation with a saved smrtPhone browser session, and it is paused.
 
 Consumes the send plan (mms_send_plan.csv / mms_send_queue.csv), reuses the saved
 smrtPhone session (smrtphone_state.json), downloads each Dropbox screenshot to a

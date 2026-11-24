@@ -164,46 +164,9 @@ def _titles(items) -> list[str]:
     return [(x.get("title") if isinstance(x, dict) else str(x)) or "" for x in items or []]
 
 
-def quote(m, ids: list[str], list_name: str, tag: str) -> dict:
-    """The documented quote, chunk by chunk, on exactly the query the add will send."""
-    out = {"total": 0, "in_account": 0, "new": 0, "billable": 0, "allowance_left": None, "shortfall": 0,
-           "blocked": 0, "problem": ""}
-    for i in range(0, len(ids), CHUNK):
-        chunk = ids[i:i + CHUNK]
-        q = m._request(QUOTE, "POST", {"query": d4d.add_query_body(chunk, list_name, tag)["query"]}) or {}
-        if not isinstance(q, dict) or not isinstance(q.get("total"), int):
-            out["problem"] = "the quote came back without a total: %s" % str(q)[:160]
-            return out
-        if q["total"] != len(chunk):
-            out["problem"] = ("the quote counted %d of %d ids in one chunk, so the add would be cut short the "
-                              "same way; nothing was pulled" % (q["total"], len(chunk)))
-            return out
-        out["total"] += q["total"]
-        out["in_account"] += int(q.get("in_account") or 0)
-        out["new"] += int(q.get("new") or 0)
-        bill = q.get("billable")
-        out["billable"] += int(bill if isinstance(bill, int) else (q.get("new") or 0))
-        out["shortfall"] += int(q.get("shortfall") or 0) if isinstance(q.get("shortfall"), int) else 0
-        out["blocked"] += int(q.get("blocked_count") or 0) if isinstance(q.get("blocked_count"), int) else 0
-        left = (q.get("property_usage") or {}).get("allowance_left")
-        if isinstance(left, (int, float)):
-            out["allowance_left"] = left if out["allowance_left"] is None else min(out["allowance_left"], left)
-    return out
-
-
-def refusal(q: dict, approved: int) -> str:
-    """Why the pull must not run on this quote, or "". Each line is the overspend it prevents."""
-    if q.get("problem"):
-        return q["problem"]
-    if q["billable"] > approved:
-        return ("the quote says %d new records would use the allowance and %d were approved; nothing was pulled"
-                % (q["billable"], approved))
-    if q["allowance_left"] is not None and q["billable"] > q["allowance_left"]:
-        return ("the quote says %d new records and the account has %s left in its allowance; nothing was pulled"
-                % (q["billable"], q["allowance_left"]))
-    if q["shortfall"]:
-        return "the quote reports a shortfall of %d records; nothing was pulled" % q["shortfall"]
-    return ""
+# The documented quote and its refusals live in pull_by_ids, which the command line runs too.
+quote = pbi.quote
+refusal = pbi.refusal
 
 
 def probe(crm, m, pid: str, list_name: str, tag: str, wait_min: float) -> tuple[str, str]:

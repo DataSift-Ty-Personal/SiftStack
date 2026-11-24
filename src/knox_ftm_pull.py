@@ -41,12 +41,6 @@ EXTRA_COLUMNS = [
 ]
 OUT_COLUMNS = DATASIFT_COLUMNS + EXTRA_COLUMNS
 
-_API = r"C:\Users\you\OneDrive\Desktop\Deal Room Coaching Call\_api"
-if os.path.isdir(_API):
-    sys.path.insert(0, _API)
-    sys.path.insert(0, os.path.join(_API, "clients"))
-os.environ.setdefault("REISIFT_ACCOUNT", "datasift-apikey")
-
 SFR = "single_family_residence"
 
 
@@ -605,17 +599,11 @@ def normalize_address(a: str) -> str:
 
 def enrich(records: list[dict], city: str = "Knoxville", state: str = "TN",
            sleep: float = 0.2) -> list[dict]:
-    # Prefer the Deal Room client when its checkout is on disk (it carries the
-    # multi-account auth and throttling), otherwise the self-contained one.
-    # This import was the single reason the county stage skipped on every
-    # scheduled cloud run: a Fly machine has no Deal Room checkout.
-    try:
-        from clients.siftmap_api import SiftMapClient
-        c = SiftMapClient()
-    except Exception:
-        from siftmap_standalone import SiftMapClient as StandaloneSiftMap
-        c = StandaloneSiftMap()
-        print("SiftMap: using the standalone client (Api-Key auth)")
+    # The self-contained SiftMap client on the Open API key, the one the scheduled box has always used. The
+    # Deal Room client it once preferred lived on one workstation; importing it was why the county stage
+    # skipped on every cloud run before the fallback existed.
+    from siftmap_standalone import SiftMapClient as StandaloneSiftMap
+    c = StandaloneSiftMap()
     try:
         from ftm_budget import acquire as _slot     # this box's SiftMap share; a no-op unless switched on
     except Exception:

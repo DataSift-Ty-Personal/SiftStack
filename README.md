@@ -206,6 +206,8 @@ To keep the County List Playbook's doors per deal current for your counties from
 
 To find curative title deals (an owner died, the title is stuck, no probate), research every heir and each share, and load the houses ready to work onto the Curative Title board, run [`src/curative_title.py`](docs/curative-title.md).
 
+To hand a calling agency a ranked county list (the best houses by AI score or by your Doors per Deal ladder, pulled into your account, one owner a row with only the numbers worth dialing), run [`src/ai_pools.py`, then `pull_by_ids.py` and `agency_call_list.py`](docs/agency-call-list.md). To add numbers for the owners a list still cannot reach and put a Trestle dial tier on every number, run [`src/tracerfy_ftm.py`, `enformion_ftm.py` and `phone_tiers.py`](docs/phone-reskip.md).
+
 What broke in production, why, and what changed is in [`docs/lessons-learned.md`](docs/lessons-learned.md). The issue fixer (`tools/issue_fixer/`) writes a lesson with every fix it ships, and each fix is published to this repository as soon as it ships.
 
 ## Working on a skill

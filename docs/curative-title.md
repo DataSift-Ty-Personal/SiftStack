@@ -49,7 +49,8 @@ county assessment, death and lien flags, sales and loans). Where the county has 
 | Blount County, TN | the Trustee's live tax roll |
 | any other county | the record and SiftMap only (the workbook says so) |
 
-Adding a county is one entry in `src/curative_engine/counties.py`.
+Any US county works by name and state (`--county "Polk, FL"`) or FIPS code. Giving a county its own sources (a tax
+roll, an obituary or probate index) is one entry in `src/curative_engine/counties.py`.
 
 It writes `output/curative_title/<market>/<Market>_Curative_Title_<date>.xlsx` (a market is the county, for
 example `knox-tn`). The run is resumable: a record read in the last 7 days is not read again, and
