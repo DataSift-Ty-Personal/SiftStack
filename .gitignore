@@ -196,8 +196,11 @@ pb.html
 # Windows artifact from a stray shell redirect.
 NUL
 
-# The public release tool reads its private half from here (names, exclusions). Never committed.
-private/
+# The public release tool's private half (names, exclusions, private words). Since 2026-11-24 the map is
+# committed to the PRIVATE repo only, so the issue fixer's box releases with the current list; every release
+# leaves private/ out whatever the map says. Anything else dropped in here stays out of git.
+private/*
+!private/public_release.json
 
 # The dialer fetches the pinned Twilio Voice SDK at build time (python -m dialer.cli vendor)
 src/dialer/static/vendor/

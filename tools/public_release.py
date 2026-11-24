@@ -20,11 +20,19 @@ The scrub, in order:
   7. scan every file, archives included (tools/public_scan.py with the private words): one finding stops it.
 
 The private half (what to leave out, the phrase map, the private scan words) lives in
-private/public_release.json, which is gitignored. Without it the tool refuses to run.
+private/public_release.json. It is committed to the PRIVATE repo only (since 2026-11-24, so the issue
+fixer's box releases with the current map), and every release leaves private/ out whatever the map says;
+the scan would refuse it anyway, since it spells the private words. Without it the tool refuses to run.
+PUBLIC_RELEASE_PRIVATE points at another copy.
 
 Two repositories: the owner's checkout has origin (the PRIVATE working repo, every branch and its history)
 and `public` (the published repo, main only). A pre-push hook in the owner's checkout refuses any push to
 the public repo that is not a release on main; this tool sets PUBLIC_RELEASE=1, which the hook asks for.
+
+Who runs it (Ty, 2026-11-24: "let's just do a release whenever a fix goes out"): the issue fixer, after
+each fix it ships (tools/issue_fixer/fixer.py, release_due), and a person for anything else. A release's
+commit message names the lessons it adds to docs/lessons-learned.md, and the last line printed is
+`RESULT released|unchanged|stopped ...`, which the fixer reads.
 """
 from __future__ import annotations
 
@@ -43,10 +51,15 @@ from datetime import date
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-PRIVATE = ROOT / "private" / "public_release.json"
+PRIVATE = Path(os.environ.get("PUBLIC_RELEASE_PRIVATE") or (ROOT / "private" / "public_release.json"))
 WORK = Path(os.environ.get("PUBLIC_RELEASE_WORK", Path(tempfile.gettempdir()) / "siftstack_public_release"))
 MAIN_WT = Path(os.environ.get("PUBLIC_RELEASE_MAIN_WORKTREE", Path(tempfile.gettempdir()) / "siftstack_main_worktree"))
 UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+# Left out of every release whatever the map says: the map itself lives there.
+ALWAYS_LEAVE_OUT = ["private/**"]
+LESSONS = "docs/lessons-learned.md"
+LESSON_RX = re.compile(r"^## (.+?)\s*$", re.M)
+BUILT_FROM_RX = re.compile(r"Built by tools/public_release\.py from ([0-9a-f]{7,40})")
 sys.path.insert(0, str(ROOT / "tools"))
 import public_scan  # noqa: E402
 
@@ -242,7 +255,7 @@ def build(ref: str, py: str) -> tuple[Path, dict]:
     if dest.exists():
         shutil.rmtree(dest)
     shutil.copytree(src, dest)
-    gone = leave_out(dest, cfg["exclude"])
+    gone = leave_out(dest, ALWAYS_LEAVE_OUT + list(cfg["exclude"]))
     overlay(src, dest, cfg.get("overlay", {}), strict=ref != "WORKTREE")
     blanked = playbook(dest, cfg["playbook"]) if cfg.get("playbook") else 0
     counts = substitute(dest, cfg["substitutions"], cfg.get("skip_substitution", []))
@@ -278,7 +291,8 @@ def checks(release: Path, py: str, pytest_files: list[str]) -> list[str]:
         ([py, "src/sms_agent/cli.py", "selftest"], "texting selftest"),
     ]
     for cmd, label in steps:
-        code, out = run(cmd, dest, label)
+        # an hour, not half: the issue fixer's box (two shared cores) runs the same suites for its own gate
+        code, out = run(cmd, dest, label, timeout=3600)
         if code:
             failed.append("%s:\n%s" % (label, "\n".join(l for l in out.splitlines() if "FAIL" in l or "rror" in l)[-1500:]
                                        or out.strip()[-800:]))
@@ -288,10 +302,41 @@ def checks(release: Path, py: str, pytest_files: list[str]) -> list[str]:
         failed.append("long dashes in: %s" % ", ".join(p.relative_to(dest).as_posix() for p in dashes))
     if pytest_files:
         present = [f for f in pytest_files if (dest / f).exists()]
-        code, out = run([py, "-m", "pytest", "-q", "-p", "no:cacheprovider", *present], dest, "pytest (%d files)" % len(present))
+        code, out = run([py, "-m", "pytest", "-q", "-p", "no:cacheprovider", *present], dest, "pytest (%d files)" % len(present),
+                        timeout=3600)
         if code:
             failed.append("pytest:\n" + out.strip()[-2500:])
     return failed
+
+
+def lesson_titles(path: Path) -> list[str]:
+    """The lessons in docs/lessons-learned.md, by their headings, newest first."""
+    try:
+        return LESSON_RX.findall(path.read_text(encoding="utf-8"))
+    except OSError:
+        return []
+
+
+def release_message(day: str, new_lessons: list[str], message: str | None = None) -> str:
+    """The release commit's subject, then the lessons it adds, so main's history reads as what was fixed."""
+    if message:
+        head = message
+    elif new_lessons:
+        m = re.match(r"\d{4}-\d{2}-\d{2}: (.+)", new_lessons[0])
+        head = "Release %s: %s" % (day, m.group(1) if m else new_lessons[0])
+        if len(new_lessons) > 1:
+            head += " (and %d more)" % (len(new_lessons) - 1)
+    else:
+        head = "Release %s: the evergreen SiftStack" % day
+    if not new_lessons:
+        return head
+    return "\n".join([head, "", "New in %s:" % LESSONS] + ["- %s" % t for t in new_lessons])
+
+
+def built_from(message: str) -> str:
+    """The working-branch commit a release was built from, read off its commit message."""
+    m = BUILT_FROM_RX.search(message or "")
+    return m.group(1) if m else ""
 
 
 def publish(dest: Path, report: dict, push: bool, message: str | None) -> str:
@@ -306,6 +351,7 @@ def publish(dest: Path, report: dict, push: bool, message: str | None) -> str:
         git("checkout", "--detach", base, cwd=MAIN_WT)
         git("reset", "--hard", base, cwd=MAIN_WT)
         git("clean", "-fdx", "-q", cwd=MAIN_WT)
+    published_lessons = set(lesson_titles(MAIN_WT / LESSONS))      # what main already says, before it is replaced
     for p in MAIN_WT.iterdir():
         if p.name == ".git":
             continue
@@ -315,9 +361,12 @@ def publish(dest: Path, report: dict, push: bool, message: str | None) -> str:
         shutil.copytree(p, target) if p.is_dir() else shutil.copyfile(p, target)
     git("add", "-A", cwd=MAIN_WT)
     if not git("status", "--porcelain", cwd=MAIN_WT):
+        sha = git("rev-parse", "HEAD", cwd=MAIN_WT)
         say("main already matches this release: nothing to commit")
-        return git("rev-parse", "HEAD", cwd=MAIN_WT)
-    msg = message or "Release %s: the evergreen SiftStack" % date.today().isoformat()
+        say("RESULT unchanged %s" % sha[:12])
+        return sha
+    new_lessons = [t for t in lesson_titles(MAIN_WT / LESSONS) if t not in published_lessons]
+    msg = release_message(date.today().isoformat(), new_lessons, message)
     body = ("%s\n\nBuilt by tools/public_release.py from %s: %d private file(s) left out, names, accounts and paths\n"
             "replaced, every file and archive scanned with no finding. Main gets one commit per release, never\n"
             "the working branch's history.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n") % (
@@ -331,6 +380,9 @@ def publish(dest: Path, report: dict, push: bool, message: str | None) -> str:
         # PUBLIC_RELEASE=1 is what the owner's pre-push hook asks for before anything reaches the public repo
         git("push", remote, "HEAD:main", cwd=MAIN_WT, capture=True, env_extra={"PUBLIC_RELEASE": "1"})
         say("pushed %s main -> %s" % (remote, sha[:12]))
+        say("RESULT released %s from %s, %d new lesson(s)" % (sha[:12], report["ref"][:12], len(new_lessons)))
+    else:
+        say("RESULT committed %s from %s, not pushed" % (sha[:12], report["ref"][:12]))
     return sha
 
 
@@ -348,8 +400,12 @@ def main(argv=None) -> int:
         for p in report["regen_problems"]:
             say("REGEN " + p)
         say("stopped: fix the findings above (in the source, or in private/public_release.json) and run again")
+        where = sorted({str(f[0]) for f in report["findings"]})
+        say("RESULT stopped: the scan found %d private thing(s)%s and %d file(s) did not regenerate" % (
+            len(report["findings"]), (" (in %s)" % ", ".join(where[:3])) if where else "", len(report["regen_problems"])))
         return 1
     if a.action == "build":
+        say("RESULT built %s" % report["ref"][:12])
         return 0
     pytest_files = a.pytest if a.pytest is not None else sorted(
         p.relative_to(dest).as_posix() for p in (dest / "tests").glob("test_*.py"))
@@ -358,9 +414,12 @@ def main(argv=None) -> int:
         say("FAILED " + f)
     if failed:
         say("stopped: %d check(s) failed inside the release" % len(failed))
+        say("RESULT stopped: %d check(s) failed inside the release (%s)" % (
+            len(failed), ", ".join(f.split(":", 1)[0] for f in failed)))
         return 1
     say("every check passed inside the release")
     if a.action == "test":
+        say("RESULT tested %s" % report["ref"][:12])
         return 0
     publish(dest, report, a.push, a.message)
     return 0

@@ -26,6 +26,11 @@ wall. A spend cap per session and per day, one session at a time, and an off swi
     python tools/issue_fixer/fixer.py seed [--hours 72]      # mark what is already in the channel as seen
     python tools/issue_fixer/fixer.py status | off | on
     python tools/issue_fixer/fixer.py loop                   # the fixer's own Fly box (fly.fixer.toml)
+    python tools/issue_fixer/fixer.py release [--force] [--dry]   # publish the newest shipped fix by hand
+
+After every run (Ty, 2026-11-24: "let's just do a release whenever a fix goes out"): each fix that went out
+is published to public SiftStack with tools/public_release.py (release_due), and its thread hears so. The
+session writes the fix's lesson into docs/lessons-learned.md, which the release carries.
 
 Where it runs (2026-11-18, Ty: off the desktop): its own Fly app, siftstack-fixer, signed in to Ty's Max
 plan with CLAUDE_CODE_OAUTH_TOKEN, deploying with ISSUE_FIXER_FLY_TOKEN, pushing with a GitHub deploy key,
@@ -150,6 +155,8 @@ class Settings:
                           else {a for a, c in APPS.items() if c["auto"]})
         self.icon = merged.get("ISSUE_FIXER_ICON_URL", "")
         self.model = merged.get("ISSUE_FIXER_MODEL") or _registry_model()
+        # Ty, 2026-11-24: "let's just do a release whenever a fix goes out". ISSUE_FIXER_RELEASE=off stops it.
+        self.release = (merged.get("ISSUE_FIXER_RELEASE") or "on").strip().lower() not in ("off", "0", "false", "no")
 
 
 def _registry_model() -> str:
@@ -947,6 +954,143 @@ def retry_waiting_deploys(sh: Shell, slack, st: Settings, led: dict, dry: bool) 
                     other["status"], other["fixed_at"] = iss["status"], iss.get("fixed_at")
 
 
+# ---------------------------------------------------------------------- the public release
+PUBLIC_TOOL = Path("tools") / "public_release.py"
+RELEASE_TIMEOUT_S = 90 * 60          # build, every check inside the release, push: about 20 minutes on this box
+RELEASE_TRIES = 3                    # a release that failed for no stated reason (a network drop) is tried again
+RESULT_RX = re.compile(r"^RESULT (\w+)(.*)$", re.M)
+BUILT_FROM_RX = re.compile(r"Built by tools/public_release\.py from ([0-9a-f]{7,40})")
+
+
+def public_remote() -> str:
+    return os.environ.get("PUBLIC_RELEASE_REMOTE") or "public"
+
+
+def public_release_source(sh: Shell) -> str:
+    """The agents-infra commit the newest public release was built from, read off public main's message."""
+    rc, out = git(sh, "fetch", public_remote(), "main", cwd=MAIN, timeout=300)
+    if rc:
+        return ""
+    rc, out = git(sh, "log", "-1", "--format=%B", "%s/main" % public_remote(), cwd=MAIN)
+    m = BUILT_FROM_RX.search(out or "")
+    return m.group(1) if (rc == 0 and m) else ""
+
+
+def is_ancestor(sh: Shell, older: str, newer: str) -> bool:
+    """True when `older` is in `newer`'s history (or is it). An unknown commit is not."""
+    if not older or not newer:
+        return False
+    rc, _ = git(sh, "merge-base", "--is-ancestor", older, newer, cwd=MAIN)
+    return rc == 0
+
+
+def newest(sh: Shell, shas: list[str]) -> str:
+    """The commit that carries all the others (agents-infra is one line of history)."""
+    for c in shas:
+        if all(o == c or is_ancestor(sh, o, c) for o in shas):
+            return c
+    return shas[-1]
+
+
+def release_due(sh: Shell, slack, st: Settings, led: dict, force: bool = False, dry: bool = False) -> str:
+    """Ty, 2026-11-24: "let's just do a release whenever a fix goes out". A fix has gone out when it is
+    pushed and every box it reaches took it (status fixed). The newest such commit is published to public
+    SiftStack (tools/public_release.py publish --push), which carries every fix before it, so each fix
+    reaches users within the run that ships it. A fix the last public release already holds is marked and
+    left. A release the scan stops (something private in the tree) is said once and waits for the next fix;
+    any other failure is tried again on the next runs, three times, then said once. `force` releases
+    agents-infra's tip with no fix due. Returns a line for the log ("" when there was nothing to do)."""
+    if not st.release:
+        return ""
+    if not (MAIN / PUBLIC_TOOL).exists():
+        return "no %s in %s, so no public release" % (PUBLIC_TOOL.as_posix(), MAIN)
+    due = [i for i in led["issues"].values()
+           if i.get("status") == "fixed" and (i.get("fix") or {}).get("commit") and not i.get("released_in")]
+    if not due and not force:
+        return ""
+    source = public_release_source(sh)
+    if not source:
+        return "could not read public main (the %s remote), so no release this run" % public_remote()
+    waiting = []
+    for iss in due:
+        if is_ancestor(sh, iss["fix"]["commit"], source):
+            iss["released_in"] = "built from %s" % source[:12]      # an earlier release already carried it
+        else:
+            waiting.append(iss)
+    if force:
+        git(sh, "fetch", "origin", BRANCH, cwd=MAIN)
+        target = git(sh, "rev-parse", "origin/" + BRANCH, cwd=MAIN)[1].strip()
+    elif waiting:
+        target = newest(sh, [i["fix"]["commit"] for i in waiting])
+    else:
+        return "every shipped fix is already in public main (built from %s)" % source[:12]
+    if is_ancestor(sh, target, source):
+        return "public main already carries %s (built from %s)" % (target[:7], source[:12])
+    rel = led.setdefault("release", {})
+    failed = rel.get("failed") or {}
+    if not force and failed.get("sha") == target and (failed.get("said") or int(failed.get("tries") or 0) >= RELEASE_TRIES):
+        return "the release of %s stopped before (%s); it waits for the next fix" % (target[:7], failed.get("why", ""))
+    if dry:
+        return "would release %s to public main (%d fix(es) waiting)" % (target[:7], len(waiting))
+    env = {k: v for k, v in plain_env().items() if k != "FLY_API_TOKEN"}
+    rc, out = sh.run([PY, MAIN / PUBLIC_TOOL, "publish", "--push", "--ref", target, "--python", PY], cwd=MAIN,
+                     timeout=RELEASE_TIMEOUT_S, env=env)
+    STATE.mkdir(parents=True, exist_ok=True)
+    with open(STATE / "release.log", "a", encoding="utf-8") as fh:
+        fh.write("==== %s release of %s, exit %d\n%s\n" % (now_utc().isoformat(timespec="seconds"), target[:12], rc,
+                                                           "\n".join(out.strip().splitlines()[-80:])))
+    results = RESULT_RX.findall(out or "")
+    kind, rest = (results[-1][0], results[-1][1].strip(" :")) if results else ("", "")
+    carried = [i for i in waiting if is_ancestor(sh, i["fix"]["commit"], target)]
+    if rc == 0 and kind in ("released", "unchanged"):
+        public_sha = (rest.split() or [""])[0]
+        for iss in carried:
+            iss["released_in"] = public_sha
+            say(slack, st, iss, "Public SiftStack has this fix now (release %s)." % public_sha[:7])
+        rel.pop("failed", None)
+        rel["last"] = {"sha": target, "public": public_sha, "at": now_utc().isoformat(), "fixes": [i["id"] for i in carried]}
+        return "released %s to public main as %s" % (target[:7], public_sha[:7])
+    why = rest if kind == "stopped" else ((out or "").strip().splitlines() or ["no output"])[-1][:200]
+    tries = (int(failed.get("tries") or 0) if failed.get("sha") == target else 0) + 1
+    final = (kind == "stopped" and why.startswith("the scan found")) or tries >= RELEASE_TRIES
+    rel["failed"] = {"sha": target, "why": why, "tries": tries, "at": now_utc().isoformat(), "said": final}
+    if final and carried:
+        newest_iss = max(carried, key=lambda i: float(i.get("last_ts") or 0))
+        say(slack, st, newest_iss, "This fix is live on our boxes, but the public release stopped: %s. A person needs to "
+                                   "look at it; public SiftStack gets it with the next release that passes." % why,
+            broadcast=True)
+    return "the release of %s failed (try %d): %s" % (target[:7], tries, why)
+
+
+def publish_fixes(sh: Shell, slack, st: Settings, led: dict) -> None:
+    """After every run: what went out goes public (release_due). A release that crashes costs that release,
+    never the run's ledger."""
+    try:
+        what = release_due(sh, slack, st, led)
+        if what:
+            log(what)
+    except Exception as exc:  # noqa: BLE001
+        log("the public release crashed: %s\n%s" % (exc, traceback.format_exc()[-800:]))
+    save_ledger(led)
+
+
+def release_cmd(args, st: Settings | None = None, sh: Shell | None = None, slack=None) -> int:
+    """`fixer.py release [--force] [--dry]`: the same step by hand, under the run's lock."""
+    st = st or Settings()
+    sh = sh or Shell()
+    if slack is None and st.token and st.channel:
+        slack = Slack(st.token, st.icon)
+    with Lock():
+        if os.environ.get("ISSUE_FIXER_OWN_CLONE") == "1" and not refresh_clone(sh):
+            return 1
+        led = load_ledger()
+        what = release_due(sh, slack, st, led, force=args.force, dry=args.dry)
+        if not args.dry:
+            save_ledger(led)
+    log(what or "nothing to release")
+    return 0
+
+
 def handover(sh: Shell, app: str) -> bool:
     """The workstation hands the fixer to its own box once the box can do the work: the box holds Ty's
     Claude sign-in (the secret CLAUDE_CODE_OAUTH_TOKEN) and Claude Code answers there. Then the ledger is
@@ -1008,93 +1152,102 @@ def run(args, st: Settings | None = None, sh: Shell | None = None, slack=None) -
         if not led.get("seeded"):
             log("not seeded yet: run `fixer.py seed` first, so what is already in the channel is not worked again")
             return 2
-        for iss in led["issues"].values():
-            if iss.get("status") == "working":     # a run that died mid-session (this run holds the lock)
-                iss["status"] = "new"
-        posts = slack.history(st.channel, str(led.get("last_ts") or ""))
-        need = fold(led, posts)
-        need += [i for i, iss in led["issues"].items() if iss.get("status") in ("new", "regression") and i not in need]
-        log("read %d post(s); %d issue(s) need a look" % (len(posts), len(need)))
-        handle_approvals(sh, slack, st, led, args.dry)
-        retry_waiting_deploys(sh, slack, st, led, args.dry)
-        if not args.dry:
-            save_ledger(led)
-        if not need:
-            return 0
-        day = local_day()
-        left = st.daily_usd - spent_today(day)
-        if left < 1.0:
-            log("the day's budget is spent ($%.2f of $%.2f); %d issue(s) wait" % (st.daily_usd - left, st.daily_usd, len(need)))
-            return 0
-        ids = need[:MAX_NEW_PER_SESSION]
-        if args.dry:
-            for i in ids:
-                log("would work on %s: %s" % (i, led["issues"][i]["text"][:160].replace("\n", " | ")))
-            return 0
-        run_id = now_utc().astimezone(TZ).strftime("%Y%m%d_%H%M%S")
-        run_dir = STATE / "runs" / run_id
-        run_dir.mkdir(parents=True, exist_ok=True)
-        result_path = run_dir / "RESULT.json"
-        for i in ids:
-            led["issues"][i]["status"] = "working"
+        rc = work(args, st, sh, slack, led)
+        if not args.dry and not getattr(args, "no_ship", False):
+            publish_fixes(sh, slack, st, led)
+    return rc
+
+
+def work(args, st: Settings, sh: Shell, slack, led: dict) -> int:
+    """One run's work on the ledger, inside run()'s lock: read the channel, carry out approvals, retry
+    waiting deploys, hand the new issues to a session, then sort, fix and ship what it found."""
+    for iss in led["issues"].values():
+        if iss.get("status") == "working":     # a run that died mid-session (this run holds the lock)
+            iss["status"] = "new"
+    posts = slack.history(st.channel, str(led.get("last_ts") or ""))
+    need = fold(led, posts)
+    need += [i for i, iss in led["issues"].items() if iss.get("status") in ("new", "regression") and i not in need]
+    log("read %d post(s); %d issue(s) need a look" % (len(posts), len(need)))
+    handle_approvals(sh, slack, st, led, args.dry)
+    retry_waiting_deploys(sh, slack, st, led, args.dry)
+    if not args.dry:
         save_ledger(led)
-        base = prepare_worktree(sh)
+    if not need:
+        return 0
+    day = local_day()
+    left = st.daily_usd - spent_today(day)
+    if left < 1.0:
+        log("the day's budget is spent ($%.2f of $%.2f); %d issue(s) wait" % (st.daily_usd - left, st.daily_usd, len(need)))
+        return 0
+    ids = need[:MAX_NEW_PER_SESSION]
+    if args.dry:
+        for i in ids:
+            log("would work on %s: %s" % (i, led["issues"][i]["text"][:160].replace("\n", " | ")))
+        return 0
+    run_id = now_utc().astimezone(TZ).strftime("%Y%m%d_%H%M%S")
+    run_dir = STATE / "runs" / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+    result_path = run_dir / "RESULT.json"
+    for i in ids:
+        led["issues"][i]["status"] = "working"
+    save_ledger(led)
+    base = prepare_worktree(sh)
+    try:
+        meta = run_session(sh, st, build_prompt(led, ids, run_dir, result_path), run_dir, min(st.session_usd, left))
+    finally:
         try:
-            meta = run_session(sh, st, build_prompt(led, ids, run_dir, result_path), run_dir, min(st.session_usd, left))
-        finally:
-            try:
-                (WORKTREE / ".env").unlink()
-            except OSError:
-                pass
-        usd = float(meta.get("total_cost_usd") or 0)
-        record_run({"run": run_id, "day": day, "usd": usd, "issues": ids, "rc": meta.get("rc"),
-                    "is_error": meta.get("is_error"), "denials": len(meta.get("permission_denials") or [])})
-        result, problems = load_result(result_path, ids)
-        for p in problems:
-            log("result: %s" % p)
-        rows = (result or {}).get("issues") or {}
-        fixed_ids = [i for i, r in rows.items() if r.get("class") == "bug" and r.get("fixed") and r.get("commits")]
-        for i in ids:
-            iss, row = led["issues"][i], rows.get(i)
-            if not row:
-                iss["status"] = "new"            # the next session looks again
-                continue
-            iss.update({"class": row["class"], "summary": row.get("summary", ""), "evidence": row.get("evidence", "")})
-            iss["history"].append({"at": now_utc().isoformat(), "what": "sorted as %s" % row["class"], "run": run_id})
-            if row["class"] == "bug" and i in fixed_ids:
-                continue                          # shipped below
-            if row.get("account_change"):
-                stage_account_change(sh, slack, st, iss, row, args.dry)
-            elif row["class"] == "bug":
-                # Not fixed this session (one bug a session, or it ran out): the next session takes it, twice
-                # more at most, and the thread hears once now and once if it is handed to a person.
-                if not row.get("deferred"):
-                    iss["attempts"] = int(iss.get("attempts") or 0) + 1
-                if not iss.get("said_bug"):
-                    iss["said_bug"] = True
-                    say(slack, st, iss, (row.get("reply") or row.get("summary") or "This looks like a bug.")
-                        + "\nIt is in line for a fix.")
-                if int(iss.get("attempts") or 0) >= 3:
-                    iss["status"] = "needs_person"
-                    say(slack, st, iss, "Three tries did not fix this, so it needs a person. What was found: %s" % (
-                        row.get("summary") or row.get("evidence") or "see the fixer's run folder"), broadcast=True)
-                else:
-                    iss["status"] = "new"
-            elif row["class"] == "duplicate":
-                iss["status"] = "closed"
-                iss["duplicate_of"] = row.get("duplicate_of", "")
+            (WORKTREE / ".env").unlink()
+        except OSError:
+            pass
+    usd = float(meta.get("total_cost_usd") or 0)
+    record_run({"run": run_id, "day": day, "usd": usd, "issues": ids, "rc": meta.get("rc"),
+                "is_error": meta.get("is_error"), "denials": len(meta.get("permission_denials") or [])})
+    result, problems = load_result(result_path, ids)
+    for p in problems:
+        log("result: %s" % p)
+    rows = (result or {}).get("issues") or {}
+    fixed_ids = [i for i, r in rows.items() if r.get("class") == "bug" and r.get("fixed") and r.get("commits")]
+    for i in ids:
+        iss, row = led["issues"][i], rows.get(i)
+        if not row:
+            iss["status"] = "new"            # the next session looks again
+            continue
+        iss.update({"class": row["class"], "summary": row.get("summary", ""), "evidence": row.get("evidence", "")})
+        iss["history"].append({"at": now_utc().isoformat(), "what": "sorted as %s" % row["class"], "run": run_id})
+        if row["class"] == "bug" and i in fixed_ids:
+            continue                          # shipped below
+        if row.get("account_change"):
+            stage_account_change(sh, slack, st, iss, row, args.dry)
+        elif row["class"] == "bug":
+            # Not fixed this session (one bug a session, or it ran out): the next session takes it, twice
+            # more at most, and the thread hears once now and once if it is handed to a person.
+            if not row.get("deferred"):
+                iss["attempts"] = int(iss.get("attempts") or 0) + 1
+            if not iss.get("said_bug"):
+                iss["said_bug"] = True
+                say(slack, st, iss, (row.get("reply") or row.get("summary") or "This looks like a bug.")
+                    + "\nIt is in line for a fix.")
+            if int(iss.get("attempts") or 0) >= 3:
+                iss["status"] = "needs_person"
+                say(slack, st, iss, "Three tries did not fix this, so it needs a person. What was found: %s" % (
+                    row.get("summary") or row.get("evidence") or "see the fixer's run folder"), broadcast=True)
             else:
-                iss["status"] = "for_people" if row["class"] in OPEN_FOR_PEOPLE else "closed"
-                say(slack, st, iss, row.get("reply") or row.get("summary") or "")
-        save_ledger(led)
-        if fixed_ids and args.no_ship:
-            for i in fixed_ids:
-                led["issues"][i]["status"] = "new"
-                led["issues"][i]["history"].append({"at": now_utc().isoformat(), "what": "fixed in the session, not shipped (--no-ship)"})
-        elif fixed_ids:
-            ship_fixes(sh, slack, st, led, rows, fixed_ids, base, run_id)
-        save_ledger(led)
-        log("run %s done: $%.2f, %d sorted, %d fixed" % (run_id, usd, len(rows), len(fixed_ids)))
+                iss["status"] = "new"
+        elif row["class"] == "duplicate":
+            iss["status"] = "closed"
+            iss["duplicate_of"] = row.get("duplicate_of", "")
+        else:
+            iss["status"] = "for_people" if row["class"] in OPEN_FOR_PEOPLE else "closed"
+            say(slack, st, iss, row.get("reply") or row.get("summary") or "")
+    save_ledger(led)
+    if fixed_ids and args.no_ship:
+        for i in fixed_ids:
+            led["issues"][i]["status"] = "new"
+            led["issues"][i]["history"].append({"at": now_utc().isoformat(), "what": "fixed in the session, not shipped (--no-ship)"})
+    elif fixed_ids:
+        ship_fixes(sh, slack, st, led, rows, fixed_ids, base, run_id)
+    save_ledger(led)
+    log("run %s done: $%.2f, %d sorted, %d fixed" % (run_id, usd, len(rows), len(fixed_ids)))
     return 0
 
 
@@ -1277,6 +1430,9 @@ def main(argv=None) -> int:
     sub.add_parser("off")
     sub.add_parser("on")
     sub.add_parser("loop", help="the fixer's own box: a run at every quarter hour")
+    rl = sub.add_parser("release", help="publish the newest shipped fix to public SiftStack now")
+    rl.add_argument("--force", action="store_true", help="release agents-infra's tip even with no fix waiting")
+    rl.add_argument("--dry", action="store_true", help="say what would be released, release nothing")
     args = ap.parse_args(argv)
     global QUIET
     QUIET = bool(getattr(args, "quiet", False))
@@ -1285,6 +1441,8 @@ def main(argv=None) -> int:
             return loop(args)
         if args.cmd == "run":
             return run(args)
+        if args.cmd == "release":
+            return release_cmd(args)
         if args.cmd == "seed":
             return seed(args)
         if args.cmd == "status":

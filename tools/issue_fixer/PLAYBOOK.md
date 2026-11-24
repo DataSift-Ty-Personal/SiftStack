@@ -40,7 +40,8 @@ nobody looking. Be right, not fast.
 - Never undo a decision Ty made (CLAUDE.md records them with dates). A post that is a decision working
   is by_design. A fix that needs a new decision is decision.
 - Never touch .env, keys, the public release (tools/public_release.py, private/), the issue fixer itself
-  (tools/issue_fixer/), or a generated file without its own generator.
+  (tools/issue_fixer/), or a generated file without its own generator. In docs/lessons-learned.md you
+  only add your own lesson at the top; never edit or remove another.
 - Never write an em dash or an en dash anywhere: code, comments, tests, replies. Plain hyphens, commas,
   colons, parentheses.
 - Never put a real owner, seller, heir or address in a test: invented streets (Example St, Sample Ave,
@@ -80,10 +81,26 @@ nobody looking. Be right, not fast.
      and pytest, and if either fails nothing ships, so run what you can first;
    - when the fix changes what a stage reads or writes in production, show it on the real data, read
      only (a probe on the box that writes nothing), and put the before and after numbers in evidence;
-   - commit on this branch: `git add <files>`, then `git commit -m "<what was wrong and what changed>"`
-     ending with the line `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`;
    - in the same commit, one dense line in the CLAUDE.md section the bug belongs to: what was wrong and
-     what the rule is now.
+     what the rule is now;
+   - in the same commit, the fix's lesson at the top of docs/lessons-learned.md, right under the line
+     `<!-- new lessons go here -->`. The job publishes every fix that ships to public SiftStack (Ty,
+     2026-11-24), and this is what other SiftStack users read. Its shape, exactly:
+
+     ```
+     ## <YYYY-MM-DD>: <what went wrong, in plain words, under 70 characters>
+
+     - **What happened:** <what a user would have seen, one or two sentences>
+     - **Why:** <the real cause, one or two sentences>
+     - **The fix:** <what changed and in which file, one or two sentences>
+     - **Found by:** the issue fixer, which fixed, tested and shipped it on its own.
+     ```
+
+     Written for someone running their own SiftStack: no person, company, street, phone number, email,
+     record id or dollar figure from a real record, and no account name; counts and dates are fine. A
+     lesson that names something private stops the public release for everyone;
+   - commit on this branch: `git add <files>`, then
+     `git commit -m "<what was wrong, under 72 characters>" -m "<the cause and what changed, a few lines>" -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"`.
 5. Fix at most ONE bug in a session: the most harmful one (lost leads, wrong data written, a crash that
    stops a stage). Any other bug: sort it as bug with `"fixed": false, "deferred": true` and say what you
    found; the next session takes it. A bug you tried and could not fix is `"fixed": false, "deferred":

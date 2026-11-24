@@ -557,3 +557,160 @@ def test_no_dash_in_the_fixer_sources():
     for name in ("fixer.py", "PLAYBOOK.md", "seed_verdicts.json"):
         text = (ROOT / "tools" / "issue_fixer" / name).read_text(encoding="utf-8")
         assert chr(0x2014) not in text and chr(0x2013) not in text, name
+
+
+# ---------------------------------------------------------------------- the public release after a fix
+C1, C2, C3, C5, C9 = ("c1c1c1c1c1c1", "c2c2c2c2c2c2", "c3c3c3c3c3c3", "c5c5c5c5c5c5", "c9c9c9c9c9c9")   # commits: hex, as public main's message carries them
+
+
+class ReleaseShell:
+    """git and tools/public_release.py, for release_due: `source` is the commit public main says it was
+    built from, `ancestors` the (older, newer) pairs in one history, `outs` what each release prints."""
+
+    def __init__(self, source=C1, ancestors=(), outs=None, tip=C9):
+        self.calls, self.source, self.ancestors, self.tip = [], source, set(ancestors), tip
+        self.outs = list(outs or [(0, "RESULT released 1234567890ab from c2c2c2c2c2c2, 1 new lesson(s)")])
+
+    def run(self, cmd, cwd=None, timeout=1800, env=None, input_text=None):
+        c = [str(x) for x in cmd]
+        line = " ".join(c)
+        self.calls.append(line)
+        if "public_release.py" in line:
+            rc, out = self.outs.pop(0) if len(self.outs) > 1 else self.outs[0]
+            return rc, "export c2\nscan: 0 finding(s)\n" + out + "\n"
+        if os.path.basename(c[0]).lower() in ("git", "git.exe"):
+            if "log" in c and "--format=%B" in c:
+                return 0, ("Release 2026-11-23: x\n\nBuilt by tools/public_release.py from %s: 39 private file(s) left out"
+                           % self.source)
+            if "merge-base" in c:
+                older, newer = c[-2], c[-1]
+                return (0 if older == newer or (older, newer) in self.ancestors else 1), ""
+            if "rev-parse" in c:
+                return 0, self.tip + "\n"
+        return 0, ""
+
+    def releases(self):
+        return [c for c in self.calls if "public_release.py" in c]
+
+
+def shipped(led, iid, commit, ts="100"):
+    led["issues"][iid] = {"id": iid, "text": "issue %s" % iid, "first_ts": ts, "last_ts": ts, "seen": 1, "history": [],
+                          "status": "fixed", "fix": {"commit": commit, "run": "r", "tests": [], "apps": []}}
+    return led["issues"][iid]
+
+
+@pytest.fixture
+def release_tool():
+    (F.MAIN / "tools").mkdir(parents=True, exist_ok=True)
+    (F.MAIN / "tools" / "public_release.py").write_text("# stands in for the release tool\n", encoding="utf-8")
+
+
+def test_a_shipped_fix_is_released_and_its_thread_hears(release_tool):
+    led, slack = F.empty_ledger(), FakeSlack([])
+    iss = shipped(led, "i1", C2)
+    sh = ReleaseShell(source=C1, ancestors={(C1, C2)})
+    what = F.release_due(sh, slack, settings(), led)
+    assert sh.releases() and "publish --push --ref " + C2 in sh.releases()[0]
+    assert iss["released_in"] == "1234567890ab" and "released c2c2c2c" in what
+    assert [p["text"] for p in slack.posts] == ["Public SiftStack has this fix now (release 1234567)."]
+    assert slack.posts[0]["thread_ts"] == "100" and not slack.posts[0]["broadcast"], "a quiet note in the fix's own thread"
+    assert F.release_due(sh, slack, settings(), led) == "" and len(sh.releases()) == 1, "released once"
+
+
+def test_a_fix_the_last_release_carries_is_marked_without_a_release(release_tool):
+    led, slack = F.empty_ledger(), FakeSlack([])
+    iss = shipped(led, "i1", C1)
+    sh = ReleaseShell(source=C5, ancestors={(C1, C5)})
+    F.release_due(sh, slack, settings(), led)
+    assert not sh.releases() and iss["released_in"] == "built from " + C5 and not slack.posts
+
+
+def test_two_fixes_go_out_in_one_release_of_the_newest(release_tool):
+    led, slack = F.empty_ledger(), FakeSlack([])
+    a, b = shipped(led, "i1", C2, ts="100"), shipped(led, "i2", C3, ts="200")
+    sh = ReleaseShell(source=C1, ancestors={(C2, C3), (C1, C2), (C1, C3)})
+    F.release_due(sh, slack, settings(), led)
+    assert len(sh.releases()) == 1 and "--ref " + C3 in sh.releases()[0]
+    assert a["released_in"] == b["released_in"] == "1234567890ab" and len(slack.posts) == 2
+
+
+def test_a_fix_waiting_for_its_box_is_not_released_yet(release_tool):
+    led, slack = F.empty_ledger(), FakeSlack([])
+    iss = shipped(led, "i1", C2)
+    iss["status"] = "waiting_to_deploy"
+    sh = ReleaseShell(source=C1)
+    assert F.release_due(sh, slack, settings(), led) == "" and not sh.calls
+    iss["status"] = "fixed"                        # the box took it
+    F.release_due(sh, slack, settings(), led)
+    assert sh.releases()
+
+
+def test_a_scan_stop_is_said_once_and_the_next_fix_tries_again(release_tool):
+    led, slack = F.empty_ledger(), FakeSlack([])
+    shipped(led, "i1", C2)
+    stop = (1, "RESULT stopped: the scan found 2 private thing(s) (in docs/lessons-learned.md) and 0 file(s) did not regenerate")
+    sh = ReleaseShell(source=C1, outs=[stop])
+    F.release_due(sh, slack, settings(), led)
+    assert len(slack.posts) == 1 and slack.posts[0]["broadcast"]
+    assert "public release stopped: the scan found 2 private thing(s)" in slack.posts[0]["text"]
+    assert "waits for the next fix" in F.release_due(sh, slack, settings(), led)
+    assert len(sh.releases()) == 1 and len(slack.posts) == 1, "not tried again, not said again"
+    shipped(led, "i2", C3, ts="300")
+    sh.ancestors |= {(C2, C3)}
+    sh.outs = [(0, "RESULT released abcdef123456 from c3c3c3c3c3c3, 2 new lesson(s)")]
+    F.release_due(sh, slack, settings(), led)
+    assert "--ref " + C3 in sh.releases()[-1] and led["issues"]["i1"]["released_in"] == "abcdef123456"
+    assert "failed" not in led["release"]
+
+
+def test_a_failure_with_no_stated_reason_is_tried_three_times_then_said(release_tool):
+    led, slack = F.empty_ledger(), FakeSlack([])
+    shipped(led, "i1", C2)
+    sh = ReleaseShell(source=C1, outs=[(1, "git push public HEAD:main failed: Connection reset by peer")])
+    for _ in range(2):
+        F.release_due(sh, slack, settings(), led)
+        assert not slack.posts
+    F.release_due(sh, slack, settings(), led)
+    assert len(sh.releases()) == 3 and len(slack.posts) == 1 and "Connection reset by peer" in slack.posts[0]["text"]
+    F.release_due(sh, slack, settings(), led)
+    assert len(sh.releases()) == 3, "after three tries it waits for the next fix"
+
+
+def test_the_release_switch_and_a_missing_tool(release_tool):
+    led, slack = F.empty_ledger(), FakeSlack([])
+    shipped(led, "i1", C2)
+    sh = ReleaseShell(source=C1)
+    assert F.release_due(sh, slack, settings(ISSUE_FIXER_RELEASE="off"), led) == "" and not sh.calls
+    (F.MAIN / "tools" / "public_release.py").unlink()
+    assert "no public release" in F.release_due(sh, slack, settings(), led) and not sh.calls
+
+
+def test_force_releases_the_tip_with_nothing_due(release_tool):
+    led, slack = F.empty_ledger(), FakeSlack([])
+    sh = ReleaseShell(source=C1, tip=C9)
+    F.release_due(sh, slack, settings(), led, force=True)
+    assert "--ref " + C9 in sh.releases()[0] and not slack.posts
+    sh2 = ReleaseShell(source=C9, tip=C9)
+    assert "already carries" in F.release_due(sh2, slack, settings(), led, force=True) and not sh2.releases()
+
+
+def test_a_run_that_ships_a_fix_then_releases_it(monkeypatch):
+    slack = FakeSlack([])
+    st = settings()
+    seeded(slack, st)
+    bug = post(datetime(2026, 11, 18, 15, 5, tzinfo=timezone.utc).timestamp(), "Research queue: it stopped partway")
+    slack.history_rows.append(bug)
+    bid = F.shape_key(bug["text"])
+    sh = FakeShell(result={"issues": [
+        {"id": bid, "class": "bug", "summary": "a crash", "reply": "It crashed.", "fixed": True, "commits": ["abc1234"]}]})
+    monkeypatch.setattr(F, "apps_for", lambda repo, changed: [])
+    seen = []
+    monkeypatch.setattr(F, "release_due", lambda sh_, slack_, st_, led: seen.append(led["issues"][bid]["status"]) or "")
+    F.run(Args(), st=st, sh=sh, slack=slack)
+    assert seen == ["fixed"], "the release step runs once, after the fix has gone out"
+    seen.clear()
+
+    class NoShip(Args):
+        no_ship = True
+    F.run(NoShip(), st=st, sh=FakeShell(result={"issues": []}), slack=slack)
+    assert not seen, "--no-ship releases nothing"

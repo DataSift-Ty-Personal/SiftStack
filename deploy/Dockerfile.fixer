@@ -30,6 +30,9 @@ ENV SIFTSTACK_MAIN=/data/repo \
     ISSUE_FIXER_DEPLOY_TREE=/data/work/fixer_deploy \
     ISSUE_FIXER_PYTHON=/usr/local/bin/python \
     ISSUE_FIXER_OWN_CLONE=1 \
+    PUBLIC_RELEASE_REMOTE=public \
+    PUBLIC_RELEASE_WORK=/data/work/release \
+    PUBLIC_RELEASE_MAIN_WORKTREE=/data/work/release_main \
     PYTHONUNBUFFERED=1
 
 CMD ["sh", "/app/fixer_entry.sh"]
