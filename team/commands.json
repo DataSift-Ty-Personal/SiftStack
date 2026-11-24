@@ -3,11 +3,11 @@
  "counts": {
   "browser": 23,
   "package": 1,
-  "paid": 13,
+  "paid": 14,
   "retired": 17,
-  "runnable": 52,
+  "runnable": 53,
   "wired": 31,
-  "writes": 20
+  "writes": 21
  },
  "scripts": {
   "_debug_login": {
@@ -1251,6 +1251,399 @@
     "market_report"
    ],
    "writes": ""
+  },
+  "curative_title": {
+   "args": [],
+   "class": "runnable",
+   "cli": "argparse",
+   "complete": true,
+   "paid": [
+    "Trestle"
+   ],
+   "paid_deeper": [
+    "Claude",
+    "Enformion",
+    "Firecrawl",
+    "Google Maps",
+    "OpenRouter",
+    "Scrapfly",
+    "SerpApi",
+    "Serper",
+    "SmartSkip",
+    "Tracerfy",
+    "Zillow (OpenWeb Ninja)"
+   ],
+   "shared": [
+    {
+     "flags": [
+      "--market"
+     ],
+     "help": "the market's folder name (default: the first county, e.g. knox-tn)",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--dir"
+     ],
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--county"
+     ],
+     "help": "a county, e.g. \"Knox, TN\" or 47093 (repeat for more)",
+     "kind": "value"
+    }
+   ],
+   "subcommand_required": false,
+   "subcommands": {
+    "family": {
+     "args": [
+      {
+       "default": 0,
+       "flags": [
+        "--top"
+       ],
+       "help": "the top N houses not ruled out (default: tiers 1 and 2)",
+       "kind": "value",
+       "type": "int"
+      },
+      {
+       "flags": [
+        "--quote"
+       ],
+       "kind": "switch"
+      },
+      {
+       "flags": [
+        "--commit"
+       ],
+       "kind": "switch"
+      },
+      {
+       "default": 60.0,
+       "flags": [
+        "--max-usd"
+       ],
+       "kind": "value",
+       "type": "float"
+      }
+     ]
+    },
+    "next": {
+     "args": []
+    },
+    "people": {
+     "args": [
+      {
+       "flags": [
+        "--house"
+       ],
+       "kind": "value",
+       "required": true
+      },
+      {
+       "flags": [
+        "--first"
+       ],
+       "kind": "value",
+       "required": true
+      },
+      {
+       "flags": [
+        "--last"
+       ],
+       "kind": "value",
+       "required": true
+      },
+      {
+       "flags": [
+        "--middle"
+       ],
+       "kind": "value"
+      },
+      {
+       "flags": [
+        "--street"
+       ],
+       "kind": "value"
+      },
+      {
+       "flags": [
+        "--city"
+       ],
+       "kind": "value"
+      },
+      {
+       "flags": [
+        "--state"
+       ],
+       "kind": "value"
+      },
+      {
+       "flags": [
+        "--zip"
+       ],
+       "kind": "value"
+      },
+      {
+       "flags": [
+        "--dob-year"
+       ],
+       "kind": "value"
+      },
+      {
+       "default": 3,
+       "flags": [
+        "--max"
+       ],
+       "kind": "value",
+       "type": "int"
+      }
+     ]
+    },
+    "phones": {
+     "args": [
+      {
+       "flags": [
+        "--commit"
+       ],
+       "kind": "switch"
+      },
+      {
+       "default": 250,
+       "flags": [
+        "--max-pairs"
+       ],
+       "kind": "value",
+       "type": "int"
+      },
+      {
+       "flags": [
+        "--only"
+       ],
+       "kind": "value"
+      }
+     ]
+    },
+    "rank": {
+     "args": [
+      {
+       "flags": [
+        "--lists"
+       ],
+       "help": "comma list of list titles (default Obituary,Probate,Foreclosure)",
+       "kind": "value"
+      },
+      {
+       "flags": [
+        "--tags"
+       ],
+       "help": "comma list of tag titles to add to the scope",
+       "kind": "value"
+      },
+      {
+       "default": 7,
+       "flags": [
+        "--fresh-days"
+       ],
+       "help": "a record read within this many days is not read again",
+       "kind": "value",
+       "type": "int"
+      },
+      {
+       "default": 0,
+       "flags": [
+        "--max-records"
+       ],
+       "help": "read at most this many records this run (resumable)",
+       "kind": "value",
+       "type": "int"
+      },
+      {
+       "default": 4,
+       "flags": [
+        "--workers"
+       ],
+       "help": "county roll reads at once",
+       "kind": "value",
+       "type": "int"
+      },
+      {
+       "flags": [
+        "--no-siftmap"
+       ],
+       "help": "skip SiftMap's detail",
+       "kind": "switch"
+      },
+      {
+       "flags": [
+        "--no-county"
+       ],
+       "help": "skip the county tax roll and city bills",
+       "kind": "switch"
+      },
+      {
+       "flags": [
+        "--no-obits"
+       ],
+       "help": "skip the obituary index lookups",
+       "kind": "switch"
+      }
+     ]
+    },
+    "score": {
+     "args": [
+      {
+       "flags": [
+        "--reassemble"
+       ],
+       "help": "join the saved reads again first",
+       "kind": "switch"
+      },
+      {
+       "flags": [
+        "--refresh-probate"
+       ],
+       "help": "download the probate index again",
+       "kind": "switch"
+      }
+     ]
+    },
+    "stories": {
+     "args": [
+      {
+       "choices": [
+        "select",
+        "prepare",
+        "run",
+        "status",
+        "summarize"
+       ],
+       "flags": [
+        "action"
+       ],
+       "kind": "positional"
+      },
+      {
+       "default": 25,
+       "flags": [
+        "--top"
+       ],
+       "kind": "value",
+       "type": "int"
+      },
+      {
+       "flags": [
+        "--only"
+       ],
+       "help": "comma list of house slugs",
+       "kind": "value"
+      },
+      {
+       "flags": [
+        "--redo"
+       ],
+       "help": "select houses that already have a story too",
+       "kind": "switch"
+      },
+      {
+       "default": 3,
+       "flags": [
+        "--concurrency"
+       ],
+       "kind": "value",
+       "type": "int"
+      },
+      {
+       "default": 100.0,
+       "flags": [
+        "--daily-usd"
+       ],
+       "help": "Claude Code usage a day (its own estimate)",
+       "kind": "value",
+       "type": "float"
+      },
+      {
+       "default": 10.0,
+       "flags": [
+        "--house-usd"
+       ],
+       "kind": "value",
+       "type": "float"
+      },
+      {
+       "default": "opus",
+       "flags": [
+        "--model"
+       ],
+       "kind": "value"
+      },
+      {
+       "choices": [
+        "plan",
+        "api"
+       ],
+       "default": "plan",
+       "flags": [
+        "--auth"
+       ],
+       "help": "plan: Claude Code's own sign-in (an API key is left out); api: pass ANTHROPIC_API_KEY",
+       "kind": "value"
+      },
+      {
+       "default": 0,
+       "flags": [
+        "--limit"
+       ],
+       "kind": "value",
+       "type": "int"
+      },
+      {
+       "flags": [
+        "--no-wait"
+       ],
+       "help": "exit at the daily cap instead of waiting for tomorrow",
+       "kind": "switch"
+      }
+     ]
+    },
+    "widen": {
+     "args": [
+      {
+       "flags": [
+        "--commit"
+       ],
+       "kind": "switch"
+      },
+      {
+       "default": 0,
+       "flags": [
+        "--approve"
+       ],
+       "help": "how many new records you approve the pull to use",
+       "kind": "value",
+       "type": "int"
+      },
+      {
+       "default": 2000,
+       "flags": [
+        "--max"
+       ],
+       "kind": "value",
+       "type": "int"
+      }
+     ]
+    },
+    "workbook": {
+     "args": []
+    }
+   },
+   "summary": "Curative title, end to end: rank the houses whose owner died and whose title is stuck, research every heir, check whose phone each number is, and hand the work-now houses to the Curative Title board.",
+   "write_flags": [
+    "--commit"
+   ],
+   "writes": "commit"
   },
   "d4d_call_list": {
    "args": [

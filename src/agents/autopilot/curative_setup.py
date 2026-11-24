@@ -1,13 +1,23 @@
 """Set up the Curative Title board and load the houses the curative research says to work now
 (Ty, 2026-11-23).
 
-    python src/agents/autopilot/curative_setup.py board [--commit]
+    python src/agents/autopilot/curative_setup.py board [--commit] [--no-login]
+    python src/agents/autopilot/curative_setup.py columns
     python src/agents/autopilot/curative_setup.py load [--results DIR] [--only slug,slug] [--limit N] [--commit]
     python src/agents/autopilot/curative_setup.py reset-statuses [--results DIR] [--only slug,slug] [--commit]
     python src/agents/autopilot/curative_setup.py reset-statuses --undo <log> [--commit]
 
 All of them are dry by default: they read and say what they would do. A write needs --commit AND
 CURATIVE_ALLOW=1, the two switches every account tool here takes, so a typed flag alone never writes.
+
+The houses and their heir stories come from the curative engine (src/curative_title.py: rank, stories, phones),
+which writes <market>/stories/ (stories_results.json, houses/<slug>/{input.json, heirs.json, story.md,
+phones_checked.json}) next to <market>/work/scored.json. `load` reads that folder (--results, or the one market
+under output/curative_title that has results). docs/curative-title.md walks the whole workflow.
+
+An account with only the Open API key (no DataSift login in .env) gets the tag and the board from `board --commit`,
+makes the nine columns by hand in the app (the published API has no column route), and `columns` then reads their
+ids for the stage once one card is on the board.
 
 board   the tag Curative, the SiftLine board Curative Title and its nine columns (Research, Ready for
         Marketing, Day 1 to Day 5, Heir Engaged, Exhausted). The tag and the board are made on the Open API
@@ -85,7 +95,29 @@ from agents.autopilot import gate, heirlane, lanes, ledger, mail, stages   # noq
 from agents.autopilot.crm import record_said, rows_of  # noqa: E402
 
 ALLOW_ENV = "CURATIVE_ALLOW"
+# The research folder the first heir stories were written in, before the engine shipped: read only when no engine
+# results exist and that folder does. research-fallback-ok
 PILOT = ROOT / "output" / "research" / "curative_title" / "pilot"
+
+
+def default_results() -> Path:
+    """The curative engine's results folder (src/curative_title.py writes <market>/stories/): CURATIVE_RESULTS when set,
+    else the one market under CURATIVE_DIR (default output/curative_title) that has results. With two or more,
+    --results must name one; nothing is guessed."""
+    env = os.environ.get("CURATIVE_RESULTS", "").strip()
+    if env:
+        return Path(env)
+    base = Path(os.environ.get("CURATIVE_DIR") or (ROOT / "output" / "curative_title"))
+    found = sorted({p.parent for p in base.glob("*/stories/stories_results.json")})
+    if len(found) == 1:
+        return found[0]
+    if len(found) > 1:
+        raise SystemExit("results for more than one market: name one with --results (%s)"
+                         % ", ".join(str(p) for p in found))
+    if (PILOT / "stories_results.json").exists():
+        return PILOT
+    raise SystemExit("no curative results yet: run `python src/curative_title.py stories run` (and summarize) first, "
+                     "or name the folder with --results")
 WORK_NOW = "Work now"
 NOTE_MARK = "Curative title:"
 CENSUS = "https://geocoding.geo.census.gov/geocoder/locations/address"
@@ -185,9 +217,10 @@ def board(crm, columns_crm=None, *, commit: bool = False, out=print) -> dict:
             % (len(done["would"]), len(done["already"]), ALLOW_ENV))
         for w in done["would"]:
             out("would make  %s" % w)
+        if columns_crm is None:
+            out("With --no-login the tag and the board are made on the Open API key and the columns by hand in the app "
+                "(the published API has no column route); the run prints the steps.")
         return done
-    if columns_crm is None:
-        raise Refused("refused before any write: the board's columns need this workstation's login, and none was given")
     if not tag_id:
         crm.call(R_TAG_NEW, "POST", {"title": cur.TAG})
         tag_id = _tag_id(crm, cur.TAG)
@@ -208,6 +241,12 @@ def board(crm, columns_crm=None, *, commit: bool = False, out=print) -> dict:
         done["made"].append("board %s" % cur.BOARD)
         out("made     board %s" % cur.BOARD)
     done["board"] = uuid
+    if columns_crm is None:
+        # The published API makes the tag and the board but not a board's columns, and a key-only account has no
+        # login to make them with. They are made by hand once; the stage (and `columns`) then learns their ids.
+        done["manual"] = list(cur.COLUMNS)
+        out(manual_columns_text())
+        return done
     cols = siftline_columns.list_columns(columns_crm, uuid)
     for i, title in enumerate(cur.COLUMNS):
         have = {c["title"].strip().lower(): c for c in cols}
@@ -237,6 +276,45 @@ def board(crm, columns_crm=None, *, commit: bool = False, out=print) -> dict:
     for title in cur.COLUMNS:
         out('      "%s": "%s"' % (title, done["column_ids"].get(title, "")))
     return done
+
+
+def manual_columns_text() -> str:
+    """The steps for an account with only the Open API key: the columns are made in the app, once."""
+    lines = ["The tag %s and the board %s are in the account. The published API cannot make a board's columns, so make "
+             "them once in the app:" % (cur.TAG, cur.BOARD),
+             "  1. Open SiftLine, then the %s board." % cur.BOARD,
+             "  2. Add these columns, left to right, with these exact titles: %s." % ", ".join(cur.COLUMNS),
+             "  3. Put any one record on the Research column (it can be taken off again later).",
+             "  4. A minute later run: python src/agents/autopilot/curative_setup.py columns",
+             "     It reads the columns' ids from that card through the documented routes and prints them for the "
+             "stage's column_ids. The board stage also learns them by itself once a card is on the board."]
+    return "\n".join(lines)
+
+
+def columns(crm, *, out=print, now: datetime | None = None) -> dict:
+    """The board's column ids, learned through documented routes only (the board, the account log and one card's
+    timeline), for the curative stage's column_ids. Needs one card on the board."""
+    from agents.autopilot import leadroutes
+    store.init()
+    problems: list = []
+    b = leadroutes.load_board(crm, cur.BOARD, expect=cur.COLUMNS, now=now or datetime.now(timezone.utc), problems=problems)
+    titles = {u: str(v.get("title") or "") for u, v in (b.columns or {}).items()}
+    ids = {}
+    for t in cur.COLUMNS:
+        u = leadroutes.match_title(titles, t)
+        if u and str(titles.get(u, "")).strip().lower() == t.lower():
+            ids[t] = u
+    missing = [t for t in cur.COLUMNS if t not in ids]
+    if not b.columns:
+        out("The %s board's columns could not be read yet%s. Put any one record on the Research column in the app, wait a "
+            "minute, and run this again." % (cur.BOARD, (": " + problems[0]) if problems else ""))
+        return {"column_ids": {}, "missing": list(cur.COLUMNS)}
+    out("Learned from %s. Put these under the curative stage's column_ids in team/autopilot.yaml:" % b.source)
+    for t in cur.COLUMNS:
+        out('      "%s": "%s"' % (t, ids.get(t, "")))
+    if missing:
+        out("Missing on the board (make them in the app with these exact titles): %s" % ", ".join(missing))
+    return {"column_ids": ids, "missing": missing}
 
 
 R_COLUMN_ONE = "/api/internal/siftline/board/%s/column/%s/"
@@ -682,7 +760,7 @@ def _write_house(crm, u: str, rec: dict, tree: dict, payloads: list, before: lis
             raise Refused("stopped on the first record: %s; nothing more was written" % bad)
 
 
-def load(crm, *, results=PILOT, scored=None, only=(), limit: int = 0, commit: bool = False, renote: bool = False,
+def load(crm, *, results=None, scored=None, only=(), limit: int = 0, commit: bool = False, renote: bool = False,
          third: str = "person", geocode=census_zip, render=render_pdf, post=None, out=print, folder=None,
          zip_gap: float = 1.0, gate_cfg=None, now: datetime | None = None, sleep=time.sleep) -> dict:
     """Load the work-now houses (the module's docstring says what, in order). Dry unless both switches
@@ -694,7 +772,7 @@ def load(crm, *, results=PILOT, scored=None, only=(), limit: int = 0, commit: bo
         raise SystemExit("--third must be one of %s" % ", ".join(THIRD_MODES))
     allowed = may_write(commit)
     now = now or datetime.now(timezone.utc)
-    results = Path(results)
+    results = Path(results) if results else default_results()
     folder = Path(folder) if folder else default_folder()
     scored = Path(scored) if scored else results.parent / "work" / "scored.json"
     if allowed:
@@ -864,14 +942,14 @@ def _match(crm, index: dict, h: dict) -> dict:
             "siftmap": sm["siftmap"]}
 
 
-def reset_statuses(crm, *, results=PILOT, scored=None, only=(), commit: bool = False, out=print, folder=None,
+def reset_statuses(crm, *, results=None, scored=None, only=(), commit: bool = False, out=print, folder=None,
                    now: datetime | None = None, gate_cfg=None) -> dict:
     """Clear the status earlier marketing left on each work-now house (the module's docstring says which).
     Dry unless both switches are on: a dry run finds each record and says what it would clear."""
     from agents.autopilot.leadroutes import stored_status
     allowed = may_write(commit)
     now = now or datetime.now(timezone.utc)
-    results = Path(results)
+    results = Path(results) if results else default_results()
     folder = Path(folder) if folder else default_folder()
     scored = Path(scored) if scored else results.parent / "work" / "scored.json"
     index = scored_index(scored)
@@ -1020,6 +1098,14 @@ def key_only_crm(gap: float = 2.0):
     return CRM(api=up.Api(api_key=key), min_gap=max(gap, float(os.environ.get("AUTOPILOT_API_GAP_S") or 0)))
 
 
+def has_login() -> bool:
+    """Does this machine's .env hold a DataSift login (only our own accounts' workstations do)? A user's install
+    has the Open API key alone, and the board's columns are then made by hand."""
+    import datasift_api_upload as up
+    e = up.env()
+    return bool((e.get("DATASIFT_EMAIL") or "").strip() and (e.get("DATASIFT_PASSWORD") or "").strip())
+
+
 class LazyLogin:
     """This workstation's login, minted the first time a request needs it (the board's columns only)."""
 
@@ -1042,9 +1128,11 @@ def main(argv: list[str] | None = None) -> int:
     b = sub.add_parser("board", help="the tag, the board and its nine columns, in order")
     b.add_argument("--commit", action="store_true")
     b.add_argument("--gap", type=float, default=2.0, help="seconds between requests")
-    b.add_argument("--no-login", action="store_true", help="do not use this workstation's login to list or make columns")
+    b.add_argument("--no-login", action="store_true", help="do not use this workstation's login to list or make columns "
+                                                            "(the default when .env holds no DataSift login)")
+    sub.add_parser("columns", help="print the board's column ids for the stage (needs one card on the board)")
     ld = sub.add_parser("load", help="load the work-now houses onto their records")
-    ld.add_argument("--results", default=str(PILOT), help="the curative results folder (stories_results.json, houses/)")
+    ld.add_argument("--results", default="", help="the curative results folder (stories_results.json, houses/); default: the one market under output/curative_title with results")
     ld.add_argument("--scored", default="", help="the scoring file for the cross-check (default <results>/../work/scored.json)")
     ld.add_argument("--only", default="", help="comma list of house slugs")
     ld.add_argument("--limit", type=int, default=0)
@@ -1055,7 +1143,7 @@ def main(argv: list[str] | None = None) -> int:
     ld.add_argument("--zip-gap", type=float, default=1.0, help="seconds between geocoder calls")
     ld.add_argument("--out", default="", help="where the heir files, PDFs and the zip cache go (default <data>/curative)")
     rs = sub.add_parser("reset-statuses", help="clear the status earlier marketing left on the work-now houses")
-    rs.add_argument("--results", default=str(PILOT), help="the curative results folder (stories_results.json, houses/)")
+    rs.add_argument("--results", default="", help="the curative results folder; default as for load")
     rs.add_argument("--scored", default="", help="the scoring file for the cross-check (default <results>/../work/scored.json)")
     rs.add_argument("--only", default="", help="comma list of house slugs")
     rs.add_argument("--undo", default="", help="a reset log: put its statuses back")
@@ -1068,11 +1156,14 @@ def main(argv: list[str] | None = None) -> int:
         return 3
     try:
         if args.cmd == "board":
-            columns = None if args.no_login else LazyLogin(args.gap)
-            board(key_only_crm(args.gap), columns, commit=args.commit)
+            login = None if (args.no_login or not has_login()) else LazyLogin(args.gap)
+            board(key_only_crm(args.gap), login, commit=args.commit)
             return 0
+        if args.cmd == "columns":
+            got = columns(key_only_crm(2.0))
+            return 0 if got["column_ids"] and not got["missing"] else 2
         if args.cmd == "load":
-            load(key_only_crm(args.gap), results=Path(args.results), scored=Path(args.scored) if args.scored else None,
+            load(key_only_crm(args.gap), results=Path(args.results) if args.results else None, scored=Path(args.scored) if args.scored else None,
                  only=tuple(s.strip() for s in args.only.split(",") if s.strip()), limit=args.limit, commit=args.commit,
                  renote=args.renote, third=args.third, zip_gap=args.zip_gap, folder=Path(args.out) if args.out else None)
             return 0
@@ -1080,7 +1171,7 @@ def main(argv: list[str] | None = None) -> int:
             if args.undo:
                 undo_reset(key_only_crm(args.gap), Path(args.undo), commit=args.commit)
                 return 0
-            reset_statuses(key_only_crm(args.gap), results=Path(args.results),
+            reset_statuses(key_only_crm(args.gap), results=Path(args.results) if args.results else None,
                            scored=Path(args.scored) if args.scored else None,
                            only=tuple(s.strip() for s in args.only.split(",") if s.strip()), commit=args.commit,
                            folder=Path(args.out) if args.out else None)

@@ -11,6 +11,13 @@ broke.
 
 <!-- new lessons go here -->
 
+## 2026-11-24: The curative board shipped without the research that feeds it
+
+- **What happened:** The Curative Title board and its loader were published, but the ranking that finds the houses and the heir research that names every heir and share were not. A community member who installed SiftStack found the loader and nothing for it to load.
+- **Why:** The ranking and the research began as one-off scripts in a research folder that is never published (it holds work in progress and owner and family names). The loader read its input from that folder, so it worked on the machine that built it and nowhere else.
+- **The fix:** The whole workflow is now in the repository as one engine on a user's own Open API key: rank, family trees, the heir research (each house in its own Claude Code session), phone checks, the workbook, and the loader's hand-off (`src/curative_engine/`, `src/curative_title.py`, `docs/curative-title.md`). A test now fails if shipped code ever reads a research folder again (`tests/test_shipped_inputs.py`). Ship a workflow with every step that makes its input, and test it from a clean install.
+- **Found by:** a community member, fixed by hand.
+
 ## 2026-11-24: Search results stopped carrying each house's flags
 
 - **What happened:** SiftMap's property search began returning rows without their distress flags, presets and AI scores, though the published contract still shows them. Counts and filters kept working, so nothing failed.

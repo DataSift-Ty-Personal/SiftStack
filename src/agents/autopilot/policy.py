@@ -258,10 +258,28 @@ def _check_stage(st: Stage, problems: list[str]) -> None:
             p.append("stage %s: %s must be a positive number" % (st.id, key))
 
 
+# The public release writes this in place of every account id in the playbook (tools/public_release.py). It is
+# never a real id, so it reads as unset: a stage on a fresh install then learns or asks for its own ids instead
+# of writing to a column, a design or a user that does not exist.
+PLACEHOLDER_ID = "00000000-0000-0000-0000-000000000000"
+
+
+def unset_placeholders(x):
+    """The playbook with every placeholder id read as unset: "" in a value, left out of a list."""
+    if isinstance(x, dict):
+        return {k: unset_placeholders(v) for k, v in x.items()}
+    if isinstance(x, list):
+        return [unset_placeholders(v) for v in x if not (isinstance(v, str) and v.strip() == PLACEHOLDER_ID)]
+    if isinstance(x, str) and x.strip() == PLACEHOLDER_ID:
+        return ""
+    return x
+
+
 def parse(data: dict, employees: set[str] | None = None, path: str = "") -> Policy:
     problems: list[str] = []
     if not isinstance(data, dict):
         raise PolicyError("autopilot.yaml must be a mapping")
+    data = unset_placeholders(data)
     biz = data.get("business") or {}
     tz = str(biz.get("tz") or "America/New_York")
     try:

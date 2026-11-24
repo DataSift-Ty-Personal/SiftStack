@@ -204,6 +204,8 @@ Every agent in the system is described once, in [`docs/agents.json`](docs/agents
 
 To keep the County List Playbook's doors per deal current for your counties from your own API key, and see which lists to work first right now, run [`src/dpd_live.py`](docs/dpd-live.md).
 
+To find curative title deals (an owner died, the title is stuck, no probate), research every heir and each share, and load the houses ready to work onto the Curative Title board, run [`src/curative_title.py`](docs/curative-title.md).
+
 What broke in production, why, and what changed is in [`docs/lessons-learned.md`](docs/lessons-learned.md). The issue fixer (`tools/issue_fixer/`) writes a lesson with every fix it ships, and each fix is published to this repository as soon as it ships.
 
 ## Working on a skill

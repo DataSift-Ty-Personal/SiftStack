@@ -1311,11 +1311,16 @@ def _board_tool(check) -> None:
     check(not done["allowed"] and not crm.writes, "--commit alone is still a dry run: the env switch is the second key")
     os.environ["CURATIVE_ALLOW"] = "1"
     try:
-        try:
-            cs.board(crm, None, commit=True, out=said.append)
-            check(False, "a real run with no login for the columns is refused before any write")
-        except SystemExit:
-            check(not crm.writes, "with both switches but no login for the columns, nothing is written")
+        # An account with only the Open API key (2026-11-24): the published API makes the tag and the board but has
+        # no column route, so those two are made on the key and the columns are made by hand in the app.
+        key_said = []
+        done_key = cs.board(crm, None, commit=True, out=key_said.append)
+        check(("tag_create", "Curative") in crm.writes and ("board_create", cv.BOARD) in crm.writes
+              and done_key.get("manual") == list(cv.COLUMNS) and not done_key["column_ids"],
+              "with no login the tag and the board are made on the key, and no column is")
+        check(any("Ready for Marketing" in line for line in key_said)
+              and any("curative_setup.py columns" in line for line in key_said),
+              "and the run lists the columns to make in the app, in order, and how to read their ids")
         cols = ColCrm()
         done = cs.board(crm, cols, commit=True, out=said.append)
     finally:
@@ -1326,6 +1331,30 @@ def _board_tool(check) -> None:
           "both switches on: the tag, the board and the nine columns in order are made and read back")
     check(any(cv.EXHAUSTED in line and done["column_ids"][cv.EXHAUSTED] in line for line in said),
           "and the run prints the column ids for the stage's block")
+
+    # `columns`: the ids of columns made by hand, learned through the documented routes (a card's timeline).
+    from .autopilot import leadroutes
+    real_load = leadroutes.load_board
+    try:
+        learned = {"col-%d" % i: {"title": t, "order": i} for i, t in enumerate(cv.COLUMNS)}
+        leadroutes.load_board = lambda *a, **k: leadroutes.Board(title=cv.BOARD, uuid="b1", columns=dict(learned),
+                                                                  source="a card's timeline")
+        col_said = []
+        got = cs.columns(CurCrm([]), out=col_said.append)
+        check(got["column_ids"] == {t: "col-%d" % i for i, t in enumerate(cv.COLUMNS)} and not got["missing"]
+              and any('"Exhausted": "col-%d"' % (len(cv.COLUMNS) - 1) in line for line in col_said),
+              "`columns` prints every column's id for the stage once a card is on the board")
+        leadroutes.load_board = lambda *a, **k: leadroutes.Board(title=cv.BOARD, uuid="b1", columns={
+            u: v for u, v in learned.items() if v["title"] != "Ready for Marketing"}, source="a card's timeline")
+        got = cs.columns(CurCrm([]), out=col_said.append)
+        check(got["missing"] == ["Ready for Marketing"], "and names a column the board does not have yet")
+        leadroutes.load_board = lambda *a, **k: leadroutes.Board(title=cv.BOARD)
+        empty_said = []
+        got = cs.columns(CurCrm([]), out=empty_said.append)
+        check(not got["column_ids"] and any("Put any one record on the Research column" in line for line in empty_said),
+              "with no card on the board yet it says to put one record on Research and run it again")
+    finally:
+        leadroutes.load_board = real_load
 
     # The board as it was made on 2026-11-23: eight columns, no Ready for Marketing.
     old = ("Research",) + cv.DAY_COLUMNS + ("Heir Engaged", "Exhausted")

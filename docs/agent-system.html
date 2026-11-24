@@ -249,17 +249,17 @@ footer p { margin:0 0 6px; }
 <div class="mast">
   <div class="wrap mast-in">
     <p class="eyebrow">
-      <span>SiftStack</span><span class="sep">/</span><span>Build 1.0.61</span>
-      <span class="sep">/</span><span>2026-11-10</span>
+      <span>SiftStack</span><span class="sep">/</span><span>Build 1.0.97</span>
+      <span class="sep">/</span><span>2026-11-24</span>
     </p>
     <h1>SiftStack AI Agent Org Chart</h1>
     <p class="lede">Every agent, what triggers it, what it touches, where a human still signs off, and the specific trap each one exists to avoid.</p>
 
     <div class="stats">
-      <div class="stat"><b>97</b><span>agents</span></div>
+      <div class="stat"><b>100</b><span>agents</span></div>
       <div class="stat"><b>9</b><span>divisions</span></div>
-      <div class="stat"><b>83</b><span>live in production</span></div>
-      <div class="stat"><b>70</b><span>with a human gate</span></div>
+      <div class="stat"><b>86</b><span>live in production</span></div>
+      <div class="stat"><b>73</b><span>with a human gate</span></div>
     </div>
 
     <div class="install">
@@ -621,7 +621,7 @@ footer p { margin:0 0 6px; }
   <header class="dept-head">
     <h3>Enrichment &amp; Identity</h3>
     <p class="dept-tag">Who actually owns it and who can legally sign</p>
-    <span class="dept-count"><b>13</b> agents</span>
+    <span class="dept-count"><b>15</b> agents</span>
   </header>
   <div class="grid"><article class="agent" data-dept="enrich" data-status="live" data-phase="1" data-human="yes" data-search="enrichment pipeline ten-plus step chain that takes a bare address to a dialable decision maker. src/enrichment_pipeline.py every step is optional and states its own failure. one dead api must never take the record with it. enrichment_pipeline.py">
   <details>
@@ -842,6 +842,40 @@ footer p { margin:0 0 6px; }
     <div class="agent-body">
       <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">python src/dream100_dp.py --phase records | smartskip | merge | gapfill | score | build | writeback | qa</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Pulls the record, its activity log and the county title</li><li>SmartSkip relatives and phones, then gap-fill and Trestle tiers</li><li>A researcher writes sourced facts; the module never invents a relative</li><li>Builds a pack per property and writes the findings back</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>Every claim in the research layer carries a URL and a verbatim quote</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Pack PDF per property, Workbook plus a redacted demo twin, CRM write-back</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">SmartSkip</span><span class="chip">Tracerfy</span><span class="chip">Trestle</span><span class="chip">OpenRouter / Gemini</span><span class="chip">DataSift API</span></div></div>
       <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>Every record changed once researched: three of the top five owners were dead and the team had been calling all three by name. Audio models also invent speech on short call recordings (660 words from 11 seconds), so a transcript counts only at 3 words a second or less of real audio.</p></div>
+    </div>
+  </details>
+</article><article class="agent" data-dept="enrich" data-status="live" data-phase="1" data-human="yes" data-search="curative title ranking ranks every house in the account tied to an owner&#x27;s death on its odds of being a curative title deal: the owner died, the title is still in that name, no probate, taxes or liens behind, and enough equity for every heir&#x27;s share. src/curative_title.py an obituary on the record is not proof the owner died: it can be the co-owner&#x27;s, and a married couple&#x27;s house passes to the survivor, so it is stuck only after the second death. a death counts when the age at death fits the owner&#x27;s age; a name alone never does. datasift api siftmap county tax rolls obituary index probate index smartskip">
+  <details>
+    <summary>
+      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="agent-name">Curative Title Ranking</span>
+      <span class="agent-meta">
+        <span class="badge badge-live">Live</span>
+        <span class="badge badge-gate">Human gate</span>
+      </span>
+      <span class="agent-role">Ranks every house in the account tied to an owner&#x27;s death on its odds of being a curative title deal: the owner died, the title is still in that name, no probate, taxes or liens behind, and enough equity for every heir&#x27;s share.</span>
+      <code class="src">src/curative_title.py</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">python src/curative_title.py rank --county &quot;&lt;County, ST&gt;&quot;</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Reads every record on the Obituary, Probate and Foreclosure lists in full, with its SiftMap detail (records in the account only)</li><li>Reads the county&#x27;s live tax roll, the city&#x27;s own bill, the obituary index and the probate index where the county has a built-in source</li><li>Checks each owner&#x27;s death against the obituary index by age, catching the spouse trap and the same-name stranger</li><li>Scores 105 points (death and title, no probate, taxes and liens, money, disconnection, penalties) and sets a tier and a play</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>Reads the workbook and picks how deep to research</li><li>--commit and an approved count for any paid step</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">The ranked workbook (work list, all ranked, taxes behind, probate deals, family trees, ruled out), scored.json for the heir research and the loader</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">DataSift API</span><span class="chip">SiftMap</span><span class="chip">County tax rolls</span><span class="chip">Obituary index</span><span class="chip">Probate index</span><span class="chip">SmartSkip</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>An obituary on the record is not proof the owner died: it can be the co-owner&#x27;s, and a married couple&#x27;s house passes to the survivor, so it is stuck only after the second death. A death counts when the age at death fits the owner&#x27;s age; a name alone never does.</p></div>
+    </div>
+  </details>
+</article><article class="agent" data-dept="enrich" data-status="live" data-phase="1" data-human="yes" data-search="heir story research researches one curative house at a time: every death and its order, whose estate holds the house, every heir tied by a record that names the parent, each share under the state&#x27;s law, and where each heir lives. src/curative_engine/stories.py a spouse&#x27;s children are stepchildren and inherit nothing unless adopted, and children from an earlier marriage inherit the same share as any other child: every heir needs a record that names the decedent as the parent. claude code web search enformion scrapfly trestle real contact">
+  <details>
+    <summary>
+      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="agent-name">Heir Story Research</span>
+      <span class="agent-meta">
+        <span class="badge badge-live">Live</span>
+        <span class="badge badge-gate">Human gate</span>
+      </span>
+      <span class="agent-role">Researches one curative house at a time: every death and its order, whose estate holds the house, every heir tied by a record that names the parent, each share under the state&#x27;s law, and where each heir lives.</span>
+      <code class="src">src/curative_engine/stories.py</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">python src/curative_title.py stories select, then stories run (each house in its own Claude Code session)</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Builds each house&#x27;s input from the ranking, the family tree, the obituary index and the probate index</li><li>Runs each house in a clean headless Claude Code session following heir_method.md, capped per house and per day</li><li>Writes heirs.json and a one-page story.md per house, then a verdict (work now, research more, will or probate, under $50K a share, not curative)</li><li>Checks each heir&#x27;s numbers with Trestle Real Contact before any are loaded</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>A person may correct a house with heirs_verified.json, which wins</li><li>An attorney confirms who inherits before any share is bought</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">heirs.json and story.md per house, stories_results.json for the loader, phones_checked.json</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">Claude Code</span><span class="chip">Web search</span><span class="chip">Enformion</span><span class="chip">Scrapfly</span><span class="chip">Trestle Real Contact</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>A spouse&#x27;s children are stepchildren and inherit nothing unless adopted, and children from an earlier marriage inherit the same share as any other child: every heir needs a record that names the decedent as the parent.</p></div>
     </div>
   </details>
 </article></div>
@@ -1271,7 +1305,7 @@ footer p { margin:0 0 6px; }
   <header class="dept-head">
     <h3>Outreach &amp; Marketing</h3>
     <p class="dept-tag">The seller should feel found, not targeted</p>
-    <span class="dept-count"><b>13</b> agents</span>
+    <span class="dept-count"><b>14</b> agents</span>
   </header>
   <div class="grid"><article class="agent" data-dept="outreach" data-status="live" data-phase="1" data-human="yes" data-search="two-way sms agent sends outreach, reads replies live on smrtphone and smarter contact, classifies them, writes back to the crm, hands positives to a prospector. src/sms_agent/ datasift webhooks cannot see an inbound text. webhooks shipped as a sequence action, so all ten triggers are crm state changes. smrtphone&#x27;s smsincoming is the only inbound leg. that single constraint shapes the entire architecture. smrtphone api smarter contact datasift api slack fly.io sqlite">
   <details>
@@ -1492,6 +1526,23 @@ footer p { margin:0 0 6px; }
     <div class="agent-body">
       <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">python src/sms_agent/cli.py deliverability [--days 30 --full]</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Reads the receiver&#x27;s delivery callbacks, never the send path</li><li>Share of sends that got a final carrier verdict</li><li>What the carrier said when it refused</li><li>Whether replies per send are trending down</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>Decides whether to rest or replace a number</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Verdict by pool and by number</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">SQLite event log</span><span class="chip">smrtPhone</span></div></div>
       <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>Sent means handed to the carrier, not delivered. Only delivered and undelivered are verdicts, and until the receiver dedupe fix shipped it kept only the first callback per message, so every rate it reports for that period is a floor.</p></div>
+    </div>
+  </details>
+</article><article class="agent" data-dept="outreach" data-status="live" data-phase="1" data-human="yes" data-search="curative title board works every curative house through a five-day call round to the whole heir tree on its own siftline board, with the heir story filed on the record. never texts. src/agents/autopilot/curative.py the published api has no route for a board&#x27;s columns: on an account with only the open api key they are made by hand once, and their ids are read back from a card&#x27;s timeline. datasift api siftline census geocoder">
+  <details>
+    <summary>
+      <span class="dot dot-live" aria-hidden="true"></span>
+      <span class="agent-name">Curative Title Board</span>
+      <span class="agent-meta">
+        <span class="badge badge-live">Live</span>
+        <span class="badge badge-gate">Human gate</span>
+      </span>
+      <span class="agent-role">Works every curative house through a five-day call round to the whole heir tree on its own SiftLine board, with the heir story filed on the record. Never texts.</span>
+      <code class="src">src/agents/autopilot/curative.py</code>
+    </summary>
+    <div class="agent-body">
+      <div class="fact"><div class="fact-k">Trigger</div><div class="fact-v">Autopilot stage curative_pipeline, 02:50, 08:35 and 17:00 on weekdays; houses loaded by curative_setup.py load</div></div><div class="fact"><div class="fact-k">What it does</div><ul class="fact-v steps"><li>Loads each work-now house: the heirs&#x27; confirmed numbers, the story as a PDF, one pinned note, the Curative tag last</li><li>Moves a house to Ready for Marketing once a living heir has a usable number and the PDF is on the record</li><li>Starts at most ten houses a business day and writes one call task per heir each day of the round</li><li>Moves an answered conversation to Heir Engaged; after Day 5 with nobody reached, Exhausted with a call back in 30 days</li></ul></div><div class="fact"><div class="fact-k">Human signs off</div><ul class="fact-v steps"><li>A caller works the heirs: call 1 is discovery with no price, the offer comes on call 2</li><li>--commit and CURATIVE_ALLOW=1 for every load</li></ul></div><div class="fact"><div class="fact-k">Outputs</div><div class="fact-v">Cards on the Curative Title board, Daily call tasks per heir, One alert when an heir engages</div></div><div class="fact"><div class="fact-k">Touches</div><div class="fact-v chips"><span class="chip">DataSift API</span><span class="chip">SiftLine</span><span class="chip">Census geocoder</span></div></div>
+      <div class="trap"><div class="trap-k">The trap this exists to avoid</div><p>The published API has no route for a board&#x27;s columns: on an account with only the Open API key they are made by hand once, and their ids are read back from a card&#x27;s timeline.</p></div>
     </div>
   </details>
 </article></div>

@@ -2,7 +2,7 @@
 
 *Every agent, what triggers it, what it touches, where a human still signs off, and the specific trap each one exists to avoid*
 
-97 agents across 9 divisions. Generated from [`docs/agents.json`](agents.json) by `tools/agent_map.py`. Build 1.0.61, 2026-11-10.
+100 agents across 9 divisions. Generated from [`docs/agents.json`](agents.json) by `tools/agent_map.py`. Build 1.0.97, 2026-11-24.
 
 Do not hand-edit this file. Edit `docs/agents.json` and re-run the generator.
 
@@ -431,7 +431,7 @@ RETIRED 2026-08-14. Captured a full-page screenshot of each notice as proof of s
 
 *Who actually owns it and who can legally sign*
 
-13 agents.
+15 agents.
 
 #### Enrichment Pipeline (division lead)
 
@@ -738,6 +738,58 @@ Researches the top of the Dream 100 until each record names who must sign and wh
 **Touches.** SmartSkip, Tracerfy, Trestle, OpenRouter / Gemini, DataSift API
 
 > **The trap this exists to avoid.** Every record changed once researched: three of the top five owners were dead and the team had been calling all three by name. Audio models also invent speech on short call recordings (660 words from 11 seconds), so a transcript counts only at 3 words a second or less of real audio.
+
+#### Curative Title Ranking
+
+`src/curative_title.py` &middot; phase 1 &middot; live
+
+Ranks every house in the account tied to an owner's death on its odds of being a curative title deal: the owner died, the title is still in that name, no probate, taxes or liens behind, and enough equity for every heir's share.
+
+**Trigger.** python src/curative_title.py rank --county "<County, ST>"
+
+**Does.**
+
+- Reads every record on the Obituary, Probate and Foreclosure lists in full, with its SiftMap detail (records in the account only)
+- Reads the county's live tax roll, the city's own bill, the obituary index and the probate index where the county has a built-in source
+- Checks each owner's death against the obituary index by age, catching the spouse trap and the same-name stranger
+- Scores 105 points (death and title, no probate, taxes and liens, money, disconnection, penalties) and sets a tier and a play
+
+**Human checkpoint.**
+
+- Reads the workbook and picks how deep to research
+- --commit and an approved count for any paid step
+
+**Outputs.** The ranked workbook (work list, all ranked, taxes behind, probate deals, family trees, ruled out), scored.json for the heir research and the loader
+
+**Touches.** DataSift API, SiftMap, County tax rolls, Obituary index, Probate index, SmartSkip
+
+> **The trap this exists to avoid.** An obituary on the record is not proof the owner died: it can be the co-owner's, and a married couple's house passes to the survivor, so it is stuck only after the second death. A death counts when the age at death fits the owner's age; a name alone never does.
+
+#### Heir Story Research
+
+`src/curative_engine/stories.py` &middot; phase 1 &middot; live
+
+Researches one curative house at a time: every death and its order, whose estate holds the house, every heir tied by a record that names the parent, each share under the state's law, and where each heir lives.
+
+**Trigger.** python src/curative_title.py stories select, then stories run (each house in its own Claude Code session)
+
+**Does.**
+
+- Builds each house's input from the ranking, the family tree, the obituary index and the probate index
+- Runs each house in a clean headless Claude Code session following heir_method.md, capped per house and per day
+- Writes heirs.json and a one-page story.md per house, then a verdict (work now, research more, will or probate, under $50K a share, not curative)
+- Checks each heir's numbers with Trestle Real Contact before any are loaded
+
+**Human checkpoint.**
+
+- A person may correct a house with heirs_verified.json, which wins
+- An attorney confirms who inherits before any share is bought
+
+**Outputs.** heirs.json and story.md per house, stories_results.json for the loader, phones_checked.json
+
+**Touches.** Claude Code, Web search, Enformion, Scrapfly, Trestle Real Contact
+
+> **The trap this exists to avoid.** A spouse's children are stepchildren and inherit nothing unless adopted, and children from an earlier marriage inherit the same share as any other child: every heir needs a record that names the decedent as the parent.
 
 ### Deal Analysis
 
@@ -1353,7 +1405,7 @@ Reads each builder's buy box off their own deeds, then matches the lots on the g
 
 *The seller should feel found, not targeted*
 
-13 agents.
+14 agents.
 
 #### Two-Way SMS Agent (division lead)
 
@@ -1672,6 +1724,32 @@ Answers whether the texts actually reached a handset, per pool and per number, f
 **Touches.** SQLite event log, smrtPhone
 
 > **The trap this exists to avoid.** Sent means handed to the carrier, not delivered. Only delivered and undelivered are verdicts, and until the receiver dedupe fix shipped it kept only the first callback per message, so every rate it reports for that period is a floor.
+
+#### Curative Title Board
+
+`src/agents/autopilot/curative.py` &middot; phase 1 &middot; live
+
+Works every curative house through a five-day call round to the whole heir tree on its own SiftLine board, with the heir story filed on the record. Never texts.
+
+**Trigger.** Autopilot stage curative_pipeline, 02:50, 08:35 and 17:00 on weekdays; houses loaded by curative_setup.py load
+
+**Does.**
+
+- Loads each work-now house: the heirs' confirmed numbers, the story as a PDF, one pinned note, the Curative tag last
+- Moves a house to Ready for Marketing once a living heir has a usable number and the PDF is on the record
+- Starts at most ten houses a business day and writes one call task per heir each day of the round
+- Moves an answered conversation to Heir Engaged; after Day 5 with nobody reached, Exhausted with a call back in 30 days
+
+**Human checkpoint.**
+
+- A caller works the heirs: call 1 is discovery with no price, the offer comes on call 2
+- --commit and CURATIVE_ALLOW=1 for every load
+
+**Outputs.** Cards on the Curative Title board, Daily call tasks per heir, One alert when an heir engages
+
+**Touches.** DataSift API, SiftLine, Census geocoder
+
+> **The trap this exists to avoid.** The published API has no route for a board's columns: on an account with only the Open API key they are made by hand once, and their ids are read back from a card's timeline.
 
 ### CRM Operations
 

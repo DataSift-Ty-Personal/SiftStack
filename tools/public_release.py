@@ -46,6 +46,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 from collections import Counter
 from datetime import date
 from pathlib import Path
@@ -66,6 +67,21 @@ import public_scan  # noqa: E402
 
 def say(msg: str) -> None:
     print(msg, flush=True)
+
+
+def clear(path: Path, tries: int = 5) -> None:
+    """Remove a folder the last run left, waiting out a brief Windows lock (WinError 32: a virus scanner
+    or the search indexer still looking at files the last run wrote) instead of failing the release on
+    it. Seen 2026-11-24: the release stopped on an empty check folder that came free seconds later."""
+    for attempt in range(tries):
+        try:
+            if path.exists():
+                shutil.rmtree(path)
+            return
+        except PermissionError:
+            if attempt == tries - 1:
+                raise
+            time.sleep(2 * (attempt + 1))
 
 
 def load_private() -> dict:
@@ -96,8 +112,7 @@ def public_remote() -> str:
 def export(ref: str, dest: Path) -> None:
     """The committed tree of `ref`, or with ref "WORKTREE" the files git would track right now (tracked plus
     untracked, ignored left out): only for trying the tool out, a release is always built from a commit."""
-    if dest.exists():
-        shutil.rmtree(dest)
+    clear(dest)
     dest.mkdir(parents=True)
     if ref == "WORKTREE":
         names = subprocess.run(["git", "ls-files", "-co", "--exclude-standard", "-z"], cwd=ROOT,
@@ -252,8 +267,7 @@ def build(ref: str, py: str) -> tuple[Path, dict]:
     dest = WORK / "release"
     say("export %s -> %s" % (ref, dest))
     export(ref, src)
-    if dest.exists():
-        shutil.rmtree(dest)
+    clear(dest)
     shutil.copytree(src, dest)
     gone = leave_out(dest, ALWAYS_LEAVE_OUT + list(cfg["exclude"]))
     overlay(src, dest, cfg.get("overlay", {}), strict=ref != "WORKTREE")
@@ -278,8 +292,7 @@ def checks(release: Path, py: str, pytest_files: list[str]) -> list[str]:
     """What CI runs on main, plus both selftests, inside a COPY of the release tree, so nothing a test
     writes (output/, caches) can reach the published tree."""
     dest = WORK / "check"
-    if dest.exists():
-        shutil.rmtree(dest)
+    clear(dest)
     shutil.copytree(release, dest)
     failed = []
     steps = [

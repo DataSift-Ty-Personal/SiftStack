@@ -2,7 +2,7 @@
 
 # Org chart coverage
 
-Every agent on docs/agents.json (the public org chart), the team workflow that runs it, and the employee who owns that workflow. 91 agents: 82 run by a workflow, 3 platform, 6 retired, 0 not yet assigned.
+Every agent on docs/agents.json (the public org chart), the team workflow that runs it, and the employee who owns that workflow. 94 agents: 85 run by a workflow, 3 platform, 6 retired, 0 not yet assigned.
 
 ## Atlas (Analysis)
 
@@ -89,7 +89,7 @@ Every agent on docs/agents.json (the public org chart), the team workflow that r
 | speed_to_lead | autopilot stage | none: not on the org chart yet |
 | lead_nurture | autopilot stage | none: not on the org chart yet |
 | lead_appointments | autopilot stage | none: not on the org chart yet |
-| curative_pipeline | autopilot stage | none: not on the org chart yet |
+| curative_pipeline | autopilot stage | Curative Title Ranking (curativerank), Heir Story Research (heirstory), Curative Title Board (curativeboard) |
 | morning_callbacks | autopilot stage | none: not on the org chart yet |
 | lead_notes | autopilot stage | none: not on the org chart yet |
 | lead_encumbrances | autopilot stage | none: not on the org chart yet |

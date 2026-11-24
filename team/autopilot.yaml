@@ -1613,11 +1613,17 @@ stages:
     summary: "Every curative title house (the owner died, no probate, every heir signs) on the Curative Title board: Research, Ready for Marketing, Day 1 to Day 5, Heir Engaged, Exhausted. At most daily_starts houses start a business day, the longest-waiting first; every living heir with a number is called each business day of the round, never texted."
     # Ty, 2026-11-23: "a specific curative title pipeline that is a fully sequential process without smarter
     # contact, that has 5 days ... reach out to the entire heir tree and have that full PDF." Separate from the
-    # First to Market board and the heir lane, which both skip the Curative tag. Set up and loaded from the
-    # workstation (CURATIVE_ALLOW=1 and --commit to write):
+    # First to Market board and the heir lane, which both skip the Curative tag. The houses and their heir stories
+    # come from the curative engine (docs/curative-title.md):
+    #   python src/curative_title.py rank --county "<County, ST>"   (rank every house tied to a death; the workbook)
+    #   python src/curative_title.py stories select | run | summarize   (the heir research, a house at a time)
+    #   python src/curative_title.py phones --commit                  (whose number is whose)
+    # Set up and loaded from the workstation (CURATIVE_ALLOW=1 and --commit to write):
     #   python src/agents/autopilot/curative_setup.py board     (the tag, the board, its columns; prints the ids)
+    #   python src/agents/autopilot/curative_setup.py columns   (key-only accounts: the ids of columns made in the app)
     #   python src/agents/autopilot/curative_setup.py load      (PDF, heir numbers, note, tag on each Work-now house)
     #   python src/agents/autopilot/curative_setup.py reset-statuses  (clears old marketing statuses on the Work-now houses; --undo <log> puts them back)
+    covers: [curativerank, heirstory, curativeboard]
     lane: heirs
     gate_allow: [deceased, heir, in_research]   # the death is the point; each letter goes to the heir's own address; research may leave Deep Prospecting on
     tag: Curative
