@@ -81,6 +81,32 @@ def test_the_note_a_caller_reads_carries_who_must_sign_and_no_long_dash(one_reco
     assert st.N_MARLA not in note and st.N_MARLA[-4:] in note      # last four digits only
 
 
+def test_a_number_already_on_the_record_gets_its_tie_to_the_family_with_its_tier(tmp_path, monkeypatch):
+    """A daughter's cell that was already on the record used to take its tier alone, so the caller
+    saw "Dial First" and no way to tell whose line it was. A line the owner also holds still gets no
+    relationship tag (the owner rule)."""
+    for key in wb.SETTING_NAMES:
+        monkeypatch.delenv(key, raising=False)
+    for name in PATCHED:
+        monkeypatch.setattr(dp, name, getattr(dp, name))
+    rec = st.record()
+    rec["owner"]["phones"] = [{"number": st.N_INES, "type": "MOBILE", "tags": [], "status": "UNKNOWN"},
+                              {"number": st.N_MARLA, "type": "MOBILE", "tags": [], "status": "UNKNOWN"},
+                              {"number": st.N_OWNER, "type": "LANDLINE", "tags": ["Dial Fourth"], "status": "UNKNOWN"}]
+    an = st.analysis()
+    an["people"] = an["people"] + [st.who("Dorn Quillfeather", "Owner", living="Deceased", role="owner", key="k-dorn")]
+    run = st._write_run(tmp_path, "tie", rec=rec, an=an)
+    people = st.people_index()
+    people[0]["phones"] = [dict(people[1]["phones"][0])]          # the owner shares the wife's line
+    run.save("people.json", [{"slug": st.SLUG, "people": people, "crm_only": []}])
+    row = dict(run.load("records.json")[0]["row"], uuid=st.U, owner_uuid=st.OW, parcel_id="", tax_query="")
+    dpr.patch(row)
+    items = {p["number"]: p for p in dpr.existing_tier_writes(run)}
+    assert items[st.N_INES]["tags"] == ["Daughter", "Dial Second"]
+    assert items[st.N_MARLA]["tags"] == ["Dial First"]             # a line the owner holds: tier only
+    assert st.N_OWNER not in items                                  # nothing new to put on it
+
+
 def test_the_module_holds_no_long_dash_or_backspace_byte():
     text = (SRC / "deep_prospect_record.py").read_text(encoding="utf-8")
     assert chr(8212) not in text and chr(8211) not in text and chr(8) not in text

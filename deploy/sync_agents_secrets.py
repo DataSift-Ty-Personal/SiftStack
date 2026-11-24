@@ -30,9 +30,13 @@ REQUIRED = [
     ("AGENTS_WEBHOOK_SECRET", "the secret path DataSift's webhook posts to"),
 ]
 OPTIONAL = [
+    # 2026-11-23: the install's own company names, set aside in a buyer search (it buys houses too)
+    ("AGENTS_OWN_BUYER_NAMES", "your own company names, comma separated, set aside as buyers in a buyer search"),
     # 2026-11-18: on a free box, the stages named here act and spend (the first-to-market texts and the
     # foreclosure research), and the texting app's route that loads a released text batch into Smarter Contact.
     ("AGENTS_LIVE_STAGES", "stage ids that act live on a free box, comma separated"),
+    # 2026-11-23: the owner of record becomes the verified decision maker (research write-back and estate_owner_swap)
+    ("AGENTS_DP_OWNER_SWAP", "1 lets the research write-back and estate_owner_swap change an owner of record, after the one-record proof"),
     # 2026-11-19: research (every deep prospect) has its own day cap; AGENTS_DAILY_CAP_USD is the team's own work.
     ("AGENTS_RESEARCH_DAILY_CAP_USD", "research's own daily cap, apart from the team's AGENTS_DAILY_CAP_USD (default 25)"),
     ("AGENTS_SC_LOAD_URL", "the texting app's Smarter Contact load route (https://<app>/hooks/scload)"),

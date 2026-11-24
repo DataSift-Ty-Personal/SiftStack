@@ -233,6 +233,42 @@ def scload_status(batch: int, request: Request, dry: int = 0) -> Any:
     return sc_load.dry_status(batch) if dry else sc_load.status(batch)
 
 
+def _dialer_ok(request: Request) -> bool:
+    """The SiftStack dialer's bearer token (SMS_AGENT_DIALER_TOKEN), in a header."""
+    import hmac
+
+    auth = request.headers.get("authorization", "")
+    token = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
+    return bool(config.DIALER_TOKEN and token) and hmac.compare_digest(token, config.DIALER_TOKEN)
+
+
+@app.get("/hooks/dialer/thread")
+def dialer_thread(request: Request, phone: str = "") -> Any:
+    """The text thread with a number, for the caller's screen. Read-only, one indexed query."""
+    if not _dialer_ok(request):
+        return Response(status_code=status.HTTP_404_NOT_FOUND)
+    from . import dialer_hook
+
+    return dialer_hook.thread_for(phone)
+
+
+@app.post("/hooks/dialer/call")
+async def dialer_call(request: Request, background: BackgroundTasks) -> Any:
+    """A call's outcome from the dialer, kept in the event log and handled by the worker (dialer_hook.py)."""
+    if not _dialer_ok(request):
+        return Response(status_code=status.HTTP_404_NOT_FOUND)
+    try:
+        payload = await request.json()
+    except Exception:  # noqa: BLE001
+        return Response(status_code=status.HTTP_400_BAD_REQUEST)
+    if not isinstance(payload, dict) or not payload.get("call_id"):
+        return Response(status_code=status.HTTP_400_BAD_REQUEST)
+    payload["event"] = "dialerCall"
+    # One event per call and outcome: a retry of the same delivery collapses onto the first.
+    payload["dialerCallId"] = "%s:%s" % (payload["call_id"], payload.get("disposition") or "")
+    return _ingest("dialer", payload, background)
+
+
 @app.get("/health")
 def health() -> dict:
     """Liveness only. Deliberately does NOT touch the database.

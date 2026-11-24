@@ -1,0 +1,238 @@
+/* SiftStack dialer. DataSift palette, system fonts, one shape system (12 / 8 / 6 / 4). */
+:root {
+  --navy: #0A1130;
+  --navy2: #141D45;
+  --blue: #316AFF;
+  --blue-dark: #2456D6;
+  --green: #1B9E5A;
+  --gold: #B7791F;
+  --bg: #F5F7FB;
+  --card: #FFFFFF;
+  --line: #E2E6EF;
+  --line2: #CDD3E0;
+  --ink: #0A1130;
+  --ink2: #4A5372;
+  --ink3: #5E6785;
+  --blue-tint: #EAF0FF;
+  --green-tint: #E8F5EE;
+  --gold-tint: #FBF3E6;
+  --navy-tint: #EEF0F6;
+  --r: 12px;
+  --r-in: 8px;
+  --r-ctl: 6px;
+  --r-tag: 4px;
+  --shadow: 0 1px 2px rgba(10, 17, 48, 0.06);
+  --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font: 14px/1.45 var(--font);
+  -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
+}
+[hidden] { display: none !important; }
+.num, .timer, .tnum { font-variant-numeric: tabular-nums; }
+a { color: var(--blue-dark); }
+a:focus-visible, button:focus-visible, select:focus-visible, input:focus-visible, textarea:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: 2px;
+}
+
+/* Header: a flat navy card, left aligned, the real logo. */
+.top {
+  margin: 12px 16px 0;
+  background: var(--navy);
+  color: #fff;
+  border-radius: var(--r);
+  padding: 10px 14px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+}
+.brand { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.brand img { width: 28px; height: 28px; border-radius: var(--r-ctl); display: block; }
+.brand b { font-size: 15px; font-weight: 700; white-space: nowrap; }
+.who { display: flex; align-items: center; gap: 10px; margin-left: auto; flex-wrap: wrap; }
+.who .name { font-weight: 600; }
+.top .small { color: #C9CFE3; }
+.line-state { font-size: 13px; color: #C9CFE3; }
+.line-state.ok { color: #FFFFFF; }
+.line-state.bad { color: #F2D9AE; }
+.top .btn-ghost { color: #fff; border-color: rgba(255, 255, 255, 0.28); background: transparent; }
+.top .btn-ghost:hover { background: var(--navy2); }
+
+.modes { margin: 10px 16px 0; display: flex; flex-direction: column; gap: 6px; }
+.note {
+  background: var(--gold-tint);
+  border: 1px solid #EBD7B4;
+  border-left: 3px solid var(--gold);
+  border-radius: var(--r-in);
+  padding: 8px 12px;
+  color: var(--ink);
+}
+.note.info { background: var(--blue-tint); border-color: #CCDAFF; border-left-color: var(--blue); }
+
+/* Layout: three independent columns on a desk, two at tablet width (the third goes under both), one on a
+   phone in the order a caller works: phone, outcome, record, texts, power dialer, inbox. */
+.cols { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; padding: 12px 16px 24px; align-items: start; }
+.col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+@media (min-width: 760px) {
+  .cols { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .col-c { grid-column: 1 / -1; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: start; }
+}
+@media (min-width: 1180px) {
+  .cols { grid-template-columns: minmax(300px, 0.9fr) minmax(0, 1.2fr) minmax(300px, 0.9fr); }
+  .col-c { grid-column: auto; display: flex; align-items: stretch; }
+}
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  box-shadow: var(--shadow);
+  padding: 14px;
+  min-width: 0;
+}
+.card h2 { font-size: 15px; font-weight: 700; margin: 0 0 10px; display: flex; align-items: center; gap: 8px; }
+.card h2.h2-sub { margin-top: 16px; }
+.card h2 .aside { margin-left: auto; font-size: 12px; font-weight: 600; color: var(--ink3); }
+.sub { color: var(--ink2); }
+.small { font-size: 12px; color: var(--ink3); }
+.empty { color: var(--ink3); padding: 6px 0; }
+
+/* Controls */
+.btn {
+  appearance: none;
+  border: 1px solid var(--line2);
+  background: #fff;
+  color: var(--ink);
+  font: 600 14px/1 var(--font);
+  height: 38px;
+  padding: 0 14px;
+  border-radius: var(--r-ctl);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  white-space: nowrap;
+  transition: background-color 120ms ease, border-color 120ms ease;
+}
+.btn:hover { background: var(--navy-tint); }
+.btn:active { transform: translateY(1px); }
+.btn:disabled { opacity: 0.45; cursor: not-allowed; transform: none; }
+.btn-primary { background: var(--blue); border-color: var(--blue); color: #fff; }
+.btn-primary:hover { background: var(--blue-dark); border-color: var(--blue-dark); }
+.btn-dark { background: var(--navy); border-color: var(--navy); color: #fff; }
+.btn-dark:hover { background: var(--navy2); border-color: var(--navy2); }
+.btn-sm { height: 30px; padding: 0 10px; font-size: 13px; }
+.btn-block { width: 100%; }
+.btn.on { border-color: var(--blue); background: var(--blue-tint); }
+
+input[type="tel"], input[type="text"], input[type="datetime-local"], select, textarea {
+  font: 14px/1.3 var(--font);
+  color: var(--ink);
+  background: #fff;
+  border: 1px solid var(--line2);
+  border-radius: var(--r-ctl);
+  padding: 8px 10px;
+  width: 100%;
+  min-width: 0;
+}
+textarea { resize: vertical; min-height: 64px; }
+label.field { display: block; font-size: 12px; font-weight: 700; color: var(--ink2); margin: 10px 0 4px; }
+.row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.row + .row { margin-top: 10px; }
+.progress + .note, .note + .row { margin-top: 10px; }
+.row > .grow { flex: 1 1 160px; min-width: 0; }
+.check { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--ink2); cursor: pointer; }
+
+/* The phone */
+.dial input { font-size: 18px; letter-spacing: 0.01em; font-variant-numeric: tabular-nums; }
+.callbox {
+  margin-top: 12px;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--line2);
+  border-radius: var(--r-in);
+  padding: 12px;
+  background: #FBFCFE;
+}
+.callbox.ringing { border-left-color: var(--blue); }
+.callbox.live { border-left-color: var(--green); background: var(--green-tint); }
+.callbox.ended { border-left-color: var(--line2); }
+.callbox .state { font-size: 12px; font-weight: 700; color: var(--ink2); }
+.callbox .who-called { font-size: 17px; font-weight: 700; margin-top: 2px; overflow-wrap: anywhere; }
+.callbox .numline { color: var(--ink2); font-variant-numeric: tabular-nums; }
+.timer { font-size: 26px; font-weight: 700; margin-top: 6px; }
+.controls { display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 8px; margin-top: 12px; }
+.warnlist { margin: 8px 0 0; padding-left: 18px; }
+.warnlist li { margin: 2px 0; }
+
+/* Outcomes */
+.outgroup { margin-top: 10px; }
+.outgroup h3 { font-size: 12px; font-weight: 700; color: var(--ink2); margin: 0 0 6px; }
+.outs { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px; }
+.outs .btn { height: auto; min-height: 38px; padding: 8px 10px; white-space: normal; text-align: left; justify-content: flex-start; line-height: 1.25; }
+.outs .btn.suggested { border: 2px solid var(--blue); padding: 7px 9px; }
+.outs .btn.picked { background: var(--navy); border-color: var(--navy); color: #fff; }
+
+/* The record */
+.rec-head { display: flex; gap: 10px; align-items: flex-start; flex-wrap: wrap; }
+.rec-head .owner { font-size: 18px; font-weight: 700; overflow-wrap: anywhere; }
+.rec-head .addr { color: var(--ink2); }
+.rec-head .open { margin-left: auto; }
+.facts { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 8px; margin: 12px 0; }
+.fact { background: var(--bg); border-radius: var(--r-in); padding: 8px 10px; min-width: 0; }
+.fact .k { font-size: 12px; color: var(--ink3); }
+.fact .v { font-weight: 700; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.tags { display: flex; flex-wrap: wrap; gap: 4px; }
+.tag { font-size: 12px; background: var(--navy-tint); color: var(--ink); border-radius: var(--r-tag); padding: 2px 6px; }
+.tag.gold { background: var(--gold-tint); }
+.phones { list-style: none; margin: 10px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.phones li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  border: 1px solid var(--line);
+  border-radius: var(--r-in);
+  padding: 8px 10px;
+}
+.phones li.current { border-color: var(--blue); background: var(--blue-tint); }
+.phones .pn { font-weight: 700; font-variant-numeric: tabular-nums; }
+.phones .meta { color: var(--ink3); font-size: 12px; }
+.phones .act { margin-left: auto; }
+
+/* Texts */
+.thread { display: flex; flex-direction: column; gap: 6px; max-height: 360px; overflow-y: auto; padding-right: 2px; }
+.msg { max-width: 88%; border-radius: var(--r-in); padding: 7px 10px; overflow-wrap: anywhere; }
+.msg.in { background: var(--navy-tint); align-self: flex-start; }
+.msg.out { background: var(--blue-tint); align-self: flex-end; }
+.msg .when { display: block; font-size: 11px; color: var(--ink3); margin-top: 2px; }
+
+/* Queue and inbox */
+.progress { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin: 10px 0; }
+.progress .fact .v { font-size: 18px; }
+.countdown { font-weight: 700; color: var(--ink); }
+.list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.list li { border: 1px solid var(--line); border-radius: var(--r-in); padding: 8px 10px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.list li .grow { flex: 1 1 140px; min-width: 0; overflow-wrap: anywhere; }
+.list li.hot { border-left: 3px solid var(--green); }
+details summary { cursor: pointer; color: var(--ink2); font-size: 13px; margin-top: 8px; }
+
+/* The confirm sheet */
+.sheet-wrap { position: fixed; inset: 0; background: rgba(10, 17, 48, 0.45); display: flex; align-items: center; justify-content: center; padding: 16px; z-index: 20; }
+.sheet { background: #fff; border-radius: var(--r); max-width: 460px; width: 100%; padding: 16px; border: 1px solid var(--line); }
+.sheet h3 { margin: 0 0 6px; font-size: 16px; }
+.sheet .row { margin-top: 14px; justify-content: flex-end; }
+
+.toast { position: fixed; left: 16px; right: 16px; bottom: 16px; max-width: 520px; margin: 0 auto; background: var(--navy); color: #fff; border-radius: var(--r-in); padding: 10px 14px; z-index: 30; }
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; }
+}

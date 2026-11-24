@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SiftStack Dialer settings</title>
+<link rel="stylesheet" href="options.css">
+</head>
+<body>
+<header class="top"><img src="icons/icon32.png" alt="DataSift"><b>SiftStack Dialer</b></header>
+<main class="card">
+  <h1>Settings</h1>
+  <label class="field" for="dialerUrl">Your dialer's address</label>
+  <input id="dialerUrl" type="url" placeholder="https://siftstack-dialer.fly.dev">
+  <p class="small">The page you sign in to. Chrome asks once before the extension may talk to an address it does not already know.</p>
+  <label class="check"><input id="bar" type="checkbox"> Show the call bar inside DataSift</label>
+  <label class="check"><input id="follow" type="checkbox"> When the power dialer moves on, open the next record in DataSift</label>
+  <div class="row"><button id="save" type="button">Save</button><span id="msg" class="small"></span></div>
+  <h2>How it works</h2>
+  <p>Every phone number on a DataSift page gets a small Call button. It dials through your dialer tab, which this extension opens (pinned) the first time. The extension holds no passwords or keys: it only passes messages between DataSift and that tab.</p>
+</main>
+<script src="options.js"></script>
+</body>
+</html>

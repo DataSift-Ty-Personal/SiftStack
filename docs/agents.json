@@ -2508,6 +2508,8 @@
       "Pulls the activity log with its own JWT",
       "Three distinct rates, lead counting including new_lead statuses",
       "Funnel pacing from dials to correct to leads to appointments to contracts",
+      "Credits every new lead to a source: a caller, texts, a call-in, the autopilot or DataSift automation",
+      "Writes the KPI Google Sheet three times a weekday: scoreboard, texts, goals with pace",
       "Outputs markdown, CSV, Excel, or Slack"
      ],
      "human": [
@@ -2515,10 +2517,12 @@
      ],
      "outputs": [
       "KPI report",
+      "KPI Google Sheet",
       "Slack digest"
      ],
      "tools": [
       "DataSift API",
+      "Google Sheets",
       "Slack"
      ],
      "phase": 1,

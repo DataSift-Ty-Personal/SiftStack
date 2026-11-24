@@ -212,6 +212,23 @@ def test_leak_scan_refuses_phone_email_uuid():
     assert any("uuid" in p for p in B.scan_leaks(bp))
     bp["sequences"] = [{"title": "S", "actions": [{"payload": {"x": {"$unresolved": U["col_new"], "path": "p"}}}]}]
     assert B.scan_leaks(bp) == [], "$unresolved markers are allowed (apply treats them as gaps)"
+    hook = "https://brain.example.com/hooks/datasift/" + "s3cr3t" * 5 + "/deep-prospect"
+    bp["sequences"] = [{"title": "S", "actions": [{"payload": {"webhook_url": hook}}]}]
+    leaks = B.scan_leaks(bp)
+    assert any("webhook URL" in p for p in leaks) and not any("s3cr3t" in p for p in leaks), \
+        "a webhook receiver's URL is refused, and the refusal never prints its secret"
+
+
+def test_send_webhook_action_never_carries_its_url():
+    """2026-11-23: the live export carried the brain's receiver URL, secret and all, in Send to Deep Prospecting."""
+    log = Log()
+    seq = {"title": "Send to Deep Prospecting", "trigger": "property.status.updated", "conditions": [],
+           "actions": [{"action": "send-webhook", "payload": {"label": "send.webhook", "webhook_name": "receiver",
+                                                              "webhook_url": "https://brain.example.com/hooks/datasift/abc/x"}}]}
+    out = T.sequence_to_refs(seq, source_index(), log)
+    pl = out["actions"][0]["payload"]
+    assert "webhook_url" not in pl and pl["webhook_name"] == "receiver"
+    assert "/hooks/" not in json.dumps(out)
 
 
 def test_validate_catches_missing_color_junk_tag_empty_must_and_account():

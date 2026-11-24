@@ -353,18 +353,11 @@ def _collect(c: dict, folder: Path) -> list[str]:
     return made
 
 
-def _top(c: dict, n: int = 3) -> list[dict]:
-    try:
-        scored = json.loads((county_dir(c) / "scored.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return []
-    mail = [f for f in scored if f.get("mailable")]
-    out = []
-    for f in mail[:n]:
-        out.append({"tier": f.get("tier"), "address": f.get("address"), "city": f.get("city"),
-                    "acres": f.get("acres"), "segment": f.get("segment"),
-                    "offer": [f.get("offer_low"), f.get("offer_high")]})
-    return out
+def _top(ex: dict, n: int = 3) -> list[dict]:
+    """The export's own top lots: the offers are priced in export, so scored.json never carries them."""
+    return [{"tier": t.get("tier"), "address": t.get("address"), "city": t.get("city"), "acres": t.get("acres"),
+             "segment": t.get("segment"), "offer": [t.get("offer_low"), t.get("offer_high")]}
+            for t in (ex.get("top") or [])[:n]]
 
 
 def _finished(task: dict, c: dict, after: dict, base: dict) -> dict:
@@ -379,7 +372,7 @@ def _finished(task: dict, c: dict, after: dict, base: dict) -> dict:
         ex = json.loads((county_dir(c) / "export.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return dict(base, ok=False, mode="failed", problem="the run finished but left no export.json")
-    return dict(base, ok=True, mode="done", export=ex, files=_collect(c, folder), top=_top(c),
+    return dict(base, ok=True, mode="done", export=ex, files=_collect(c, folder), top=_top(ex),
                 started=st.get("started"), finished=st.get("finished"), phases=st.get("phases") or [])
 
 
@@ -507,9 +500,11 @@ def render(task: dict, result: dict) -> str:
     lines.append("Offers run %d%% to %d%% of the lot comp; the county's median lot sale is %s over %s sales."
                  % (round(band[0] * 100), round(band[1] * 100), _money(ex.get("comp_median")), _n(ex.get("comps"))))
     for t in result.get("top") or []:
-        lines.append("Top lot: %s, %s, %s ac, tier %s, %s, offer %s to %s." % (
+        lo, hi = (list(t.get("offer") or []) + [None, None])[:2]
+        offer = ", offer %s to %s" % (_money(lo), _money(hi)) if lo and hi else ", not priced (no lot comp)"
+        lines.append("Top lot: %s, %s, %s ac, tier %s, %s%s." % (
             t.get("address"), t.get("city"), t.get("acres"), t.get("tier"), str(t.get("segment") or "").lower(),
-            _money((t.get("offer") or [None])[0]), _money((t.get("offer") or [None, None])[1])))
+            offer))
     for name in result.get("files") or []:
         u = slack.file_url(task["id"], name)
         lines.append("%s: %s" % (name, u) if u else name)

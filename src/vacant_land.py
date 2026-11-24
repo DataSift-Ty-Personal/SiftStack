@@ -2108,12 +2108,20 @@ def phase_export(c: dict, args) -> int:
         "segments": seg_n, "owners": src_n, "owner_unknown": sum(1 for f in scored if f.get("pull_candidate")),
         "to_pull": len(pull), "pull_tiers": _counter(f["tier"] for f in pull), "comps": len(comps),
         "comp_median": bands["COUNTY"].get("median"), "offer_band": [lo_pct, hi_pct],
-        "list": "%s - Buildable Lots" % c["label"]})
+        "list": "%s - Buildable Lots" % c["label"], "top": top_lots(mail)})
     print("export: %s (%d mailable lots, %d on the pull list, %d comps)" % (path, len(mail), len(pull), len(comps)))
     return 0
 
 
 # ------------------------------------------------------------------- pull
+
+def top_lots(mail: list, n: int = 3) -> list[dict]:
+    """The first n lots of the mail list (already in tier and priority order) with their offer band, for
+    export.json. The offers exist only after export prices the lots: scored.json is written before."""
+    return [{"tier": f.get("tier"), "address": f.get("address"), "city": f.get("city"), "acres": f.get("acres"),
+             "segment": f.get("segment"), "offer_low": f.get("offer_low"), "offer_high": f.get("offer_high")}
+            for f in mail[:n]]
+
 
 def pull_plan(scored: list, label: str) -> dict:
     """Tier -> dataflik ids for the lots to bring into the account (the mailable ones and the pull

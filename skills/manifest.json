@@ -39,7 +39,7 @@
       "source_dir": "skills/account-blueprint",
       "files": [
         "SKILL.md",
-        "blueprints/account_2026-09-10.json",
+        "blueprints/account_2026-11-23.json",
         "references/blueprint-format.md",
         "scripts/account_blueprint/__init__.py",
         "scripts/account_blueprint/apply.py",
@@ -54,9 +54,9 @@
         "scripts/clone_account.py"
       ],
       "file_count": 14,
-      "bytes": 405025,
+      "bytes": 471650,
       "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/account-blueprint.skill",
-      "sha256": "d2adab272451fa6c09e9c8a85bbc6c31104b02a34f9d6a90b9a42879dc57db47",
+      "sha256": "cfacff99ab8ab5d543bd11bbc77c86588d6d3a43577aaccdb3e7821e0c6b15b9",
       "requires": {
         "tier": "account",
         "accounts": [

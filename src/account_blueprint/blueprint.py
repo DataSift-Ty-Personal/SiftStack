@@ -22,6 +22,8 @@ UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]
 UUID_ANY = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.I)
 PHONE_RE = re.compile(r"(?<![\w-])\+?1?[\s.-]?\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}(?![\w-])")
 EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
+# A webhook receiver's address carries its secret in the path (/hooks/<source>/<secret>/...).
+HOOK_URL_RE = re.compile(r"https?://[^\s\"']*/hooks/[^\s\"']*")
 
 REF_KINDS = ("list", "tag", "status", "board", "column", "user", "task_preset",
              "task_group", "sequence_folder", "custom_field", "self")
@@ -120,6 +122,8 @@ def scan_leaks(bp: dict) -> list[str]:
         problems.append("email leaked: %s" % m)
     for m in PHONE_RE.findall(text):
         problems.append("phone-shaped string leaked: %s" % m.strip())
+    for m in HOOK_URL_RE.findall(text):
+        problems.append("webhook URL leaked (it carries the receiver's secret): %s/hooks/..." % m.split("/hooks/")[0])
     return sorted(set(problems))
 
 

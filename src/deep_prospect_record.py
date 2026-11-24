@@ -554,18 +554,29 @@ def assemble(run) -> list[dict]:
     return out
 
 
+def relationship_tags(dial: list) -> dict:
+    """number -> the relationship tag a phone carries: the highest-ranked person it reaches (a
+    decision maker before a channel), never on a line the owner also holds, never a name."""
+    out = {}
+    for r in dial:
+        if any(x["owner_like"] for x in r["reaches"]):
+            continue
+        rel = sorted((ROLE_RANK.get(x["role"], 3), x["tag"]) for x in r["reaches"] if x["tag"])
+        if rel:
+            out[r["number"]] = rel[0][1]
+    return out
+
+
 def writeback_plan(d: dict) -> dict:
     """dream100_dp's plan, with the relationship tag taken from the highest-ranked person on a
     shared line (a decision maker before a channel) rather than the alphabetically first one."""
     plan = _WRITEBACK_PLAN(d)
     by_num = {r["number"]: r for r in d["dial"]}
+    ties = relationship_tags(d["dial"])
     for p in plan["phones"]:
         r = by_num[p["number"]]
-        if any(x["owner_like"] for x in r["reaches"]):
-            continue
-        rel = sorted((ROLE_RANK.get(x["role"], 3), x["tag"]) for x in r["reaches"] if x["tag"])
-        if rel:
-            p["tags"] = [rel[0][1]] + [t for t in p["tags"] if t == r["tier"] or t in r["sources"]]
+        if p["number"] in ties:
+            p["tags"] = [ties[p["number"]]] + [t for t in p["tags"] if t == r["tier"] or t in r["sources"]]
     return plan
 
 
@@ -613,11 +624,15 @@ def phase_build(args, run, row):
 
 
 def existing_tier_writes(run) -> list[dict]:
-    """Full phone objects for numbers already on the record whose fresh tier is not on them yet."""
+    """Full phone objects for numbers already on the record whose fresh tier, or whose tie to the
+    family, is not on them yet. The tie is the tag a new number reaching the same people gets.
+    Before this a number already on the record took its tier alone, so a caller could not tell
+    the daughter's cell from an uncle's line (seen on a probate record, 2026-11-20)."""
     import d4d_call_list as d4d  # noqa: E402
     x = run.load("records.json")[0]
     scores = run.load("scores.json", {})
     wrong = dp._analysis(run, x["slug"]).get("wrong_party") or {}
+    ties = relationship_tags((dp.assemble(run) or [{}])[0].get("dial") or [])
     items = []
     for n, c in dp._crm_phones(x).items():
         s = scores.get(n) or {}
@@ -625,6 +640,8 @@ def existing_tier_writes(run) -> list[dict]:
         if not tier or c["status"] in dp.BAD_STATUSES or n in wrong:
             continue
         keep = [t for t in c["tags"] if t not in d4d.TIER_NAMES and t != d4d.LITIGATOR_TAG]
+        if ties.get(n) and ties[n] not in keep:
+            keep.append(ties[n])
         if sorted(keep + [tier]) == sorted(c["tags"]):
             continue
         raw = c["raw"]

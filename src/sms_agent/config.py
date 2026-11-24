@@ -64,6 +64,12 @@ SC_WEBHOOK_TOKEN = _env("SMARTERCONTACT_WEBHOOK_TOKEN", "")
 # login it already holds (sc_load.py). Its own bearer token, sent in a header: the smrtPhone secret and
 # IP allowlist guard a different sender. Unset, the route answers 404 and nothing can be loaded.
 SC_LOAD_SECRET = _env("SMS_AGENT_SC_LOAD_SECRET", "")
+# The SiftStack dialer (src/dialer, its own Fly app) and this app talk both ways (dialer_hook.py). Each
+# direction has its own bearer token in a header. All three unset (the default), the dialer routes answer
+# 404 and nothing is pushed, so this build behaves exactly as the one before it.
+DIALER_TOKEN = _env("SMS_AGENT_DIALER_TOKEN", "")                    # what the dialer sends to /hooks/dialer/*
+DIALER_URL = _env("SMS_AGENT_DIALER_URL", "")                        # https://siftstack-dialer.fly.dev
+DIALER_HANDRAISE_TOKEN = _env("SMS_AGENT_DIALER_HANDRAISE_TOKEN", "")  # what this app sends to the dialer
 SC_SIGNATURE_MAX_AGE = int(_env("SMARTERCONTACT_SIGNATURE_MAX_AGE", str(3 * 60 * 60)))
 # Replies and labels in Smarter Contact go through its web app's own API, signed
 # in as Ty's account (no public API on this plan). The refresh token is the

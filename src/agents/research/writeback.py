@@ -611,7 +611,8 @@ def swap_plan(d: dict, verified: dict, owner: dict | None = None) -> tuple[dict 
     ow = owner if owner is not None else ((x.get("record") or {}).get("owner") or {})
     if not (an.get("death") or {}).get("owner_deceased"):
         return None, ["the owner's death is not confirmed"]
-    if ow.get("company") and not ow.get("first_name"):
+    kind = str(ow.get("type_override") or ow.get("type") or "").strip().lower()
+    if str(ow.get("company") or "").strip() or kind in ("llc", "trust"):
         return None, ["the owner is a company or a trust"]
     if not is_decedent(owner_label(ow), an):
         return None, ["the record's owner (%s) is not the person who died" % (owner_label(ow) or "no name")]

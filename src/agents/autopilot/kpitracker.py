@@ -74,8 +74,8 @@ GAP = "not tracked yet"
 NOT_READ = "not read this run"
 NONE_YET = "-"
 RUNS = ("morning", "noon", "evening")
-TAB_ORDER = ("Scoreboard", "Today", "Callers", "Leads", "Deals", "First to Market", "Direct Mail", "Channels",
-             "Lists", "Goals", "Costs", "How it is counted")
+TAB_ORDER = ("Scoreboard", "Today", "Callers", "Texts", "Leads", "Deals", "First to Market", "Direct Mail", "Channels",
+             "Lists", "Costs", "Goals", "How it is counted")
 KV_LATEST = "autopilot:kpitracker:latest"
 KV_BUILT = "autopilot:kpitracker:built"
 KV_FACTS = "autopilot:kpitracker:facts"
@@ -268,6 +268,13 @@ def _next_month(first: date) -> date:
     return (first.replace(day=28) + timedelta(days=4)).replace(day=1)
 
 
+def _iso_day(v) -> date | None:
+    try:
+        return date.fromisoformat(str(v)[:10]) if v else None
+    except ValueError:
+        return None
+
+
 @dataclass(frozen=True)
 class Win:
     """A window of time the tabs count over: [start, end), and its local days [first, nxt)."""
@@ -281,6 +288,13 @@ class Win:
     @property
     def last_day(self) -> date:
         return self.nxt - timedelta(days=1)
+
+
+def short_label(w: Win) -> str:
+    """The DataSift KPI tracker's column words: "Nov (to date)", "Oct"; a week by its Monday, "Nov 16"."""
+    if w.nxt - w.first > timedelta(days=7):
+        return w.first.strftime("%b") + (" (to date)" if w.current else "")
+    return kpi.fmt_day(w.first) + (" (to date)" if w.current else "")
 
 
 # ---------------------------------------------------------------------- small words
@@ -413,6 +427,7 @@ def lane_label(lane: str) -> str:
 
 # ---------------------------------------------------------------------- counting acts (agents/kpi_sources)
 UUID_SHAPE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-", re.I)
+RECORD_UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.I)
 
 
 def person_name(ref) -> str:
@@ -472,6 +487,23 @@ def caller_rows(acts, conv_s: int) -> dict:
     return {w: {"dials": r["dials"], "answered": r["answered"], "conversations": r["conversations"], "talk_s": r["talk_s"],
                 "noanswer": r["noanswer"], "owners": len(r["owners"] - {""}), "numbers": len(r["numbers"] - {""}),
                 "first": min(r["at"]), "last": max(r["at"])} for w, r in seen.items()}
+
+
+def caller_rows_by_day(acts, conv_s: int, zone) -> dict:
+    """caller_rows over a window of many days, each day on its own and then added up: a dial no source named
+    a caller for goes to the one caller who worked that day (capture.day_rows' rule). Over 90 days with more
+    than one caller on the log, the window-wide rule leaves the unnamed dials with nobody, and since a
+    dial's own event carries no caller while the answered call does, a caller then reads 99% answered."""
+    by_day: dict = defaultdict(list)
+    for a in acts:
+        by_day[a.at.astimezone(zone).date()].append(a)
+    out: dict = {}
+    for day_acts in by_day.values():
+        for who, r in caller_rows(day_acts, conv_s).items():
+            t = out.setdefault(who, {"dials": 0, "answered": 0, "conversations": 0, "talk_s": 0, "noanswer": 0})
+            for k in t:
+                t[k] += r[k]
+    return out
 
 
 def appointment_cards(since: datetime, until: datetime) -> set:
@@ -891,7 +923,7 @@ class Snap:
             for a in sorted(self.acts(w, "stage"), key=lambda x: x.at):
                 if a.stage == stage and a.record and a.record not in seen:
                     seen.add(a.record)
-                    out.append({"record": a.record, "when": a.at, "sources": list(a.sources)})
+                    out.append({"record": a.record, "when": a.at, "sources": list(a.sources), "author": a.author})
             return out
         return self._cached(("stage", stage, w.start, w.end), read)
 
@@ -971,6 +1003,314 @@ class Snap:
 
     def reached(self, w: Win) -> int:
         return len(self.reach_set(w))
+
+    # ---- Kendrick Eid's notes (2026-11-23): the channels apart, the text funnel, a source for every lead
+    def avg_talk(self, w: Win):
+        """The mean length of a conversation call in the window, as m:ss ("Avg Talk Time per Conversation"),
+        or "-" with no conversation call that carries a length."""
+        secs = [int(x["act"].seconds) for x in self.conv(w)["items"]
+                if str(x["kind"]).startswith("call") and getattr(x["act"], "seconds", None)]
+        if not secs:
+            return NONE_YET
+        s = int(round(sum(secs) / float(len(secs))))
+        return "%d:%02d" % (s // 60, s % 60)
+
+    def text_ledger(self, w: Win) -> dict:
+        """The texts the autopilot released in the window, from its own text ledger (limits.py): the texts,
+        the owners and numbers they went to, opening texts against follow-ups, and each stage's share. A text
+        the other system counted is left out, as dealsource.texts_sent does. None for a field when the
+        ledger cannot be read."""
+        def read():
+            from . import limits
+            try:
+                rows = [r for r in limits.rows(since_day=w.first.isoformat(), until_day=w.nxt.isoformat(),
+                                               statuses=("released",)) if r.get("system") != limits.OTHER]
+            except Exception:  # noqa: BLE001  (the ledger belongs to another part of the autopilot)
+                log.exception("the text ledger could not be read")
+                return {"ok": False, "texts": None, "owners": None, "numbers": None, "opening": None, "followup": None,
+                        "by_stage": {}, "owner_set": set()}
+            by_stage: dict = defaultdict(lambda: {"texts": 0, "owners": set()})
+            for r in rows:
+                s = by_stage[str(r.get("stage") or "")]
+                s["texts"] += 1
+                s["owners"].add(str(r.get("owner_uuid") or ""))
+            owners = {str(r.get("owner_uuid") or "") for r in rows} - {""}
+            opening = sum(1 for r in rows if str(r.get("series") or "") == "opening")
+            return {"ok": True, "texts": len(rows), "owners": len(owners), "owner_set": owners,
+                    "numbers": len({str(r.get("number") or "") for r in rows} - {""}),
+                    "opening": opening, "followup": len(rows) - opening, "by_stage": dict(by_stage)}
+        return self._cached(("text_ledger", w.first, w.nxt), read)
+
+    def outreach_texts(self, w: Win):
+        """Texts sent before any reply ("Outreach Texts Sent (Pre-Reply)"): the texts the autopilot released
+        into the texting tool (its own ledger), or, once a texting tool reports its sends, every text it sent
+        to a number before that number's first reply. The tool sees the autopilot's texts too, so its count
+        stands alone: never both added together."""
+        led = self.text_ledger(w)
+        tool = 0
+        if self.texts_covered(w):
+            firsts = self.first_reply_moments()
+            for a in self.acts(w, "calls"):
+                if a.kind == "text" and a.direction == "out" and ks.METRIC_TEST["texts_sent"](a):
+                    t = firsts.get((self.party(a), a.phone))
+                    if t is None or a.at < t:
+                        tool += 1
+        if tool:
+            return tool
+        if not led["ok"]:
+            return "could not be read"
+        return led["texts"]
+
+    def first_reply_moments(self) -> dict:
+        """(owner, number) -> the moment of the first text that number ever sent us, read from every text a
+        connected texting tool reported. A thread's first reply counts once, in the window it landed in."""
+        def read():
+            ever = Win("ever", EVER, self.now, EVER.date(), self.today + timedelta(days=1), True)
+            first: dict = {}
+            for a in sorted(self.acts(ever, "calls"), key=lambda x: x.at):
+                if a.kind == "text" and a.direction == "in":
+                    first.setdefault((self.party(a), a.phone), a.at)
+            return first
+        return self._cached("first_replies", read)
+
+    def first_replies(self, w: Win):
+        """Owners' first replies in the window ("Initial Text Replies (First reply of text thread)"), or
+        not tracked yet while no texting tool reports replies."""
+        if not self.texts_covered(w):
+            return GAP
+        return sum(1 for t in self.first_reply_moments().values() if w.start <= t < w.end)
+
+    def correct_split(self, w: Win) -> dict:
+        """Numbers marked correct in the window, each once, by who confirmed it: call (a dialer wrote the
+        mark), text (our own key wrote it outside the brain's own stages: the texting app's mark on a reply),
+        person (anyone else in DataSift, or a brain stage). Before 2026-11-15 the log does not tell our key
+        from a person (author "user"), so a month before that reads text low; counting every mark no dialer
+        wrote read October at 157 texts confirmed, before Smarter Contact was texting at all."""
+        def read():
+            dialers = {ks.tool_key(s) for s in self.cat.definition("correct_number").get("dialer_sources") or []}
+            seen: dict = {}
+            for a in sorted(self.acts(w, "phone"), key=lambda x: x.at):
+                if a.outcome not in CORRECT:
+                    continue
+                k = (self.party(a), a.phone)
+                if k in seen:
+                    continue
+                seen[k] = "call" if a.tool in dialers else ("text" if a.author == "self" and not a.via else "person")
+            out = Counter(seen.values())
+            owners = defaultdict(set)
+            for (party, _phone), how in seen.items():
+                owners[how].add(party)
+            return {"total": len(seen), "call": out["call"], "text": out["text"], "person": out["person"],
+                    "owners": {k: v - {""} for k, v in owners.items()}}
+        return self._cached(("correct_split", w.start, w.end), read)
+
+    def text_marks(self, w: Win) -> dict:
+        """Numbers the texting app marked wrong or do not call on a reply in the window (our own key, outside
+        the brain's stages), each number once per family."""
+        def read():
+            seen = {name: set() for name, _ in MARK_FAMILIES}
+            for a in self.acts(w, "phone"):
+                if a.author != "self" or a.via:
+                    continue
+                for name, statuses in MARK_FAMILIES:
+                    if a.outcome in statuses:
+                        seen[name].add((self.party(a), a.phone))
+            return {name: len(v) for name, v in seen.items()}
+        return self._cached(("text_marks", w.start, w.end), read)
+
+    def reached_split(self, w: Win) -> dict:
+        """Owners reached in the window by channel ("Owners Reached per Channel (Call and SMS separate)"): by
+        call, a call conversation or a number a dialer marked correct; by text, a text conversation, a first
+        reply, or a number the texting app marked correct on a reply. An owner reached both ways counts in
+        both; a number a person marked by hand is in neither."""
+        def read():
+            call, text = set(), set()
+            for x in self.conv(w)["items"]:
+                (text if x["kind"] == "text" else call).add(x["party"])
+            owners = self.correct_split(w)["owners"]
+            call |= owners.get("call", set())
+            text |= owners.get("text", set())
+            if self.texts_covered(w):
+                text |= {p for (p, _n), t in self.first_reply_moments().items() if w.start <= t < w.end}
+            return {"call": len(call - {""}), "text": len(text - {""})}
+        return self._cached(("reached_split", w.start, w.end), read)
+
+    def texts_per_correct(self, w: Win):
+        n = self.outreach_texts(w)
+        return _ratio(n, self.correct_split(w)["text"]) if isinstance(n, int) else NONE_YET
+
+    def texts_per_reply(self, w: Win):
+        n, r = self.outreach_texts(w), self.first_replies(w)
+        if r == GAP:
+            return GAP
+        return _ratio(n, r) if isinstance(n, int) else NONE_YET
+
+    def replies_per_text_lead(self, w: Win):
+        r = self.first_replies(w)
+        if r == GAP:
+            return GAP
+        return _ratio(r, self.lead_sources(w)["texts"])
+
+    def texted_before(self, owner: str, when: datetime, days: int = 30) -> bool:
+        """The autopilot released a text to this owner in the `days` before `when`."""
+        from . import limits
+        if not owner or when is None:
+            return False
+        local = when.astimezone(self.zone)
+        try:
+            rows = limits.rows(owner_uuid=owner, since_day=(local.date() - timedelta(days=days)).isoformat(),
+                               until_day=(local.date() + timedelta(days=1)).isoformat(), statuses=("released",))
+        except Exception:  # noqa: BLE001
+            return False
+        for r in rows:
+            at = _moment(r.get("at"))
+            if r.get("system") != limits.OTHER and (at is None or at <= when):
+                return True
+        return False
+
+    def text_confirmed(self) -> dict:
+        """owner -> the moments one of their numbers was marked correct outside a call (no dialer wrote it, no
+        brain stage did): the texting app's mark on a reply, or a person's in DataSift after a text exchange.
+        Measured 2026-11-23: 28 of the 35 November leads no call of ours came before were marked this way first,
+        the Smarter Contact reply flow, and the autopilot's own text ledger only starts 2026-11-18."""
+        def read():
+            dialers = {ks.tool_key(s) for s in self.cat.definition("correct_number").get("dialer_sources") or []}
+            ever = Win("ever", EVER, self.now, EVER.date(), self.today + timedelta(days=1), True)
+            out: dict = defaultdict(list)
+            for a in self.acts(ever, "phone"):
+                if a.outcome in CORRECT and a.tool not in dialers and not a.via:
+                    out[str(self.party(a) or "").lower()].append(a.at)
+            return out
+        return self._cached("text_confirmed", read)
+
+    def text_confirmed_before(self, owner: str, when: datetime, days: int = 30) -> bool:
+        if not owner or when is None:
+            return False
+        lo, hi = when - timedelta(days=days), when + timedelta(minutes=10)
+        return any(lo <= t <= hi for t in self.text_confirmed().get(owner.lower(), []))
+
+    def lead_source(self, lead: dict) -> tuple[str, str]:
+        """(source, owner) for one new lead: caller, call-in, texts, autopilot, or none (lead_sources)."""
+        owner = str(ledger.fact(lead["record"], "owner_uuid") or "") or self.omap().get(lead["record"], "")
+        o = dealsource.origin(self.cat, owner, lead["when"]) if owner else {"channel": "", "caller": ""}
+        channel = str(o.get("channel") or "")
+        if o.get("caller"):
+            return "caller", owner
+        if channel.startswith("call") or channel == "mail":
+            return "call-in", owner
+        if channel == "text" or self.texted_before(owner, lead["when"]) or self.text_confirmed_before(owner, lead["when"]):
+            return "texts", owner
+        if lead.get("author") == "self":
+            return "autopilot", owner
+        if lead.get("author") == "system":
+            return "automation", owner                 # DataSift's own user: a dialer's disposition or a sequence
+        return "none", owner
+
+    def lead_source_rows(self, w: Win) -> list[tuple[str, str]]:
+        return self._cached(("lead_source_rows", w.start, w.end),
+                            lambda: [self.lead_source(lead) for lead in self.leads(w)])
+
+    def lead_sources(self, w: Win) -> Counter:
+        """Every new lead in the window credited to something (Kendrick Eid: "Leads credited to SOMETHING
+        (Autopilot, autosms, AI caller, whatever it is)"): a caller when the log holds a conversation of ours
+        before it (the opportunity rule, dealsource.origin); a call-in, or a text reply, when that was the
+        conversation; texts when the autopilot texted the owner in the 30 days before; the autopilot when
+        our own key set the status; none when nothing points anywhere."""
+        out = Counter({"caller": 0, "call-in": 0, "texts": 0, "autopilot": 0, "automation": 0, "none": 0})
+        out.update(src for src, _owner in self.lead_source_rows(w))
+        return out
+
+    def texts_by_lane(self, w: Win) -> list[list]:
+        """The window's autopilot texts by lane (the stage's lane: first to market, the Top 1,000), with the
+        owners texted, the numbers a text reply confirmed among them, and the leads from texts among them."""
+        led = self.text_ledger(w)
+        lanes_of: dict = defaultdict(lambda: {"texts": 0, "owners": set()})
+        for stage, v in (led.get("by_stage") or {}).items():
+            st = (getattr(self.pol, "stages", None) or {}).get(stage)
+            lane = str(st.get("lane") or "") if st is not None else ""
+            name = lane_label(lane) if lane else (stage.replace("_", " ") or "other")
+            lanes_of[name]["texts"] += v["texts"]
+            lanes_of[name]["owners"] |= v["owners"]
+        confirmed = self.correct_split(w)["owners"].get("text", set())
+        lead_owners = {o for src, o in self.lead_source_rows(w) if src == "texts"}
+        out = []
+        for name, v in sorted(lanes_of.items(), key=lambda kv: -kv[1]["texts"]):
+            owners = v["owners"] - {""}
+            out.append([name, v["texts"], len(owners), len(owners & confirmed), len(owners & lead_owners)])
+        return out
+
+    def caller_day_rates(self, w: Win) -> dict:
+        """This window's dials, conversations and credited leads per caller per calling day: the Goals tab's
+        "This month a day" beside each target. A calling day is a caller and a local day with a dial of ours."""
+        def read():
+            pairs, by = set(), Counter()
+            for a in our_dials(self.acts(w, "calls")):
+                name = person_name(a.person_ref) or UNKNOWN
+                if name in (UNKNOWN, NOT_TIED) or name.strip().lower() in self.not_callers:
+                    continue
+                pairs.add((name, a.at.astimezone(self.zone).date()))
+                by["dials"] += 1
+            for x in self.conv(w)["items"]:
+                if str(x["kind"]).startswith("call"):
+                    by["conversations"] += 1
+            n = len(pairs)
+            leads = self.lead_sources(w)["caller"]
+            return {"days": n, "dials": _ratio(by["dials"], n), "conversations": _ratio(by["conversations"], n),
+                    "leads": _ratio(leads, n)}
+        return self._cached(("caller_day_rates", w.start, w.end), read)
+
+    def goal_cells(self) -> dict:
+        """key -> [needed, so far, pace, mark] for the Goals tab's gray columns (Kendrick Eid and Ty: "Combine
+        inputs and goals", "add pace to goals"): each goal worked back to a month beside this month's count,
+        its pace to the month's end and the mark; each caller target beside this month's own a calling day."""
+        cat = self.cat
+        need = goals.needs(cat)
+        risk = cat.share("goal.at_risk_share")
+        cur = self.months()[-1]
+        calls_span = self.month_days(self._reach_day(activity.CALLS))
+        state_span = self.month_days(self._reach_day("property.status.updated"))
+
+        def pace(got, span, money=False):
+            done, total = span
+            if not isinstance(got, (int, float)) or isinstance(got, bool):
+                return ""
+            if done <= 0:
+                return NONE_YET
+            return round(got * total / done, 2 if money else 1)
+
+        out = {}
+        revenue_month = round(float(cat.value("goal.revenue_per_year")) / 12.0, 2)
+        for key, n, got, span, money in (
+                ("goal.revenue_per_year", revenue_month, self.revenue(cur), state_span, True),
+                ("goal.average_deal", need["deals"], self.changes("closed_statuses", cur), state_span, False),
+                ("funnel.contracts_that_close", need["contracts"], self.changes("contract_statuses", cur), state_span, False),
+                ("funnel.leads_per_deal", need["leads"], len(self.leads(cur)), state_span, False),
+                ("funnel.dials_per_lead", need["dials"], self.calls(cur)["dials"], calls_span, False)):
+            p = pace(got, span, money)
+            out[key] = [n if money else _n1(n), got, p, kpi.mark(p, n, risk) if isinstance(p, (int, float)) else ""]
+        rates = self.caller_day_rates(cur)
+        for key, got, lower in (("caller.dials_per_day", rates["dials"], False),
+                                ("caller.conversations_per_day", rates["conversations"], False),
+                                ("caller.opportunities_per_day", rates["leads"], False),
+                                ("funnel.dials_per_correct_number",
+                                 _ratio(self.calls(cur)["dials"], self.correct(cur)["total"]), True)):
+            f = cat.fig(key)
+            target = f.value if f.value is not None else cat.low(key)
+            shown = ("%s to %s" % (kpi.num(cat.low(key)), kpi.num(cat.high(key)))) if f.value is None else target
+            mark = (kpi.mark(got, cat.high(key) if lower and f.value is None else target, risk, lower_is_better=lower)
+                    if isinstance(got, (int, float)) and target else "")
+            out[key] = [shown, got, "", mark]
+        return out
+
+    def goal_cells_safe(self) -> dict:
+        """goal_cells, or {} when a number it needs cannot be read: the Goals tab then keeps its last."""
+        if self.cat is None:
+            return {}
+        try:
+            return self.goal_cells()
+        except Exception as exc:  # noqa: BLE001  (the sheet's gray columns must never cost the run)
+            self.problem("the Goals tab's pace columns could not be worked out (%s)" % str(exc)[:100])
+            return {}
 
     def worked_set(self, w: Win) -> set:
         """The owners worked in the window: an outbound call of ours or a text sent (contactrate.first_worked)."""
@@ -1069,11 +1409,43 @@ class Snap:
         st = self.stage_of("dealsource", self.o["deal_stage"])
         return str(st.get("fee_field") or "") if st is not None else ""
 
+    def typed_deals(self) -> list[dict]:
+        """The deals typed on the KPI sheet's Goals tab (kpi.apply_typed), each {"property", "signed",
+        "closed" (YYYY-MM-DD), "type", "price", "expected", "fee"}. Empty when none was typed."""
+        info = getattr(self.cat, "typed", None) or {}
+        return [d for d in info.get("deals") or [] if isinstance(d, dict)]
+
     def revenue(self, w: Win):
-        if not self.fee_field():
+        """What deals paid in the window. The deal-source stage's fee field when it is named; else the fees
+        typed on the Goals tab, by the day each deal closed (prod-account has no fee field, decision F10)."""
+        if self.fee_field():
+            rows = dealsource.deals(since_day=w.first.isoformat(), until_day=w.nxt.isoformat())
+            return round(sum(float((d.get("detail") or {}).get("fee") or 0) for d in rows))
+        deals = self.typed_deals()
+        if not deals:
             return GAP
-        rows = dealsource.deals(since_day=w.first.isoformat(), until_day=w.nxt.isoformat())
-        return round(sum(float((d.get("detail") or {}).get("fee") or 0) for d in rows))
+        total = 0.0
+        for d in deals:
+            day = _iso_day(d.get("closed"))
+            if day is not None and d.get("fee") is not None and w.first <= day < w.nxt:
+                total += float(d["fee"])
+        return round(total)
+
+    def fees_open(self):
+        """The expected fees of the deals typed as signed and not yet closed."""
+        deals = self.typed_deals()
+        if not deals:
+            return GAP
+        return round(sum(float(d.get("expected") or 0) for d in deals if d.get("signed") and not d.get("closed")))
+
+    def revenue_note(self) -> str:
+        if self.fee_field():
+            return "Revenue is what the deal-source stage's fee field (%s) recorded at closing." % self.fee_field()
+        if self.typed_deals():
+            return ("Revenue is the fees typed on the Goals tab's deals, counted on the day each closed (%d deal%s "
+                    "typed)." % (len(self.typed_deals()), "" if len(self.typed_deals()) == 1 else "s"))
+        return ("Revenue is not tracked until a deal's fee is typed on the Goals tab of the Google Sheet (one row a "
+                "contract), or the deal-source stage names a fee field.")
 
     # ---- live counts, bounded
     def _take(self, what: str) -> bool:
@@ -1278,13 +1650,17 @@ class Snap:
         section_log = {"Activity": "calls", "Contact": "calls", "Ratios": "calls", "Pipeline": "state", "Speed": "state",
                        "Spend": "none"}
         measures = self.measures()
-        columns = ["Section", "Measure"] + [w.label for w in months] + ["This month pace", "Benchmark", "Mark"]
-        rows = []
+        # The DataSift KPI tracker's order (2026-11-23): this month first, its pace and mark beside it, the
+        # months before it newest first, and the figure it is judged by at the far end.
+        older = list(reversed(months[:-1]))
+        columns = (["Section", "Monthly", short_label(cur), "Pace this month", "Mark"] + [short_label(w) for w in older]
+                   + ["Goal a month", "Benchmark"])
+        rows, now_rows = [], []
         marks = {}
         for m in measures:
             if m["kind"] == "now":
                 v = m["fn"](None)
-                rows.append([m["section"], m["label"]] + [""] * len(months) + [v, m.get("bench", ""), m.get("mark_fn", lambda x: "")(v)])
+                now_rows.append([m["label"], v, m.get("bench", ""), m.get("mark_fn", lambda x: "")(v)])
                 continue
             vals = [m["fn"](w) for w in months]
             now_v = vals[-1]
@@ -1303,27 +1679,38 @@ class Snap:
                 marks[m["need"]] = "not judged yet"
             elif m.get("target") is not None and isinstance(now_v, (int, float)):
                 mark = kpi.mark(now_v, m["target"], risk, lower_is_better=m.get("lower", False))
-            rows.append([m["section"], m["label"]] + vals + [pace, m.get("bench", ""), mark])
-        # the last six weeks, Monday to Sunday
+            # the month's need worked back from the year's goal, a number in a column of its own (Ty, 2026-11-23:
+            # one fact a cell, no sentence of commas beside every row)
+            goal = _n1(need[m["need"]]) if m.get("need") else ""
+            rows.append([m["section"], m["label"], now_v, pace, mark] + list(reversed(vals[:-1]))
+                        + [goal, m.get("bench", "")])
+        # what is true right now, and the windows that are not months: set under the table's own columns, so the
+        # value sits under this month, the mark under Mark and the goal in the wide column at the end
+        pad = [""] * len(older)
+        rows.append([])
+        rows.append(["Right now and the last %d days" % d90_days(cat)])
+        rows.append(["Measure", "Value", "", "Mark"] + pad + ["", "Benchmark"])
+        rows += [[label, v, "", mark] + pad + ["", bench] for label, v, bench, mark in now_rows]
+        # the last six weeks, Monday to Sunday, newest first, each judged against the week's share of the goal
         weeks = self.weeks()
+        newest = list(reversed(weeks))
         rows.append([])
         rows.append(["Last %d weeks (Monday to Sunday)" % len(weeks)])
-        rows.append(["Section", "Measure"] + [w.label for w in weeks])
-        for m in measures:
-            if m["kind"] == "now" or not m.get("weekly", True):
-                continue
-            rows.append([m["section"], m["label"]] + [m["fn"](w) for w in weeks])
+        rows.append(["Section", "Measure"] + [short_label(w) for w in newest] + ["Weekly goal"])
         cr = contactrate.measure(self.now, self.tz, cat, weeks=len(weeks), include_current=True)
         by_start = {r["start"]: r for r in cr["weeks"]}
-        rows.append(["Contact", "Contact rate, owners first worked that week and reached since"] + [
+        contact_row = ["Contact", "Contact rate (first worked that week and reached since)"] + [
             ("%s of %s (%s%%)" % (by_start[w.first.isoformat()]["reached"], by_start[w.first.isoformat()]["owners"],
                                   _pct(by_start[w.first.isoformat()]["reached"], by_start[w.first.isoformat()]["owners"]))
              if by_start.get(w.first.isoformat()) and by_start[w.first.isoformat()]["owners"] else NONE_YET)
-            for w in weeks])
-        rows.append([])
-        rows.append(["Note", "%s A lead with no conversation of ours in the log before it is credited to nobody." % (
-            " ".join(str(cat.definition("opportunity").get("says") or "").split()))])
-        rows.append(["Note", footnote(cat, USES)])
+            for w in newest] + [""]
+        weekly = [m for m in measures if m["kind"] != "now" and m.get("weekly", True)]
+        last_contact = max((i for i, m in enumerate(weekly) if m["section"] == "Contact"), default=len(weekly) - 1)
+        for i, m in enumerate(weekly):
+            wgoal = _n1(need[m["need"]] * 12.0 / 52.0) if m.get("need") else ""
+            rows.append([m["section"], m["label"]] + [m["fn"](w) for w in newest] + [wgoal])
+            if i == last_contact:
+                rows.append(contact_row)
         # what the Slack lines read from this tab
         lw = [w for w in weeks if not w.current]
         last_week = lw[-1] if lw else None
@@ -1338,12 +1725,20 @@ class Snap:
                                        "contracts": self.changes("contract_statuses", last_week)}
         self.facts["texts_released_month"] = self.texts_released(cur)
         note = ("Refreshed %s. Every call, text, phone mark, stage and dollar is read from the connected KPI sources, "
-                "each act counted once. Months from the first month the call log copy covers; this month's pace is the "
-                "month so far over the weekdays gone that the log copy holds (today counted by the share of business "
-                "hours past), times the month's weekdays. Marks judge the pace against the goal sheet's need a month "
-                "(team/kpi.yaml); with no weekday on record yet, the mark reads not judged yet. %s %s Revenue is not "
-                "tracked until the deal-source stage names its fee field (fee_field)." % (
-                    self.refreshed_words(), self.texts_note(), self.offers_note()))
+                "each act counted once. Months from the first month the call log copy covers, this month first; this "
+                "month's pace is the month so far over the weekdays gone that the log copy holds (today counted by the "
+                "share of business hours past), times the month's weekdays. Marks judge the pace against the need a "
+                "month worked back from the year's goal (the Goals tab, else team/kpi.yaml); with no weekday on record "
+                "yet, the mark reads not judged yet. A week's goal is the month's need times 12, over 52. %s %s %s %s "
+                "Every lead is credited to something: a caller when the log holds a conversation of ours before it, a "
+                "call-in or a text reply when that was the conversation, else texts when the autopilot texted the owner "
+                "or a number of theirs was marked correct outside a call in the 30 days before, else the autopilot when "
+                "our own key set the status, else DataSift automation when its system user did (a dialer disposition or "
+                "a sequence), else no source found. "
+                "Outreach texts are the texts sent before any reply; a reply is counted once, the first in its thread. "
+                "Talk time is the mean length of a conversation call. %s" % (
+                    self.refreshed_words(), " ".join(str(cat.definition("opportunity").get("says") or "").split()),
+                    self.texts_note(), self.offers_note(), self.revenue_note(), footnote(cat, USES)))
         if span["calls"][0] <= 0:
             note += " No business hour of this month is on record yet, so its pace is not judged."
         reach = self._reach_day(activity.CALLS)
@@ -1397,28 +1792,40 @@ class Snap:
              "bench": bench(cat, "caller.dials_per_day", "per caller")},
             {"section": "Activity", "label": "Owners dialed", "fn": lambda w: c(w)["owners"], "kind": "count", "pace": False},
             {"section": "Activity", "label": "Answered", "fn": lambda w: c(w)["answered"], "kind": "count",
-             "bench": "normal is %s; an answer is not a conversation" % cat.text("alarm.answer_rate_normal")},
+             "bench": "normal is %s" % cat.text("alarm.answer_rate_normal")},
             {"section": "Activity", "label": "Conversations", "fn": lambda w: c(w)["conversations"], "kind": "count",
              "need": "conversations", "bench": bench(cat, "caller.conversations_per_day", "per caller")},
-            {"section": "Activity", "label": "Talk minutes", "fn": lambda w: c(w)["talk_min"], "kind": "count",
-             "bench": cat.cite("measured.talk_seconds_per_dial")},
-            {"section": "Activity", "label": "Texts sent", "fn": self.texts_sent,
-             "kind": "count" if self.texting() else "gap", "pace": False, "bench": ""},
-            {"section": "Activity", "label": "Texts released by the autopilot",
-             "fn": lambda w: (lambda v: "could not be read" if v is None else v)(self.texts_released(w)), "kind": "count"},
-            {"section": "Activity", "label": "Text replies", "fn": self.replies,
-             "kind": "count" if self.texting() else "gap", "pace": False, "bench": ""},
-            {"section": "Contact", "label": "Correct numbers", "fn": lambda w: self.correct(w)["total"], "kind": "count"},
+            {"section": "Activity", "label": "Avg talk time per conversation (m:ss)", "fn": self.avg_talk, "kind": "ratio"},
+            {"section": "Activity", "label": "Outreach texts sent (before a reply)", "fn": self.outreach_texts,
+             "kind": "count"},
+            {"section": "Activity", "label": "Initial text replies (first reply in a thread)", "fn": self.first_replies,
+             "kind": "count" if self.texting() else "gap", "pace": False},
+            {"section": "Contact", "label": "Correct numbers (all channels)", "fn": lambda w: self.correct(w)["total"],
+             "kind": "count"},
             {"section": "Contact", "label": "Dials per correct number",
              "fn": lambda w: _ratio(c(w)["dials"], self.correct(w)["total"]), "kind": "ratio",
              "bench": cat.cite("funnel.dials_per_correct_number"), "target": cat.value("funnel.dials_per_correct_number"),
              "lower": True},
-            {"section": "Contact", "label": "Owners reached", "fn": self.reached, "kind": "count", "pace": False},
+            {"section": "Contact", "label": "Texts per correct number", "fn": self.texts_per_correct, "kind": "ratio"},
+            {"section": "Contact", "label": "Texts per reply", "fn": self.texts_per_reply, "kind": "ratio"},
+            {"section": "Contact", "label": "Owners reached by call", "fn": lambda w: self.reached_split(w)["call"],
+             "kind": "count", "pace": False},
+            {"section": "Contact", "label": "Owners reached by text", "fn": lambda w: self.reached_split(w)["text"],
+             "kind": "count", "pace": False},
             {"section": "Pipeline", "label": "New leads", "fn": lead_n, "kind": "count", "need": "leads",
              "bench": bench(cat, "caller.opportunities_per_day", "per caller")},
-            {"section": "Pipeline", "label": "Leads credited to a caller", "fn": lambda w: sum(self.credit(w)[0].values()),
+            {"section": "Pipeline", "label": "Leads from a caller", "fn": lambda w: self.lead_sources(w)["caller"],
              "kind": "count"},
-            {"section": "Pipeline", "label": "Leads credited to nobody", "fn": lambda w: self.credit(w)[1], "kind": "count"},
+            {"section": "Pipeline", "label": "Leads from texts", "fn": lambda w: self.lead_sources(w)["texts"],
+             "kind": "count"},
+            {"section": "Pipeline", "label": "Leads from a call-in", "fn": lambda w: self.lead_sources(w)["call-in"],
+             "kind": "count"},
+            {"section": "Pipeline", "label": "Leads set by the autopilot", "fn": lambda w: self.lead_sources(w)["autopilot"],
+             "kind": "count"},
+            {"section": "Pipeline", "label": "Leads set by DataSift automation",
+             "fn": lambda w: self.lead_sources(w)["automation"], "kind": "count"},
+            {"section": "Pipeline", "label": "Leads with no source found", "fn": lambda w: self.lead_sources(w)["none"],
+             "kind": "count"},
             {"section": "Pipeline", "label": "Qualified leads", "fn": lambda w: self.changes("qualified_statuses", w),
              "kind": "count", "bench": NO_FIGURE},
             {"section": "Pipeline", "label": "Appointments", "fn": lambda w: self.appts(w)["total"], "kind": "count",
@@ -1428,23 +1835,33 @@ class Snap:
             {"section": "Pipeline", "label": "Contracts signed", "fn": contracts_n, "kind": "count", "need": "contracts"},
             {"section": "Pipeline", "label": "Deals closed", "fn": lambda w: self.changes("closed_statuses", w),
              "kind": "count", "need": "deals"},
-            {"section": "Pipeline", "label": "Revenue closed", "fn": self.revenue, "kind": "count"},
+            {"section": "Pipeline", "label": "Revenue closed ($)", "fn": self.revenue, "kind": "count", "money": True},
             {"section": "Ratios", "label": "Dials per lead", "fn": lambda w: _ratio(c(w)["dials"], lead_n(w)), "kind": "ratio",
              "bench": cat.cite("funnel.dials_per_lead"), "target": cat.high("funnel.dials_per_lead"), "lower": True},
             {"section": "Ratios", "label": "Conversations per 1,000 dials",
              "fn": lambda w: _ratio(1000 * c(w)["conversations"], c(w)["dials"], 0), "kind": "ratio"},
+            {"section": "Ratios", "label": "Text replies per lead from texts", "fn": self.replies_per_text_lead,
+             "kind": "ratio"},
             {"section": "Ratios", "label": "Leads per contract, last %d days" % d90_days(cat), "fn": leads_per_contract,
              "kind": "now", "bench": cat.cite("funnel.leads_per_deal")},
             {"section": "Ratios", "label": "Contracts that close, last %d days (%%)" % d90_days(cat), "fn": close_rate,
              "kind": "now", "bench": cat.cite("funnel.contracts_that_close"),
              "mark_fn": lambda v: kpi.mark(v, cat.value("funnel.contracts_that_close"), cat.share("goal.at_risk_share"))
              if isinstance(v, (int, float)) else ""},
-            {"section": "Speed", "label": "Speed to lead, median minutes", "fn": lambda w: median_minutes(self.speed(w)[0]),
+            {"section": "Pipeline", "label": "Fees under contract, expected ($)", "fn": lambda _: self.fees_open(),
+             "kind": "now", "bench": "signed deals on the Goals tab"},
+            {"section": "Speed", "label": "Speed to lead (median minutes)", "fn": lambda w: median_minutes(self.speed(w)[0]),
              "kind": "ratio", "bench": NO_FIGURE},
             {"section": "Speed", "label": "Leads with no next task (now)", "fn": lambda _: self.val(self.no_task()),
              "kind": "now", "bench": NO_FIGURE},
             {"section": "Spend", "label": "Paid vendor spend ($)", "fn": lambda w: round(sum(self.spend(w).values()), 2),
              "kind": "count", "money": True},
+            {"section": "Spend", "label": "Mail ($)", "fn": lambda w: self.spend(w)["mail"], "kind": "count",
+             "money": True},
+            {"section": "Spend", "label": "Skip trace and phone scoring ($)", "fn": lambda w: self.spend(w)["data"],
+             "kind": "count", "money": True},
+            {"section": "Spend", "label": "Research ($)", "fn": lambda w: self.spend(w)["research"], "kind": "count",
+             "money": True},
             {"section": "Spend", "label": "Cost per lead ($)", "fn": cost_per(lead_n), "kind": "ratio",
              "weekly": False},
             {"section": "Spend", "label": "Cost per contract ($)", "fn": cost_per(contracts_n), "kind": "ratio",
@@ -1516,33 +1933,31 @@ class Snap:
         w = self.day_win
         table, facts = self.caller_table(w)
         self.facts["day"] = facts
-        rows = list(table)
+        # Kendrick Eid, 2026-11-23: "Ratios on funnel up top". The day's funnel first, each step against the one
+        # before it, then the callers, then the lead manager.
+        rows = self.funnel_rows(w)
+        rows += [[], ["Callers on %s" % w.label], list(self.CALLER_COLUMNS)] + list(table)
         # the lead manager's day
         waits, never, unknown = self.speed(w)
         tasks = self.lead_tasks()
         self.facts["speed_median"] = median_minutes(waits) if waits else None
         self.facts["no_task"] = self.no_task()
         att = self.lead_attempts(w)
-        rows += [[], ["Lead manager, %s" % w.label], ["Measure", "Value", "Benchmark"],
-                 ["New leads in", len(self.leads(w)), ""],
-                 ["Leads not called yet", never, ""],
-                 ["Speed to lead, median minutes", median_minutes(waits), NO_FIGURE],
-                 ["Leads with no next task (now)", self.val(self.no_task()), NO_FIGURE],
-                 ["Lead attempts (calls and texts to lead owners)", att["attempts"],
-                  bench(cat, "role.lead_manager_attempts_per_day", "per lead manager")],
-                 ["Conversations with leads", att["conversations"], ""],
-                 ["Lead tasks due today (log copy)", self.val(tasks.get("due_today")), ""],
-                 ["Lead tasks overdue (log copy)", self.val(tasks.get("overdue")), "0"],
-                 ["Texts sent", self.texts_sent(w), ""],
-                 ["Text replies", self.replies(w), ""]]
-        # the pipelines
-        cards, _, live = self.board()
-        by_col = Counter(p.get("column") for p in cards.values())
-        rows += [[], ["Pipelines now"], ["Pipeline", "Column or preset", "Records"]]
-        for col in BOARD_COLUMNS:
-            rows.append(["County board%s" % ("" if live else " (as the plan run placed the cards)"), col, by_col.get(col, 0)])
-        for title in self.pipeline_presets():
-            rows.append(["Top 1,000", title, self.val(self.preset_count(title))])
+        lm = [["New leads in", len(self.leads(w)), ""],
+              ["Leads not called yet", never, ""],
+              ["Speed to lead (median minutes)", median_minutes(waits), NO_FIGURE],
+              ["Leads with no next task (now)", self.val(self.no_task()), NO_FIGURE],
+              ["Lead attempts (calls and texts to lead owners)", att["attempts"],
+               bench(cat, "role.lead_manager_attempts_per_day", "per lead manager")],
+              ["Conversations with leads", att["conversations"], ""],
+              ["Lead tasks due today (log copy)", self.val(tasks.get("due_today")), ""],
+              ["Lead tasks overdue (log copy)", self.val(tasks.get("overdue")), "none"],
+              ["Outreach texts sent (before a reply)", self.outreach_texts(w), ""],
+              ["Initial text replies", self.first_replies(w), ""]]
+        # the benchmark in the funnel's own Benchmark column (the fourth), where the text has room
+        rows += [[], ["Lead manager on %s" % w.label], ["Measure", "Value", "", "Benchmark"]]
+        rows += [[label, v, "", b] for label, v, b in lm]
+        # Kendrick Eid, 2026-11-23: the pipelines block is off Today (the board's counts are on First to Market)
         note = ("%s. %s (each dial's own moment); numbers dialed are distinct numbers per caller. A phone mark (correct, "
                 "wrong, dead, do not call) does not say who set it, so marks are the team's and a caller's cells read "
                 "\"-\". Appointments are the team's too: a task does not name the caller who set it. On a caller's row, "
@@ -1557,7 +1972,32 @@ class Snap:
                         "%d answered calls carry" % self.calls(w)["length_unknown"]))
         if unknown:
             note += " %d new lead(s) are not timed: the speed job has not seen their owner yet." % unknown
-        return tab("Today", self.CALLER_COLUMNS, rows, note + self.live_note())
+        return tab("Today", self.FUNNEL_COLUMNS, rows, note + self.live_note())
+
+    FUNNEL_COLUMNS = ["Funnel", "Count", "Rate", "Benchmark"]
+
+    def funnel_rows(self, w: Win) -> list[list]:
+        """The window's funnel, each step with its rate against the step before: dials, answered (of dials),
+        conversations (of answered), correct numbers and new leads (dials each)."""
+        cat = self.cat
+        c = self.calls(w)
+        corr, leads = self.correct(w)["total"], len(self.leads(w))
+
+        def share(n, d, of):
+            v = _pct(n, d, 0)
+            return ("%s%% of %s" % (kpi.num(v), of)) if isinstance(v, (int, float)) else NONE_YET
+
+        def each(n, d):
+            v = _ratio(d, n)
+            return ("1 per %s dials" % kpi.num(v)) if isinstance(v, (int, float)) else NONE_YET
+
+        return [["Dials", c["dials"], "", bench(cat, "caller.dials_per_day", "per caller")],
+                ["Answered", c["answered"], share(c["answered"], c["dials"], "dials"),
+                 "normal is %s" % cat.text("alarm.answer_rate_normal")],
+                ["Conversations", c["conversations"], share(c["conversations"], c["answered"], "answered"),
+                 bench(cat, "caller.conversations_per_day", "per caller")],
+                ["Correct numbers", corr, each(corr, c["dials"]), cat.cite("funnel.dials_per_correct_number")],
+                ["New leads", leads, each(leads, c["dials"]), cat.cite("funnel.dials_per_lead")]]
 
     def lead_tasks(self) -> dict:
         """Open tasks on the leads, from the log copy: {} when the lead rows were not read, because a
@@ -1615,34 +2055,47 @@ class Snap:
         jw = Win("Last %d days" % judge, d90.start, self.today_start, d90.first, self.today, False)
         credit, _ = self.credit(jw)
         _, judged = goals.caller_lines(self.ctx, cat, self.today, dict(credit))
-        rows += [[], ["Judged on the last %d days (the goal sheet's floors)" % judge],
+        # Kendrick Eid, 2026-11-23: "On Judged the last 90 days add ratios". Each caller's own funnel over the same
+        # window beside the floors: answered of dials, dials a conversation, conversations a lead, dials a lead.
+        per = caller_rows_by_day(self.acts(jw, "calls"), self.conv_s, self.zone)
+        extras = self.extras_by_caller(jw)
+        rows += [[], ["Judged on the last %d days" % judge],
                  ["Caller", "Calling days", "Dials a day", "Floor", "Mark", "Conversations a day", "Floor", "Mark",
-                  "Leads a day", "Floor", "Mark"]]
+                  "Leads a day", "Floor", "Mark", "Answered (%)", "Dials per conversation", "Dials per correct number",
+                  "Conversations per lead", "Dials per lead"]]
+        team = Counter()
         for r in judged:
             if r["caller"].strip().lower() in self.not_callers:
                 continue
+            got = per.get(r["caller"]) or {}
+            dials, answered = _int(got.get("dials")), _int(got.get("answered"))
+            conv = _int(got.get("conversations")) + extras.get(r["caller"], 0)
+            won = credit.get(r["caller"], 0)
+            team.update({"dials": dials, "answered": answered, "conversations": conv, "leads": won})
             rows.append([_first_name(r["caller"]), r["calling_days"], r["dials_per_day"], cat.text("caller.dials_per_day"),
                          r["marks"][0], r["conversations_per_day"], cat.text("caller.conversations_per_day"), r["marks"][1],
-                         r["opportunities_per_day"], cat.text("caller.opportunities_per_day"), r["marks"][2]])
-        dpc = _ratio(self.calls(jw)["dials"], self.correct(jw)["total"])
-        rows.append(["Team", "", "", "", "", "", "", "", "", "Dials per correct number: %s" % dpc,
-                     kpi.mark(dpc, cat.value("funnel.dials_per_correct_number"), cat.share("goal.at_risk_share"),
-                              lower_is_better=True) if isinstance(dpc, (int, float)) else ""])
+                         r["opportunities_per_day"], cat.text("caller.opportunities_per_day"), r["marks"][2],
+                         _pct(answered, dials), _ratio(dials, conv), NONE_YET, _ratio(conv, won), _ratio(dials, won)])
+        calls_j = self.calls(jw)
+        dpc = _ratio(calls_j["dials"], self.correct(jw)["total"])
+        rows.append(["Team", "", "", "", "", "", "", "", "", "", "", _pct(calls_j["answered"], calls_j["dials"]),
+                     _ratio(calls_j["dials"], calls_j["conversations"]), dpc,
+                     _ratio(calls_j["conversations"], len(self.leads(jw))), _ratio(calls_j["dials"], len(self.leads(jw)))])
         # by pipeline this week
         wk = self.week(self.today - timedelta(days=self.today.weekday()))
-        rows += [[], ["By pipeline, %s (the owner's lane in the nightly map today)" % wk.label],
+        rows += [[], ["By pipeline in the %s (the owner's lane today)" % (wk.label[:1].lower() + wk.label[1:])],
                  ["Lane", "Dials", "Owners dialed", "Conversations", "Correct numbers"]]
         for lane, v in self.by_lane(wk):
             rows.append([lane_label(lane) if lane != "none" else "Not on the lane map", v["dials"], len(v["owners"]),
                          v["conversations"], v["correct"]])
         sent = self.texts_by_person(wk)
         if sent is not None:
-            rows += [[], ["Texts sent, %s (the person the texting tool names)" % wk.label], ["Person", "Texts sent"]]
+            rows += [[], ["Texts sent by person in the %s" % (wk.label[:1].lower() + wk.label[1:])], ["Person", "Texts sent"]]
             for name, n in sent:
                 rows.append([name, n])
             if not sent:
                 rows.append(["no text sent this week", 0])
-        rows += [[], ["Not tracked yet"], ["By attempt (Day 1 to Day 5, Exhausted)", GAP],
+        rows += [[], ["Not tracked yet"], ["By attempt (Day 1 to Day 5 and Exhausted)", GAP],
                  ["Contracts credited to a caller", GAP]]
         if sent is None:
             rows.append(["Texts a caller sent", GAP])
@@ -1686,6 +2139,72 @@ class Snap:
         order = list(lanes.ORDER) + ["none"]
         return sorted(out.items(), key=lambda kv: order.index(kv[0]) if kv[0] in order else 99)
 
+    # ================================================================== tab: Texts
+    def text_measures(self) -> list[tuple]:
+        """(section, label, fn) for the Texts tab, month and week alike."""
+        led = self.text_ledger
+
+        def rate(w):
+            r, n = self.first_replies(w), led(w)["owners"]
+            if r == GAP:
+                return GAP
+            return _pct(r, n) if isinstance(n, int) else NONE_YET
+
+        def gap_or(v):
+            return "could not be read" if v is None else v
+
+        return [
+            ("Outreach", "Outreach texts sent (before a reply)", self.outreach_texts),
+            ("Outreach", "Owners texted", lambda w: gap_or(led(w)["owners"])),
+            ("Outreach", "Numbers texted", lambda w: gap_or(led(w)["numbers"])),
+            ("Outreach", "Opening texts (texts 1 to 3)", lambda w: gap_or(led(w)["opening"])),
+            ("Outreach", "Follow-up texts", lambda w: gap_or(led(w)["followup"])),
+            ("Replies", "Initial text replies (first reply in a thread)", self.first_replies),
+            ("Replies", "Reply rate (% of owners texted)", rate),
+            ("Replies", "Numbers confirmed by a text reply", lambda w: self.correct_split(w)["text"]),
+            ("Replies", "Wrong numbers marked on a text reply", lambda w: self.text_marks(w)["Wrong"]),
+            ("Replies", "Do not contact marked on a text reply", lambda w: self.text_marks(w)["DNC"]),
+            ("Results", "Owners reached by text", lambda w: self.reached_split(w)["text"]),
+            ("Results", "Leads from texts", lambda w: self.lead_sources(w)["texts"]),
+            ("Results", "Texts per correct number", self.texts_per_correct),
+            ("Results", "Texts per reply", self.texts_per_reply),
+            ("Results", "Text replies per lead from texts", self.replies_per_text_lead),
+        ]
+
+    def tab_texts(self) -> dict:
+        """Kendrick Eid, 2026-11-23: "Add a tab for text metrics". What the autopilot texted, what came back and
+        what it made, by month, this month by lane, and by week. The texts come from the autopilot's own
+        ledger (Smarter Contact sends never reach DataSift's log); replies come from a texting tool that
+        reports them, and read not tracked yet until one does."""
+        months = self.months()
+        cur = months[-1]
+        older = list(reversed(months[:-1]))
+        wins = [cur] + older
+        measures = self.text_measures()
+        columns = ["Section", "Monthly"] + [short_label(w) for w in wins]
+        rows = [[sec, label] + [fn(w) for w in wins] for sec, label, fn in measures]
+        rows += [[], ["This month by lane"],
+                 ["Lane", "Texts sent", "Owners texted", "Confirmed by a text reply", "Leads from texts"]]
+        lane_rows = self.texts_by_lane(cur)
+        rows += lane_rows or [["no text released this month", 0, 0, 0, 0]]
+        weeks = self.weeks()
+        newest = list(reversed(weeks))
+        rows += [[], ["Last %d weeks (Monday to Sunday)" % len(weeks)],
+                 ["Section", "Measure"] + [short_label(w) for w in newest]]
+        rows += [[sec, label] + [fn(w) for w in newest] for sec, label, fn in measures]
+        note = ("Outreach texts are the texts sent before any reply: the ones the autopilot released into the texting "
+                "tool, read from its own ledger, or once a texting tool reports its sends, every text it sent before a "
+                "number's first reply. A reply is counted once, the first in its thread. A number confirmed, marked "
+                "wrong or marked do not contact on a text reply is the texting app's own mark (our key, outside the "
+                "brain's stages); before 2026-11-15 the log does not tell its marks from a person's, so earlier "
+                "weeks read low. A lead from texts is one with no call of ours before it whose owner the autopilot "
+                "texted, or whose number was marked correct outside any call, in the 30 days before. The autopilot's "
+                "own text ledger starts 2026-11-18. %s" % self.texts_note())
+        if not self.texting():
+            note += (" Replies, the reply rate, texts per reply and replies per lead read not tracked yet until the "
+                     "texting app reports its replies to the tracker.")
+        return tab("Texts", columns, rows, note + self.live_note())
+
     # ================================================================== tab 4: Leads
     def lead_day_windows(self) -> list[Win]:
         out = []
@@ -1719,7 +2238,7 @@ class Snap:
                  ["Warm leads gone quiet", self.val(quiet.get("warm")), "a talk every %s" % cat.text("cadence.warm_days")],
                  ["Cold leads gone quiet", self.val(quiet.get("cold")), "a talk every %s" % cat.text("cadence.cold_days")]]
         # the lead ledger
-        rows += [[], ["Lead ledger, this month and last"], self.LEDGER_COLUMNS]
+        rows += [[], ["Lead ledger this month and last"], self.LEDGER_COLUMNS]
         rows += self.lead_ledger()
         # the pipeline now
         rows += [[], ["Leads by status now"], ["Status", "Leads"]]
@@ -1745,7 +2264,7 @@ class Snap:
         return tab("Leads", columns, rows, note + self.live_note())
 
     LEDGER_COLUMNS = ["Record", "Added to DataSift", "Became a lead", "Channel", "Source", "Caller credited", "Qualified",
-                      "First offer", "Offer accepted", "Under contract", "Closed or lost", "Days, lead to contract",
+                      "First offer", "Offer accepted", "Under contract", "Closed or lost", "Days lead to contract",
                       "Status now"]
 
     def link(self, record: str) -> str:
@@ -1875,10 +2394,11 @@ class Snap:
             ["Deals closed"] + closed + ["", ""],
             ["Contracts that close (%)", "", "", cc, cat.cite("funnel.contracts_that_close"),
              kpi.mark(cc, cat.value("funnel.contracts_that_close"), risk) if isinstance(cc, (int, float)) else ""],
+            ["Fees collected ($)"] + [self.revenue(w) for w in wins] + ["", ""],
         ]
-        rows += [[], ["Contract ledger, last %d days" % d90_days(cat)],
+        rows += [[], ["Contract ledger for the last %d days" % d90_days(cat)],
                  ["Record", "Contract signed", "Deal type", "Contract price", "Projected fee", "Assigned to a buyer",
-                  "Closed", "Fee", "Days, lead to contract", "Days, contract to close", "Generated by", "Carried by",
+                  "Closed", "Fee", "Days lead to contract", "Days contract to close", "Generated by", "Carried by",
                   "Closed by"]]
         rows += self.contract_ledger(d90)
         rows += [[], ["Dispositions"], ["Measure", "Value"],
@@ -1886,26 +2406,38 @@ class Snap:
                  ["Days from contract to assignment", GAP], ["Contracts that could not be assigned", GAP]]
         note = ("Contracts signed and deals closed stay on separate rows: a signed contract is never counted as a deal "
                 "(team/kpi.yaml). Walks are the appointments set, since a walk is not logged apart from its "
-                "appointment. %s Deal type, prices and the assignment are not tracked until their fields are named "
-                "(decision F10); the three names are the deal sources' reading of the call log, to confirm before "
-                "paying on it. Dispositions are not tracked yet: the buyer registry and the blast tables live on the "
-                "texting app and the workstation, not on the brain." % self.offers_note())
+                "appointment. %s %s Deal type, price and fees come from the Goals tab's deals: paste the record's "
+                "DataSift link in the Property cell and the ledger row picks them up. The three names are the deal "
+                "sources' reading of the call log, to confirm before paying on it. Dispositions are not tracked yet: "
+                "the buyer registry and the blast tables live on the texting app and the workstation, not on the "
+                "brain." % (self.offers_note(), self.revenue_note()))
         return tab("Deals", columns, rows, note + self.live_note())
 
     def contract_ledger(self, w: Win) -> list[list]:
         recorded = {d["record_uuid"]: d for d in dealsource.deals()}
+        # A deal typed on the Goals tab with its DataSift link fills the ledger's money columns.
+        typed = {}
+        for t in self.typed_deals():
+            m = RECORD_UUID.search(str(t.get("property") or ""))
+            if m:
+                typed[m.group(0).lower()] = t
         out = []
         for c in self.stage_records(w, "contract")[-int(self.o["ledger_rows"]):]:
             u, at = c["record"], c["when"]
             closed_at = self._status_after(u, at, self.o["closed_statuses"])
             moments = dealsource.lead_moments(u, until=at)
             d = recorded.get(u) or {}
-            fee = (d.get("detail") or {}).get("fee")
+            t = typed.get(str(u).lower()) or {}
+            fee = (d.get("detail") or {}).get("fee") or t.get("fee")
             owner = self.owner_of(u)
             gen = d.get("generated_by") or (dealsource.origin(self.cat, owner, moments[-1])["caller"] if owner and moments else "")
-            out.append([self.link(u), _nice(at.astimezone(self.zone).date()), GAP, GAP, GAP, GAP,
+
+            def money(v):
+                return round(float(v)) if isinstance(v, (int, float)) else GAP
+            out.append([self.link(u), _nice(at.astimezone(self.zone).date()), t.get("type") or GAP, money(t.get("price")),
+                        money(t.get("expected")), GAP,
                         _nice(closed_at.astimezone(self.zone).date()) if closed_at else "",
-                        round(float(fee)) if fee else (GAP if not self.fee_field() else ""),
+                        round(float(fee)) if fee else (GAP if not (self.fee_field() or t) else ""),
                         (at - moments[-1]).days if moments else "before the log copy",
                         (closed_at - at).days if closed_at else "", _first_name(gen),
                         _first_name(d.get("carried_by") or ""), _first_name(d.get("closed_by") or "")])
@@ -2014,7 +2546,7 @@ class Snap:
             rows.append(["%s (another source)" % tool, "every step", "", "", "", "", "", n, "", "", ""])
             month_pieces += n
         # what DataSift's own counters say
-        rows += [[], ["Records mailed, by DataSift's own counters"],
+        rows += [[], ["Records mailed by DataSift's own counters"],
                  ["Lane", "Records in the lane", "Mailed at least once", "Mailed this month", "Never mailed"]]
         tomorrow = (self.today + timedelta(days=1)).isoformat()
         for lane in lanes_seen:
@@ -2338,6 +2870,11 @@ class Snap:
         return int(agencyscore.agency_side(mine)["counts"].get("lead") or 0)
 
     def agency_fee(self):
+        """The calling agency's fee a month: typed on the Goals tab (Calling agency), else the agency
+        scorecard stage's monthly_fee."""
+        typed = self.cat.monthly_costs().get("agency") if self.cat is not None else None
+        if typed is not None:
+            return round(float(typed))
         st = self.stage_of("agencyscore", self.o["agency_stage"])
         fee = st.get("monthly_fee") if st is not None else None
         return round(float(fee)) if isinstance(fee, (int, float)) and not isinstance(fee, bool) and fee > 0 else GAP
@@ -2385,7 +2922,7 @@ class Snap:
             rows.append([f["feed"], self.val(t), self.val(m),
                          _pct(m, t) if isinstance(t, int) and isinstance(m, int) else NOT_READ, GAP])
         m = contactrate.measure(self.now, self.tz, cat, weeks=int(self.o["weeks"]))
-        rows += [[], ["Contact rate by week (owners first worked that week, reached since)"],
+        rows += [[], ["Contact rate by week (owners first worked that week and reached since)"],
                  ["Week", "Owners", "Reached", "Share (%)"]]
         for r in m["weeks"]:
             rows.append(["Week %d (%s)%s" % (r["week"], r["start"], ", partly before the log copy" if r["clipped"] else ""),
@@ -2411,6 +2948,8 @@ class Snap:
 
         def status(key):
             f = cat.fig(key)
+            if kpi.TYPED_SOURCE in f.source:
+                return "yours, typed on the Goals tab"
             return f.tag() or "confirmed"
 
         columns = ["Input", "Value", "Status", "Decision", "Source"]
@@ -2430,7 +2969,7 @@ class Snap:
             f = cat.fig(key)
             label = "Conversations per dial" if key == "caller.conversations_per_day" else f.label.capitalize()
             rows.append([label, value, status(key), f.decision, ", ".join(f.source)])
-        rows += [[], ["Needed a month, worked back"], ["Measure", "A month"]]
+        rows += [[], ["Needed a month worked back"], ["Measure", "A month"]]
         for k in ("deals", "contracts", "leads", "dials", "conversations"):
             rows.append([k.capitalize(), _n1(need[k])])
         # pace: the goal sheet's windows, scaled to the days the log copy holds
@@ -2443,7 +2982,7 @@ class Snap:
         span_a = goals._span(act, self.today, calls_first)
         span_l = goals._span(act, self.today, state_first)
         span_d = goals._span(deal, self.today, state_first)
-        rows += [[], ["Pace, the goal sheet's windows (up to yesterday)"], ["Measure", "Window", "Actual", "Needed so far", "Mark"]]
+        rows += [[], ["Pace in the goal sheet's windows (up to yesterday)"], ["Measure", "Window", "Actual", "Needed so far", "Mark"]]
         for label, got, month_need, span, full in (
                 ("Dials", self.calls(aw)["dials"], need["dials"], span_a, act),
                 ("Conversations", self.calls(aw)["conversations"], need["conversations"], span_a, act),
@@ -2469,10 +3008,14 @@ class Snap:
                   kpi.mark(cc, cat.value("funnel.contracts_that_close"), risk) if isinstance(cc, (int, float)) else ""]]
         lines, _ = goals.owner_review(self.ctx, cat, self.today)
         rows += [[], ["Quarterly owner review"]] + [[ln] for ln in lines[1:]]
-        note = ("Every input is read from team/kpi.yaml, so the sheet, the Slack update and the Monday goal sheet use "
-                "the same numbers; change a figure there, not here. The pace counts from the connected sources (the log "
-                "copy among them), so it can read above the Monday goal sheet on a day the daily capture missed. %s"
-                % footnote(cat, goals.USES + goals.REVIEW_USES))
+        read_at = _moment((getattr(cat, "typed", None) or {}).get("at"))
+        note = ("Each input is the number typed on the Goals tab of the Google Sheet when one is typed there, and "
+                "team/kpi.yaml's otherwise, so the sheet, the Slack update and the Monday goal sheet use the same numbers: "
+                "change one on the Goals tab, not here.%s The pace counts from the connected sources (the log copy among "
+                "them), so it can read above the Monday goal sheet on a day the daily capture missed. %s" % (
+                    (" The Goals tab was last read %s at %s." % (_nice(read_at.astimezone(self.zone).date()),
+                                                                 _clock(read_at.astimezone(self.zone))))
+                    if read_at else "", footnote(cat, goals.USES + goals.REVIEW_USES)))
         return tab("Goals", columns, rows, note + self.live_note())
 
     def _reach_day(self, types) -> date | None:
@@ -2488,17 +3031,17 @@ class Snap:
         cat = self.cat
         months = self.months()
         columns = ["Cost"] + [w.label for w in months] + ["Benchmark"]
-        typed = cat.monthly_costs()
+        typed = {k: v for k, v in cat.monthly_costs().items() if k != "agency"}     # the agency has its own row
         fee = self.agency_fee()
         rows = [["Mail (the autopilot's ledger) ($)"] + [round(self.spend(w)["mail"], 2) for w in months] + [""],
                 ["Skip trace and phone scoring (the ledger) ($)"] + [round(self.spend(w)["data"], 2) for w in months] + [""],
                 ["Research (the brain's spend) ($)"] + [round(self.spend(w)["research"], 2) for w in months] + [""]]
         for name in ("dialer", "texting", "salaries", "subscriptions"):
             v = typed.get(name)
-            rows.append(["%s ($ a month, typed in team/kpi.yaml)" % name.capitalize()] + [round(v) if v is not None else GAP] * len(months) + [""])
+            rows.append(["%s ($ a month, typed)" % name.capitalize()] + [round(v) if v is not None else GAP] * len(months) + [""])
         for name in sorted(n for n in typed if n not in ("dialer", "texting", "salaries", "subscriptions")):
             rows.append(["%s ($ a month, typed)" % name.capitalize()] + [round(typed[name])] * len(months) + [""])
-        rows.append(["Agency fee ($ a month)"] + [fee] * len(months) + [""])
+        rows.append(["Calling agency ($ a month)"] + [fee] * len(months) + [""])
         totals = []
         for w in months:
             t = sum(self.spend(w).values()) + sum(typed.values()) + (fee if isinstance(fee, (int, float)) else 0)
@@ -2509,7 +3052,7 @@ class Snap:
                                  ("Cost per closed deal ($)", lambda w: self.changes("closed_statuses", w), cat.cite("owner.cost_per_deal"))):
             vals = []
             for w, t in zip(months, totals):
-                if not typed:
+                if not cat.monthly_costs():      # the fixed costs unknown: a cost per lead would read too low
                     vals.append(GAP)
                     continue
                 n = fn(w)
@@ -2522,15 +3065,17 @@ class Snap:
         runway = cat.input("runway_months")
         rows.append(["Months of runway (typed)"] + [runway if runway is not None else GAP] * len(months)
                     + [cat.cite("pacing.runway_months")])
-        rows += [[], ["Spend by source and tool, every connected source ($)"], ["Source and tool"] + [w.label for w in months]]
+        rows += [[], ["Spend by source and tool ($)"], ["Source and tool"] + [w.label for w in months]]
         rows += self.spend_by_source(months)
         missing = [n for n in ("dialer", "texting", "salaries", "subscriptions") if n not in typed]
         note = ("Mail, data and research are what the autopilot paid, read from the spend the sources report (the ledger "
                 "and the brain's spend table, each dollar once). %s Cost per lead, contract and deal are not tracked until "
-                "a monthly cost is typed under inputs.monthly_costs in team/kpi.yaml (decision F11); the net margin waits "
-                "on revenue (the deal-source stage's fee_field, decision F10). Spend by source and tool also shows what "
-                "the totals above leave out (the team's own model turns), and any spend a connected tool reports." % (
-                    ("Not typed yet: %s." % ", ".join(missing)) if missing else "Every named monthly cost is typed."))
+                "a monthly cost is typed on the Goals tab of the Google Sheet (or under inputs.monthly_costs in "
+                "team/kpi.yaml); a typed cost counts in every month shown. The net margin waits on revenue: %s Spend by "
+                "source and tool also shows what the totals above leave out (the team's own model turns), and any spend "
+                "a connected tool reports." % (
+                    ("Not typed yet: %s." % ", ".join(missing)) if missing else "Every named monthly cost is typed.",
+                    self.revenue_note()))
         return tab("Costs", columns, rows, note + self.live_note())
 
     def spend_by_source(self, months) -> list[list]:
@@ -2557,6 +3102,13 @@ class Snap:
         ("Owners dialed", "Distinct owners with an outbound dial in the window."),
         ("Hours on the dialer", "A caller's first dial to their last that day, each dial's own moment; nobody types it."),
         ("Owners reached", "Owners with a conversation or a number marked correct in the window (the contact rate's rule)."),
+        ("Owners reached by call", "Owners with a call conversation, or a number a dialer marked correct, in the window."),
+        ("Owners reached by text", "Owners with a text conversation, a first reply, or a number the texting app marked "
+                                   "correct on a reply, in the window."),
+        ("Outreach texts", "Texts sent before any reply: what the autopilot released into the texting tool (its own "
+                           "ledger), and the outreach a connected texting tool reports. A reply of ours is not outreach."),
+        ("Initial text reply", "An owner's first text back in a thread, counted once, in the window it landed in."),
+        ("Talk time a conversation", "The mean length of a call that counts as a conversation, as minutes:seconds."),
         ("Qualified lead", "A lead moved to one of the qualified statuses on the stage (decision F9), read from the log copy."),
         ("Pass-off", "An appointment set, until the acquisitions columns are named (decision F9)."),
         ("Appointment", "A record any source reports at the appointment stage (an appointment task in DataSift), or a "
@@ -2599,7 +3151,10 @@ class Snap:
                 t.astimezone(self.zone).strftime("%b %d %I:%M %p").replace(" 0", " ") if t else "never")])
         rows += [["Texts", self.texts_note()],
                  ["Offers", self.offers_note()],
-                 ["Leads credited to nobody", "A lead with no call of ours before it in the log (a text reply reads this way)."],
+                 ["Lead sources", "A caller when the log holds a conversation of ours before the lead; a call-in or a "
+                  "text reply when that was the conversation; texts when the autopilot texted the owner, or a number "
+                  "of theirs was marked correct outside a call, in the 30 days before; the autopilot when our own key "
+                  "set the status; DataSift automation when its system user did; else no source found."],
                  ["Live counts", "Clean records (the app's first tab), at most %d a run." % int(self.o["max_counts"])],
                  ["Refresh", "%s. Every tab is rebuilt at each run except %s." % (
                      ", ".join(getattr(self.ctx.stage, "schedule", None) or []) or "the stage's schedule",
@@ -2607,7 +3162,7 @@ class Snap:
                                for k, v in sorted((self.o.get("tab_runs") or {}).items())) or "none")],
                  ["Deleted tabs", "A tab deleted by hand on the sheet stays deleted; the writer never adds it back."]]
         # the sources every number above was read from
-        rows += [[], ["The KPI sources (agents/kpi_sources), as this run read them"],
+        rows += [[], ["The KPI sources as this run read them"],
                  ["Source", "What it provides", "Last reported", "Status"]]
         for c in self.connections():
             r = self.source_rows.get(c["id"]) or {}
@@ -2797,7 +3352,8 @@ def research_table(rows: list[dict]) -> dict:
 FACT_TABS = {"day": "Today", "speed_median": "Today", "no_task": "Today", "marks": "Scoreboard", "month": "Scoreboard",
              "last_week": "Scoreboard", "texts_released_month": "Scoreboard", "cards_due": "First to Market",
              "agency_leads_back": "Channels"}
-BUILDERS = {"Scoreboard": "tab_scoreboard", "Today": "tab_today", "Callers": "tab_callers", "Leads": "tab_leads",
+BUILDERS = {"Scoreboard": "tab_scoreboard", "Today": "tab_today", "Callers": "tab_callers", "Texts": "tab_texts",
+            "Leads": "tab_leads",
             "Deals": "tab_deals", "First to Market": "tab_ftm", "Direct Mail": "tab_mail", "Channels": "tab_channels",
             "Lists": "tab_lists", "Goals": "tab_goals", "Costs": "tab_costs", "How it is counted": "tab_counted"}
 
@@ -2877,7 +3433,7 @@ def build(ctx: Ctx, cat, o: dict, run: str) -> tuple[dict, dict]:
         notes.append("Kept from an earlier run: %s." % ", ".join(kept))
     problems = list(dict.fromkeys(list(ctx.out.problems) + s.problems))
     snap = {"refreshed": ctx.now.isoformat(timespec="seconds"), "run": run, "tz": s.tz, "tabs": tabs,
-            "slack": {"lines": lines}, "problems": problems, "notes": notes}
+            "slack": {"lines": lines}, "problems": problems, "notes": notes, "goal_cells": s.goal_cells_safe()}
     facts = dict(s.facts)
     facts["_built"] = built
     facts["_failed"] = failed
@@ -2922,9 +3478,30 @@ def publish(ctx: Ctx, snap: dict) -> None:
         ctx.out.tally["slack: %s" % str(res["slack"])[:60]] = 1
 
 
+def read_sheet_inputs(ctx: Ctx) -> dict:
+    """The Google Sheet's Goals tab, read before anything is counted, so the goal, the targets, the costs
+    and the deals typed there are what this run judges by (kpi.load() lays them over team/kpi.yaml).
+    Best effort: a sheet that cannot be read leaves the last read, and that is said."""
+    try:
+        from .kpisinks import read_inputs
+    except ImportError:
+        return {}
+    try:
+        res = read_inputs() or {}
+    except Exception as exc:  # noqa: BLE001  (the sheet's inputs never stop the run)
+        ctx.out.problem("the KPI sheet's Goals tab could not be read (%s)" % str(exc)[:100])
+        return {}
+    for p in res.get("problems") or []:
+        ctx.out.problem(str(p))
+    if res.get("status") == "read":
+        ctx.out.tally["inputs read from the sheet: %d typed" % int(res.get("typed") or 0)] = 1
+    return res
+
+
 def run_kpitracker(ctx: Ctx) -> None:
     o = options(ctx.stage)
     run = which_run(ctx.stage, ctx.now, ctx.policy.tz)
+    sheet_in = read_sheet_inputs(ctx)
     cat = kpi.for_stage(ctx)
     if o["sync"] and cat is not None:
         try:
@@ -2933,6 +3510,7 @@ def run_kpitracker(ctx: Ctx) -> None:
             ctx.out.problem("the KPI tracker stopped reading the log copy: the hour's request budget ran out (%s); "
                             "the numbers may be short" % str(exc)[:80])
     snap, facts = build(ctx, cat, o, run)
+    snap["notes"] += [str(n) for n in sheet_in.get("notes") or [] if str(n) not in snap["notes"]]
     kpi.save_report("kpi_tracker", ctx.now, snap)
     remember(snap, facts)
     summarize(ctx, snap, facts)

@@ -2277,15 +2277,17 @@ Activity-log pull and funnel pacing straight from the account.
 - Pulls the activity log with its own JWT
 - Three distinct rates, lead counting including new_lead statuses
 - Funnel pacing from dials to correct to leads to appointments to contracts
+- Credits every new lead to a source: a caller, texts, a call-in, the autopilot or DataSift automation
+- Writes the KPI Google Sheet three times a weekday: scoreboard, texts, goals with pace
 - Outputs markdown, CSV, Excel, or Slack
 
 **Human checkpoint.**
 
 - Benchmarks are baselines to tune per operation, not targets
 
-**Outputs.** KPI report, Slack digest
+**Outputs.** KPI report, KPI Google Sheet, Slack digest
 
-**Touches.** DataSift API, Slack
+**Touches.** DataSift API, Google Sheets, Slack
 
 > **The trap this exists to avoid.** Benchmarks ship as tune-per-operation baselines. Publishing someone else's conversion rate as a target is how you get a team optimizing for a number that never applied to them.
 

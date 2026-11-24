@@ -162,7 +162,14 @@ RELATIVE = re.compile(
     r"|\bmy\s+(?:late\s+)?" + _KIN + r"\s+(?:was|were)\b(?=[^.!?]{0,80}\b(?:passed|died|deceased|will|estate)\b)"
     r"|\b(?:willed|left|deeded)\s+(?:it\s+|the\s+(?:house|home|property|land|place)\s+)?to\s+(?:me|us)\b"
     r"|\bi\s+(?:inherited|am\s+(?:the|an|one\s+of\s+the)\s+heirs?)\b"
-    r"|\bexecut(?:or|rix)\s+of\s+(?:his|her|their|the|my\s+\w+(?:'s)?)\s+estate\b", re.I)
+    r"|\bexecut(?:or|rix)\s+of\s+(?:his|her|their|the|my\s+\w+(?:'s)?)\s+estate\b"
+    # Step-family and half-siblings, anywhere in the reply, and the owner as the sender's kin doing
+    # something with the house or the family. 2026-11-20: an owner's stepdaughter wrote "My stepfather
+    # had other children ... My half sister might know where they're at because she is his child." and
+    # was burned as a wrong number for the second time in two days; no pattern above saw it.
+    r"|\bmy\s+(?:late\s+)?(?:step[- ]?(?:father|mother|dad|mom|parents?|son|daughter|brother|sister|kids|children)"
+    r"|half[- ]?(?:sister|brother|siblings?))\b"
+    r"|\bmy\s+(?:late\s+)?" + _KIN + r"\s+(?:had|has|left|owned|owns|lived|lives|bought)\b", re.I)
 
 
 @dataclass

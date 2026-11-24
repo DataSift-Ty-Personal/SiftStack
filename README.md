@@ -99,7 +99,7 @@ More: [Getting started](docs/setup/GETTING-STARTED.md), [API contracts](docs/api
 | `kpi-engine` | Dials, connects, correct numbers, leads and pacing from your own DataSift account |
 | **CRM** | |
 | `sift-sequences` | 26 sequence templates and how to build them |
-| `account-blueprint` | Builds a DataSift account in a reference structure over the API, every object read back |
+| `account-blueprint` | Builds a DataSift account in a reference structure over the API, every object read back ([every folder and preset, step by step](docs/account-structure.md)) |
 | `sift-operations` (plugin) | The CRM operations encyclopedia: boards, drips, tasks, filters, tags, skip trace |
 | **Setup** | |
 | `siftstack-core` (plugin) | The doctor and the guided setup. Every bundle installs it |

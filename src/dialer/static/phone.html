@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SiftStack dialer</title>
+<link rel="icon" href="/static/datasift-64.png">
+<link rel="stylesheet" href="/static/phone.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand"><img src="/static/datasift-64.png" alt="DataSift"><b>SiftStack dialer</b></div>
+  <span id="lineState" class="line-state bad">Connecting the phone</span>
+  <div class="who">
+    <span id="callerName" class="name"></span>
+    <span id="callerNumber" class="small tnum"></span>
+    <button id="settingsBtn" class="btn btn-sm btn-ghost" type="button">Voicemail and settings</button>
+    <button id="signOutBtn" class="btn btn-sm btn-ghost" type="button">Sign out</button>
+  </div>
+</header>
+
+<div id="modes" class="modes"></div>
+
+<main class="cols">
+ <div class="col col-a">
+  <section class="card a-phone" aria-labelledby="phoneTitle">
+    <h2 id="phoneTitle">Phone <span id="phoneAside" class="aside"></span></h2>
+    <form id="dialForm" class="row dial" autocomplete="off">
+      <input id="dialNumber" class="grow" type="tel" inputmode="tel" placeholder="Number to call" aria-label="Number to call">
+      <button id="dialBtn" class="btn btn-primary" type="submit">Call</button>
+    </form>
+    <div id="callBox" class="callbox" hidden>
+      <div id="callState" class="state">Ready</div>
+      <div id="callWho" class="who-called"></div>
+      <div id="callNum" class="numline"></div>
+      <div id="callTimer" class="timer" hidden>0:00</div>
+      <ul id="callWarnings" class="warnlist small"></ul>
+      <div id="callControls" class="controls">
+        <button id="muteBtn" class="btn" type="button">Mute</button>
+        <button id="holdBtn" class="btn" type="button">Hold</button>
+        <button id="vmBtn" class="btn" type="button" hidden>Leave voicemail</button>
+        <button id="xferBtn" class="btn" type="button">Transfer</button>
+        <button id="hangBtn" class="btn btn-dark" type="button">Hang up</button>
+      </div>
+      <div id="xferBox" class="row" hidden>
+        <select id="xferTeam" class="grow" aria-label="Teammate"></select>
+        <input id="xferNumber" class="grow" type="tel" placeholder="or a number" aria-label="Transfer number">
+        <button id="xferGo" class="btn btn-sm" type="button">Add to call</button>
+      </div>
+    </div>
+    <div id="incomingBox" class="callbox ringing" hidden>
+      <div class="state">Incoming call</div>
+      <div id="inWho" class="who-called"></div>
+      <div id="inNum" class="numline"></div>
+      <div class="controls">
+        <button id="acceptBtn" class="btn btn-primary" type="button">Answer</button>
+        <button id="declineBtn" class="btn" type="button">Send to voicemail</button>
+      </div>
+    </div>
+  </section>
+
+  <section id="outcomeCard" class="card a-outcome" aria-labelledby="outTitle" hidden>
+    <h2 id="outTitle">How did it go? <span id="outAside" class="aside"></span></h2>
+    <div id="outGroups"></div>
+    <div id="callbackBox" hidden>
+      <label class="field" for="callbackAt">Call back at</label>
+      <input id="callbackAt" type="datetime-local">
+    </div>
+    <label class="field" for="outNote">Note for the record</label>
+    <textarea id="outNote" placeholder="What they said, in their words"></textarea>
+    <div class="row">
+      <button id="saveOutcome" class="btn btn-primary" type="button" disabled>Save outcome</button>
+      <span id="outMsg" class="small"></span>
+    </div>
+  </section>
+ </div>
+ <div class="col col-b">
+  <section class="card a-record" aria-labelledby="recTitle">
+    <h2 id="recTitle">Record <span id="recAside" class="aside"></span></h2>
+    <div id="recEmpty" class="empty">Call a number, or click one in DataSift, and the record shows here.</div>
+    <div id="recBody" hidden>
+      <div class="rec-head">
+        <div>
+          <div id="recOwner" class="owner"></div>
+          <div id="recAddr" class="addr"></div>
+        </div>
+        <a id="recOpen" class="btn btn-sm open" href="#" target="_blank" rel="noopener">Open in DataSift</a>
+      </div>
+      <div class="facts">
+        <div class="fact"><div class="k">Status</div><div id="recStatus" class="v"></div></div>
+        <div class="fact"><div class="k">Call attempts</div><div id="recAttempts" class="v"></div></div>
+        <div class="fact"><div class="k">Value</div><div id="recValue" class="v"></div></div>
+        <div class="fact"><div class="k">Equity</div><div id="recEquity" class="v"></div></div>
+      </div>
+      <div id="recTags" class="tags"></div>
+      <ul id="recPhones" class="phones"></ul>
+    </div>
+  </section>
+
+  <section class="card a-texts" aria-labelledby="txtTitle">
+    <h2 id="txtTitle">Texts with this number <span id="txtAside" class="aside"></span></h2>
+    <div id="thread" class="thread"><div class="empty">No text thread yet.</div></div>
+  </section>
+ </div>
+ <div class="col col-c">
+  <section class="card a-queue" aria-labelledby="qTitle">
+    <h2 id="qTitle">Power dialer <span id="qAside" class="aside"></span></h2>
+    <div id="qStart">
+      <label class="field" for="presetPick">Call list (a DataSift preset)</label>
+      <div class="row">
+        <select id="presetPick" class="grow" aria-label="Call list"></select>
+        <button id="qStartBtn" class="btn btn-primary" type="button">Start</button>
+      </div>
+    </div>
+    <div id="qRun" hidden>
+      <div id="qPreset" class="sub"></div>
+      <div class="progress">
+        <div class="fact"><div class="k">Done</div><div id="qDone" class="v">0</div></div>
+        <div class="fact"><div class="k">Skipped</div><div id="qSkipped" class="v">0</div></div>
+        <div class="fact"><div class="k">In the list</div><div id="qTotal" class="v">0</div></div>
+      </div>
+      <div id="qNow" class="note info" hidden></div>
+      <div class="row">
+        <button id="qDialBtn" class="btn btn-primary" type="button">Dial next</button>
+        <button id="qSkipBtn" class="btn" type="button">Skip record</button>
+        <button id="qStopBtn" class="btn" type="button">Stop</button>
+      </div>
+      <div class="row">
+        <label class="check"><input id="qAuto" type="checkbox" checked> Dial the next one by itself</label>
+        <label class="check"><input id="qPause" type="checkbox"> Pause after this call</label>
+      </div>
+      <details>
+        <summary>Why records were skipped</summary>
+        <ul id="qReasons" class="list small"></ul>
+      </details>
+    </div>
+  </section>
+
+  <section class="card a-inbox" aria-labelledby="inboxTitle">
+    <h2 id="inboxTitle">Waiting on you <span id="inboxAside" class="aside"></span></h2>
+    <ul id="hotList" class="list"></ul>
+    <h2 class="h2-sub">Today</h2>
+    <ul id="recentList" class="list"></ul>
+    <div id="mgrBox" hidden>
+      <h2 class="h2-sub">Live calls</h2>
+      <ul id="activeList" class="list"></ul>
+    </div>
+  </section>
+ </div>
+</main>
+
+<div id="sheetWrap" class="sheet-wrap" hidden>
+  <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="sheetTitle">
+    <h3 id="sheetTitle"></h3>
+    <div id="sheetBody"></div>
+    <div class="row">
+      <button id="sheetNo" class="btn" type="button">Cancel</button>
+      <button id="sheetYes" class="btn btn-primary" type="button">Call anyway</button>
+    </div>
+  </div>
+</div>
+
+<div id="settingsWrap" class="sheet-wrap" hidden>
+  <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="setTitle">
+    <h3 id="setTitle">Voicemail message</h3>
+    <p id="vmState" class="sub"></p>
+    <audio id="vmPreview" controls hidden></audio>
+    <div class="row">
+      <button id="vmRecordBtn" class="btn" type="button">Record it by phone</button>
+      <label class="btn" for="vmFile">Upload an mp3</label>
+      <input id="vmFile" type="file" accept="audio/mpeg" hidden>
+    </div>
+    <p class="small">This is the message "Leave voicemail" plays. It stays off unless the dialer has voicemail drop switched on.</p>
+    <div class="row">
+      <button id="setClose" class="btn btn-primary" type="button">Done</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast" class="toast" hidden role="status"></div>
+
+<script src="/static/vendor/twilio.min.js"></script>
+<script src="/static/phone.js"></script>
+</body>
+</html>

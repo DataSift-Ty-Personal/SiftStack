@@ -1127,6 +1127,9 @@ def _process(source: str, payload: dict) -> dict:
     if source == "smartercontact":
         from . import sc_inbound  # the thread lives in Smarter Contact: never sends
         return sc_inbound.handle(payload)
+    if source == "dialer":
+        from . import dialer_hook  # a call from the SiftStack dialer: this app's half of its outcome
+        return dialer_hook.process(payload)
     handler = HANDLERS.get(payload.get("event") or "")
     if not handler:
         return {"action": "ignored", "reason": f"no handler for event {payload.get('event')!r}"}

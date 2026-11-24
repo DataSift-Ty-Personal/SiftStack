@@ -16,7 +16,7 @@ import json
 import os
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 from . import config
 
@@ -87,6 +87,13 @@ class FakeGoogle:
         if book is None:
             return NOT_FOUND
         if method == "GET":
+            if op.startswith("values/"):
+                rng = unquote(op[len("values/"):])
+                tab = book["tabs"].get(self._title(rng))
+                if tab is None:
+                    return 400, {"error": {"code": 400, "message": "Unable to parse range: %s" % rng,
+                                           "status": "INVALID_ARGUMENT"}}
+                return 200, {"range": rng, "values": copy.deepcopy(tab["rows"])}
             return 200, self._meta(book)
         if op == "batchUpdate":
             return self._batch(book, json)
@@ -98,12 +105,12 @@ class FakeGoogle:
             return 200, {"spreadsheetId": sid}
         if op == "values:batchUpdate":
             for d in json["data"]:
-                title, start = self._title(d["range"]), 1 if d["range"].endswith("!A2") else 0
+                title, (start, col) = self._title(d["range"]), self._start(d["range"])
                 tab, vals = book["tabs"].get(title), d["values"]
                 if tab is None:
                     return 400, {"error": {"code": 400, "message": "Unable to parse range: %s" % d["range"],
                                            "status": "INVALID_ARGUMENT"}}
-                if start + len(vals) > tab["grid"][0] or max([len(r) for r in vals] + [0]) > tab["grid"][1]:
+                if start + len(vals) > tab["grid"][0] or col + max([len(r) for r in vals] + [0]) > tab["grid"][1]:
                     return 400, {"error": {"code": 400, "status": "INVALID_ARGUMENT", "message":
                                            "Range (%s) exceeds grid limits. Max rows: %d, max columns: %d"
                                            % (title, tab["grid"][0], tab["grid"][1])}}
@@ -112,9 +119,9 @@ class FakeGoogle:
                         tab["rows"].append([])
                     cur = tab["rows"][start + i]
                     for j, v in enumerate(row):
-                        while len(cur) <= j:
+                        while len(cur) <= col + j:
                             cur.append("")
-                        cur[j] = v
+                        cur[col + j] = v
             return 200, {"spreadsheetId": sid}
         return 400, {"error": {"code": 400, "message": "unknown call"}}
 
@@ -122,6 +129,17 @@ class FakeGoogle:
     def _title(rng: str) -> str:
         t = rng.split("!")[0]
         return t[1:-1].replace("''", "'") if t.startswith("'") and t.endswith("'") else t
+
+    @staticmethod
+    def _start(rng: str) -> tuple[int, int]:
+        """(row, column) of a range's first cell, from A1 notation: 'Tab'!C5:D5 is (4, 2)."""
+        cell = rng.split("!", 1)[1].split(":")[0] if "!" in rng else "A1"
+        letters = "".join(ch for ch in cell if ch.isalpha()).upper() or "A"
+        digits = "".join(ch for ch in cell if ch.isdigit()) or "1"
+        col = 0
+        for ch in letters:
+            col = col * 26 + (ord(ch) - 64)
+        return int(digits) - 1, col - 1
 
     def _add(self, book, title, index, grid=None) -> dict:
         for t in book["tabs"].values():
@@ -180,12 +198,54 @@ class FakeGoogle:
                 if tab is None:
                     return 400, {"error": {"code": 400, "message": "No grid with id"}}
                 gp = u["properties"].get("gridProperties") or {}
-                if "gridProperties.rowCount" in u["fields"]:
+                fields = u["fields"].split(",")
+                if "gridProperties.rowCount" in fields:
                     tab["grid"][0] = gp["rowCount"]
-                if "gridProperties.columnCount" in u["fields"]:
+                    tab["rows"] = tab["rows"][:gp["rowCount"]]          # a shrunk grid drops what was past it
+                if "gridProperties.columnCount" in fields:
                     tab["grid"][1] = gp["columnCount"]
-                if "gridProperties.frozenRowCount" in u["fields"]:
+                    tab["rows"] = [r[:gp["columnCount"]] for r in tab["rows"]]
+                if "gridProperties.frozenRowCount" in fields:
                     tab["frozen"] = gp["frozenRowCount"]
+                if "gridProperties.frozenColumnCount" in fields:
+                    tab["frozen_cols"] = gp["frozenColumnCount"]
+                if "title" in fields:
+                    new = u["properties"]["title"]
+                    old = next(x for x, v in book["tabs"].items() if v is tab)
+                    if new != old and new in book["tabs"]:
+                        return 400, {"error": {"code": 400, "message": "A sheet with the name \"%s\" already exists." % new}}
+                    book["tabs"][new] = book["tabs"].pop(old)
+                if "index" in fields:
+                    # Google reads a move in "before the move" indexes: a move later names the slot after the tab
+                    order = [x for x, v in sorted(book["tabs"].items(), key=lambda kv: kv[1]["index"])]
+                    me = next(x for x, v in book["tabs"].items() if v is tab)
+                    at, to = order.index(me), int(u["properties"]["index"])
+                    order.pop(at)
+                    order.insert(to if to <= at else to - 1, me)
+                    for i, x in enumerate(order):
+                        book["tabs"][x]["index"] = i
+                book["formats"].append(copy.deepcopy(req))
+            elif "deleteSheet" in req:
+                gid = req["deleteSheet"].get("sheetId")
+                title = next((t for t, tab in book["tabs"].items() if tab["sheetId"] == gid), None)
+                if title is None or len(book["tabs"]) < 2:
+                    return 400, {"error": {"code": 400, "message": "Invalid requests[0].deleteSheet"}}
+                book["tabs"].pop(title)
+            elif "mergeCells" in req:
+                rng = req["mergeCells"]["range"]
+                tab = self._by_gid(book, rng.get("sheetId"))
+                fc = int((tab or {}).get("frozen_cols") or 0)
+                if tab is None:
+                    return 400, {"error": {"code": 400, "message": "No grid with id: %s" % rng.get("sheetId")}}
+                if fc and rng.get("startColumnIndex", 0) < fc < rng.get("endColumnIndex", 0):
+                    return 400, {"error": {"code": 400, "status": "INVALID_ARGUMENT",
+                                           "message": "Invalid requests[0].mergeCells: You can't merge frozen and non-frozen columns."}}
+                book["formats"].append(copy.deepcopy(req))
+            elif "autoResizeDimensions" in req:
+                dims = req["autoResizeDimensions"].get("dimensions") or {}
+                if self._by_gid(book, dims.get("sheetId")) is None:
+                    return 400, {"error": {"code": 400, "message": "No grid with id: %s" % dims.get("sheetId")}}
+                book["formats"].append(copy.deepcopy(req))
             else:
                 rng = (next(iter(req.values())) or {}).get("range") or {}
                 tab = self._by_gid(book, rng.get("sheetId"))
@@ -567,12 +627,30 @@ def _checks(check, k, wall: Wall, tmp: Path) -> None:
           "with a credential, the Google Sheet is made once, titled from the setting, with every tab in order")
     sid = urlparse(rb["sheet"]).path.split("/")[3]
     book = g.books[sid]
-    check(book["tabs"]["Scoreboard"]["rows"][0][0] == "Refreshed Monday, November 16 at 7:45 AM Eastern"
-          and book["tabs"]["Scoreboard"]["rows"][4] == ["Dials", 412, 9020],
-          "each tab in the sheet holds the same layout as the page: the Refreshed line on top, numbers as numbers")
+    sbr = book["tabs"]["Scoreboard"]["rows"]
+    check(sbr[0][0] == "KPI scoreboard" and sbr[1][0] == "Refreshed Mon Nov 16 at 7:45 AM ET" and "," not in sbr[1][0]
+          and sbr[3] == ["Metric", "Nov", "Oct"] and sbr[4] == ["Dials", 412, 9020],
+          "each tab reads as the DataSift tracker's: a title, the Refreshed line, then the table, numbers as numbers")
+    check(["Notes"] in sbr and ["Month so far against last month."] in sbr,
+          "the tab's note sits under the table as its own lines, as the DataSift tracker's does")
+    order = sorted(book["tabs"], key=lambda n: book["tabs"][n]["index"])
+    check(order == ["Scoreboard", "Callers", "Goals", "How it is counted"],
+          "the Goals tab (the owner's own) is made with the sheet, just before How it is counted: %r" % order)
+    inp = book["tabs"]["Goals"]["rows"]
+    labels = [r[0] for r in inp if r]
+    check(labels[0] == "Goals" and labels[1] == "Refreshed Mon Nov 16 at 7:45 AM ET" and "Revenue goal a year ($)" in labels
+          and "Dials a day" in labels and "Calling agency" in labels and "Property (address or DataSift link)" in labels,
+          "the Goals tab holds the goals, a calling day's targets, the monthly costs and a deal table")
+    check(book["tabs"]["Scoreboard"]["grid"][0] == len(sbr) + k.SPARE_ROWS and book["tabs"]["Scoreboard"]["grid"][1] <= 5,
+          "a tracker tab's grid is cut to what it holds: no 1,000 empty rows to scroll: %r" % book["tabs"]["Scoreboard"]["grid"])
+    yellow = [f for f in book["formats"] if "repeatCell" in f
+              and f["repeatCell"]["cell"]["userEnteredFormat"].get("backgroundColor") == k.kpisheet.YELLOW]
+    picks = [f for f in book["formats"] if "setDataValidation" in f]
+    check(yellow and picks and picks[0]["setDataValidation"]["rule"]["condition"]["type"] == "ONE_OF_LIST",
+          "the cells a person types in are yellow, and a deal's type is a pick list")
     how_rows = [r[0] for r in book["tabs"]["How it is counted"]["rows"] if r]
-    check(any(str(x).startswith('Scoreboard: =IMPORTDATA("https://agents.example.test/kpi/') for x in how_rows),
-          "the sheet's How it is counted tab carries the mirror formulas too")
+    check(not any("IMPORTDATA" in str(x) for x in how_rows),
+          "the sheet is the tracker: its How it is counted tab carries no instructions for mirroring the page")
     g.calls.clear()
     rc = k.publish(quiet, snap(when=NOON, dials=450))
     batch = [r for c in g.calls if c["url"].endswith(":batchUpdate") for r in (c["json"] or {}).get("requests", [])]
@@ -580,18 +658,29 @@ def _checks(check, k, wall: Wall, tmp: Path) -> None:
     check(not [c for c in g.calls if c["method"] == "POST" and c["url"] == SHEETS] and any(c["method"] == "GET" for c in g.calls)
           and rc["sheet"] == rb["sheet"],
           "the next run opens the remembered sheet and never makes a second one")
-    check("'Scoreboard'" in clears and not [r for r in batch if "addSheet" in r]
-          and book["tabs"]["Scoreboard"]["rows"][0][0] == "Refreshed Monday, November 16 at 12:30 PM Eastern"
-          and book["tabs"]["Scoreboard"]["rows"][4][1] == 450,
-          "each tab is rewritten in place: cleared and written again under the new Refreshed line, no tab added")
+    check("'Scoreboard'" in clears and "'Goals'" not in clears and not [r for r in batch if "addSheet" in r]
+          and book["tabs"]["Scoreboard"]["rows"][1][0] == "Refreshed Mon Nov 16 at 12:30 PM ET"
+          and book["tabs"]["Scoreboard"]["rows"][4][1] == 450 and book["tabs"]["Goals"]["rows"][1][0] == "Refreshed Mon Nov 16 at 12:30 PM ET",
+          "each tab is rewritten in place under the new Refreshed line, no tab added, and the Goals tab is never cleared")
     check(not [c for c in g.calls if c["url"] == TOKEN], "the token is reused within its hour, not asked for on every run")
-    frozen = [r for r in batch if r.get("updateSheetProperties", {}).get("properties", {}).get("gridProperties", {})
-              .get("frozenRowCount") == 4]
+    unfrozen = [r for r in batch if r.get("updateSheetProperties", {}).get("properties", {}).get("gridProperties", {})
+                .get("frozenRowCount") == 0]
     bold = [r for r in batch if "repeatCell" in r and r["repeatCell"]["range"].get("startRowIndex") == 3
-            and r["repeatCell"]["cell"]["userEnteredFormat"]["textFormat"].get("bold")]
+            and r["repeatCell"]["cell"]["userEnteredFormat"]["textFormat"].get("bold")
+            and r["repeatCell"]["cell"]["userEnteredFormat"].get("borders")]
     dump = json.dumps(batch)
-    check(frozen and bold and "backgroundColor" not in dump and "addBanding" not in dump,
-          "the header row is bold and frozen, and nothing is banded or colored in")
+    fills = {json.dumps(r["repeatCell"]["cell"]["userEnteredFormat"].get("backgroundColor"), sort_keys=True)
+             for r in batch if "repeatCell" in r and r["repeatCell"]["cell"]["userEnteredFormat"].get("backgroundColor")}
+    hidden = [r for r in batch if r.get("updateSheetProperties", {}).get("properties", {}).get("gridProperties", {})
+              .get("hideGridlines") is True]
+    check(unfrozen and bold and hidden and "addBanding" not in dump
+          and fills <= {json.dumps(c, sort_keys=True) for c in (k.kpisheet.HEAD_BG, k.kpisheet.ZEBRA, k.kpisheet.YELLOW)},
+          "the design pass: gridlines off, the header a quiet band over a rule, no rows frozen, no other fill")
+    resets = [r for r in batch if "unmergeCells" in r] and [r for r in batch if "autoResizeDimensions" in r]
+    check(bool(resets), "every rewrite undoes the last run's merges and refits the rows, so no old layout is left behind")
+    num = [r["repeatCell"]["cell"]["userEnteredFormat"].get("numberFormat", {}).get("pattern") for r in batch
+           if "repeatCell" in r and r["repeatCell"]["range"].get("startRowIndex") == 4]
+    check("#,##0" in num, "a count is written as a number with commas: %r" % num)
     g.books[sid]["tabs"].pop("Callers")
     g.calls.clear()
     rd = k.publish(quiet, snap(when=NOON))
@@ -632,6 +721,130 @@ def _checks(check, k, wall: Wall, tmp: Path) -> None:
     check(grown and not [p for p in rw["problems"] if "Google" in p] and len(g.books[sid]["tabs"]["Scoreboard"]["rows"][3]) == 30,
           "a tab wider than Google's starting grid is given room before it is written")
 
+    # ------------------------------------------------------------------ 9b. the Inputs tab, read back (2026-11-23)
+    print("  the Google Sheet's Goals tab, read back")
+    from .autopilot import kpi
+    kpi.override(None)
+    inp_tab = g.books[sid]["tabs"]["Goals"]["rows"]
+
+    def at(label):
+        return next(i for i, r in enumerate(inp_tab) if r and r[0] == label)
+    r_dials, r_goal, r_conv = at("Dials a day"), at("Revenue goal a year ($)"), at("Conversations a day")
+    r_deal = at("Property (address or DataSift link)")
+    inp_tab[r_dials][1], inp_tab[r_goal][1], inp_tab[r_conv][1] = "180", "$600,000", "abc"
+    inp_tab[r_deal + 1] = ["100 Sample St", "11/02/2026", "Assignment", "$90,000", "12,000", "11/12/2026", "12000", ""]
+    res = k.read_inputs()
+    cat_t = kpi.load()
+    check(res["status"] == "read" and res["typed"] == 3 and cat_t.fig("caller.dials_per_day").value == 180
+          and cat_t.fig("goal.revenue_per_year").value == 600000 and cat_t.fig("caller.dials_per_day").status == "confirmed",
+          "the Goals tab is read back: a typed number becomes the figure every report judges by, confirmed: %r" % res)
+    check(any("Conversations a day" in n and "'abc'" in n for n in res["notes"]) and res["problems"] == []
+          and cat_t.fig("caller.conversations_per_day").low == kpi.load(kpi.path()).fig("caller.conversations_per_day").low,
+          "a typed cell that is not a number keeps the default, and that is a note, never a problem")
+    deals = cat_t.typed.get("deals") or []
+    check(len(deals) == 1 and deals[0].get("fee") == 12000.0 and deals[0].get("closed") == "2026-11-12"
+          and deals[0].get("price") == 90000.0,
+          "a deal row is read with its days and its dollars: %r" % deals)
+    check(kpi.load(kpi.path()).fig("caller.dials_per_day").value != 180,
+          "team/kpi.yaml on its own is untouched: the Goals tab is laid over it, never written into it")
+    g.calls.clear()
+    sg = snap(when=EVENING)
+    sg["goal_cells"] = {"caller.dials_per_day": [150, 206.6, "", "on track"]}
+    k.publish(quiet, sg)
+    said = {d["range"]: d["values"][0] for c in g.calls if c["url"].endswith("/values:batchUpdate")
+            for d in c["json"]["data"] if d["range"].startswith("'Goals'!")}
+    dials_cell = said.get("'Goals'!C%d:H%d" % (r_dials + 1, r_dials + 1), [""] * 6)
+    conv_cell = said.get("'Goals'!C%d:H%d" % (r_conv + 1, r_conv + 1), [""] * 6)
+    check(dials_cell[:4] == [150, 206.6, "", "on track"] and dials_cell[5].startswith("Yours: 180")
+          and dials_cell[4].startswith("150") and conv_cell[5].startswith("Could not read 'abc'") and inp_tab[r_dials][1] == "180"
+          and not [x for c in g.calls if c["url"].endswith("/values:batchClear") for x in c["json"]["ranges"] if "Goals" in x],
+          "each run writes back only the gray columns (the month's pace beside each goal, the default, what was used); "
+          "what the owner typed stays as typed: %r" % (dials_cell,))
+    gid_goals = g.books[sid]["tabs"]["Goals"]["sheetId"]
+    marks = [r for c in g.calls if c["url"].endswith(":batchUpdate") for r in (c["json"] or {}).get("requests", [])
+             if r.get("repeatCell", {}).get("range", {}).get("sheetId") == gid_goals
+             and r["repeatCell"]["range"].get("startColumnIndex") == 5 and r["repeatCell"]["range"].get("startRowIndex") == r_dials]
+    check(marks and marks[0]["repeatCell"]["cell"]["userEnteredFormat"]["textFormat"]["foregroundColor"] == k.kpisheet.GREEN,
+          "a goal's mark is colored at every refresh, never a yellow cell")
+    # an install from before the combined tab (layout 2): the owner's Inputs tab, the tracker's own Goals tab beside it
+    meta_path = config.DATA_DIR / "kpi" / "sheet.json"
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    meta["inputs_version"] = 2
+    meta_path.write_text(json.dumps(meta), encoding="utf-8")
+    tabs_b = g.books[sid]["tabs"]
+    tabs_b["Inputs"] = tabs_b.pop("Goals")
+    inputs_gid = tabs_b["Inputs"]["sheetId"]
+    tabs_b["Inputs"]["rows"] = [["Inputs: the numbers only you know"], ["Type in the yellow cells."], [],
+                                ["Goals", "Your number", "Default", "In use now", "What it changes"],
+                                ["Revenue goal a year ($)", "$600,000", "$360,000 a year", "Yours: $600,000", "Deals"],
+                                ["Dials a day", "180", "150 dials a day", "Yours: 180", "Marks"], [],
+                                ["Deals: one row a contract (the fees give revenue and net margin)"],
+                                list(k.kpisheet.DEAL_HEAD), ["100 Sample St", "11/02/2026", "Assignment", "$90,000"]]
+    g._add(g.books[sid], "Goals", 2)
+    old_goals_gid = tabs_b["Goals"]["sheetId"]
+    tabs_b["Goals"]["rows"] = [["Goals"], ["the tracker's old numbers"]]
+    g.calls.clear()
+    rm = k.publish(quiet, snap(when=EVENING))
+    new = tabs_b.get("Goals") or {}
+    rows_new = new.get("rows") or []
+    rev = next((r for r in rows_new if r and r[0] == "Revenue goal a year ($)"), [])
+    deal_head = next((i for i, r in enumerate(rows_new) if r and r[0] == k.kpisheet.DEAL_HEAD[0]), None)
+    check("Inputs" not in tabs_b and new.get("sheetId") == inputs_gid and old_goals_gid not in {x["sheetId"] for x in tabs_b.values()}
+          and rev[:2] == ["Revenue goal a year ($)", "$600,000"] and deal_head is not None
+          and rows_new[deal_head + 1][:4] == ["100 Sample St", "11/02/2026", "Assignment", "$90,000"]
+          and json.loads(meta_path.read_text(encoding="utf-8"))["inputs_version"] == k.kpisheet.INPUTS_VERSION
+          and any("Inputs tab became the Goals tab" in n for n in rm["notes"]),
+          "Kendrick: an older install's Inputs tab becomes the Goals tab once, laid out with the pace beside each goal; "
+          "what was typed there is kept as typed, and the tracker's old Goals tab goes: %r" % (rev,))
+    g.calls.clear()
+    k.publish(quiet, snap(when=EVENING))
+    again = [r for c in g.calls if c["url"].endswith(":batchUpdate") for r in (c["json"] or {}).get("requests", [])
+             if "deleteSheet" in r or "title" in str(r.get("updateSheetProperties", {}).get("fields", ""))]
+    check(not again and not [x for c in g.calls if c["url"].endswith("/values:batchClear") for x in c["json"]["ranges"]
+                             if "Goals" in x],
+          "and only once: the next run writes the gray columns only")
+    # a later layout version of the combined tab: its column widths only, once
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    meta["inputs_version"] = k.kpisheet.COMBINED_VERSION
+    meta_path.write_text(json.dumps(meta), encoding="utf-8")
+    goals_gid = tabs_b["Goals"]["sheetId"]
+    before_goals = copy.deepcopy(tabs_b["Goals"]["rows"])
+    g.calls.clear()
+    k.publish(quiet, snap(when=EVENING))
+    widths = [r for c in g.calls if c["url"].endswith(":batchUpdate") for r in (c["json"] or {}).get("requests", [])
+              if r.get("updateDimensionProperties", {}).get("range", {}).get("sheetId") == goals_gid]
+    check(len(widths) == len(k.kpisheet.INPUTS_WIDTHS)
+          and [r[:2] for r in tabs_b["Goals"]["rows"]] == [r[:2] for r in before_goals]
+          and json.loads(meta_path.read_text(encoding="utf-8"))["inputs_version"] == k.kpisheet.INPUTS_VERSION,
+          "a later layout version of the Goals tab sets its column widths once; nothing typed there moves")
+    # a tab dragged out of place goes back to the tracker's order
+    sb_tab = tabs_b["Scoreboard"]
+    g.calls.clear()
+    g._batch(g.books[sid], {"requests": [{"updateSheetProperties": {"properties": {"sheetId": sb_tab["sheetId"], "index": 3},
+                                                                    "fields": "index"}}]})
+    k.publish(quiet, snap(when=EVENING))
+    order2 = sorted(tabs_b, key=lambda n: tabs_b[n]["index"])
+    check(order2[:3] == ["Scoreboard", "Goals", "How it is counted"],
+          "a tab dragged out of place by hand is put back in the tracker's order: %r" % order2)
+    g.books[sid]["tabs"].pop("Goals")
+    res2 = k.read_inputs()
+    check(res2["status"] == "deleted" and kpi.load().fig("caller.dials_per_day").value == 150
+          and any("Goals tab was deleted" in n for n in res2["notes"]),
+          "a Goals tab a person deletes takes its numbers with it: team/kpi.yaml's are used, and that is said")
+    g.calls.clear()
+    k.publish(quiet, snap(when=EVENING))
+    check("Goals" not in g.books[sid]["tabs"]
+          and not [r for c in g.calls if c["url"].endswith(":batchUpdate") for r in (c["json"] or {}).get("requests", [])
+                   if "addSheet" in r],
+          "and the Goals tab is never added back")
+    s9 = FakeSlack()
+    k.SLACK = s9
+    k.publish(_Ctx(), snap(when="2026-11-13T17:30:00+00:00"))
+    posts = s9.sent()
+    check(posts and ("docs.google.com/spreadsheets/d/%s" % sid) in posts[0]["text"],
+          "the Slack message opens the Google Sheet when this run wrote it")
+    k.SLACK = s
+
     g.fail.append(("GET", lambda u: u.startswith(SHEETS + "/"),
                    (503, {"error": {"code": 503, "message": "The service is currently unavailable.", "status": "UNAVAILABLE"}})))
     ro = k.publish(quiet, snap(when=EVENING, dials=480))
@@ -654,6 +867,18 @@ def _checks(check, k, wall: Wall, tmp: Path) -> None:
           and {"Scoreboard", "Callers", "How it is counted"} <= set(tabs) and tabs["Sheet1"]["rows"] == [["kept by hand"]]
           and rf["sheet"] == "https://docs.google.com/spreadsheets/d/made-by-hand/edit",
           "with AGENTS_KPI_SHEET_ID set, that sheet is used, the tabs go in beside what is there, and nothing is made")
+    g2.make_book("blank-book", ["Sheet1"])
+    g2.books["blank-book"]["tabs"]["Sheet1"]["rows"] = []
+    os.environ["AGENTS_KPI_SHEET_ID"] = "blank-book"
+    rbb = k.publish(quiet, snap(when=EVENING))
+    btabs = g2.books["blank-book"]["tabs"]
+    check("Sheet1" not in btabs and "Scoreboard" in btabs and any("empty Sheet1" in n for n in rbb["notes"])
+          and "Sheet1" in tabs,
+          "Google's empty Sheet1 in a sheet made for the tracker is removed once; a Sheet1 holding anything stays")
+    in_use_d = [r[7] for r in btabs["Goals"]["rows"] if r and r[0] == "Dials a day"]
+    check(in_use_d and str(in_use_d[0]) == "Default",
+          "a new Goals tab says what is in use from its first refresh: %r" % in_use_d)
+    os.environ["AGENTS_KPI_SHEET_ID"] = "made-by-hand"
     g2.books.pop("made-by-hand")
     rn = k.publish(quiet, snap(when=EVENING))
     check(any(p.startswith("the Google Sheet in AGENTS_KPI_SHEET_ID could not be opened (Google answered 404)")

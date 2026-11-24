@@ -414,6 +414,8 @@ A new env var a Fly app needs must be added to that app's `deploy/sync_*_secrets
 
 **The KPI catalog** (`team/kpi.yaml`) holds every figure the reports judge against; the reports carry no numbers of their own.
 
+**The KPI sheet** (`kpi_tracker` stage, `autopilot/kpisheet.py` layout, `autopilot/kpisinks.py` writer): a Google Sheet the brain rewrites three times a weekday in the DataSift KPI tracker's layout (title, one Refreshed line, metrics down the side, the newest month first, notes at the bottom). Its Goals tab is where the owner types the goal, a calling day's targets, the monthly costs and each deal's fee, each goal shown beside what it needs a month, the month so far and the pace; every run reads it first and `kpi.load()` lays it over `team/kpi.yaml`, so every report uses those numbers. A Texts tab carries the text funnel and every new lead is credited to a source. Connect it once with `python deploy/kpi_sheet_connect.py --sheet <link> --client-env <a .env holding a Google OAuth desktop client>`; without it the brain's own page and CSVs (`GET /kpi/...`) carry the same tabs.
+
 ## Deploying
 
 Prerequisites: `flyctl` installed and signed in with `fly auth login` (it needs an interactive terminal; from an agent session, launch it in its own window). An app-scoped `FLY_API_TOKEN` in the environment makes flyctl fail on every other app and cannot create apps: blank it for those calls.

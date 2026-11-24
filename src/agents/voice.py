@@ -44,6 +44,8 @@ def price() -> tuple[float, float]:
 NAMES = {
     "autopilot_digest": "Morning update", "ftm_pipeline": "County board", "top1000_refresh": "Top 1,000",
     "agency_export": "Agency file", "ftm_death_screen": "County death check", "top1000_death_screen": "Top 1,000 death check",
+    "ftm_skip_screen": "County SmartSkip check", "curative_pipeline": "Curative title board",
+    "estate_owner_swap": "Estate owner swap",
     "ftm_auction": "Auction calendar", "hot_auction_tasks": "Auction tasks", "conventions_check": "Account tidiness",
     # Never "Yesterday's calls" for the audit: the live test read a crash of that check as "nobody was
     # called yesterday" (2026-11-15). A name says what the check is, not what it looked at.

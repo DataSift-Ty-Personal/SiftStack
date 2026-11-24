@@ -145,9 +145,12 @@ def _files(d: Path) -> None:
     (d / "mail_list.csv").write_text("Rank,Tier,DataSift id\n1,A,880001\n", encoding="utf-8")
     (d / "pull_list.csv").write_text("Rank,Tier,Why,DataSift id\n1,A,on the mail list,880001\n2,C,owner not "
                                      "visible yet,880002\n", encoding="utf-8")
+    # As the engine really leaves them: score writes scored.json before export prices the lots, so the
+    # offers live only in export.json's top lots (the first box run read them from scored.json and
+    # printed "offer no figure to no figure").
     (d / "scored.json").write_text(json.dumps([
         {"mailable": True, "tier": "A", "address": "10 Sample Rd", "city": "Testfield", "acres": 0.6,
-         "segment": "Out-of-state owner", "offer_low": 30000, "offer_high": 39000},
+         "segment": "Out-of-state owner"},
         {"mailable": False, "tier": "C", "address": "12 Sample Rd", "city": "Testfield", "acres": 1.1}]),
         encoding="utf-8")
     (d / "export.json").write_text(json.dumps({
@@ -155,7 +158,11 @@ def _files(d: Path) -> None:
         "verdicts": {"BUILDABLE": 5, "LIKELY BUILDABLE": 5, "VERIFY": 2, "BUILT SINCE REAPPRAISAL": 20,
                      "NOT BUILDABLE": 6, "PUBLIC OR COMMON": 2},
         "tiers": {"A": 1}, "owners": {"siftmap cache": 1, "": 11}, "owner_unknown": 1, "to_pull": 2,
-        "comps": 9, "comp_median": 60000, "offer_band": [0.5, 0.65], "list": "Testfield OH - Buildable Lots"}),
+        "comps": 9, "comp_median": 60000, "offer_band": [0.5, 0.65], "list": "Testfield OH - Buildable Lots",
+        "top": [{"tier": "A", "address": "10 Sample Rd", "city": "Testfield", "acres": 0.6,
+                 "segment": "Out-of-state owner", "offer_low": 30000, "offer_high": 39000},
+                {"tier": "B", "address": "14 Sample Rd", "city": "Testfield", "acres": 0.9,
+                 "segment": "Local owner", "offer_low": None, "offer_high": None}]}),
         encoding="utf-8")
 
 
@@ -207,6 +214,8 @@ def _background(check, bl, store) -> None:
     check("40 vacant lots in the window, 12 can carry a house, 1 mailable now (A 1, B 0, C 0)" in text, text)
     check("Screened out: 20 already built on, 6 cannot carry a house, 2 public or common land." in text, text)
     check("Top lot: 10 Sample Rd, Testfield, 0.6 ac, tier A" in text and "$30,000 to $39,000" in text, text)
+    check("Top lot: 14 Sample Rd, Testfield, 0.9 ac, tier B, local owner, not priced (no lot comp)." in text
+          and "no figure" not in text, "a lot with no comp says so instead of printing empty prices: %s" % text)
     check("pull testfield_oh_pull_list.csv onto the list \"Testfield OH - Buildable Lots\"" in text
           and "nothing is pulled without your approved count" in text, text)
     check(_no_dash(text) and "SiftMap detail" not in text, "the post is plain")

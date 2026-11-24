@@ -588,15 +588,19 @@ def parse_fact(memo: str) -> dict:
         return {}
 
 
-def investigate(model: str, system: str, ask: str, web: Web, searches: int, pages: int) -> dict:
-    """One model's tool loop. Returns the memo, the fact sheet and what it cost; never raises."""
+def investigate(model: str, system: str, ask: str, web: Web, searches: int, pages: int, *,
+                tools: list | None = None, nudge: str | None = None) -> dict:
+    """One model's tool loop. Returns the memo, the fact sheet and what it cost; never raises.
+    `tools` and `nudge` default to the owner research's own; another research (a buyer's contacts, say)
+    passes its own so the model is never asked for an owner's fact sheet."""
+    tools, nudge = tools or TOOLS, nudge or NUDGE
     meter, memo, err, nudged, t0 = Meter(), "", "", False, time.time()
     used = {"search": 0, "page": 0}
     messages = [{"role": "system", "content": system}, {"role": "user", "content": ask}]
     try:
         for _ in range(MAX_STEPS):
             spent_out = used["search"] >= searches and used["page"] >= pages
-            j = chat(model, messages, tools=None if spent_out else TOOLS)
+            j = chat(model, messages, tools=None if spent_out else tools)
             meter.add(j)
             m = j["choices"][0]["message"]
             keep = {k: m[k] for k in ("role", "content", "tool_calls", "reasoning_details") if m.get(k) is not None}
@@ -609,7 +613,7 @@ def investigate(model: str, system: str, ask: str, web: Web, searches: int, page
                 if "FACT_SHEET_JSON" in memo or nudged:
                     break
                 nudged = True
-                messages.append({"role": "user", "content": NUDGE})
+                messages.append({"role": "user", "content": nudge})
                 continue
             for tc in calls:
                 fn = tc.get("function") or {}

@@ -45,6 +45,28 @@ rules says how).
 - `quick_screen` and `underwrite` stay for a quick screen the operator asks for by that name, and for
   the stages that start one. They are not the answer to a comps or rehab ask.
 
+## Buyers for a house
+
+- "Who buys this", "the buyers on", "top buyers for": `buyer_search`. It is the data team's buyer
+  model run on this account's own SiftMap reads: investor purchases of houses like this one within 5
+  miles over 24 months, each buyer's portfolio and track record, scored 0 to 100, with the ones we
+  never sell to marked (builders, iBuyers, funds, lenders, government). It needs the house: a record,
+  or a street line with city, state and ZIP. Reading only; it costs nothing but deed reads from the
+  day's shared budget.
+- `deal_buyers` is the deeper one for a contracted house: deed-verified local buyers within 3 miles,
+  the decision maker, and how many numbers are on file. Offer it after `buyer_search` when the
+  operator wants to start calling.
+- SiftMap lists at most 11 houses per owner, so "holds 11 or more" is a ceiling, not a count. When the
+  list is short, say so, widen the radius (up to 10 miles) or run `deal_buyers`.
+- Past the top 10: "the next 20" or "buyers 11 to 30" is `start` 11 with `limit` 20 (at most 50 a time);
+  every buyer is in the workbook. When the answer says houses were left unread, asking again for the same
+  house reads only those (a bigger `reads` reads more of them) and the list grows.
+- What each buyer would pay is a guess on every line: each of their deals priced for this house (a flip's
+  buy over its resale times this house's ARV; any other purchase's price over its value times this house's
+  estimated value), blended with the area's typical so one odd deal cannot swing it. Each line names the
+  deal it rests on. When an ARV is known (a comps run, the operator's number), pass it as `arv`; it moves
+  only the flips' deals. The guesses do not see the house's condition, so on a gut rehab say they read high.
+
 ## The method
 
 - Offer to seller = rule percent of ARV, minus repairs, minus our fee. Defaults: 70 percent and a

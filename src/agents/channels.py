@@ -47,6 +47,7 @@ KIND_DEPARTMENT = {
     "paidlookup": "ops", "taxwatch": "ops", "taxsale": "ops", "probate": "ops", "attempts": "ops",
     "watchdog": "ops", "accountchecks": "ops", "conventions": "ops", "laddercheck": "ops",
     "bizaudit": "ops", "digest": "ops",
+    "skipscreen": "ops", "ownerswap": "ops", "curative": "sales",
 }
 # A workflow a stage queued (a deep prospect, comps for an appointment) reports where the stage that
 # queued it does; one asked for with no stage behind it, by what it is.

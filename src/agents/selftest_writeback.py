@@ -224,6 +224,8 @@ class FakeDataSift:
                                  "options": [{"label": o, "uuid": "opt-" + o} for o in self.selects.get(label, [])]}
                                 for label, fid in self.fields.items()]}
         if bits == ["property"] and read:
+            if self.fail.get("search"):
+                raise RuntimeError("HTTP 502 from the records search")
             owners = set(body["query"]["must"]["owners"])
             hit = [{"uuid": u} for u, r in self.records.items() if r["owner"]["uuid"] in owners]
             return {"count": len(hit), "results": hit[body["offset"]:body["offset"] + body["limit"]]}
@@ -232,6 +234,8 @@ class FakeDataSift:
             if len(bits) == 2 and method == "PATCH":
                 ow.update(body)
             elif len(bits) == 2:
+                # Like DataSift: the owner route carries no house count (read live 2026-11-23; properties_count
+                # is a list and tag field). The records search by owner is how the write-back counts houses.
                 return copy.deepcopy(ow)
             elif bits[2] == "upsert-phones":
                 for p in body["phones"]:
@@ -1055,6 +1059,23 @@ def _chain(check, tmp: Path) -> None:
           and sorted(p["number"] for p in new["phones"]) == sorted([N_MARLA, N_INES]) and new["skiptrace_attempts"] == 1
           and entry["rb"]["phones_ok"] and entry["rb"]["skiptrace_ok"] and entry["skiptrace"]["carried"],
           "if the owner change attaches a new owner record instead of renaming the old one, the numbers and the counter follow the house")
+
+    two = FakeDataSift([record(), record(uuid="prop-twin", id=4102)], fields=FakeDataSift.FIELDS + (wb.LEVEL_FIELD,))
+    with env(**everything), patched(wb, _post_file=two.post_file):
+        entry = write_back(_write_run(tmp, "wb_shared_owner"), two)
+    check(two.owner(OW)["first_name"] == "Dorn" and "holds 2 houses" in ((entry["held"].get("owner_swap") or [""])[0]),
+          "an owner who holds two houses in the account is never changed here: a rename would change both")
+    check(any(p == "/api/internal/property/" and r and (b or {}).get("query", {}).get("must", {}).get("owners") == [OW]
+              for m, p, b, r in two.calls),
+          "the houses are counted with the records search by owner, since the owner route carries no count")
+
+    blind = FakeDataSift([record()], fields=FakeDataSift.FIELDS + (wb.LEVEL_FIELD,))
+    blind.fail["search"] = True
+    with env(**everything), patched(wb, _post_file=blind.post_file):
+        entry = write_back(_write_run(tmp, "wb_count_unread"), blind)
+    check(blind.owner(OW)["first_name"] == "Dorn"
+          and entry["held"].get("owner_swap") == ["could not read how many houses the owner holds"],
+          "when the house count cannot be read the owner is never changed")
 
     api = FakeDataSift([record()])
     with env(AGENTS_DP_LEVEL=1):

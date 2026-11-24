@@ -1,7 +1,7 @@
 """Clone the prod-account DataSift account structure into any DataSift account.
 
     python src/clone_account.py --phase export                                        # prod-account -> output/blueprints/account_<date>.json
-    python src/clone_account.py --phase validate --blueprint output/blueprints/account_2026-09-10.json
+    python src/clone_account.py --phase validate --blueprint output/blueprints/account_2026-11-23.json
     python src/clone_account.py --phase plan  --blueprint <bp> --target you@x.com --jwt <paste>          # dry diff + TODO list
     python src/clone_account.py --phase apply --blueprint <bp> --target you@x.com --email you@x.com --password ... --commit
     python src/clone_account.py --phase apply --blueprint <bp> --target client@x.com --impersonate --commit   # staff, non-staff client

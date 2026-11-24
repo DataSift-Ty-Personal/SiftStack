@@ -1,0 +1,20 @@
+{
+  "manifest_version": 3,
+  "name": "SiftStack Dialer for DataSift",
+  "short_name": "SiftStack Dialer",
+  "version": "1.0.0",
+  "description": "Call any phone number in DataSift through your SiftStack dialer, and see the call in a small bar on the record.",
+  "icons": { "16": "icons/icon16.png", "32": "icons/icon32.png", "48": "icons/icon48.png", "128": "icons/icon128.png" },
+  "action": { "default_title": "SiftStack Dialer", "default_icon": { "16": "icons/icon16.png", "32": "icons/icon32.png" } },
+  "background": { "service_worker": "background.js" },
+  "permissions": ["storage", "scripting"],
+  "host_permissions": ["https://app.reisift.io/*", "https://siftstack-dialer.fly.dev/*", "http://127.0.0.1/*", "http://localhost/*"],
+  "optional_host_permissions": ["https://*/*"],
+  "content_scripts": [
+    { "matches": ["https://app.reisift.io/*"], "js": ["sift.js"], "run_at": "document_idle" },
+    { "matches": ["https://siftstack-dialer.fly.dev/phone*", "http://127.0.0.1/phone*", "http://localhost/phone*"],
+      "js": ["bridge.js"], "run_at": "document_start" }
+  ],
+  "options_page": "options.html",
+  "minimum_chrome_version": "116"
+}

@@ -347,6 +347,23 @@ workflows:
     manual: python src/deal_buyer_match.py then src/deal_buyer_dp.py.
     sources: [agents.workflows.deal_buyers, deal_buyer_match, deal_buyer_dp]
     covers: [dealmatch]
+  buyer_search:
+    owner: sales
+    summary: The buyers most likely to buy one house, the data team's buyer model rebuilt on this account's own SiftMap reads (investor purchases of houses like this one nearby, each buyer's portfolio and track record, scored 0 to 100, each with a guess at what they would pay), with builders, iBuyers, funds, lenders and government marked; read only, inside the deal workflows' daily deed-read budget.
+    status: live
+    spend: free
+    triggers: [slack]
+    inputs:
+      address: "The record uuid or the house's street line; a house that is not a record needs its city, state and ZIP (123 Example St, Knoxville, TN 37920)"
+      radius: "Miles around the house; empty for 5 (at most 10)"
+      months: "Months of sales; empty for 24"
+      limit: "How many buyers to list in Slack; empty for 10, at most 50 (every buyer is in the workbook)"
+      start: "The first buyer to list, to go past the top ones (11 lists from the 11th); empty for 1"
+      reads: "Deed reads for this ask; empty for 150, at most 300 and what is left of today's budget. Asking again for the same house reads only what the last ask left unread"
+      arv: "What the house is worth fixed up; the flippers' deals in each price guess are priced against it (empty for its estimated value)"
+    manual: python src/buyer_search_cli.py --address "123 Example St, Knoxville, TN 37920" --show 0 (REISIFT_API_KEY in .env; --show 0 prints every buyer).
+    sources: [agents.workflows.buyer_search, buyer_search_cli, buyer_search]
+    covers: [dealmatch]
   dispo_blast:
     owner: sales
     summary: A deal blast staged to the matched buyers; a human releases it.

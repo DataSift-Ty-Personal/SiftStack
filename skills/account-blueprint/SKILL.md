@@ -46,15 +46,15 @@ report, never a silent omission.
 cd scripts
 
 # 1. See what would happen. Nothing is written.
-python clone_account.py --phase plan --blueprint ../blueprints/account_2026-09-10.json \
+python clone_account.py --phase plan --blueprint ../blueprints/account_2026-11-23.json \
     --target you@example.com --email you@example.com --password '...'
 
 # 2. Create it. Still nothing is written without --commit.
-python clone_account.py --phase apply --blueprint ../blueprints/account_2026-09-10.json \
+python clone_account.py --phase apply --blueprint ../blueprints/account_2026-11-23.json \
     --target you@example.com --email you@example.com --password '...' --commit
 
 # 3. Check parity later, read-only.
-python clone_account.py --phase verify --blueprint ../blueprints/account_2026-09-10.json \
+python clone_account.py --phase verify --blueprint ../blueprints/account_2026-11-23.json \
     --target you@example.com --jwt '<paste>'
 ```
 
@@ -116,9 +116,12 @@ someone else.
 ## How the reference blueprint was made
 
 `references/blueprint-format.md` describes the file. The reference blueprint
-was exported live from the DataSift challenge account on 2026-09-10: 20 preset
-folders and 98 presets, 27 sequences, 13 task presets, 37 custom fields, 37
-SiftMap presets, 56 lists, 21 tags and 4 custom statuses. Sequences that send
+was exported live from the DataSift challenge account on 2026-11-23: 22 preset
+folders and 103 presets, 28 sequences, 13 task presets, 54 custom fields, 40
+SiftMap presets, 69 lists, 32 tags, 9 SiftLine boards and 30 statuses. It is the
+three marketing flows (foreclosures, estates, the Top 1,000) plus the Curative Title
+board and the agency queue; `docs/account-structure.md` in the SiftStack repo walks
+through every folder and preset step by step. Sequences that send
 SMS or email in the source account are included without those actions and are
 created inactive, with the message text kept in the file so you can re-add
 them with your own integration.

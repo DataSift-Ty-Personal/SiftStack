@@ -138,6 +138,9 @@ walk_*.json
 *.png
 # ...except the team's portraits and the app icon, which ship with the brain (served at /assets/).
 !team/assets/*.png
+# ...and the DataSift mark the dialer page and its Chrome extension carry.
+!src/dialer/static/datasift-64.png
+!extensions/sift-dialer/icons/*.png
 
 # Our sending numbers and the internal uuid -> caller name map. Publishing the
 # number pool invites exactly the abuse the pool exists to avoid, and these
@@ -195,3 +198,6 @@ NUL
 
 # The public release tool reads its private half from here (names, exclusions). Never committed.
 private/
+
+# The dialer fetches the pinned Twilio Voice SDK at build time (python -m dialer.cli vendor)
+src/dialer/static/vendor/

@@ -281,6 +281,7 @@ def run(r, stub) -> None:
         _hand_raise(r, kit)
         _speed_to_lead(r, kit)
         _number_health(r, kit)
+        _dialer(r, kit)
     finally:
         for key, value in saved_cfg.items():
             setattr(config, key, value)
@@ -1767,3 +1768,92 @@ def _number_health(r, kit) -> None:
     r.check("and the day's line check is part of the number readout", "Today's line check" in N.report(days=1))
     config.CANARY_TO = ""
     kit.clear_queue()
+
+
+def _dialer(r, kit) -> None:
+    """The SiftStack dialer's two routes, its call outcomes and the hand raise pushed to it (dialer_hook.py)."""
+    from fastapi.testclient import TestClient
+
+    from . import dialer_hook
+    m = kit.m
+    config, store, sc_client, receiver = m.config, m.store, m.sc_client, m.receiver
+    saved = (config.DIALER_TOKEN, config.DIALER_URL, config.DIALER_HANDRAISE_TOKEN, sc_client.configured,
+             sc_client.contact_id_for, dialer_hook.threading.Thread)
+    import requests
+    real_post = requests.post
+    try:
+        tc = TestClient(receiver.app)
+        config.DIALER_TOKEN = ""
+        r.check("with no dialer token the dialer routes do not exist",
+                tc.get("/hooks/dialer/thread?phone=8650007201").status_code == 404
+                and tc.post("/hooks/dialer/call", json={"call_id": "x", "phone": "8650007201"}).status_code == 404)
+        config.DIALER_TOKEN = "dt"
+        H = {"Authorization": "Bearer dt"}
+        r.check("a wrong dialer token is refused",
+                tc.get("/hooks/dialer/thread?phone=8650007201", headers={"Authorization": "Bearer no"}).status_code == 404)
+        a = "8650007201"
+        store.ensure_conversation(a, from_number=SELLER, record_uuid="rec-dialer-1")
+        store.add_message(a, "out", "Hi, is this still your house on Example St?", from_number=SELLER, sms_id="dl-1", author="seed")
+        store.add_message(a, "in", "Maybe. Who is this?", from_number=SELLER, sms_id="dl-2")
+        got = tc.get("/hooks/dialer/thread?phone=" + a, headers=H).json()
+        r.check("the dialer reads the thread with its state", got["conversation"]["state"] == "active"
+                and [x["direction"] for x in got["messages"]][-2:] == ["out", "in"], str(got)[:200])
+        store.queue_message(a, "Just following up on the house.", from_number=SELLER)
+        res = dialer_hook.process({"call_id": "dl-c1", "phone": a, "record_uuid": "rec-dialer-1", "answered": True,
+                                   "seconds": 75, "caller": "Casey", "sms_kind": "plain_no", "disposition": "not_interested"})
+        r.check("a 75 second call is a person taking the thread, and the no closes it",
+                res["talked"] and (store.get_conversation(a) or {}).get("state") == "closed", str(res))
+        r.check("and the queued follow-up text is cancelled",
+                not [x for x in kit.rows(a) if x["status"] == "queued"])
+        b = "8650007202"
+        store.ensure_conversation(b, from_number=SELLER, record_uuid="rec-dialer-2")
+        sc_client.configured = lambda: True
+        sc_client.contact_id_for = lambda phone: "c-" + phone
+        before = store._conn().execute("SELECT COUNT(*) FROM sc_outbox WHERE phone=? AND kind='reply'", (b,)).fetchone()[0]
+        dialer_hook.process({"call_id": "dl-c2", "phone": b, "answered": True, "seconds": 20, "caller": "Casey",
+                             "sms_kind": "stop_all", "disposition": "do_not_contact"})
+        r.check("a stop on the phone suppresses the number here", store.is_suppressed(b) == "opt_out")
+        kinds = [x[0] for x in store._conn().execute("SELECT kind FROM sc_outbox WHERE phone=? AND status='queued'", (b,))]
+        r.check("and queues Smarter Contact's own do-not-contact", "dnc" in kinds, str(kinds))
+        after = store._conn().execute("SELECT COUNT(*) FROM sc_outbox WHERE phone=? AND kind='reply'", (b,)).fetchone()[0]
+        r.check("and never texts back", after == before)
+        c = "8650007203"
+        store.ensure_conversation(c, from_number=SELLER, record_uuid="rec-dialer-3")
+        dialer_hook.process({"call_id": "dl-c3", "phone": c, "answered": True, "seconds": 9, "caller": "Casey",
+                             "sms_kind": "wrong_number", "disposition": "wrong_number"})
+        r.check("a wrong number on the phone is suppressed as one, with no apology text",
+                store.is_suppressed(c) == "wrong_number"
+                and not store._conn().execute("SELECT 1 FROM sc_outbox WHERE phone=? AND kind='reply'", (c,)).fetchone())
+        d = "8650007204"
+        store.ensure_conversation(d, from_number=SELLER, record_uuid="rec-dialer-4")
+        res = dialer_hook.process({"call_id": "dl-c4", "phone": d, "answered": False, "seconds": 0, "sms_kind": "",
+                                   "disposition": "no_answer"})
+        r.check("a ring-out changes nothing on the thread", (store.get_conversation(d) or {}).get("state") == "active"
+                and not res["talked"])
+        body = {"call_id": "dl-c5", "phone": d, "disposition": "no_answer", "sms_kind": "", "answered": False}
+        one = tc.post("/hooks/dialer/call", json=body, headers=H).json()
+        two = tc.post("/hooks/dialer/call", json=body, headers=H).json()
+        r.check("the route keeps a call in the event log, and a retried delivery is one event",
+                one.get("ok") and one.get("event_id") and two.get("duplicate") is True, str((one, two)))
+        posted = []
+
+        class _Now:
+            def __init__(self, target=None, daemon=None, name=None):
+                self.target = target
+
+            def start(self):
+                self.target()
+        dialer_hook.threading.Thread = _Now
+        requests.post = lambda url, json=None, headers=None, timeout=None: posted.append((url, json, headers))
+        config.DIALER_URL, config.DIALER_HANDRAISE_TOKEN = "https://dialer.example.test", "ht"
+        ok = dialer_hook.push_handraise(a, "rec-dialer-1", "Yes, what would you offer?", "seller")
+        r.check("a hand raise is pushed to the dialer, with its own bearer token",
+                ok and posted and posted[0][0].endswith("/hooks/handraise") and posted[0][2]["authorization"] == "Bearer ht"
+                and posted[0][1]["phone"] == a, str(posted)[:200])
+        r.check("a dispo buyer's reply is not pushed", dialer_hook.push_handraise(a, "", "yes", "dispo") is False)
+        config.DIALER_URL = ""
+        r.check("with no dialer address nothing is pushed", dialer_hook.push_handraise(a, "", "yes", "seller") is False)
+    finally:
+        (config.DIALER_TOKEN, config.DIALER_URL, config.DIALER_HANDRAISE_TOKEN, sc_client.configured,
+         sc_client.contact_id_for, dialer_hook.threading.Thread) = saved
+        requests.post = real_post

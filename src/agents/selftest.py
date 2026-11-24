@@ -88,6 +88,9 @@ def _webhook_signer(check):
 
 
 EXTRA_SECTIONS: list[tuple[str, str]] = [
+    ("the SmartSkip screen: deaths, representatives and the order book", "selftest_skipscreen"),
+    ("the curative title board", "selftest_curative"),
+    ("the owner of record to the decision maker, on estates already researched", "selftest_ownerswap"),
     ("skills worked as in Claude Code", "selftest_skilltools"),
     ("the model lineup and skill_report", "selftest_skillrun"),
     ("data, lists and hygiene", "selftest_data"),
@@ -103,6 +106,7 @@ EXTRA_SECTIONS: list[tuple[str, str]] = [
     ("people workflows", "selftest_wf_people"),
     ("atlas's data workflows", "selftest_wf_data"),
     ("roma's deal workflows", "selftest_wf_deals"),
+    ("the data team's buyer search", "selftest_buyer_search"),
     ("query tools", "selftest_query"),
     ("scripts from slack", "selftest_cmd"),
     ("code sandbox", "selftest_sandbox"),
@@ -135,6 +139,7 @@ EXTRA_SECTIONS: list[tuple[str, str]] = [
     ("who wrote a log row: our own key or a person", "selftest_logauthor"),
     ("contact rate by week", "selftest_contactrate"),
     ("kpi tracker: the page, the sheet and the slack message", "selftest_kpisinks"),
+    ("kpi sheet: the DataSift tracker's layout, and the Inputs tab read back", "selftest_kpisheet"),
     ("the kpi tracker", "selftest_kpitracker"),
     ("kpi sources: any tool's work, each act counted once", "selftest_kpisources"),
     ("mail counted from a date: the auction and probate campaigns", "selftest_mailcadence"),

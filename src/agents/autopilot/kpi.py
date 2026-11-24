@@ -156,6 +156,9 @@ class Catalog:
     inputs: dict = field(default_factory=dict)
     pacing: dict = field(default_factory=dict)
     path: str = ""
+    # What the KPI sheet's Goals tab laid over the file (apply_typed): when it was read, which keys came
+    # from it, the deals typed there, and what could not be read. Empty when nothing was typed.
+    typed: dict = field(default_factory=dict)
 
     def fig(self, key: str) -> Figure:
         f = self.figures.get(key)
@@ -442,6 +445,91 @@ def path() -> Path:
 _CACHE: dict = {}
 _OVERRIDE: list = [None]
 
+# ---------------------------------------------------------------------- the KPI sheet's Goals tab (2026-11-23)
+# Ty: the sheet holds "everything in one place". The owner's own numbers (the year's goal, a calling day's
+# targets, the costs the ledger cannot see, each deal's fee) are typed on the sheet's Goals tab; the KPI
+# tracker reads that tab at the start of every run (kpisinks.read_inputs) and keeps what it read on the
+# volume, and load() lays it over team/kpi.yaml. So the sheet, the Slack update, the Monday goal sheet and
+# every alarm judge against the same numbers, and a typed figure counts as confirmed: the owner typed it.
+TYPED_FIGURES = ("goal.revenue_per_year", "goal.average_deal", "funnel.contracts_that_close", "funnel.leads_per_deal",
+                 "funnel.dials_per_lead", "caller.dials_per_day", "caller.conversations_per_day",
+                 "caller.opportunities_per_day", "funnel.dials_per_correct_number")
+TYPED_INPUTS = ("market_investor_deals_6mo", "marketing_started", "monthly_marketing_budget", "runway_months")
+TYPED_SOURCE = "typed on the KPI sheet's Goals tab"
+
+
+def typed_path() -> Path:
+    return Path(config.DATA_DIR) / "kpi" / "sheet_inputs.json"
+
+
+def typed() -> dict:
+    """The last read of the KPI sheet's Goals tab, or {} when it was never read."""
+    try:
+        data = json.loads(typed_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _typed_number(v) -> float | None:
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return None
+    f = float(v)
+    return f if f >= 0 and f == f else None
+
+
+def apply_typed(cat: Catalog, data: dict) -> Catalog:
+    """The catalog with the Goals tab laid over it. Only the figures and inputs the tab offers are
+    touched, a value that does not fit its figure (a range where one number belongs) is passed over, and
+    nothing here raises: a bad file leaves the catalog as team/kpi.yaml has it."""
+    from dataclasses import replace
+    if not isinstance(data, dict) or not data or data.get("found_tab") is False:
+        return cat
+    figures, used = dict(cat.figures), []
+    for key, v in (data.get("figures") or {}).items():
+        f = figures.get(key)
+        if key not in TYPED_FIGURES or f is None or not isinstance(v, dict):
+            continue
+        one = _typed_number(v.get("value"))
+        lo, hi = _typed_number(v.get("low")), _typed_number(v.get("high"))
+        if one is not None:
+            if f.unit.strip().startswith("%") and one > 100:
+                continue
+            if one == 0 and key in ("goal.average_deal", "caller.dials_per_day", "funnel.contracts_that_close"):
+                continue                       # a divisor: zero would stop the goal sheet
+            figures[key] = replace(f, value=one, low=None, high=None, status="confirmed", source=(TYPED_SOURCE,),
+                                   decision="", measured="")
+        elif lo is not None and hi is not None and lo <= hi and f.ranged:
+            figures[key] = replace(f, value=None, low=lo, high=hi, status="confirmed", source=(TYPED_SOURCE,),
+                                   decision="", measured="")
+        else:
+            continue
+        used.append(key)
+    inputs = dict(cat.inputs)
+    raw_in = data.get("inputs") or {}
+    costs = dict(inputs.get("monthly_costs") or {})
+    for name, v in (raw_in.get("monthly_costs") or {}).items():
+        n = _typed_number(v)
+        if n is not None and str(name).strip():
+            costs[str(name).strip()] = n
+            used.append("cost:%s" % name)
+    if costs:
+        inputs["monthly_costs"] = costs
+    for k in TYPED_INPUTS:
+        v = raw_in.get(k)
+        if k == "marketing_started":
+            if _is_day(v):
+                inputs[k] = str(v)
+                used.append(k)
+        elif _typed_number(v) is not None:
+            inputs[k] = float(v)
+            used.append(k)
+    deals = [d for d in data.get("deals") or [] if isinstance(d, dict)]
+    info = {"at": str(data.get("read_at") or ""), "keys": used, "deals": deals,
+            "problems": [str(p) for p in data.get("problems") or []], "rows": dict(data.get("rows") or {}),
+            "bad": dict(data.get("bad") or {})}
+    return replace(cat, figures=figures, inputs=inputs, typed=info)
+
 
 def override(cat: Catalog | None) -> None:
     """Stand a catalog in for the file, or pass None to go back to the file. The selftest's way to
@@ -450,21 +538,37 @@ def override(cat: Catalog | None) -> None:
 
 
 def load(p: Path | None = None) -> Catalog:
-    """The catalog, re-read only when the file changes. Raises KpiError when it cannot be used."""
+    """The catalog, re-read only when the file (or the Goals tab's last read) changes. Raises KpiError
+    when it cannot be used. A path the caller names is that file alone, with nothing laid over it: the
+    plain catalog, whose numbers the Goals tab shows as its defaults."""
     if p is None and _OVERRIDE[0] is not None:
         return _OVERRIDE[0]
+    plain = p is not None
     p = Path(p or path())
     if not p.is_file():
         raise KpiError(["there is no KPI catalog at %s" % p])
-    key = (str(p), p.stat().st_mtime)
-    if _CACHE.get("key") != key:
+    tp = typed_path()
+    try:
+        tkey = None if plain else tp.stat().st_mtime
+    except OSError:
+        tkey = None
+    key = (str(p), p.stat().st_mtime, tkey, str(tp) if tkey is not None else "")
+    hit = _CACHE.get(key)
+    if hit is None:
         try:
             data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
         except yaml.YAMLError as exc:
             raise KpiError(["the file is not valid YAML: %s" % " ".join(str(exc).split())[:200]])
-        _CACHE["catalog"] = parse(data, str(p))
-        _CACHE["key"] = key
-    return _CACHE["catalog"]
+        hit = parse(data, str(p))
+        if tkey is not None:
+            try:
+                hit = apply_typed(hit, typed())
+            except Exception as exc:  # noqa: BLE001  (a bad read of the sheet never stops the catalog)
+                log.warning("the KPI sheet's Goals tab could not be laid over the catalog: %s", str(exc)[:160])
+        if len(_CACHE) >= 6:             # the file alone and with the sheet laid over it, as each changes
+            _CACHE.clear()
+        _CACHE[key] = hit
+    return hit
 
 
 def describe(cat: Catalog | None = None) -> list[str]:

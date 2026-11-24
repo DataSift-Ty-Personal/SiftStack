@@ -77,7 +77,7 @@ def test_each_new_write_against_a_fake_datasift(sealed):
 def test_the_write_back_run_twice(sealed):
     check = Checks()
     st._chain(check, sealed)
-    check.done(41)
+    check.done(42)
 
 
 def test_the_order_of_the_chain(sealed):
@@ -90,7 +90,7 @@ def test_the_order_of_the_chain(sealed):
 def test_the_whole_section_the_way_the_agents_selftest_runs_it(sealed):
     check = Checks()
     st.run(check, sealed)
-    check.done(213)
+    check.done(214)
 
 
 NAMES = [("Quillfeather, Marla J", "Marla Quillfeather"), ("Marla Jean Quillfeather", "Marla Quillfeather Sr."),

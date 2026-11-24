@@ -510,6 +510,24 @@ def _lead_and_hygiene(check, pw, crm) -> None:
           "two records at one street line are refused, never guessed between")
     check(pw.find_record(crm, "12 Testwood")[0] is None,
           "the search matches a prefix, so a longer street it returns is not the house asked for")
+    check(pw.split_line("12 Testwood Dr, Knoxville, TN 37900") == ("12 Testwood Dr", "Knoxville", "37900")
+          and pw.split_line("12 Testwood Dr, Knoxville TN") == ("12 Testwood Dr", "Knoxville", "")
+          and pw.split_line("12 Testwood Dr, TN 37900-1234") == ("12 Testwood Dr", "", "37900")
+          and pw.split_line("12 Testwood Dr") == ("12 Testwood Dr", "", ""),
+          "a pasted line splits into its street, city and ZIP")
+    row, why = pw.find_record(crm, "12 Testwood Dr, Knoxville, TN 37900")
+    check(row and row["uuid"] == U_SUBJ and not why,
+          "a whole pasted line finds its record (sent whole, it never could)")
+    check(pw.find_record(crm, "12 Testwood Dr, Knoxville, TN 37911")[0] is None,
+          "a pasted ZIP that disagrees with the record's is not the house")
+    other = _record("cccccccc-0000-4000-8000-000000000009", "12 Testwood Dr")
+    other["address"].update(city="Maryville", postal_code="37801")
+    towns = FakeCRM([_record(), other])
+    check((pw.find_record(towns, "12 Testwood Dr, Maryville, TN")[0] or {}).get("uuid") == other["uuid"]
+          and (pw.find_record(towns, "12 Testwood Dr, Knoxville, TN 37900")[0] or {}).get("uuid") == U_SUBJ,
+          "one street line in two towns: the pasted city or ZIP picks the record")
+    check((pw.find_record(towns, "12 Testwood Dr, Maryville, TN 37900")[0] or {}).get("uuid") == U_SUBJ,
+          "a ZIP outranks a typed city, since a postal city often differs from the record's")
     check(pw.deal_room_clients() is None, "with no setting there is no Deal Room checkout, so the key path is the only path")
     text = (SRC / "post_walkthrough.py").read_text(encoding="utf-8")
     check("Deal Room Coaching Call" not in text and "C:\\Users" not in text and "OneDrive\\Desktop" not in text,

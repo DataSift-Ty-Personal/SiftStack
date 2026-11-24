@@ -1935,7 +1935,10 @@ def run(live_model: bool = False) -> int:
     heirs = ("I'm not the owner.  My parents were and when they passed there was no will",
              "It was my father in law he passed 9 yrs ago,my wife was executor  of his estate",
              "It was willed to me, but I do not own it.",
-             "It's my dads", "You would have to talk to my brother Sam Testerly.")
+             "It's my dads", "You would have to talk to my brother Sam Testerly.",
+             "I'm not sure I will be able to help you. My stepfather had other children. Don't know where "
+             "they're at. My half sister might know where they're at because she is his child.",
+             "My dad owned it before he passed", "Ask my half brother, he handles it")
     fam = {t[:30]: _disp.is_family(t) for t in heirs}
     r.check("an heir speaking about the estate is family", all(fam.values()), str(fam))
     strangers = ("Wrong number", "I don't own that place", "My ex wife is the owner of that property.",

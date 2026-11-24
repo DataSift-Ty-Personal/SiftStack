@@ -90,6 +90,13 @@ APPS = {
                   "entry_dirs": [], "entries": [],
                   "always": ["src/sms_agent/", "src/model_registry.py", "deploy/Dockerfile",
                              "deploy/requirements-sms-agent.txt", "fly.toml"]},
+    # The dialer is never deployed by the fixer: a restart mid-call drops the caller's phone page and
+    # Twilio's callbacks for that call. Its image holds exactly these files (deploy/Dockerfile.dialer).
+    "siftstack-dialer": {"toml": "fly.dialer.toml", "name": "the dialer", "auto": False, "image_only": True,
+                         "entry_dirs": [], "entries": [],
+                         "always": ["src/dialer/", "src/sms_agent/gate_rules.py", "src/agents/autopilot/windows.py",
+                                    "src/datasift_links.py", "deploy/Dockerfile.dialer", "deploy/requirements-dialer.txt",
+                                    "fly.dialer.toml"]},
 }
 ALLOWED_TOOLS = [
     "Read", "Edit", "Write", "Glob", "Grep",

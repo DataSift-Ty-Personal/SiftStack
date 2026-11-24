@@ -217,6 +217,12 @@ def sequence_to_refs(seq: dict, idx: SourceIndex, log, keep_titles: dict | None 
                 pl.pop("end_of_day")
                 log.add("sequences", "translated", title,
                         "create-task-by-preset: dropped absolute end_of_day")
+        if kind == "send-webhook" and pl.get("webhook_url"):
+            # The receiver's URL carries its secret in the path, and a webhook is made in the app for each
+            # account anyway: the blueprint keeps the action's name, never the address (2026-11-23).
+            pl.pop("webhook_url")
+            log.add("sequences", "translated", title,
+                    "send-webhook: dropped the webhook URL (it carries the receiver's secret)")
         if kind == "remove" and keep_titles:
             for key in ("lists", "tags"):
                 if key in pl and isinstance(pl[key], list):

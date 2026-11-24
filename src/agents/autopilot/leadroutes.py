@@ -748,6 +748,9 @@ def undo_step(crm, change: dict) -> str:
         create_card(crm, before["column"], u)
         return "card created again"
     if what == "card_create":
+        if (after or {}).get("kind") == "curative":
+            from .curative import undo_create as curative_undo
+            return curative_undo(crm, change)
         from .ftmpipeline import undo_create
         return undo_create(crm, change)
     if what == "task_create":

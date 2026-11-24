@@ -252,24 +252,52 @@ def _street_norm(s: str) -> str:
     return re.sub(r"[^a-z0-9]", "", str(s or "").lower())
 
 
-def find_record(crm, address: str, zip_code: str = "") -> tuple[dict | None, str]:
+def split_line(address: str) -> tuple[str, str, str]:
+    """(street line, city, ZIP) from what a person pasted: "12 Oak St, Sampleton, TN 37999" gives
+    ("12 Oak St", "Sampleton", "37999"). A line with no comma comes back whole, with no city or ZIP."""
+    head, sep, rest = str(address or "").partition(",")
+    if not sep:
+        return head.strip(), "", ""
+    z = re.search(r"\b(\d{5})(?:-\d{4})?\s*$", rest)
+    zip5 = z.group(1) if z else ""
+    bits = [b.strip() for b in (rest[:z.start()] if z else rest).split(",") if b.strip()]
+    city = bits[0] if bits else ""
+    if len(bits) == 1:                               # "Sampleton TN": the state rides on the city
+        city = re.sub(r"\s+[A-Za-z]{2}$", "", city)
+    if re.fullmatch(r"[A-Za-z]{2}", city):           # "12 Oak St, TN 37999": a state, not a city
+        city = ""
+    return head.strip(), city, zip5
+
+
+def find_record(crm, address: str, zip_code: str = "", city: str = "") -> tuple[dict | None, str]:
     """(search row, "") for the one record at this street line, else (None, why).
 
     The records search matches the street as a prefix, so "12 Oak St" also
     finds "12 Oak Street Ext"; a record counts only when its street is the same
     once punctuation and case are gone, and its ZIP agrees when one is given.
     Two records that both qualify are refused rather than guessed between.
+
+    A whole pasted line ("street, city, state ZIP") is split first: the street is
+    searched and the ZIP filters, or the city when there is no ZIP (a postal city
+    often differs from the record's, so the city never overrides a ZIP). Sent whole,
+    the line could never equal a record's street, so every Slack ask that pasted a
+    full address was treated as a house not in DataSift (found 2026-11-23).
     """
+    street_line, typed_city, typed_zip = split_line(address)
+    zip_code = zip_code or typed_zip
+    city = city or ("" if zip_code else typed_city)
     body = {"limit": 5, "offset": 0, "ordering": "-list_count",
-            "query": {"must": {"property_type": "clean", "search": "address_prefix:%s" % address}}}
+            "query": {"must": {"property_type": "clean", "search": "address_prefix:%s" % street_line}}}
     rows = _rows(crm.call("/api/internal/property/", "POST", body, headers={"x-http-method-override": "GET"}))
-    want = _street_norm(address)
+    want = _street_norm(street_line)
     keep = []
     for r in rows:
         a = r.get("address") or {}
         street = a.get("street") if isinstance(a, dict) else str(a).split(",")[0]
         z = str((a.get("postal_code") if isinstance(a, dict) else "") or "")[:5]
-        if _street_norm(street) == want and (not zip_code or not z or z == str(zip_code)[:5]):
+        c = str((a.get("city") if isinstance(a, dict) else "") or "")
+        if (_street_norm(street) == want and (not zip_code or not z or z == str(zip_code)[:5])
+                and (not city or not c or _street_norm(c) == _street_norm(city))):
             keep.append(r)
     if not keep:
         return None, f"no Sift record matched '{address}'"

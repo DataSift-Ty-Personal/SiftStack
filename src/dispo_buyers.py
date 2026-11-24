@@ -604,6 +604,12 @@ def _hydrate_one(smc: SiftMapClient, rid: str) -> dict:
                        "borrower": m.get("grantee_name"), "lender": m.get("lender_name")}
                       for m in (d.get("mortgage_history") or [])[:8] if isinstance(m, dict)],
         "year_built": d.get("years_built"),
+        # The owner's houses as SiftMap lists them (at most 11: `total_properties` is this list's length, so 11
+        # reads "11 or more"). No sale dates; `squareFeet` there is the LOT, so it is not kept. buyer_search
+        # builds a buyer's profile and price paid from these (read 2026-11-23).
+        "owner_properties": [{"beds": p.get("bedrooms"), "baths": p.get("bathrooms"),
+                              "value": p.get("estimatedValue"), "paid": p.get("lastSaleAmount")}
+                             for p in (oi.get("owner_properties") or [])[:11] if isinstance(p, dict)],
     }
 
 

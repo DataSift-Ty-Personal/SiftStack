@@ -32,6 +32,8 @@ def plan(run_id: str) -> list[dict]:
     """The steps an undo would take, newest change first."""
     from .leadroutes import UNDOABLE as LEAD_ROUTES
     from .primaryphone import UNDOABLE as PRIMARY
+    from .ownerswap import UNDOABLE as SWAP
+    from .skipscreen import UNDOABLE as SKIP_SCREEN
     out = []
     for c in reversed(ledger.changes(run_id=run_id)):
         what, before, after = c["what"], c["before"], c["after"]
@@ -76,6 +78,10 @@ def plan(run_id: str) -> list[dict]:
             step["do"], step["args"] = "record_fields", dict(before)   # taxwatch: the tax year it replaced
         elif what in PRIMARY:
             step["do"], step["args"] = "primary_phone", c             # the owner's primary before a confirmed number
+        elif what in SWAP:
+            step["do"], step["args"] = "owner_swap", c                # the owner of record before the change
+        elif what in SKIP_SCREEN:
+            step["do"], step["args"] = "skip_screen", c               # the deceased mark or mailing address before
         elif what == "attempt_note":
             step["do"], step["args"] = "attempt_note", c              # the attempt log's note: deleted, or its text back
         else:
@@ -151,6 +157,12 @@ def run(run_id: str, crm=None, commit: bool = False) -> dict:
             elif s["do"] == "attempt_note":
                 from .attemptlog import undo_step as attempt_undo
                 attempt_undo(crm, s["args"])
+            elif s["do"] == "owner_swap":
+                from .ownerswap import undo_step as swap_undo
+                swap_undo(crm, s["args"])
+            elif s["do"] == "skip_screen":
+                from .skipscreen import undo_step as skip_undo
+                skip_undo(crm, s["args"])
             ledger.change_undone(s["change"], "undone")
             done += 1
         except Exception as exc:  # noqa: BLE001  (one record failing must not stop the rest going back)

@@ -50,15 +50,16 @@ RELEASE: dict[str, tuple[str, str]] = {
     "agency": ("autopilot.agencyexport", "release"),   # the monthly file for the calling agency
     "newhire": ("autopilot.newhire", "release"),       # a new hire's day of coaching notes, after the owner reads them
     "closer_text": ("autopilot.handoff", "release"),   # the closer's "I'll call you in a few minutes" text at the handoff
+    "curative_mail": ("autopilot.curative", "release"),   # the Curative Title board's letters, one per verified heir
 }
 # Kinds whose release has two steps because a person uploads a file between them: the second step
 # (after the upload) is the confirm with "uploaded".
-FILE_KINDS = ("heir_mail", "heir_text", "obituary_mail", "agency")
+FILE_KINDS = ("heir_mail", "heir_text", "obituary_mail", "agency", "curative_mail")
 LABELS = {"mail": "mail piece(s)", "attempts": "call counter correction(s)", "text": "owner text(s)",
           "leadclock": "card move(s)", "drip": "text(s) and email(s)", "heir_mail": "heir letter(s)",
           "heir_text": "heir text(s)", "obituary_mail": "obituary letter(s)", "probate": "probate change(s)",
           "command": "command(s)", "agency": "owner(s) for the calling agency",
-          "newhire": "day(s) of new hire notes", "closer_text": "handoff text(s)"}
+          "newhire": "day(s) of new hire notes", "closer_text": "handoff text(s)", "curative_mail": "curative letter(s)"}
 
 
 def label(kind: str) -> str:

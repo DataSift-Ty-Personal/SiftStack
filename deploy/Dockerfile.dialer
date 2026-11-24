@@ -1,0 +1,36 @@
+# The SiftStack dialer: a Twilio softphone and power dialer for DataSift (src/dialer).
+#
+# Its own small image and its own Fly app, apart from the texting app: a deploy here never restarts the
+# box that takes Smarter Contact and smrtPhone webhooks, and the reverse. It carries the dialer package
+# plus three pure, standard-library files it shares with the rest of SiftStack: the gate the texting app
+# is parity-tested against, the preset date-window converter, and the one definition of a record's link.
+FROM python:3.12-slim
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1
+
+WORKDIR /app
+
+COPY deploy/requirements-dialer.txt ./requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY src/dialer ./dialer
+COPY src/sms_agent/__init__.py ./sms_agent/__init__.py
+COPY src/sms_agent/gate_rules.py ./sms_agent/gate_rules.py
+COPY src/agents/__init__.py ./agents/__init__.py
+COPY src/agents/autopilot/__init__.py ./agents/autopilot/__init__.py
+COPY src/agents/autopilot/windows.py ./agents/autopilot/windows.py
+COPY src/datasift_links.py ./datasift_links.py
+
+ENV PYTHONPATH=/app \
+    DIALER_DATA_DIR=/data \
+    DIALER_DB=/data/dialer.db
+
+# The Twilio Voice SDK the phone page loads, at the pinned version. The build fails if its bytes do not
+# match the pinned sha256, so a changed or tampered file can never ship.
+RUN python -m dialer.cli vendor
+
+EXPOSE 8080
+# The container has no .env; every secret arrives as a Fly secret.
+CMD ["uvicorn", "dialer.app:app", "--host", "0.0.0.0", "--port", "8080", "--proxy-headers", "--forwarded-allow-ips", "*"]

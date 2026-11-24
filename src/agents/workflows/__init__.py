@@ -38,6 +38,7 @@ REGISTRY: dict[str, str] = {
     "walkthrough_video": "walkthrough_video",  # a walkthrough video read into the one repair number, kept for buyers with a room index
     "offer_sheet": "offer_sheet",        # the one-tab wholesale offer from a saved pack and a walk
     "deal_buyers": "deal_buyers",        # the top buyers for one contracted house, with the decision maker
+    "buyer_search": "buyer_search",      # the data team's buyer model rebuilt on this account's own SiftMap reads
     "lender_package": "lender_package",  # the eight-piece private lender set from a deal spec
     "mls_offers": "mls_offers",          # every active listing in a market: a cash and a creative offer, the agent to call
     # Atlas, Analysis (wave 4, 2026-11-13)

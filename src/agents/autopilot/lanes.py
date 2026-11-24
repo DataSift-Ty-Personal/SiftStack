@@ -76,8 +76,10 @@ GONE_STATUS_VALUES = ["sold", "closed", "close_out", "lost_deal", "listed", "dnc
                       "not_interested", "buyer", "buyer_found", "buyer_lost", "Auction Date Passed"]
 
 # How a lane is recognised on a full record: any of these tags or lists (case does not matter).
+# Curative (2026-11-23): a house whose title passes to the heirs with no probate, worked on its own
+# board (curative.py). It is the heirs lane too, so the family's other records are held while it is.
 DEFAULT_MARKERS = {
-    "heirs": {"tags": ["Heir Identified"]},
+    "heirs": {"tags": ["Heir Identified", "Curative"]},
     "hot_auction": {"tags": ["Auction Soon"]},
     "ftm": {"tags": ["FTM"]},
     "obituary": {"tags": ["Obituary"], "lists": ["Obituary"]},

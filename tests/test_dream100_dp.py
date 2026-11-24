@@ -118,6 +118,13 @@ x = {"record": {"owner": {"first_name": "Charles", "last_name": "Hexample"}},
 check(dp._title_people(x) == [("Charles", "B", "Hexample")], dp._title_people(x))
 x = {"record": {"owner": {"first_name": "Sharon M", "last_name": "Gexample"}}, "title_owner": "GEXAMPLE SHARON"}
 check(dp._title_people(x) == [("Sharon", "M", "Gexample")], dp._title_people(x))
+x = {"record": {"owner": {"first_name": "Bobby", "last_name": "Hexample"},
+                "secondary_owners": [{"full_name": "Cheryl F Hexample"}]}, "title_owner": "HEXAMPLE BOBBY N & CHERYL F"}
+check(dp._title_people(x) == [("Bobby", "N", "Hexample"), ("Cheryl", "F", "Hexample")],
+      "a co-owner's middle initial is a middle, never part of the surname: %s" % dp._title_people(x))
+x = {"record": {"owner": {"first_name": "Al", "last_name": "Hexample"},
+                "secondary_owners": [{"full_name": "Mary Ann Hexample"}]}, "title_owner": "HEXAMPLE AL & MARY ANN"}
+check(dp._title_people(x)[1] == ("Mary Ann", "", "Hexample"), "a double first name stays whole: %s" % dp._title_people(x))
 
 toks = dp._name_tokens("Survivors: wife: Kendra Hale Hexample; step-children: Susanna Tolvexample, Brayden Moorexample; "
                        "grandchildren Marissa Fryexample (Travis) Lena and Owen Bullexample")
@@ -130,5 +137,13 @@ check(dp.no_dash("a " + chr(0x2014) + " b " + chr(0x2013) + " c") == "a ,  b - c
 check(chr(0x2014) not in Path(__file__).read_text(encoding="utf-8") and chr(0x2013) not in Path(__file__).read_text(encoding="utf-8"),
       "no long dash in this test file either")
 check(dp._short("5619 Sample Grove Pike") == "Sample Grove" and dp._short("122 Elm Ave") == "Elm", "tab names drop the house number")
+
+# Kixie answers an archived recording with HTTP 200, text/html and an "Access Denied" page: never audio.
+_page = b"<!DOCTYPE html>\n<html><body><h1>Access Denied</h1><p>The media resource has been archived</p></body></html>"
+check(dp._not_audio(_page, "text/html"), "an archived recording's page is not audio")
+check(dp._not_audio(_page, ""), "a page with no content type is still not audio")
+check(dp._not_audio(b"", "audio/mpeg"), "an empty download is not audio")
+check(not dp._not_audio(b"\xff\xe3\x48\x04" + bytes(60), "audio/mpeg"), "an MPEG frame is audio")
+check(not dp._not_audio(b"ID3\x04" + bytes(60), ""), "an ID3-tagged mp3 is audio")
 
 print("test_dream100_dp: %d checks passed" % n)

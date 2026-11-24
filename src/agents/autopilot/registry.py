@@ -93,6 +93,12 @@ EXTRA: dict[str, tuple[str, str, str, bool, bool]] = {
     "coldtopup": ("coldemail", "run_coldtopup", "outreach", False, False),
     "coldhealth": ("coldemail", "run_coldhealth", "free", False, False),
     "coldstats": ("coldemail", "run_coldstats", "free", False, True),
+    # SmartSkip on every first-to-market record: a death on file, a probate's representative (Ty, 2026-11-23)
+    "skipscreen": ("skipscreen", "run_skipscreen", "paid", True, False),
+    # the Curative Title board: every heir called each business day for five days, never texted (Ty, 2026-11-23)
+    "curative": ("curative", "run_curative", "outreach", False, False),
+    # the owner of record becomes the decision maker research verified, on estates already researched (Ty, 2026-11-23)
+    "ownerswap": ("ownerswap", "run_ownerswap", "free", False, False),
 }
 
 

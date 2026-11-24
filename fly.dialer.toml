@@ -1,0 +1,41 @@
+# The SiftStack dialer (src/dialer): python deploy/dialer_up.py does every step below.
+#   fly apps create siftstack-dialer
+#   fly volumes create dialer_data --size 1 --region iad -a siftstack-dialer
+#   fly secrets import -a siftstack-dialer --stage < (values from .env)
+#   fly deploy -c fly.dialer.toml -a siftstack-dialer --remote-only
+#
+# FLY SECRETS OVERRIDE [env]. Every switch below can be overridden by a secret of the same name, and
+# `fly config env` shows only this block; ask the running app (/health) what it is actually doing.
+app = "siftstack-dialer"
+primary_region = "iad"          # beside Twilio's Ashburn edge
+
+[build]
+  dockerfile = "deploy/Dockerfile.dialer"
+
+[env]
+  DIALER_CALLS = "test"         # off | test (only DIALER_TEST_NUMBERS) | live
+  DIALER_WRITEBACK = "dry"      # off | dry (logs what it would write) | live
+  DIALER_RECORD = "one_party"   # off | one_party (never a number or owner in an all-party-consent state) | all
+  DIALER_AMD = "off"            # off | detect | auto_drop (needs DIALER_VM_DROP=on)
+  DIALER_VM_DROP = "off"        # a recorded voicemail is a prerecorded call: on only with counsel's sign-off
+  DIALER_PUBLIC_URL = "https://siftstack-dialer.fly.dev"
+  DIALER_DATA_DIR = "/data"
+  DIALER_DB = "/data/dialer.db"
+  TWILIO_EDGE = "ashburn"
+
+# The call log, the write log and the callers' voicemail messages. They must survive a deploy.
+[mounts]
+  source = "dialer_data"
+  destination = "/data"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  # Never stopped: a stopped machine drops Twilio's callbacks and every caller's phone page.
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

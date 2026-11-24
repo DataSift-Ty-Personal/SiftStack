@@ -260,14 +260,14 @@ BOARD_RANK = {
     # sales. The 4:30 full-attempt list is numbers to dial before the day ends, so it sits by the callbacks:
     # a long board cuts the sections at its end first, and unranked (500) the list was the first thing cut.
     "leadclock": 10, "callbacks": 20, "fullattempt": 25, "appointments": 30, "auction": 40, "auctiontasks": 45,
-    "leadcheck": 50, "leadtasks": 55, "audit": 60, "limits": 65, "capture": 70, "goals": 75, "alarms": 80,
+    "curative": 48, "leadcheck": 50, "leadtasks": 55, "audit": 60, "limits": 65, "capture": 70, "goals": 75, "alarms": 80,
     # marketing
     "textlane": 10, "coldreplies": 15, "ftmpipeline": 20, "mail": 30, "mailcadence": 35, "obituary": 40,
     "heirlane": 45, "agencyexport": 50, "coldtopup": 52, "agencyscore": 55, "top1000": 60, "contactrate": 70,
     "coldstats": 72, "cadence": 75, "revoke": 80,
     # ops
-    "digest": 5, "researchqueue": 20, "screen": 30, "score": 40, "native_trace": 45, "retrace": 50, "handoff": 55,
-    "complete": 60, "phonecleanup": 65, "taxwatch": 70, "taxsale": 72, "probate": 74, "attempts": 80,
+    "digest": 5, "researchqueue": 20, "screen": 30, "skipscreen": 35, "score": 40, "native_trace": 45, "retrace": 50, "handoff": 55,
+    "complete": 60, "phonecleanup": 65, "ownerswap": 67, "taxwatch": 70, "taxsale": 72, "probate": 74, "attempts": 80,
     "watchdog": 85, "accountchecks": 90,
 }
 # A head that says the run left something for a person to release: its own post, so it is not missed.

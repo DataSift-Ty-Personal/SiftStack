@@ -292,6 +292,29 @@ def _words(text: str) -> int:
     return len(text.split("DELIVERY SUMMARY")[0].split())
 
 
+def _not_audio(data: bytes, ctype: str = "") -> str:
+    """Why a recording download is not audio, or ''. Kixie answers an archived recording with
+    HTTP 200, text/html and an "Access Denied, the media resource has been archived" page. Saved
+    as the mp3, that page reached the transcriber, which raised and stopped the whole records
+    phase (seen on a probate record, 2026-11-20)."""
+    if (ctype or "").split(";")[0].strip().lower().startswith(("text/", "application/json")):
+        return "the recording link returned %s, not audio (archived or removed)" % ctype.split(";")[0].strip()
+    if not data or data[:64].lstrip().startswith((b"<", b"{")):
+        return "the recording link returned a page, not audio (archived or removed)"
+    return ""
+
+
+def _fetch_recording(url: str) -> tuple[bytes, str]:
+    """(audio bytes, '') or (b'', why the recording could not be had)."""
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, headers=UA), timeout=60) as r:
+            data, ctype = r.read(), r.headers.get("Content-Type") or ""
+    except urllib.error.HTTPError as exc:
+        return b"", "the recording link answered HTTP %s" % exc.code
+    why = _not_audio(data, ctype)
+    return (b"", why) if why else (data, "")
+
+
 def _transcribe_calls(run: Run, slug: str, timeline: list) -> float:
     """Transcribe every answered call that has a recording, then police the result.
 
@@ -311,11 +334,15 @@ def _transcribe_calls(run: Run, slug: str, timeline: list) -> float:
         mp3 = run.p("audio", "%s_%s.mp3" % (slug, cid))
         txt = run.p("audio", "%s_%s.txt" % (slug, cid))
         strict = run.p("audio", "%s_%s_strict.txt" % (slug, cid))
-        row["transcript_file"] = rel(txt)
+        if mp3.exists() and _not_audio(mp3.read_bytes()[:64]):
+            mp3.unlink()                       # a page an earlier run saved as the recording
         if not mp3.exists():
-            req = urllib.request.Request(row["recording"], headers=UA)
-            with urllib.request.urlopen(req, timeout=60) as r:
-                mp3.write_bytes(r.read())
+            data, why = _fetch_recording(row["recording"])
+            if why:
+                row["recording_unavailable"] = why  # one lost recording never stops the record
+                continue
+            mp3.write_bytes(data)
+        row["transcript_file"] = rel(txt)
         if not txt.exists():
             txt.write_text(transcribe_audio(mp3, agent_name=(row.get("who") or "").split(" ")[0] or None),
                            encoding="utf-8")
@@ -509,7 +536,11 @@ def _title_people(x: dict) -> list[tuple[str, str, str]]:
         nm = (so.get("full_name") or "").strip()
         if nm:
             parts = nm.split()
-            if len(parts) >= 3 and parts[1][:1].isupper() and parts[0].lower() in ("jo", "mary", "anna", "betty"):
+            if len(parts) == 3 and len(parts[1].rstrip(".")) == 1 and parts[1][:1].isalpha():
+                # "Mary Q Sample": the initial is a middle, not part of the surname (it was
+                # sent to SmartSkip as last name "Q Sample" on a probate record, 2026-11-20)
+                people.append((parts[0], parts[1].rstrip(".").upper(), parts[2]))
+            elif len(parts) >= 3 and parts[1][:1].isupper() and parts[0].lower() in ("jo", "mary", "anna", "betty"):
                 people.append((" ".join(parts[:2]), "", " ".join(parts[2:])))
             else:
                 people.append((parts[0], "", " ".join(parts[1:])))
@@ -533,12 +564,65 @@ def phase_smartskip(args, run: Run):
     cols = ["First Name", "Middle Name", "Last Name", "Mailing Address", "Mailing City",
             "Mailing State", "Mailing Zip", "Property Address", "Property City", "Property State",
             "Property Zip"]
-    buf = io.StringIO()
-    w = csv.DictWriter(buf, fieldnames=cols, extrasaction="ignore", lineterminator="\n")
-    w.writeheader()
-    for r in rows:
-        w.writerow(r)
-    body = buf.getvalue()
+
+    def body_of(rs):
+        buf = io.StringIO()
+        w = csv.DictWriter(buf, fieldnames=cols, extrasaction="ignore", lineterminator="\n")
+        w.writeheader()
+        for r in rs:
+            w.writerow(r)
+        return buf.getvalue()
+
+    # The skip screen (agents/autopilot/skipscreen.py) keeps what SmartSkip said about a record's owner as the
+    # fact "skip_screen": an answer under 30 days old about the same person (role owner or pr, the same first and
+    # last name) is used instead of buying it again. A run that already holds an order for exactly these rows
+    # keeps that order. Only the ledger is imported, so this file's own dependencies stay what they were.
+    reused = []
+    prior = run.load("smartskip_state.json", {}) or {}
+    if not (prior.get("bulkSkipId") and prior.get("digest") == hashlib.sha1(body_of(rows).encode()).hexdigest()[:12]):
+        try:
+            from agents.autopilot import ledger as ap_ledger
+        except Exception:  # noqa: BLE001  (no agents package here: buy as before)
+            ap_ledger = None
+
+        def key(s):
+            return re.sub(r"[^a-z]", "", str(s or "").lower())
+
+        def first_key(s):
+            return key(str(s or "").split()[0]) if str(s or "").split() else ""
+
+        def fresh(stamp):
+            try:
+                at = datetime.fromisoformat(str(stamp))
+            except ValueError:
+                return False
+            return ((datetime.now(at.tzinfo) if at.tzinfo else datetime.now()) - at).total_seconds() < 30 * 86400
+
+        rest = []
+        for r in rows:
+            x = next((x for x in recs if x.get("slug") == r.get("_slug")), {})
+            uuid = (x.get("record") or {}).get("uuid") or (x.get("row") or {}).get("uuid") or ""
+            try:
+                f = ap_ledger.fact(uuid, "skip_screen") if (ap_ledger and uuid) else None
+            except Exception:  # noqa: BLE001  (a box without the autopilot's tables: nothing to reuse)
+                f = None
+            if (isinstance(f, dict) and f.get("role") in ("owner", "pr") and isinstance(f.get("parsed"), dict)
+                    and first_key(f.get("first")) and first_key(f.get("first")) == first_key(r.get("First Name"))
+                    and key(f.get("last")) and key(f.get("last")) == key(r.get("Last Name")) and fresh(f.get("at"))):
+                p = dict(f["parsed"], input_name=("%s %s" % (r["First Name"], r["Last Name"])).strip())
+                p.pop("order", None)
+                reused.append(p)
+                print("  %-10s %-14s | reused from the skip screen (order %s, %s)" % (
+                    r["First Name"], r["Last Name"], f.get("order"), str(f.get("at"))[:10]))
+            else:
+                rest.append(r)
+        rows = rest
+        if reused and not rows:
+            run.save("smartskip.json", reused)
+            run.ledger("smartskip", 0.0, "every row reused from the skip screen's SmartSkip answers; nothing bought")
+            print("smartskip: %d row(s) reused from the skip screen, nothing bought" % len(reused))
+            return
+    body = body_of(rows)
     digest = hashlib.sha1(body.encode()).hexdigest()[:12]
     csv_path.write_text(body, encoding="utf-8")
     for r in rows:
@@ -576,8 +660,9 @@ def phase_smartskip(args, run: Run):
         time.sleep(15)
     ss.download(sess, bid, str(run.p("ss_vertical.csv")), "vertical")
     ss.download(sess, bid, str(run.p("ss_horizontal.csv")), "horizontal")
-    parsed = ps.parse(str(run.p("ss_vertical.csv")))
-    hits = sum(1 for p in parsed if p.get("has_results"))
+    bought = ps.parse(str(run.p("ss_vertical.csv")))
+    hits = sum(1 for p in bought if p.get("has_results"))
+    parsed = reused + bought
     run.save("smartskip.json", parsed)
     run.ledger("smartskip", hits * SMARTSKIP_PER_HIT, "%d hits of %d rows, order %s" % (hits, len(rows), bid))
     for p in parsed:
@@ -2105,6 +2190,23 @@ def phase_writeback(args, run: Run):
                     entry["errors"].append("report not filed: %s" % str(exc)[:160])
         if cfg["owner_swap"] and not dec["suppress"] and not moved:
             swap, refused = wb.swap_plan(d, dec["verified"], owner=owner_now)
+            if swap:
+                # A rename of a shared owner object changes every house it holds (2026-11-23): count them first,
+                # and refuse when the count cannot be read. The owner route carries no house count (read live
+                # 2026-11-23; properties_count is a list and tag field), so the records search by owner counts
+                # them. Unfiltered it answers both of the app's record tabs (an owner whose 14 houses are all
+                # incomplete reads 14). This record is one of them, so a count under 1 is a failed read.
+                try:
+                    held_by = (api.call("/api/internal/property/", "POST",
+                                        {"limit": 1, "offset": 0, "query": {"must": {"owners": [owner_now["uuid"]]}}},
+                                        headers={"x-http-method-override": "GET"}) or {}).get("count") \
+                        if owner_now.get("uuid") else None
+                except Exception:  # noqa: BLE001
+                    held_by = None
+                if not isinstance(held_by, int) or isinstance(held_by, bool) or held_by < 1:
+                    swap, refused = None, ["could not read how many houses the owner holds"]
+                elif held_by > 1:
+                    swap, refused = None, ["the owner holds %d houses in the account; a change here would change all of them" % held_by]
             if swap:
                 try:
                     done = wb.swap_owner(api, uuid, swap)

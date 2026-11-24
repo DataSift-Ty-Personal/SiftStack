@@ -51,7 +51,7 @@ gate:
   # mails, traces or scores it; research may take it. Tax Sale Redemption (2026-11-20): a former owner who
   # can still redeem a tax sale house is held from every outreach until a lawyer okays it, which is a
   # person taking the tag off (or this line). Only a person's booked visit lifts it (allow word research_tag).
-  research_tags: [Tax Sale Redemption]
+  research_tags: [Tax Sale Redemption, Curative]
   read_fields: true                       # also read the Owner Deceased custom field (one more read per record acted on, cached a week)
   # The national do-not-call registry flag DataSift puts on skip-traced numbers. OFF for this account
   # (Ty, 2026-11-17: "we don't need it for our case"): a flagged number is texted and called like any
@@ -70,7 +70,7 @@ gate:
 # sequence, first to market on top. Agency: everything else in the buy box, sent once a month to
 # the calling agency (agency_export). The Priority 1 and Priority 2 tags no longer decide a lane.
 lanes:
-  heirs:       {tags: [Heir Identified]}
+  heirs:       {tags: [Heir Identified, Curative]}
   hot_auction:
     tags: [Auction Soon]
     timeline: true            # the FTM round, then a call task every 2 days to the sale, a door knock inside 7 days (1.8, 4.8)
@@ -183,6 +183,64 @@ stages:
     on_hit: tag
     max_records: 60
 
+  ftm_skip_screen:
+    kind: skipscreen
+    owner: research
+    lane: ftm
+    mode: "plan"
+    schedule: "08:05 Mon-Fri"
+    summary: Every first-to-market record traced once through SmartSkip, so a death on file is marked before anyone calls and a probate's mail reaches the representative's own address.
+    # Ty, 2026-11-23: "we probably should smart-skip every first-to-market record ... we can automatically know
+    # when there's a deceased record on file." One order a run, oldest landing first; an order an earlier run paid
+    # for is collected before anything new is ordered. Paid: on a free box it acts only when AGENTS_LIVE_STAGES
+    # names it. A probate is traced as the decedent at the house, so the representative comes back among the
+    # family with their own address and numbers. The free backfill over orders already paid for:
+    #   cd /app/src && python -m agents.autopilot.skipscreen paid-orders            (dry)
+    #   SKIPSCREEN_ALLOW=1 python -m agents.autopilot.skipscreen paid-orders --commit
+    presets:            # the death screen's presets
+      - FTM - 00 Needs Skipped
+      - FTM - 01 Skipped No Numbers
+      - FTM - 01 Ready to Text
+      - FTM - 02 Texted, Not Yet Called
+      - FTM - 02 Ready to Call
+      - FTM - 03 Call Attempt 1
+      - FTM - 04 Call Attempt 2
+      - FTM - 05 Call Attempt 3
+      - FTM - 06 Call Attempt 4
+      - FTM - Hot Auction (sale in 45 days)
+      - Probate - 01 Ready to Text
+      - Probate - 02 Texted, Not Yet Called
+      - Estate - 02 Ready to Call
+      - Estate - 03 Call Attempt 1
+      - Estate - 04 Call Attempt 2
+      - Estate - 05 Call Attempt 3
+      - Estate - 06 Call Attempt 4
+    daily_usd: 15        # caps.daily_usd (25) is shared with the scoring at 08:30 and the retraces at 11:00; raise both for a backlog push
+    record_usd: 1.00
+    max_per_order: 100
+    max_reads: 150
+    max_scan: 2000
+    recheck_days: 14
+    possible_death: trace
+    probate_marks: [Probate]
+    decedent_field: Decedent Name
+    pr_field: Personal Representative
+    dm_field: Decision Maker
+    dm_relationship_field: DM Relationship
+    pr_relationship: Personal Representative
+    pr_tag: Personal Representative
+    verify_tag: Verify Deceased
+    skip_tags: [Deep Prospected, Heir Identified, Heirs Resolved, Research Queued, Curative]
+    max_wait_s: 600
+    collect_wait_s: 0
+    card_wait_days: 3
+    callable_tiers: [Dial First, Dial Second]    # numbers land exactly as the retraces land them
+    write_tiers: [Dial First, Dial Second]
+    reserve_tiers: [Dial Third]
+    keep_numbers: 3
+    drop_status: DEAD
+    write_line_type: true
+    agreement_tag: Two Sources
   top1000_death_screen:
     kind: screen
     owner: research
@@ -759,44 +817,6 @@ stages:
       - {preset: Priority - Mail 06 Soft-Offer Check, piece: snap_pack, product_id: 18, design: "00000000-0000-0000-0000-000000000000", external_identifier: ""}   # EVG T6 Snap comparison
     sender: {}
 
-  # ------------------------------------------------------------------ retired lanes: Priority 1 (Hottest), Strong, Bulk
-  # Off since 2026-11-13: the marketing became two tracks. Priority 1, Priority 2 and Bulk records
-  # are the agency track now (or the Top 1,000 when they score into it), and the calling agency
-  # works them from the monthly file, so nothing in-house dials them. The code stays.
-  hottest_retrace:
-    kind: retrace
-    owner: research
-    covers: [tracerfy]   # the org-chart agent whose job this stage does
-    mode: "off"          # retired 2026-11-13: these records are the agency track now
-    schedule: "11:15 Mon-Fri"
-    presets: [Hottest - 01 Skipped No Numbers]
-    sources: [smartskip]             # lesson 5-01: one extra pass on high-volume Priority 1 leftovers
-    callable_tiers: [Dial First, Dial Second]
-    deceased: deep_prospect
-    entity: after
-    after_sources: mail_only
-    deep_prospect_per_day: 2
-    max_records: 50
-    daily_usd: 5
-    lane: agency
-    write_tiers: [Dial First, Dial Second]
-    reserve_tiers: [Dial Third]
-    keep_numbers: 3
-    drop_status: DEAD
-
-  hottest_score:
-    kind: score
-    owner: research
-    covers: [phone]   # the org-chart agent whose job this stage does
-    mode: "off"       # retired 2026-11-13: these records are the agency track now
-    schedule: "08:45 Mon-Fri"
-    presets: [Hottest - 02 Ready to Call, Hottest - 03 Call Attempt 1, Hottest - 04 Call Attempt 2, Hottest - 05 Call Attempt 3, Hottest - 06 Call Attempt 4]
-    max_records: 200
-    daily_usd: 5
-    lane: agency
-    drop_status: DEAD
-    write_line_type: true
-
   autopilot_digest:
     kind: digest
     owner: ops
@@ -846,7 +866,7 @@ stages:
     mode: "live"
     schedule: "Sun 03:40"
     summary: The account's naming rules checked once a week; what breaks one is listed and nothing is changed.
-    caller_folders: ["02. FORECLOSURE - CALL", "05. ESTATES - CALL", "08. TOP 1000 - CALL", "20. CALLER QUEUES"]
+    caller_folders: ["02. FORECLOSURE - CALL", "05. ESTATES - CALL", "09. TOP 1000 - CALL", "20. CALLER QUEUES"]
     starred_field: quick_filter
     inbound_field: Inbound Source
     mail_tag: "Mailed {yyyy}-{mm}"
@@ -1347,97 +1367,6 @@ stages:
     max_per_run: 50
     max_reads: 150
 
-  caller_book:
-    kind: callerbook
-    owner: analysis
-    lane: agency
-    mode: "off"                   # retired 2026-11-13: Priority 1 records are the agency track now; the callers work the Priority track
-    schedule: "Mon 07:30"
-    summary: Each caller gets a book of new Priority 1 records on Monday morning, and nothing more until the next Monday.
-    presets: [Hottest - 02 Ready to Call]
-    book_size: 75                 # D5
-    caller_cap: 2000              # D2 (yours)
-    best_rungs: 6
-    top_up: false
-    dream100_list: Dream 100
-    dream100_per_day: 20
-
-  strong_native_trace:
-    kind: native_trace
-    owner: research
-    lane: agency
-    mode: "off"                   # retired 2026-11-13: Strong records are the agency track now
-    schedule: "every 60 min 08:00-18:00 Mon-Fri"
-    presets: [Strong - 00 Needs Skipped]
-    tranche: true
-    scoped: true
-    min_age_hours: 1
-
-  strong_score:
-    kind: score
-    owner: research
-    lane: agency
-    mode: "off"                   # retired 2026-11-13: Strong records are the agency track now
-    schedule: "09:00 Mon-Fri"
-    presets: [Strong - 02 Ready to Call, Strong - 03 Call Attempt 1, Strong - 04 Call Attempt 2, Strong - 05 Call Attempt 3, Strong - 06 Call Attempt 4]
-    tranche: true
-    drop_status: DEAD
-    write_line_type: true
-    max_records: 250
-    recheck_days: 7
-
-  strong_dial_file:
-    kind: dialexport
-    owner: ops
-    lane: agency
-    mode: "off"                   # retired 2026-11-13: the calling agency dials these from the monthly file
-    schedule: "07:40 Mon-Fri"
-    summary: The current Strong tranche as a daily power-dialer file of Dial First and Second numbers nobody has reached, landlines last.
-    presets: [Strong - 02 Ready to Call, Strong - 03 Call Attempt 1, Strong - 04 Call Attempt 2, Strong - 05 Call Attempt 3, Strong - 06 Call Attempt 4]
-    tranche: true
-    every_days: 0.8               # under a day: the Strong round is a call each weekday
-    power_dialer_over: 1000       # D36 (yours): Kixie Power List, one proof call first
-    rest_after_days: 5
-    max_reads: 400
-
-  bulk_native_trace:
-    kind: native_trace
-    owner: research
-    lane: agency
-    mode: "off"                   # retired 2026-11-13: Bulk records are the agency track now
-    schedule: "every 60 min 08:00-18:00 Mon-Fri"
-    presets: [Bulk - 00 Needs Skipped]
-    tranche: true
-    scoped: true
-    min_age_hours: 1
-
-  bulk_score:
-    kind: score
-    owner: research
-    lane: agency
-    mode: "off"                   # retired 2026-11-13: Bulk records are the agency track now
-    schedule: "09:15 Mon-Fri"
-    presets: [Bulk - 02 Ready to Call, Bulk - 03 Call Attempt 1, Bulk - 04 Call Attempt 2, Bulk - 05 Call Attempt 3, Bulk - 06 Call Attempt 4, Bulk - 07 Call Attempt 5]
-    tranche: true
-    drop_status: DEAD
-    write_line_type: true
-    max_records: 250
-    recheck_days: 7
-
-  bulk_dial_file:
-    kind: dialexport
-    owner: ops
-    lane: agency
-    mode: "off"                   # retired 2026-11-13: the calling agency dials these from the monthly file
-    schedule: "Mon 07:50"
-    summary: The current Bulk tranche as a weekly power-dialer file; each record is dialed about once a month to attempt 6.
-    presets: [Bulk - 02 Ready to Call, Bulk - 03 Call Attempt 1, Bulk - 04 Call Attempt 2, Bulk - 05 Call Attempt 3, Bulk - 06 Call Attempt 4, Bulk - 07 Call Attempt 5]
-    tranche: true
-    every_days: 30
-    power_dialer_over: 1000
-    rest_after_days: 5
-    max_reads: 400
-
   rehash_dial_file:
     kind: dialexport
     owner: ops
@@ -1654,6 +1583,84 @@ stages:
       - "Hello from {sender}. I'm still interested in the house at {street}. Nothing needs to be fixed or cleaned out, and you can leave whatever you don't want. If the time is ever right, please call or text {phone}."
       - "Hello, {sender} here about {street}. I buy houses here in East Tennessee and can work around your family's schedule. If you'd like to talk, my number is {phone}. Please keep this letter, even if you're not ready to decide yet."
 
+  curative_pipeline:
+    kind: curative
+    owner: sales
+    mode: "live"                 # Ty, 2026-11-23: "go ahead and build out all that stuff"; needs AGENTS_LIVE_STAGES
+    schedule: ["02:50 Mon-Fri", "08:35 Mon-Fri", "17:00 Mon-Fri"]   # the night and the morning judge the days that are over; 5pm says who is short today
+    summary: "Every curative title house (the owner died, no probate, every heir signs) on the Curative Title board: Research, Ready for Marketing, Day 1 to Day 5, Heir Engaged, Exhausted. At most daily_starts houses start a business day, the longest-waiting first; every living heir with a number is called each business day of the round, never texted."
+    # Ty, 2026-11-23: "a specific curative title pipeline that is a fully sequential process without smarter
+    # contact, that has 5 days ... reach out to the entire heir tree and have that full PDF." Separate from the
+    # First to Market board and the heir lane, which both skip the Curative tag. Set up and loaded from the
+    # workstation (CURATIVE_ALLOW=1 and --commit to write):
+    #   python src/agents/autopilot/curative_setup.py board     (the tag, the board, its columns; prints the ids)
+    #   python src/agents/autopilot/curative_setup.py load      (PDF, heir numbers, note, tag on each Work-now house)
+    #   python src/agents/autopilot/curative_setup.py reset-statuses  (clears old marketing statuses on the Work-now houses; --undo <log> puts them back)
+    lane: heirs
+    gate_allow: [deceased, heir, in_research]   # the death is the point; each letter goes to the heir's own address; research may leave Deep Prospecting on
+    tag: Curative
+    board: Curative Title
+    column_ids:                  # made 2026-11-23 by curative_setup.py board --commit (prod-account)
+      Research: "00000000-0000-0000-0000-000000000000"
+      Ready for Marketing: "00000000-0000-0000-0000-000000000000"
+      Day 1: "00000000-0000-0000-0000-000000000000"
+      Day 2: "00000000-0000-0000-0000-000000000000"
+      Day 3: "00000000-0000-0000-0000-000000000000"
+      Day 4: "00000000-0000-0000-0000-000000000000"
+      Day 5: "00000000-0000-0000-0000-000000000000"
+      Heir Engaged: "00000000-0000-0000-0000-000000000000"
+      Exhausted: "00000000-0000-0000-0000-000000000000"
+    caller: Emerson              # the heir caller (D19, Ty 2026-11-20: "Emerson, be the one calling the heirs")
+    research_workflow: deep_prospect
+    heir_files: ""               # "" reads <data>/curative/heirs: the loader's files, copied to the box's /data/curative/heirs/
+    conversation_seconds: 60     # an answered call this long on an heir's number is an heir engaged
+    exhausted_callback_days: 30
+    daily_pieces: 0              # mail held until the new mailers come out (Ty, 2026-11-19)
+    letter_piece: handwritten_letter
+    letter_copy: "Hi {first}, my name is {sender}, and I am a local buyer. I am writing about the house at {street}. If you or your family would ever consider selling it, I would be glad to talk, with no cost and no pressure. I can buy it as it sits and work around everyone's schedule. You can call me at {phone}."
+    mailed_tag: "Mailed {yyyy}-{mm}"
+    last_mailed_field: Last Mailed
+    floor_days: 45
+    max_log_calls: 400
+    daily_starts: 10             # houses moved from Ready for Marketing into Day 1 a business day, the longest-waiting first
+    max_records: 250             # every card is read each pass now that every house is on the board
+    max_scan: 2000
+    max_creates: 200             # every tagged house goes on the board at once; daily_starts paces the calls (Ty, 2026-11-23)
+    max_moves: 200
+    max_tasks: 200
+    max_cards: 1000
+    off_days: 30
+  estate_owner_swap:
+    kind: ownerswap
+    owner: research
+    mode: "live"
+    schedule: "10:30 Mon-Fri"
+    summary: On estates research already finished, the owner of record becomes the decision maker research verified, at their own address, so mail and calls reach the person who decides; the decedent stays on the record, and every change can be undone.
+    # Ty, 2026-11-23: "swap the owner out with the key decision maker and send our mail to that person, as
+    # opposed to just at the house." Acts only when this block says live AND AGENTS_DP_OWNER_SWAP=1 is set on
+    # the box (the research write-back's own switch), once the one-record proof passes on staging:
+    #   cd src && python -m agents.autopilot.ownerswap proof --record <uuid> --key-env STAGING_DATASIFT_KEY --commit
+    # Live 2026-11-23 on Ty's go ("we can do the estate owner swap"): the proof passed on prod-account's proof record
+    # (bca1c075, --allow-prod with OWNERSWAP_PROOF=1). DataSift RENAMES the owner object rather than attaching a
+    # new one; the property address and the second owners stayed clean, and the undo step put it back as it was.
+    # An owner object that holds other houses is never renamed; when they are all the same estate the record is
+    # listed for a person.
+    covers: [researchagent]
+    max_records: 25                # owners changed (or planned) a run
+    max_reads: 150                 # DataSift reads a run: records, fields, owners, a shared owner's other houses
+    max_research_days: 120         # research older than this is left for a person to re-run
+    max_shared: 5                  # other houses of a shared owner object read to judge "the same estate"
+    recheck_days: 7                # a read that refused a record is trusted this long for the same research
+    researched_tags: [Deep Prospected]
+    death_tags: [deceased]         # with the owner flag and death_fields: the death mark the record must carry
+    death_fields: [Owner Deceased]
+    carry_phones: true             # on a new owner object: the research's numbers follow, as the record holds them
+    carry_counter: true            # on a new owner object: its skip trace counter goes up by one
+    fill_fields: true              # Decision Maker, DM Relationship, Decedent Name, only when empty
+    dm_field: "Decision Maker"
+    relationship_field: "DM Relationship"
+    decedent_field: "Decedent Name"
+    needs_switch: true             # false would act on the playbook's mode alone, without AGENTS_DP_OWNER_SWAP
   probate_honest:
     kind: probate
     owner: analysis
@@ -2078,10 +2085,12 @@ stages:
     owner: ops
     mode: "live"                  # read only: the snapshot is the same in plan and live mode
     schedule: ["07:45 Mon-Fri", "12:30 Mon-Fri", "19:30 Mon-Fri"]   # 19:30 runs after daily_capture (19:15) and kpi_alarms (19:25)
-    summary: One snapshot of the operations numbers three times a weekday (calls, leads, deals, the county board, direct mail, channels, lists, goals and costs), published as the brain's own tracker page with one CSV per tab that any Google Sheet mirrors with IMPORTDATA, and one Slack message a day edited in place.
+    summary: One snapshot of the operations numbers three times a weekday (calls, texts, leads with the source each came from, deals, the county board, direct mail, channels, lists and costs), written into the team's Google Sheet in the DataSift KPI tracker's layout (the owner types goals, costs and deal fees on its Goals tab, read back every run and shown beside the month's pace), with the brain's own page and CSVs as the fallback, and one Slack message a day edited in place.
     covers: [kpi]
     # Ty, 2026-11-16: mirror how the DataSift KPI tracker works, "as core and as simple for any universal users
     # to run as we possibly can", no Lambda or AWS. kpisinks.py publishes; a Google credential is optional.
+    # Ty, 2026-11-23: the Google Sheet is the tracker ("everything in one place ... as opposed to the HTML
+    # template"). Its id is the Fly secret AGENTS_KPI_SHEET_ID; the sign-in is deploy/kpi_sheet_connect.py.
     run: auto                     # the first slot is the morning, the last the evening
     sync: true
     groups: [calls, state, texts, board]
@@ -2106,7 +2115,8 @@ stages:
       Lists: [morning]
       Costs: [morning]
     publish:
-      title: "KPI tracker"
+      title: "the business KPIs"           # the page's title, and the sheet's name only when the tracker makes one
+      scoreboard_title: "the business KPI scoreboard"
       slack: "edit"               # one message a day, edited in place; posts or off
       how_tab: "How it is counted"
 

@@ -587,7 +587,12 @@ def apply_move(ctx: Ctx, c: dict, ph: dict, boards: dict, state: dict) -> str:
         return "moved"
     if not state.get("verified"):
         state["verified"] = True
-        if not routes.card_in_column(ctx.crm, c["to_col"], c["card"]):
+        # A card that is not in the new column may already have moved on: the account's own card.moved
+        # sequence can carry it further within a second (seen live 2026-11-23, when Send Back to LM took a
+        # card to the Lead Management board one second after our write). Only a card still in its old
+        # column did not move.
+        if (not routes.card_in_column(ctx.crm, c["to_col"], c["card"])
+                and routes.card_in_column(ctx.crm, c["from_col"], c["card"])):
             state["broken"] = True
             ctx.out.problem("the card for %s did not move (it is not in %s after the write); nothing more was moved. "
                             "Move one card by hand and check the column ids" % (c["street"], ph[c["to"]]["column"]))

@@ -1,0 +1,10 @@
+# The SiftStack dialer (src/dialer). Pinned where the behavior was verified: twilio 9.13.0 (the
+# Conference Participants kwargs, the request validator's HMAC-SHA256 support) and phonenumbers 9.0.43
+# (area codes, time zones, regions). python-multipart is what FastAPI reads Twilio's form posts with.
+fastapi>=0.115.0
+uvicorn>=0.32.0
+python-multipart>=0.0.9
+requests>=2.31.0
+twilio==9.13.0
+phonenumbers==9.0.43
+tzdata>=2024.1

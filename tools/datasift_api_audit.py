@@ -133,6 +133,7 @@ REVIEWED = {
     "mls_offers": ("ready on the key", "siftmap_standalone keeps autocomplete() for other modules; this workflow calls only "
                    "POST /properties/search/, the add-properties-by-query quote, the add itself only on a live yes inside "
                    "AGENTS_MLS_ADD_MAX, and /properties/detail/ for shortlisted listings already in the account"),
+    "buyer_search": ("ready on the key", "the autocomplete finding is deal_buyer_match's, reached through covers: [dealmatch]; this workflow calls only POST /properties/search/ (the sweep, and a map lookup around a geocoded point) and /properties/detail/ capped per run and inside the deal workflows' daily read budget, and reads a record through quick_screen.locate on the key"),
     "list_pull": ("needs work", "the pull itself (workflows/list_pull, pull_by_ids) runs on published routes and the key; "
                   "agency_call_list, knox_blount_top15k and franklin_top30k load the uploader, siftmap_pull's allowance "
                   "read and SiftMap autocomplete at module scope"),

@@ -566,7 +566,8 @@ def _checks(check, sinks: str) -> None:
     check(all(set(t) == {"name", "note", "columns", "rows", "failed"} and isinstance(t["rows"], list)
               and all(isinstance(c, (str, int, float)) for r in t["rows"] for c in r) for t in snap["tabs"]),
           "every tab keeps the contract kpisinks reads: name, note, columns, rows of text and numbers, failed")
-    check(set(snap) == {"refreshed", "run", "tz", "tabs", "slack", "problems", "notes"} and isinstance(snap["slack"]["lines"], list),
+    check(set(snap) == {"refreshed", "run", "tz", "tabs", "slack", "problems", "notes", "goal_cells"}
+          and isinstance(snap["slack"]["lines"], list),
           "the snapshot keeps the agreed top-level keys")
     saved = config.DATA_DIR / "kpi" / "kpi_tracker_2026-11-18.json"
     check(saved.is_file() and json.loads(saved.read_text(encoding="utf-8"))["run"] == "noon",
@@ -577,28 +578,62 @@ def _checks(check, sinks: str) -> None:
           and not any("sinks" in p for p in ctx.out.problems),
           "with no kpisinks module the run says so as a tally line and does not crash or raise a problem")
 
+    from .autopilot import kpisheet as ksh
+    tops = [(tb["name"], x) for tb in snap["tabs"] for blk in ksh.blocks(tb)
+            for x in [blk.title] + [str(h) for h in blk.header] if ", " in str(x)]
+    check(not tops, "no tab heading or column header carries a comma (Ty, 2026-11-23: they read clunky): %r" % tops[:6])
     sb = _tab(snap, "Scoreboard")
-    check(sb["columns"][:4] == ["Section", "Measure", "Oct 2026", "Nov 2026 (so far)"],
-          "the Scoreboard's months start where the call log copy starts: %r" % sb["columns"][:4])
+    check(sb["columns"] == ["Section", "Monthly", "Nov (to date)", "Pace this month", "Mark", "Oct", "Goal a month", "Benchmark"],
+          "the Scoreboard reads as the DataSift tracker's: this month first with its pace and mark, then the months "
+          "before it back to where the call log copy starts, the goal at the far end: %r" % sb["columns"])
     dials = _row(sb, "Activity", "Dials")
-    check(dials[2:4] == [1, 11] and dials[-1] == "behind",
-          "dials by month come from the log (1 in October, 11 this month) and the month's pace is marked: %r" % dials)
+    check(dials[2] == 11 and dials[5] == 1 and dials[4] == "behind" and dials[-2] == kt._n1(kt.goals.needs(cat)["dials"])
+          and dials[-1].startswith("150 dials a day per caller"),
+          "dials by month come from the log (11 this month, 1 in October), the month's pace is marked, and the goal "
+          "says what a month needs: %r" % dials)
     conv = _row(sb, "Activity", "Conversations")
-    check(conv[3] == 7, "conversations count calls of a minute either way and an inbound text, the catalog's way: %r" % conv)
-    check(_row(sb, "Pipeline", "New leads")[3] == 9 and _row(sb, "Pipeline", "Contracts signed")[3] == 2
-          and _row(sb, "Pipeline", "Deals closed")[3] == 1,
+    check(conv[2] == 7, "conversations count calls of a minute either way and an inbound text, the catalog's way: %r" % conv)
+    check(_row(sb, "Pipeline", "New leads")[2] == 9 and _row(sb, "Pipeline", "Contracts signed")[2] == 2
+          and _row(sb, "Pipeline", "Deals closed")[2] == 1,
           "this month: 9 new leads, 2 contracts signed and 1 deal closed, each on its own row")
-    check(_row(sb, "Pipeline", "Qualified leads")[3] == 1, "a lead moved to Hot Lead is qualified")
-    for label in ("Texts sent", "Text replies"):
-        r = _row(sb, "Activity", label)
-        check(r[2:4] == [kt.GAP, kt.GAP], "%s reads not tracked yet, never zero: %r" % (label, r[2:4]))
-    check(_row(sb, "Pipeline", "Offers made")[2:4] == [kt.GAP, kt.GAP] and _row(sb, "Pipeline", "Revenue closed")[3] == kt.GAP,
-          "offers and revenue (no fee field) are gaps, not zeros")
+    check(_row(sb, "Pipeline", "Qualified leads")[2] == 1, "a lead moved to Hot Lead is qualified")
+    r = _row(sb, "Activity", "Initial text replies (first reply in a thread)")
+    check(r[2] == kt.GAP and r[5] == kt.GAP, "replies read not tracked yet with no texting tool, never zero: %r" % (r[2:6],))
+    o = _row(sb, "Activity", "Outreach texts sent (before a reply)")
+    check(isinstance(o[2], int) and isinstance(o[5], int),
+          "outreach texts are the autopilot's own ledger, one row for every text sent before a reply: %r" % (o[2:6],))
+    check(_row(sb, "Activity", "Talk minutes") is None and _row(sb, "Pipeline", "Leads credited to nobody") is None
+          and _row(sb, "Activity", "Avg talk time per conversation (m:ss)") is not None,
+          "Kendrick's renames: talk time a conversation, not talk minutes; no lead credited to nobody")
+    srcs = [_row(sb, "Pipeline", x)[2] for x in ("Leads from a caller", "Leads from texts", "Leads from a call-in",
+                                                  "Leads set by the autopilot", "Leads set by DataSift automation",
+                                                  "Leads with no source found")]
+    check(sum(srcs) == _row(sb, "Pipeline", "New leads")[2],
+          "every new lead is credited to one source, and the sources add up to the new leads: %r" % srcs)
+    check(_row(sb, "Contact", "Owners reached by call") is not None and _row(sb, "Contact", "Owners reached by text") is not None
+          and _row(sb, "Spend", "Research ($)") is not None,
+          "owners reached by call and by text on rows of their own, and the spend broken out by channel")
+    check(_row(sb, "Pipeline", "Offers made")[2] == kt.GAP and _row(sb, "Pipeline", "Offers made")[5] == kt.GAP
+          and _row(sb, "Pipeline", "Revenue closed ($)")[2] == kt.GAP,
+          "offers and revenue (no fee field, no deal typed on the Goals tab) are gaps, not zeros")
     check("not tracked yet" in sb["note"] and "no texting tool is connected" in sb["note"]
-          and "cli.py kpisources connect" in sb["note"],
-          "the gaps' reasons are in the tab's note: no texting tool is connected, and the command that connects one")
+          and "cli.py kpisources connect" in sb["note"] and "credited to something" in sb["note"]
+          and not any(r and r[0] == "Note" for r in sb["rows"]),
+          "the gaps' reasons and how credit works are in the tab's note, not in rows of the table")
+    now_head = next(i for i, r in enumerate(sb["rows"]) if r and str(r[0]).startswith("Right now and the last"))
+    lpc = _row(sb, "Leads per contract, last 90 days")
+    check(sb["rows"][now_head + 1] == ["Measure", "Value", "", "Mark", "", "", "Benchmark"]
+          and lpc is not None and len(lpc) == len(sb["columns"]) - 1 and "leads a deal" in lpc[-1]
+          and _row(sb, "Fees under contract, expected ($)")[1] == kt.GAP,
+          "the 90-day ratios and what is true right now sit in their own block, never under a month, their goal in "
+          "the table's wide last column: %r" % (lpc,))
     week_head = next(i for i, r in enumerate(sb["rows"]) if r and r[0].startswith("Last 6 weeks"))
-    check(sb["rows"][week_head + 1][-1] == "Week of Nov 16 (so far)", "the weekly block ends with this week so far")
+    wh = sb["rows"][week_head + 1]
+    check(wh[:3] == ["Section", "Measure", "Nov 16 (to date)"] and wh[-1] == "Weekly goal",
+          "the weekly block starts with this week so far and ends with each measure's weekly goal: %r" % wh)
+    wd = next(r for r in sb["rows"][week_head + 2:] if r and r[1] == "Dials")
+    check(wd[-1] == kt._n1(kt.goals.needs(cat)["dials"] * 12.0 / 52.0),
+          "a week's goal is the month's need times 12 over 52: %r" % wd[-1])
 
     td = _tab(snap, "Today")
     adri = _row(td, "Emerson")
@@ -611,23 +646,26 @@ def _checks(check, sinks: str) -> None:
     team = _row(td, "Team")
     check(team[4] == 4 and team[8] == 3 and team[10:14] == [1, 1, 0, 1] and team[15] == 2 and team[16] == 1,
           "the team row: 4 dials, 3 conversations, 1 correct, 1 wrong, 0 dead, 1 do-not-call, 2 leads, 1 appointment: %r" % team)
-    above = td["rows"][:td["rows"].index(team)]
+    start = next(i for i, r in enumerate(td["rows"]) if r and str(r[0]).startswith("Callers on "))
+    above = td["rows"][start + 2:td["rows"].index(team)]
     check(team[4] == sum(r[4] for r in above if isinstance(r[4], int)) and team[8] == sum(r[8] for r in above),
           "the team's dials and conversations are the callers' rows added up")
     check(_row(td, "Leads with no next task (now)")[1] == 1 and _row(td, "Lead tasks overdue (log copy)")[1] == 1
           and _row(td, "Lead tasks due today (log copy)")[1] == 1 and _row(td, "Leads not called yet")[1] == 1,
           "the lead manager's day: one lead with no task, one task overdue, one due today, one lead not called yet")
-    check(_row(td, "Texts sent")[1] == kt.GAP, "texts sent read not tracked yet on the Today tab")
-    board = [r for r in td["rows"] if r and str(r[0]).startswith("County board")]
-    check([r[2] for r in board] == [1, 1, 0, 1, 0, 0, 1], "the county board's cards by column: %r" % [r[2] for r in board])
-    check(_row(td, "Top 1,000", "Priority - 02 Ready to Call")[2] == 87, "the Top 1,000 presets are counted live")
+    check(_row(td, "Initial text replies")[1] == kt.GAP, "replies read not tracked yet on the Today tab")
+    check(not any(r and (str(r[0]).startswith("County board") or str(r[0]) == "Pipelines now") for r in td["rows"]),
+          "Kendrick: the pipelines block is off the Today tab")
+    check(td["columns"] == ["Funnel", "Count", "Rate", "Benchmark"] and _row(td, "Dials")[1] == 4
+          and str(_row(td, "Answered")[2]).endswith("of dials") and str(_row(td, "Conversations")[2]).endswith("of answered"),
+          "Kendrick: the funnel's ratios at the top of Today: %r" % (td["rows"][:5],))
 
     cl = _tab(snap, "Callers")
     tue = [r for r in cl["rows"] if r and r[0] == "Tue Nov 17"]
     check(any(r[1] == kt.NOT_TIED and r[5] == 1 for r in tue) and any(r[1] == "Sloane" for r in tue),
           "with two callers a dial with no name stays not tied to a caller: %r" % [r[:6] for r in tue])
     check(any(r and r[0] == "Emerson" and r[1] == 1 for r in cl["rows"]), "the 90-day block judges each caller (goals.caller_lines)")
-    check(_row(cl, "By attempt (Day 1 to Day 5, Exhausted)")[1] == kt.GAP and _row(cl, "Contracts credited to a caller")[1] == kt.GAP,
+    check(_row(cl, "By attempt (Day 1 to Day 5 and Exhausted)")[1] == kt.GAP and _row(cl, "Contracts credited to a caller")[1] == kt.GAP,
           "by attempt and contracts credited read not tracked yet")
     wide = kt.Snap(_ctx(pol, _stage(caller_days=40), FakeCRM(), NOON), cat, kt.options(_stage(caller_days=40)), "noon")
     days = {r[0] for r in wide.tab_callers()["rows"] if r}
@@ -759,16 +797,55 @@ def _checks(check, sinks: str) -> None:
     check(ml[3].startswith("Month so far: ") and "Pace:" in ml[3], "then the month and its pace")
     check("Speed to lead: median 9 minutes. 1 lead has no next task." in ml,
           "the morning times the last calling day's leads: 9 minutes to the first call")
-    check(_tab(msnap, "Today")["rows"][0][0] == "Emerson" and "Tuesday final" in _tab(msnap, "Today")["note"],
+    mt = _tab(msnap, "Today")["rows"]
+    mh = next(i for i, r in enumerate(mt) if r and str(r[0]).startswith("Callers on "))
+    check(mt[mh + 2][0] == "Emerson" and "Tuesday final" in _tab(msnap, "Today")["note"],
           "the morning Today tab is the last calling day")
     lists = _tab(msnap, "Lists")
     check(not lists["failed"] and _row(lists, "Agency") is not None and _row(lists, "Agency")[2] == 2
           and _row(lists, "Liens")[1] == "no list with this title" and _row(lists, "Agency")[9] == kt.GAP,
           "the Lists tab: owners and records by lane, county lists counted live, doors per deal a gap")
     costs = _tab(msnap, "Costs")
-    check(_row(costs, "Dialer ($ a month, typed in team/kpi.yaml)")[1] == kt.GAP
+    check(_row(costs, "Dialer ($ a month, typed)")[1] == kt.GAP
           and _row(costs, "Cost per lead ($)")[1] == kt.GAP and _row(costs, "Mail (the autopilot's ledger) ($)")[1:3] == [3.0, 0.75],
           "costs: the ledger's spend by month; an untyped cost and the cost per lead read not tracked yet")
+
+    # ---------------------------------------------------------------- what the owner typed on the sheet (2026-11-23)
+    rec = "https://app.reisift.io/records/properties/00000000-0000-4000-8000-0000000000a1"
+    typed_cat = kpi.apply_typed(cat, {
+        "read_at": "2026-11-18T12:00:00+00:00",
+        "figures": {"goal.revenue_per_year": {"value": 600000}, "caller.conversations_per_day": {"low": 6, "high": 8},
+                    "caller.dials_per_day": {"low": 150, "high": 180}},
+        "inputs": {"monthly_costs": {"dialer": 400, "agency": 1800}},
+        "deals": [{"property": rec, "signed": "2026-11-02", "closed": "2026-11-12", "type": "Assignment", "price": 90000,
+                   "expected": 12000, "fee": 12000},
+                  {"property": "100 Sample St", "signed": "2026-11-10", "expected": 9000}]})
+    check(typed_cat.fig("goal.revenue_per_year").value == 600000 and typed_cat.fig("goal.revenue_per_year").status == "confirmed"
+          and typed_cat.fig("caller.conversations_per_day").low == 6
+          and typed_cat.fig("caller.dials_per_day").value == 150 and "caller.dials_per_day" not in typed_cat.typed["keys"],
+          "a typed goal is confirmed and used; a range typed where one number belongs is passed over")
+    kpi.override(typed_cat)
+    try:
+        s2 = kt.Snap(_ctx(pol, st, FakeCRM(), NOON), typed_cat, kt.options(st), "noon")
+        nov, octo = s2.month(date(2026, 11, 1)), s2.month(date(2026, 10, 1))
+        check(s2.revenue(nov) == 12000 and s2.revenue(octo) == 0 and s2.fees_open() == 9000,
+              "revenue is the fees typed on the Goals tab, on the day each deal closed; an open deal's expected fee "
+              "counts until it closes")
+        g2 = s2.tab_goals()
+        check(_row(g2, "Revenue goal")[1] == "$600,000 a year" and _row(g2, "Revenue goal")[2] == "yours, typed on the Goals tab",
+              "a goal typed on the Goals tab is the one the goal sheet shows, marked as yours: %r" % _row(g2, "Revenue goal"))
+        gc = s2.goal_cells()
+        check(gc["goal.revenue_per_year"][:2] == [50000.0, 12000] and gc["funnel.dials_per_lead"][0] > 0
+              and gc["caller.conversations_per_day"][0] == "6 to 8",
+              "the Goals tab's gray columns: the typed goal a month beside the fees so far, a typed range as a range: %r"
+              % ({k: gc[k] for k in ("goal.revenue_per_year", "caller.conversations_per_day")},))
+        c2 = s2.tab_costs()
+        check(_row(c2, "Dialer ($ a month, typed)")[1] == 400 and _row(c2, "Calling agency ($ a month)")[1] == 1800
+              and _row(c2, "Agency ($ a month, typed)") is None and _row(c2, "Cost per lead ($)")[1] != kt.GAP,
+              "a typed dialer cost counts every month, a typed agency cost is the agency's own row (counted once), "
+              "and with a cost typed, the cost per lead is counted")
+    finally:
+        kpi.override(cat)
 
     nctx = _ctx(pol, st, FakeCRM(), NOON)
     kt.run_kpitracker(nctx)
@@ -861,7 +938,7 @@ def _checks(check, sinks: str) -> None:
     try:
         pctx = _ctx(pol, st, FakeCRM(), NOON)
         kt.run_kpitracker(pctx)
-        check(seen.get("snap") is not None and len(seen["snap"]["tabs"]) == 12 and seen["snap"] == kt.latest(),
+        check(seen.get("snap") is not None and len(seen["snap"]["tabs"]) == len(kt.TAB_ORDER) and seen["snap"] == kt.latest(),
               "with kpisinks built, publish gets the very snapshot that was saved")
         check("the sheet is shared with no one yet" in pctx.out.problems and pctx.out.tally.get("sheet updated") == 1,
               "the sinks' problems become the stage's problems")
@@ -972,14 +1049,22 @@ def _texting(check, kt, pol, st) -> None:
     check(len(got.events) == 4 and not got.problems, "its four rows are read as texts: %r" % got.problems)
     _ctx_, snap = _run(kt, pol, st)
     sb = _tab(snap, "Scoreboard")
-    check(_row(sb, "Activity", "Texts sent")[2:4] == [kt.GAP, 2] and _row(sb, "Activity", "Text replies")[2:4] == [kt.GAP, 2],
-          "texts sent and replies fill from the texting tool (a failed text is not sent; the log's reply counts too), and "
-          "the month before it was connected stays not tracked yet: %r" % (_row(sb, "Activity", "Texts sent")[2:4],))
+    sent = _row(sb, "Activity", "Outreach texts sent (before a reply)")
+    replies = _row(sb, "Activity", "Initial text replies (first reply in a thread)")
+    check(sent[2] == 2 and replies[5] == kt.GAP and isinstance(replies[2], int) and replies[2] >= 1,
+          "outreach texts and first replies fill from the texting tool (a failed text is not sent), and the month "
+          "before it was connected keeps its replies not tracked yet: %r" % ([sent[2], replies[5], replies[2]],))
     check("no texting tool is connected" not in sb["note"] and "Smarter Contact file" in sb["note"],
           "the note says where the texts come from now")
     td = _tab(snap, "Today")
-    check(_row(td, "Texts sent")[1] == 1 and _row(td, "Text replies")[1] == 2 and _row(td, "Team")[8] == 4,
-          "today: one text sent, two replies, and the tool's reply is one more conversation, the catalog's way")
+    check(_row(td, "Outreach texts sent (before a reply)")[1] == 1 and _row(td, "Initial text replies")[1] >= 1
+          and _row(td, "Team")[8] == 4,
+          "today: one outreach text, a first reply, and the tool's reply is one more conversation, the catalog's way")
+    tx = _tab(snap, "Texts")
+    check(tx["columns"][:3] == ["Section", "Monthly", "Nov (to date)"]
+          and _row(tx, "Outreach", "Outreach texts sent (before a reply)")[2] == 2
+          and isinstance(_row(tx, "Replies", "Initial text replies (first reply in a thread)")[2], int),
+          "Kendrick: the Texts tab carries the text funnel by month: %r" % (tx["rows"][:3],))
     ch = _tab(snap, "Channels")
     check(_row(ch, "Texting (Smarter Contact)", "Texts sent")[2:4] == [2, kt.GAP]
           and _row(ch, "Texting (Smarter Contact)", "Replies")[2:4] == [1, kt.GAP]
@@ -987,13 +1072,13 @@ def _texting(check, kt, pol, st) -> None:
           and _row(ch, "Texting (Smarter Contact)", "Sent, delivered, replies, hand raises, opt-outs") is None,
           "Channels splits the texts by tool, and the old gap row goes once the tool counts")
     cl = _tab(snap, "Callers")
-    head = next((i for i, r in enumerate(cl["rows"]) if r and str(r[0]).startswith("Texts sent, ")), None)
+    head = next((i for i, r in enumerate(cl["rows"]) if r and str(r[0]).startswith("Texts sent by person")), None)
     check(head is not None and cl["rows"][head + 2] == ["Emerson", 2] and _row(cl, "Texts a caller sent") is None,
           "Callers shows the week's texts by the person the tool names, and that row is no longer a gap")
     ks.disconnect("sc_texts")
     ks.forget("sc_texts")
     _ctx_, back = _run(kt, pol, st)
-    check(_row(_tab(back, "Scoreboard"), "Activity", "Texts sent")[3] == kt.GAP,
+    check(_row(_tab(back, "Scoreboard"), "Activity", "Initial text replies (first reply in a thread)")[2] == kt.GAP,
           "switched off again, the texts read not tracked yet, never zero")
 
 
@@ -1011,7 +1096,7 @@ def _disagreement(check, kt, pol, st) -> None:
     ctx, snap = _run(kt, pol, st)
     td = _tab(snap, "Today")
     said = [p for p in snap["problems"] if "do not agree" in p]
-    check(_row(td, "Team")[4] == 4 and _row(_tab(snap, "Scoreboard"), "Activity", "Dials")[3] == 11,
+    check(_row(td, "Team")[4] == 4 and _row(_tab(snap, "Scoreboard"), "Activity", "Dials")[2] == 11,
           "the Kixie file and the log disagree on Nov 18, and the dials stay what collect resolved: the log's 4")
     check(len(said) == 1 and "Kixie calls on Nov 18" in said[0] and "the Kixie file" in said[0] and said[0] in ctx.out.problems,
           "the disagreement is one problem on the snapshot: %r" % said)
@@ -1085,8 +1170,8 @@ def _agency_files(check, kt, pol, st) -> None:
           "its report's figures show under its own words; its connects are never our conversations")
     check(_row(ch, "Agency", "Leads back from its file")[2] == 1, "its leads back come from the same file")
     td, sb = _tab(snap, "Today"), _tab(snap, "Scoreboard")
-    check(_row(td, "Team")[4] == 4 and _row(sb, "Activity", "Dials")[3] == 11 and _row(sb, "Pipeline", "New leads")[3] == 9
-          and _row(sb, "Contact", "Correct numbers")[3] == 1,
+    check(_row(td, "Team")[4] == 4 and _row(sb, "Activity", "Dials")[2] == 11 and _row(sb, "Pipeline", "New leads")[2] == 9
+          and _row(sb, "Contact", "Correct numbers (all channels)")[2] == 1,
           "and none of it lands among our callers' dials, the new leads or the correct numbers")
     hc = _tab(snap, "How it is counted")
     agency = _row(hc, "The agency's files")
@@ -1106,5 +1191,5 @@ def _behind_and_mapped(check, kt, pol, st) -> None:
           "a log copy that is behind is a problem and a note, and what it holds is still counted: %r" % said)
     ctx, snap = _run(kt, pol, _stage(contract_statuses=["under_contract", "Contract Signed"]))
     check(any("contract_statuses" in p and "differ from what the DataSift source counts" in p for p in snap["problems"])
-          and _row(_tab(snap, "Scoreboard"), "Pipeline", "Contracts signed")[3] == 2,
+          and _row(_tab(snap, "Scoreboard"), "Pipeline", "Contracts signed")[2] == 2,
           "a contract status the DataSift source does not count is said, and the contracts are counted the source's way")

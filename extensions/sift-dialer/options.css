@@ -1,0 +1,15 @@
+:root { --navy: #0A1130; --blue: #316AFF; --line: #E2E6EF; --line2: #CDD3E0; --ink2: #4A5372; --ink3: #5E6785; --bg: #F5F7FB; }
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--navy); font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+.top { margin: 12px 16px 0; background: var(--navy); color: #fff; border-radius: 12px; padding: 10px 14px; display: flex; align-items: center; gap: 10px; }
+.top img { width: 24px; height: 24px; border-radius: 6px; }
+.card { margin: 12px 16px; background: #fff; border: 1px solid var(--line); border-radius: 12px; padding: 16px; max-width: 640px; box-shadow: 0 1px 2px rgba(10, 17, 48, 0.06); }
+h1 { font-size: 18px; margin: 0 0 8px; }
+h2 { font-size: 15px; margin: 18px 0 6px; }
+.field { display: block; font-size: 12px; font-weight: 700; color: var(--ink2); margin: 10px 0 4px; }
+input[type="url"] { width: 100%; font: inherit; padding: 8px 10px; border: 1px solid var(--line2); border-radius: 6px; }
+.check { display: flex; gap: 8px; align-items: center; margin: 10px 0; }
+.small { font-size: 12px; color: var(--ink3); }
+.row { display: flex; gap: 10px; align-items: center; margin-top: 12px; flex-wrap: wrap; }
+button { font-family: inherit; font-size: 14px; font-weight: 600; line-height: 1; height: 36px; padding: 0 14px; border-radius: 6px; border: 1px solid var(--blue); background: var(--blue); color: #fff; cursor: pointer; }
+button:active { transform: translateY(1px); }

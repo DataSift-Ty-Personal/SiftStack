@@ -354,12 +354,39 @@ class SmartSkip(Source):
     land; relatives' numbers belong to the deep prospect, where a person decides who signs.
 
     The client sys.exits on any error; every exit becomes a RuntimeError here so a stage reports it
-    instead of the worker dying. A payment that needs 3DS stops with the order id, nothing guessed."""
-    name, unit_usd, per = "smartskip", 0.15, "match"
+    instead of the worker dying. A payment that needs 3DS stops with the order id, nothing guessed.
 
-    def __init__(self, max_wait_s: float = 600.0, poll_s: float = 15.0):
+    THE ORDER BOOK (2026-11-23). An order that timed out used to be paid and forgotten: trace() raised,
+    no ledger row was written, and the next run bought the same records again, while the only trace of
+    the order id was the client's own file, which sits wherever the first importer of the client
+    pointed it (a research run's folder, on a box that runs both). So every order is written to this
+    class's own book (`<DATA_DIR>/smartskip/autopilot_orders.json`) the moment SmartSkip gives it an id,
+    BEFORE the card is charged, with the rows it carries; `collect()` picks a paid order up again on a
+    later run (a finished order downloads for free), and a caller marks it claimed once its results
+    are used. Downloads are kept under `<DATA_DIR>/smartskip/orders/` so nothing is downloaded twice.
+
+    `details` keeps, per record, everything the parser read for the person matched to it (SmartSkip's
+    Deceased flag, every relative with their own address, phones and flag) and the order id, beside the
+    numbers `match` returns as it always did."""
+    name, unit_usd, per = "smartskip", 0.15, "match"
+    TRACE_LABEL = "trace"
+    # submitted: the id is known, the payment is not confirmed; needs_card: the payment asked for 3DS;
+    # paid: charged, results not read yet; collected: results on disk, not yet used by the caller.
+    OPEN = ("submitted", "needs_card", "paid", "collected")
+    ROW_FIELDS = ("record_uuid", "owner_uuid", "kind", "first", "last", "company", "street", "city", "state", "zip",
+                  "mail_street", "mail_city", "mail_state", "mail_zip")
+    COLS = ["First Name", "Middle Name", "Last Name", "Mailing Address", "Mailing City", "Mailing State",
+            "Mailing Zip", "Property Address", "Property City", "Property State", "Property Zip"]
+    import threading as _threading   # the book is read and rewritten whole, so writers take turns
+    _BOOK_LOCK = _threading.Lock()
+
+    def __init__(self, max_wait_s: float = 600.0, poll_s: float = 15.0, card_wait_days: float = 3.0,
+                 expire_days: float = 14.0, folder=None):
         self.max_wait_s, self.poll_s = max_wait_s, poll_s
+        self.card_wait_days, self.expire_days = card_wait_days, expire_days
+        self.folder = Path(folder) if folder else None
         self.costs: dict = {}
+        self.details: dict = {}
 
     def configured(self) -> bool:
         return bool(os.environ.get("SMARTSKIP_EMAIL") and os.environ.get("SMARTSKIP_PASSWORD"))
@@ -373,60 +400,258 @@ class SmartSkip(Source):
             sys.path.insert(0, str(scripts))
         return importlib.import_module("smartskip_trace"), importlib.import_module("parse_smartskip")
 
-    def trace(self, subjects: list[Subject]) -> tuple[dict, float]:
+    # ------------------------------------------------------------------ the order book
+    def home(self) -> Path:
+        if self.folder is not None:
+            return self.folder
+        from .. import config
+        return Path(config.DATA_DIR) / "smartskip"
+
+    def book_path(self) -> Path:
+        return self.home() / "autopilot_orders.json"
+
+    def order_file(self, bid: str) -> Path:
+        return self.home() / "orders" / ("%s_vertical.csv" % bid)
+
+    def book(self) -> list[dict]:
+        p = self.book_path()
+        try:
+            got = json.loads(p.read_text(encoding="utf-8")) if p.exists() else []
+        except (OSError, ValueError):
+            return []
+        return got if isinstance(got, list) else []
+
+    def keep(self, entry: dict) -> dict:
+        """Write one order into the book (replacing the entry with the same id). A finished entry is
+        dropped after 60 days so the book stays small; its download stays in orders/."""
+        with self._BOOK_LOCK:
+            now = time.time()
+            rows = [e for e in self.book() if e.get("bulkSkipId") != entry.get("bulkSkipId")
+                    and (e.get("status") in self.OPEN or now - float(e.get("created_ts") or now) < 60 * 86400)]
+            rows.append(entry)
+            p = self.book_path()
+            p.parent.mkdir(parents=True, exist_ok=True)
+            tmp = p.with_name(p.name + ".tmp")
+            tmp.write_text(json.dumps(rows, indent=1, default=str), encoding="utf-8")
+            tmp.replace(p)
+        return entry
+
+    @staticmethod
+    def _stamp() -> str:
+        return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+    def pending(self, label: str = "") -> list[dict]:
+        """The orders still open for this label, oldest first. An order whose payment was never confirmed
+        for `card_wait_days` is given up (nothing was charged: an unpaid order never runs), and any open
+        order older than `expire_days` is given up too, so the book cannot hold a stage still for ever."""
+        out = []
+        now = time.time()
+        for e in sorted(self.book(), key=lambda x: float(x.get("created_ts") or 0)):
+            if (label and e.get("label") != label) or e.get("status") not in self.OPEN:
+                continue
+            age_days = (now - float(e.get("created_ts") or now)) / 86400.0
+            if e.get("status") in ("submitted", "needs_card") and age_days > self.card_wait_days:
+                self.keep(dict(e, status="abandoned", why="the payment was never confirmed"))
+                continue
+            if age_days > self.expire_days:
+                self.keep(dict(e, status="abandoned", why="still open after %g days" % self.expire_days))
+                continue
+            out.append(e)
+        return out
+
+    def claim(self, entry: dict, note: str = "") -> dict:
+        """The caller has used this order's results: it leaves the open orders for good."""
+        return self.keep(dict(entry, status="claimed", claimed=self._stamp(), note=note))
+
+    @classmethod
+    def row_of(cls, s: Subject) -> dict:
+        return {k: getattr(s, k) for k in cls.ROW_FIELDS}
+
+    @classmethod
+    def subject_from(cls, row: dict) -> Subject:
+        return Subject(**{k: row.get(k) or "" for k in cls.ROW_FIELDS})
+
+    # ------------------------------------------------------------------ one order
+    def place(self, subjects: list[Subject], label: str, meta: dict | None = None) -> dict:
+        """Upload, map and calculate (free), write the order into the book, THEN pay. Returns the book
+        entry: status paid, or needs_card when the card asks for 3DS (nothing charged). A refused payment
+        is recorded and raised; an error before the order exists raises with nothing ordered."""
         rows = [s for s in subjects if s.first and s.last and (s.mail_street or s.street)]
-        self.costs = {}
         if not rows:
-            return {}, 0.0
-        ss, ps = self._modules()
-        run_dir = Path(os.environ["SKIPTRACE_RUN_DIR"])
-        run_dir.mkdir(parents=True, exist_ok=True)
-        stamp = time.strftime("%Y%m%d_%H%M%S")
-        csv_path = run_dir / ("autopilot_%s.csv" % stamp)
-        cols = ["First Name", "Middle Name", "Last Name", "Mailing Address", "Mailing City", "Mailing State",
-                "Mailing Zip", "Property Address", "Property City", "Property State", "Property Zip"]
+            raise ValueError("no subject has a full name and an address")
+        ss, _ = self._modules()
+        home = self.home()
+        home.mkdir(parents=True, exist_ok=True)
+        csv_path = home / ("%s_%s.csv" % (label or "autopilot", time.strftime("%Y%m%d_%H%M%S")))
         with csv_path.open("w", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
-            w.writerow(cols)
+            w.writerow(self.COLS)
             for s in rows:
                 w.writerow([s.first, "", s.last, s.mail_street or s.street, s.mail_city or s.city,
                             s.mail_state or s.state, s.mail_zip or s.zip, s.street, s.city, s.state, s.zip])
         try:
             sess = ss.Session()
-            entry = ss.submit(sess, str(csv_path), {})
-            bid = entry["bulkSkipId"]
-            if not ss.pay(sess, bid):
-                raise RuntimeError("SmartSkip order %s needs a 3DS card confirmation in the app; nothing was traced" % bid)
-            t0 = time.time()
-            while True:
-                items = ss.fetch_status(sess, bid)
-                st = ((items[0].get("status") if items else "") or "").lower()
-                if st == "completed":
-                    break
-                if st in ("error", "failed"):
-                    raise RuntimeError("SmartSkip order %s ended %s" % (bid, st))
-                if time.time() - t0 > self.max_wait_s:
-                    raise RuntimeError("SmartSkip order %s is paid and still running after %ds; its results "
-                                       "are not on the records yet" % (bid, self.max_wait_s))
-                time.sleep(self.poll_s)
-            out = run_dir / ("autopilot_%s_vertical.csv" % stamp)
-            ss.download(sess, bid, str(out), "vertical")
-            parsed = ps.parse(str(out))
+            got = ss.submit(sess, str(csv_path), {})
         except SystemExit as exc:
             raise RuntimeError("SmartSkip: %s" % exc)
-        return self.match(rows, parsed), round(self.unit_usd * sum(1 for p in parsed if p.get("has_results")), 2)
+        bid = got["bulkSkipId"]
+        entry = self.keep({"bulkSkipId": bid, "label": label, "status": "submitted", "created": self._stamp(),
+                           "created_ts": time.time(), "csv": str(csv_path), "entities": got.get("entities"),
+                           "rows": [self.row_of(s) for s in rows], "meta": meta or {}})
+        try:
+            ok = ss.pay(sess, bid)
+        except SystemExit as exc:
+            self.keep(dict(entry, status="pay_failed", why=str(exc)[:200]))
+            raise RuntimeError("SmartSkip refused the payment for order %s (%s); nothing was traced" % (bid, str(exc)[:120]))
+        return self.keep(dict(entry, status="paid" if ok else "needs_card", paid=self._stamp() if ok else ""))
 
-    def match(self, rows: list[Subject], parsed: list[dict]) -> dict:
+    def _parse(self, path: Path) -> list:
+        _, ps = self._modules()
+        return ps.parse(str(path))
+
+    def _download(self, ss, sess, bid: str):
+        """The order's vertical file, downloaded once (free) into orders/, parsed; None when SmartSkip has
+        nothing to give yet. An empty answer is not taken as a finished order."""
+        f = self.order_file(bid)
+        f.parent.mkdir(parents=True, exist_ok=True)
+        part = f.with_name(f.name + ".part")
+        try:
+            ss.download(sess, bid, str(part), "vertical")
+            parsed = self._parse(part)
+        except (SystemExit, OSError, ValueError, KeyError):
+            return None
+        if not parsed:
+            return None
+        part.replace(f)
+        return parsed
+
+    def collect(self, entry: dict, wait_s: float | None = None):
+        """The parsed results of a book entry, or None while SmartSkip is still working on it (or the
+        payment was never confirmed). Polls up to `wait_s` (default max_wait_s; 0 is one look). An order
+        SmartSkip ended in error is recorded failed and raised. SmartSkip's order list holds only orders
+        that were paid, so an order seen there is paid whatever the book said."""
+        bid = entry["bulkSkipId"]
+        f = self.order_file(bid)
+        if entry.get("status") == "collected" and f.exists():
+            try:
+                return self._parse(f)
+            except SystemExit as exc:
+                raise RuntimeError("SmartSkip order %s: its saved results do not read (%s)" % (bid, exc))
+        ss, _ = self._modules()
+        try:
+            sess = ss.Session()
+        except SystemExit as exc:
+            raise RuntimeError("SmartSkip: %s" % exc)
+        wait = self.max_wait_s if wait_s is None else float(wait_s)
+        t0 = time.time()
+        while True:
+            try:
+                items = ss.fetch_status(sess, bid)
+            except SystemExit as exc:
+                raise RuntimeError("SmartSkip: could not read order %s (%s)" % (bid, str(exc)[:120]))
+            st = ((items[0].get("status") if items else "") or "").lower()
+            if st in ("error", "failed"):
+                self.keep(dict(entry, status="failed", why="SmartSkip ended the order %s" % st))
+                raise RuntimeError("SmartSkip order %s ended %s" % (bid, st))
+            if items and entry.get("status") in ("submitted", "needs_card"):
+                entry = self.keep(dict(entry, status="paid", paid=self._stamp()))
+            if st == "completed" or (not items and entry.get("status") == "paid"):
+                got = self._download(ss, sess, bid)
+                if got is not None:
+                    self.keep(dict(entry, status="collected", collected=self._stamp(), vertical=str(f)))
+                    return got
+                if st == "completed":
+                    raise RuntimeError("SmartSkip order %s is finished but its results could not be read" % bid)
+            if time.time() - t0 >= wait:
+                return None
+            time.sleep(self.poll_s)
+
+    def completed_orders(self) -> list[dict]:
+        """Every order SmartSkip finished on this account, newest first. Its order list answers with every
+        order in one reply (page, skip and limit are ignored; measured 2026-11-23 on 120 orders)."""
+        ss, _ = self._modules()
+        try:
+            items = ss.fetch_status(ss.Session())
+        except SystemExit as exc:
+            raise RuntimeError("SmartSkip: could not list the orders (%s)" % str(exc)[:120])
+        return [i for i in items or [] if str(i.get("status") or "").lower() == "completed"]
+
+    def results(self, bid: str):
+        """A finished order's parsed results: the saved download when there is one, else one free download."""
+        f = self.order_file(bid)
+        if f.exists():
+            try:
+                return self._parse(f)
+            except SystemExit:
+                pass
+        ss, _ = self._modules()
+        try:
+            sess = ss.Session()
+        except SystemExit as exc:
+            raise RuntimeError("SmartSkip: %s" % exc)
+        return self._download(ss, sess, bid)
+
+    # ------------------------------------------------------------------ the retrace's contract
+    def trace(self, subjects: list[Subject]) -> tuple[dict, float]:
+        """({record_uuid: numbers}, usd billed), as every source answers. A paid order an earlier call left
+        unfinished is collected first and its records are not bought again; while it is still running,
+        or still waiting for a card confirmation, nothing new is ordered for them (raised, like a timeout,
+        so the caller writes nothing and tries again next run). What that earlier order cost is returned
+        here, because the call that paid for it raised before it could say so."""
+        rows = [s for s in subjects if s.first and s.last and (s.mail_street or s.street)]
+        self.costs, self.details = {}, {}
+        if not rows:
+            return {}, 0.0
+        left = {s.record_uuid: s for s in rows}
+        found, billed = {}, 0.0
+        for entry in self.pending(self.TRACE_LABEL):
+            bid = entry["bulkSkipId"]
+            covers = [r.get("record_uuid") for r in entry.get("rows") or [] if r.get("record_uuid") in left]
+            if not covers:
+                continue
+            parsed = self.collect(entry, wait_s=0)
+            if parsed is None:
+                raise RuntimeError("SmartSkip order %s from an earlier run is %s; its records wait for it and nothing "
+                                   "new was ordered" % (bid, "still running" if entry.get("status") == "paid"
+                                                        else "waiting for a card confirmation in the app"))
+            sub = [left.pop(u) for u in covers]
+            found.update(self.match(sub, parsed, order=bid))
+            billed += sum(self.costs.get(u, 0.0) for u in covers)
+            self.claim(entry, "collected by a later trace")
+        if left:
+            sub = list(left.values())
+            entry = self.place(sub, self.TRACE_LABEL)
+            bid = entry["bulkSkipId"]
+            if entry.get("status") == "needs_card":
+                raise RuntimeError("SmartSkip order %s needs a 3DS card confirmation in the app; nothing was traced" % bid)
+            parsed = self.collect(entry)
+            if parsed is None:
+                raise RuntimeError("SmartSkip order %s is paid and still running after %ds; its results are not on "
+                                   "the records yet (the next run collects them)" % (bid, self.max_wait_s))
+            found.update(self.match(sub, parsed, order=bid))
+            billed += self.unit_usd * sum(1 for p in parsed if p.get("has_results"))
+            self.claim(entry)
+        return found, round(billed, 2)
+
+    def match(self, rows: list[Subject], parsed: list[dict], order: str = "", by_input: bool = False) -> dict:
+        """Results back to records: name AND street when the result echoes the street, else name only when
+        that name is unique in the order. `by_input` also matches on the order's own Input Name column
+        (the name as it was sent), for a person SmartSkip writes back under a fuller first name."""
         by_name: dict[tuple, list[Subject]] = {}
+        by_sent: dict[str, list[Subject]] = {}
         for s in rows:
             by_name.setdefault((s.first.lower(), s.last.lower()), []).append(s)
+            by_sent.setdefault(" ".join(("%s %s" % (s.first, s.last)).lower().split()), []).append(s)
         out: dict[str, list[dict]] = {}
         for p in parsed or []:
             cands = by_name.get(((p.get("first") or "").strip().lower(), (p.get("last") or "").strip().lower())) or []
+            if not cands and by_input:
+                cands = by_sent.get(" ".join(str(p.get("input_name") or "").lower().split())) or []
             hit = [s for s in cands if same_street(s.street, p.get("property_address") or "")] or (cands if len(cands) == 1 else [])
             if len(hit) != 1:
                 continue
             u = hit[0].record_uuid
+            self.details[u] = dict(p, order=order)
             if p.get("has_results"):
                 self.costs[u] = self.unit_usd
             nums = []

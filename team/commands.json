@@ -3,11 +3,11 @@
  "counts": {
   "browser": 23,
   "package": 1,
-  "paid": 12,
+  "paid": 13,
   "retired": 17,
-  "runnable": 50,
-  "wired": 30,
-  "writes": 19
+  "runnable": 51,
+  "wired": 31,
+  "writes": 20
  },
  "scripts": {
   "_debug_login": {
@@ -367,6 +367,303 @@
    "why": "runs inside land_desk (Atlas)",
    "workflows": [
     "land_desk"
+   ],
+   "writes": ""
+  },
+  "buyer_contacts": {
+   "args": [
+    {
+     "flags": [
+      "--slug"
+     ],
+     "kind": "value",
+     "required": true
+    },
+    {
+     "choices": [
+      "seed",
+      "houses",
+      "research",
+      "officers",
+      "contacts"
+     ],
+     "flags": [
+      "--phase"
+     ],
+     "kind": "value",
+     "required": true
+    },
+    {
+     "flags": [
+      "--work"
+     ],
+     "help": "seed: the buyer search's house folder (sweep.json, details.json)",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--record"
+     ],
+     "help": "seed: the house's DataSift record uuid",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--subject-json"
+     ],
+     "help": "seed: the house as JSON instead of a record",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--dataflik-id"
+     ],
+     "help": "seed: the house's SiftMap id when the record does not carry it",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--arv"
+     ],
+     "help": "seed: price the guesses' flips against this ARV",
+     "kind": "value",
+     "type": "float"
+    },
+    {
+     "flags": [
+      "--ask"
+     ],
+     "help": "seed: the asking price, for the workbook title",
+     "kind": "value",
+     "type": "float"
+    },
+    {
+     "flags": [
+      "--contract"
+     ],
+     "help": "seed: the contract price, for the workbook title",
+     "kind": "value",
+     "type": "float"
+    },
+    {
+     "default": 24,
+     "flags": [
+      "--months"
+     ],
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "default": 0,
+     "flags": [
+      "--limit"
+     ],
+     "help": "research: at most this many buyers",
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "default": 6,
+     "flags": [
+      "--workers"
+     ],
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "flags": [
+      "--env"
+     ],
+     "help": "the .env to load keys from (default: this checkout's)",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--out"
+     ],
+     "help": "output folder (default output/deal_buyers/<slug>)",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--commit"
+     ],
+     "kind": "switch"
+    }
+   ],
+   "class": "runnable",
+   "cli": "argparse",
+   "complete": true,
+   "paid": [
+    "Claude",
+    "Enformion",
+    "Firecrawl",
+    "OpenRouter",
+    "SerpApi",
+    "Serper",
+    "Trestle",
+    "Zillow (OpenWeb Ninja)"
+   ],
+   "paid_deeper": [
+    "Google Maps",
+    "Scrapfly",
+    "SmartSkip",
+    "Tracerfy"
+   ],
+   "summary": "Contacts for the buyers a buyer search found: who decides at each one, and the numbers that reach them.",
+   "write_flags": [
+    "--commit"
+   ],
+   "writes": "commit"
+  },
+  "buyer_search_cli": {
+   "args": [
+    {
+     "flags": [
+      "--address"
+     ],
+     "help": "the house: street line with city, state and ZIP",
+     "kind": "value"
+    },
+    {
+     "choices": [
+      "siftmap",
+      "cluster"
+     ],
+     "default": "siftmap",
+     "flags": [
+      "--source"
+     ],
+     "help": "siftmap: your Open API key (default); cluster: the data team's model, staff only",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--radius"
+     ],
+     "help": "miles around the house (siftmap 5, at most 10; cluster 25)",
+     "kind": "value",
+     "type": "float"
+    },
+    {
+     "flags": [
+      "--months"
+     ],
+     "help": "months of sales (siftmap 24)",
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "flags": [
+      "--reads"
+     ],
+     "help": "deed reads at most (siftmap 150)",
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "flags": [
+      "--arv"
+     ],
+     "help": "siftmap: price each buyer's guess against this ARV instead of the house's estimated value",
+     "kind": "value",
+     "type": "float"
+    },
+    {
+     "flags": [
+      "--limit"
+     ],
+     "help": "buyers returned (100)",
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "flags": [
+      "--min-score"
+     ],
+     "help": "lowest score returned (10)",
+     "kind": "value",
+     "type": "float"
+    },
+    {
+     "flags": [
+      "--work"
+     ],
+     "help": "siftmap work folder (default output/buyer_search/<address>)",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--dataflik-id"
+     ],
+     "help": "cluster: the property's dataflik_id",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--zip"
+     ],
+     "help": "cluster: 5-digit ZIP for --address",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--all-sales"
+     ],
+     "help": "cluster: also count company purchases that are not investor sales (brings in lenders)",
+     "kind": "switch"
+    },
+    {
+     "flags": [
+      "--compat"
+     ],
+     "help": "cluster: the original Lambda's behavior, bugs included",
+     "kind": "switch"
+    },
+    {
+     "default": 25,
+     "flags": [
+      "--show"
+     ],
+     "help": "rows printed; 0 prints every buyer (all are in --csv)",
+     "kind": "value",
+     "type": "int"
+    },
+    {
+     "flags": [
+      "--json"
+     ],
+     "help": "write the whole answer here",
+     "kind": "value"
+    },
+    {
+     "flags": [
+      "--csv"
+     ],
+     "help": "write every buyer here",
+     "kind": "value"
+    }
+   ],
+   "class": "wired",
+   "cli": "argparse",
+   "complete": true,
+   "paid_deeper": [
+    "Claude",
+    "Enformion",
+    "Firecrawl",
+    "Google Maps",
+    "OpenRouter",
+    "Scrapfly",
+    "SerpApi",
+    "Serper",
+    "Tracerfy",
+    "Trestle",
+    "Zillow (OpenWeb Ninja)"
+   ],
+   "summary": "The buyers most likely to buy one house, from the command line.",
+   "why": "runs inside buyer_search (Roma)",
+   "workflows": [
+    "buyer_search"
    ],
    "writes": ""
   },

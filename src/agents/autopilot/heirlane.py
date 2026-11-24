@@ -54,7 +54,7 @@ from zoneinfo import ZoneInfo
 
 from .. import config
 from . import activity, gate, lanes, ledger, limits, mail, researchqueue, researchroutes
-from .stages import Ctx, Summary, addr, assignee_of, resolve_callers
+from .stages import Ctx, Summary, addr, assignee_of, marks_of, resolve_callers
 
 log = logging.getLogger(__name__)
 
@@ -81,6 +81,9 @@ DEFAULTS = {
     "max_records": 100,
     "max_scan": 2000,
     "scope_tags": None,             # default: the gate's heir tags
+    # A record on the Curative Title board (curative.py) is worked there, every heir at once and never
+    # texted: this lane, which texts one heir at a time, leaves it alone.
+    "skip_tags": ["Curative"],
     "mailed_tag": "Mailed {yyyy}-{mm}",
     "last_mailed_field": "Last Mailed",
 }
@@ -533,6 +536,8 @@ def still_due(ctx: Ctx, rec: dict, it: dict) -> str:
     first (a record that became a lead or lost its tag is out), then the gate."""
     if not rec.get("uuid"):
         return "the record could not be read"
+    if _skipped(rec, options(ctx.stage)):
+        return "the record is on the Curative Title board now"
     lanes_cfg = getattr(ctx.policy, "lanes", None) or lanes.Lanes()
     lane = lanes.lane_of(rec, lanes_cfg)
     if lane != "heirs":
@@ -687,6 +692,13 @@ def options(st) -> dict:
     return o
 
 
+def _skipped(rec: dict, o: dict) -> bool:
+    """Does the record carry a tag this lane leaves alone (skip_tags: the Curative Title board's)?"""
+    skip = o.get("skip_tags")
+    skip = [skip] if isinstance(skip, str) else list(skip or [])
+    return bool(marks_of(rec) & {str(t).strip().lower() for t in skip if str(t).strip()})
+
+
 def _scope_rows(ctx: Ctx, o: dict, gate_cfg) -> list[dict]:
     """The lane's records: the stage's presets when the account has them, and always the heir tag
     itself, so the lane works before anybody has built its presets."""
@@ -770,6 +782,10 @@ def run_heirlane(ctx: Ctx) -> None:
         reads += 1
         rec = ctx.crm.record(u)
         if not rec.get("uuid"):
+            continue
+        if _skipped(rec, o):
+            ctx.out.tally["on the Curative Title board: worked there, not here"] += 1
+            gone[u] = "the record is on the Curative Title board"
             continue
         lane = lanes.lane_of(rec, lanes_cfg)
         if lane != "heirs":

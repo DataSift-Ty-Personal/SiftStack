@@ -27,7 +27,6 @@ Every agent on docs/agents.json (the public org chart), the team workflow that r
 | conventions_check | autopilot stage | none: not on the org chart yet |
 | hot_auction_tasks | autopilot stage | none: not on the org chart yet |
 | second_chances | autopilot stage | none: not on the org chart yet |
-| caller_book | autopilot stage | none: not on the org chart yet |
 | probate_honest | autopilot stage | none: not on the org chart yet |
 | lost_deal_audit | autopilot stage | none: not on the org chart yet |
 | neighborhood_suppression | autopilot stage | none: not on the org chart yet |
@@ -49,6 +48,7 @@ Every agent on docs/agents.json (the public org chart), the team workflow that r
 | buyer_registry | live | Buyer Sweep (sweep), Dispo Buyer Registry (dispobuyers), Dispo Skiptrace (disposkip), Buyer Prospector (prospector) |
 | vendor_directory | by hand today | Vendor Directory Builder (vendordir), Contractor Call Sheet (callsheet) |
 | ftm_death_screen | autopilot stage | none: not on the org chart yet |
+| ftm_skip_screen | autopilot stage | none: not on the org chart yet |
 | top1000_death_screen | autopilot stage | none: not on the org chart yet |
 | ftm_native_trace | autopilot stage | none: not on the org chart yet |
 | top1000_native_trace | autopilot stage | none: not on the org chart yet |
@@ -60,16 +60,11 @@ Every agent on docs/agents.json (the public org chart), the team workflow that r
 | ftm_deep_prospect | autopilot stage | none: not on the org chart yet |
 | ftm_return_mail | autopilot stage | none: not on the org chart yet |
 | ftm_no_numbers | autopilot stage | none: not on the org chart yet |
-| hottest_retrace | autopilot stage | Tracerfy Skip Trace (tracerfy) |
-| hottest_score | autopilot stage | Phone Validator (phone) |
 | ftm_refresh | autopilot stage | none: not on the org chart yet |
 | top1000_trace_refresh | autopilot stage | none: not on the org chart yet |
-| strong_native_trace | autopilot stage | none: not on the org chart yet |
-| strong_score | autopilot stage | none: not on the org chart yet |
-| bulk_native_trace | autopilot stage | none: not on the org chart yet |
-| bulk_score | autopilot stage | none: not on the org chart yet |
 | research_queue | autopilot stage | none: not on the org chart yet |
 | obituary_lane | autopilot stage | Obituary Mail Campaign (obitcamp), Obituary Mail Export (obitmail) |
+| estate_owner_swap | autopilot stage | Research Agent (researchagent) |
 | phone_cleanup | autopilot stage | none: not on the org chart yet |
 | complete_records | autopilot stage | none: not on the org chart yet |
 
@@ -83,6 +78,7 @@ Every agent on docs/agents.json (the public org chart), the team workflow that r
 | walkthrough_video | live | Rehab Estimator (rehab) |
 | offer_sheet | live | none: not on the org chart yet |
 | deal_buyers | live | Deal Buyer Match (dealmatch) |
+| buyer_search | live | Deal Buyer Match (dealmatch) |
 | dispo_blast | by hand today | Dispo Deal Blast (dispoblast), Dispo Buyer Phonebook (dispobook), Dispo Sequential Flow (dispoflow) |
 | lender_package | live | Lender Analysis (lender), Lender Package Builder (lenderpkg), Lender Document Set (lenderdocs) |
 | mls_offers | live | MLS Offer Engine (mlsoffers) |
@@ -92,6 +88,7 @@ Every agent on docs/agents.json (the public org chart), the team workflow that r
 | speed_to_lead | autopilot stage | none: not on the org chart yet |
 | lead_nurture | autopilot stage | none: not on the org chart yet |
 | lead_appointments | autopilot stage | none: not on the org chart yet |
+| curative_pipeline | autopilot stage | none: not on the org chart yet |
 | morning_callbacks | autopilot stage | none: not on the org chart yet |
 | lead_notes | autopilot stage | none: not on the org chart yet |
 | lead_encumbrances | autopilot stage | none: not on the org chart yet |
@@ -137,8 +134,6 @@ Every agent on docs/agents.json (the public org chart), the team workflow that r
 | ftm_followup_texts | autopilot stage | Pre-Send Audit (scaudit) |
 | top1000_followup_texts | autopilot stage | Pre-Send Audit (scaudit) |
 | outreach_limits | autopilot stage | none: not on the org chart yet |
-| strong_dial_file | autopilot stage | none: not on the org chart yet |
-| bulk_dial_file | autopilot stage | none: not on the org chart yet |
 | rehash_dial_file | autopilot stage | none: not on the org chart yet |
 | kpi_alarms | autopilot stage | KPI Engine (kpi) |
 | goal_sheet | autopilot stage | KPI Engine (kpi) |

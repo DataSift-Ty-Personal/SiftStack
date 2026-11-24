@@ -258,6 +258,7 @@ class LeadCRM(FakeCRM):
         self.log_ids = False           # the log names a column by title only
         self.detail_columns = False
         self.stuck = False             # a card PATCH that answers and moves nothing
+        self.onward = ""               # a column the account's own sequence moves a card on to, a second after our move
         self.no_task_id = False        # a task create that answers with no id
         self.sticky_cards = False      # a card DELETE that answers and removes nothing
         self.lenient = False           # a timeline route that finds the card whatever column the path names
@@ -417,6 +418,10 @@ class LeadCRM(FakeCRM):
                 self.log_rows.append(self._card_row(card, self.now, old, new, source="internal-api"))
                 if self.fire:
                     self._sequence(card["prop"], new)
+                if self.onward:
+                    nxt = next(cu for cu, c in self.cols.items() if c["title"] == self.onward)
+                    card["column"] = nxt
+                    self.log_rows.append(self._card_row(card, self.now, new, nxt, source="sequence"))
                 return {"uuid": card["uuid"]}
         m = re.fullmatch(r"/siftline/board/column/([^/]+)/card/", p)
         if m:
@@ -977,6 +982,15 @@ def _run(check, tmp, store, policy, registry) -> None:
     sst = go("l_clock", cst)
     check(sst.acted == 0 and len(cst.wrote("PATCH")) == 1 and any("did not move" in p for p in sst.problems),
           "the first move is read back, and a card that did not move stops the run at one")
+    wipe()
+    con = board_scene()
+    con.onward = "Needs Review"
+    prime(con, now)
+    son = go("l_clock", con)
+    check(son.acted == 3 and not any("did not move" in p for p in son.problems)
+          and con.column_of("h1") == "Needs Review" and con.column_of("c1") == "Needs Review",
+          "a card the account's own sequence moves on at once has left its old column, so it counts as moved and the run "
+          "goes on (seen live 2026-11-23: Send Back to LM took a card to the Lead Management board one second later)")
 
     wipe()
     cr = LeadCRM([lead("r1", "21 Offer St", "Hot Lead"), lead("m1", "22 Maybe St", "No Contact New Lead", tags=["Marginal Lead"]),

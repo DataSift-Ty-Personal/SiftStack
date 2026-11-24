@@ -15,9 +15,14 @@ only puts that snapshot in front of people, in this order:
      the files in place, so a Google Sheet mirrors a tab with one formula, =IMPORTDATA("<CSV link>"),
      and Excel with Data, From Web. Nothing runs on an outside host.
   2. A Google Sheet written through the Sheets API, only when a Google credential is set (a service
-     account key, or an OAuth refresh token). No credential is the normal case and is said nowhere.
+     account key, or an OAuth refresh token). Since 2026-11-23 it is THE tracker (Ty: "a Google Sheet ...
+     mirroring the style of the DataSift KPI tracker ... everything in one place ... as opposed to the
+     HTML template"): laid out like the DataSift tracker by kpisheet.py, with a Goals tab where the
+     owner types the numbers only he knows. read_inputs() reads that tab before every run and kpi.load()
+     lays it over team/kpi.yaml. No credential still works: the page stays, the sheet waits.
   3. One Slack message a day in the pipeline channel: posted by the first run of the day and edited in
-     place by the later ones, so the channel holds one KPI message a day. Its first line links the page.
+     place by the later ones, so the channel holds one KPI message a day. Its first line links the Google
+     Sheet when this run wrote it, the page otherwise.
 
 Rules carried over from Ty's own DataSift KPI tracker (hubspot-ops kpi/sheet.py), each one something
 that went wrong or was asked for there:
@@ -50,14 +55,17 @@ import os
 import re
 import secrets
 import time
+from collections import defaultdict
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
+from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
 import requests
 
 from .. import config, slack_app, store, voice
+from . import kpisheet
 
 log = logging.getLogger(__name__)
 
@@ -70,7 +78,8 @@ _http = requests   # the real Google transport; the selftest puts a wall here th
 # From the stage's `publish:` block in team/autopilot.yaml, overridden by the environment (a Fly secret
 # turns the Slack message off without a deploy). The sheet id and the share list are environment only:
 # the playbook is in a public repo, and a sheet id or a teammate's email does not belong there.
-DEFAULTS = {"title": "KPI tracker", "slack": "edit", "how_tab": "How it is counted"}
+DEFAULTS = {"title": "KPI tracker", "slack": "edit", "how_tab": "How it is counted",
+            "scoreboard_title": "KPI scoreboard"}
 ENV = {"title": "AGENTS_KPI_TITLE", "slack": "AGENTS_KPI_SLACK"}
 SLACK_MODES = ("edit", "posts", "off")
 DEFAULT_TZ = "America/New_York"
@@ -155,6 +164,7 @@ def settings(st=None) -> dict:
         if env:
             out[k] = env
     out["title"] = str(out["title"]).strip()[:100] or DEFAULTS["title"]
+    out["scoreboard_title"] = str(out["scoreboard_title"]).strip()[:100] or DEFAULTS["scoreboard_title"]
     out["slack"] = str(out["slack"]).strip().lower()
     if out["slack"] not in SLACK_MODES:
         out["slack"] = "edit"
@@ -202,6 +212,23 @@ def long_when(dt: datetime, tz: str) -> str:
 
 def refreshed_line(dt: datetime, tz: str) -> str:
     return "Refreshed " + long_when(dt, tz)
+
+
+SHORT_ZONES = {"America/New_York": "ET", "America/Chicago": "CT", "America/Denver": "MT", "America/Phoenix": "MT",
+               "America/Los_Angeles": "PT"}
+
+
+def short_when(dt: datetime, tz: str) -> str:
+    """'Mon Nov 23 at 3:33 PM ET': the sheet's way, with no comma (Ty, 2026-11-23: commas at the top of a
+    tab read clunky)."""
+    key = tz or DEFAULT_TZ
+    loc = dt.astimezone(_zone(key))
+    word = SHORT_ZONES.get(key) or loc.tzname() or ""
+    return ("%s %s %d at %s %s" % (DAYS[loc.weekday()][:3], MONTHS[loc.month - 1][:3], loc.day, clock(loc), word)).strip()
+
+
+def sheet_line(dt: datetime, tz: str) -> str:
+    return "Refreshed " + short_when(dt, tz)
 
 
 def when_of(snapshot: dict, ctx=None) -> datetime:
@@ -871,56 +898,109 @@ def _q(name: str) -> str:
 
 
 def _grid(rows: list, width: int) -> dict:
-    return {"rowCount": max(1000, len(rows) + 100), "columnCount": max(26, width)}
+    """A tab's grid sized to what it holds, plus a little room: no 1,000 empty rows and 26 empty columns
+    to scroll past (the design pass of 2026-11-23)."""
+    return {"rowCount": len(rows) + SPARE_ROWS, "columnCount": max(1, width) + 1}
 
 
-def _sheet_rows(line: str, t: dict, extra: list[str] | None = None) -> list[list]:
-    rows = [[line], [t["note"] or ""], [], list(t["columns"])] + [["" if v is None else v for v in r] for r in t["rows"]]
-    if extra:
-        rows += [[]] + [[x] for x in extra]
-    return rows
+SPARE_ROWS = 10
 
 
-def _col_px(rows: list, width: int, upto: int = 0) -> list[int]:
-    """Column widths from the header and the table only; the Refreshed line and any note rows below the
-    table run past their cell on purpose and must not widen column A."""
-    body = rows[HEADER_ROWS - 1:(upto or len(rows))]
-    out = []
-    for ci in range(width):
-        longest = max([len(_show(r[ci])) for r in body if ci < len(r)] or [0])
-        out.append(min(max(longest * (8 if ci == 0 else 7) + 24, 160 if ci == 0 else 70), 360 if ci == 0 else 280))
-    return out
+def _rects(fmt: dict) -> list[tuple]:
+    """The cells' formats as few rectangles as there can be: runs of one format along a row, then the
+    same run stacked down the rows. (row0, row1, col0, col1, format)."""
+    keyed, by_row = {}, defaultdict(list)
+    for (r, c), f in fmt.items():
+        k = json.dumps(f, sort_keys=True)
+        keyed[k] = f
+        by_row[r].append((c, k))
+    runs = []
+    for r in sorted(by_row):
+        cells = sorted(by_row[r])
+        c0, last_c, last_k = cells[0][0], cells[0][0], cells[0][1]
+        for c, k in cells[1:]:
+            if c == last_c + 1 and k == last_k:
+                last_c = c
+                continue
+            runs.append((r, c0, last_c + 1, last_k))
+            c0, last_c, last_k = c, c, k
+        runs.append((r, c0, last_c + 1, last_k))
+    open_, out = {}, []
+    for r, c0, c1, k in runs:
+        o = open_.get((c0, c1, k))
+        if o is not None and o[1] == r:
+            o[1] = r + 1
+            continue
+        if o is not None:
+            out.append((o[0], o[1], c0, c1, keyed[k]))
+        open_[(c0, c1, k)] = [r, r + 1]
+    for (c0, c1, k), (r0, r1) in open_.items():
+        out.append((r0, r1, c0, c1, keyed[k]))
+    return sorted(out, key=lambda x: (x[0], x[2]))
 
 
-def _fmt(gid: int, rows: list, width: int, extra_from: int) -> list[dict]:
-    """Flat, as Ty's tracker: plain text, a gray Refreshed line and note, a bold header over a 1px rule,
-    the header frozen, no colored bands anywhere."""
-    def rng(r0, r1):
-        return {"sheetId": gid, "startRowIndex": r0, "endRowIndex": r1, "startColumnIndex": 0, "endColumnIndex": max(width, 1)}
+def _area(gid: int, r0: int, r1: int, c0: int, c1: int) -> dict:
+    return {"sheetId": gid, "startRowIndex": r0, "endRowIndex": r1, "startColumnIndex": c0, "endColumnIndex": c1}
 
-    def text(r0, r1, fmt):
-        return {"repeatCell": {"range": rng(r0, r1), "cell": {"userEnteredFormat": {"textFormat": fmt}},
-                               "fields": "userEnteredFormat.textFormat"}}
-    reqs = [
-        {"updateSheetProperties": {"properties": {"sheetId": gid, "gridProperties": {"frozenRowCount": HEADER_ROWS}},
-                                   "fields": "gridProperties.frozenRowCount"}},
-        {"repeatCell": {"range": {"sheetId": gid}, "cell": {"userEnteredFormat": {
-            "textFormat": {"fontSize": 10, "foregroundColor": INK}, "verticalAlignment": "TOP"}}, "fields": "userEnteredFormat"}},
-        text(0, 1, {"fontSize": 10, "foregroundColor": MUTED}),
-        text(1, 2, {"fontSize": 9, "foregroundColor": MUTED}),
-        {"repeatCell": {"range": rng(3, 4), "cell": {"userEnteredFormat": {
-            "textFormat": {"bold": True, "fontSize": 10, "foregroundColor": INK}, "wrapStrategy": "WRAP",
-            "verticalAlignment": "BOTTOM"}},
-            "fields": "userEnteredFormat.textFormat,userEnteredFormat.wrapStrategy,userEnteredFormat.verticalAlignment"}},
-        {"updateBorders": {"range": rng(3, 4), "bottom": {"style": "SOLID", "color": RULE}}},
-    ]
-    if extra_from and extra_from < len(rows):
-        reqs.append(text(extra_from, len(rows), {"fontSize": 9, "foregroundColor": MUTED}))
-    for ci, px in enumerate(_col_px(rows, width, extra_from)):
+
+def grid_requests(gid: int, g, rows_before: int = 0, reset: bool = True, trim: bool = True) -> tuple[list, list]:
+    """(the layout, the rich-text runs). The layout first undoes the last run's (every merge, every
+    format, every row height), because a row that was a bold header last run may be a plain row now.
+    The runs go in a call of their own: a refusal there must never cost the tab its layout."""
+    whole = {"sheetId": gid}
+    reqs = []
+    if reset:
+        reqs += [{"unmergeCells": {"range": whole}},
+                 {"repeatCell": {"range": whole, "cell": {"userEnteredFormat": kpisheet.DEFAULT},
+                                 "fields": "userEnteredFormat"}}]
+    # Gridlines off and the label column frozen on a wide tab: set on every write, so a tab made before
+    # the design pass takes it at its next refresh.
+    reqs.append({"updateSheetProperties": {"properties": {"sheetId": gid, "gridProperties": {
+        "frozenRowCount": 0, "frozenColumnCount": int(getattr(g, "frozen_cols", 0) or 0), "hideGridlines": True}},
+        "fields": "gridProperties.frozenRowCount,gridProperties.frozenColumnCount,gridProperties.hideGridlines"}})
+    for r0, r1, c0, c1, f in _rects(g.fmt):
+        reqs.append({"repeatCell": {"range": _area(gid, r0, r1, c0, c1), "cell": {"userEnteredFormat": f},
+                                    "fields": "userEnteredFormat"}})
+    for r0, r1, c0, c1 in g.merges:
+        reqs.append({"mergeCells": {"range": _area(gid, r0, r1, c0, c1), "mergeType": "MERGE_ALL"}})
+    for ci, px in enumerate(g.widths):
         reqs.append({"updateDimensionProperties": {"range": {"sheetId": gid, "dimension": "COLUMNS", "startIndex": ci,
                                                              "endIndex": ci + 1},
-                                                   "properties": {"pixelSize": px}, "fields": "pixelSize"}})
-    return reqs
+                                                   "properties": {"pixelSize": int(px)}, "fields": "pixelSize"}})
+    n = len(g.values) if trim else max(int(rows_before or 0), len(g.values))
+    if n:
+        reqs.append({"autoResizeDimensions": {"dimensions": {"sheetId": gid, "dimension": "ROWS", "startIndex": 0,
+                                                             "endIndex": n}}})
+    for r, px in sorted(g.heights.items()):
+        reqs.append({"updateDimensionProperties": {"range": {"sheetId": gid, "dimension": "ROWS", "startIndex": r,
+                                                             "endIndex": r + 1},
+                                                   "properties": {"pixelSize": int(px)}, "fields": "pixelSize"}})
+    for r0, r1, c0, c1, rule in g.validations:
+        reqs.append({"setDataValidation": {"range": _area(gid, r0, r1, c0, c1), "rule": rule}})
+    for (r, c), text in sorted((getattr(g, "notes", None) or {}).items()):
+        reqs.append({"updateCells": {"range": _area(gid, r, r + 1, c, c + 1), "rows": [{"values": [{"note": str(text)}]}],
+                                     "fields": "note"}})
+    if g.tab_color:
+        reqs.append({"updateSheetProperties": {"properties": {"sheetId": gid, "tabColor": g.tab_color},
+                                               "fields": "tabColor"}})
+    if trim:
+        # last, after the merges are gone: the grid cut to what the tab holds
+        reqs.append({"updateSheetProperties": {"properties": {"sheetId": gid, "gridProperties": _grid(g.values, g.width)},
+                                               "fields": "gridProperties.rowCount,gridProperties.columnCount"}})
+    runs = [{"updateCells": {"range": _area(gid, r, r + 1, c, c + 1), "rows": [{"values": [{"textFormatRuns": rs}]}],
+                             "fields": "textFormatRuns"}}
+            for (r, c), rs in sorted(g.runs.items())]
+    return reqs, runs
+
+
+def sheet_grid(t: dict, line: str, opts: dict, extra: list[str] | None = None):
+    """One snapshot tab as the sheet lays it out (kpisheet.render). The How it is counted tab carries
+    the run's own notes at the bottom, as the page's top does."""
+    tab = dict(t)
+    if extra:
+        tab["note"] = " ".join([str(tab.get("note") or "")] + [str(x).rstrip(".") + "." for x in extra if str(x).strip()])
+    title = opts.get("scoreboard_title") if t["name"] == "Scoreboard" else ""
+    return kpisheet.render(tab, line, title=title or "")
 
 
 def _open_or_create(tok: str, meta: dict, env_id: str, cred: dict, opts: dict, plan: list, tz: str, out: dict):
@@ -980,7 +1060,135 @@ def _share(tok: str, meta: dict, out: dict) -> None:
     meta["shared"] = sorted(done)
 
 
-def _write_tabs(tok: str, meta: dict, info: dict, tabs: list, plan: list, when: datetime, tz: str, out: dict) -> None:
+def _plain_and_typed():
+    """(team/kpi.yaml alone, the catalog every report used this run) or (None, None)."""
+    try:
+        from . import kpi
+        return kpi.load(kpi.path()), kpi.load()
+    except Exception:  # noqa: BLE001  (a catalog that does not load leaves the Goals tab's columns as they are)
+        return None, None
+
+
+# The Goals tab's rows that carry the four gray goal columns (needed, so far, pace, mark).
+GOAL_KEYS = tuple(r[1] for r in kpisheet.GOAL_ROWS + kpisheet.TARGET_ROWS)
+
+
+def inputs_cells(rows_at: dict, cells: dict | None = None, line: str = "") -> list[dict]:
+    """The Goals tab's gray columns for each row the last read found there: what each goal needs a month,
+    the month so far, the pace and the mark (cells: the snapshot's goal_cells), then Default (team/kpi.yaml)
+    and In use now (what this run used), and the Refreshed line. Nothing a person typed is ever written."""
+    plain, cat = _plain_and_typed()
+    if plain is None or not isinstance(rows_at, dict):
+        return []
+    dflt, used = kpisheet.default_words(plain), kpisheet.in_use(cat, plain)
+    tab = _q(kpisheet.INPUTS_TAB)
+    data = [{"range": "%s!A2" % tab, "values": [[line]]}] if line else []
+    for key, r in sorted(rows_at.items(), key=lambda kv: kv[1] if isinstance(kv[1], int) else 0):
+        if not isinstance(r, int) or r < 0 or key not in used:
+            continue
+        if key in GOAL_KEYS:
+            data.append({"range": "%s!C%d:H%d" % (tab, r + 1, r + 1),
+                         "values": [kpisheet.goal_cell_values(cells, key) + [dflt.get(key, ""), used[key]]]})
+        else:
+            data.append({"range": "%s!G%d:H%d" % (tab, r + 1, r + 1), "values": [[dflt.get(key, ""), used[key]]]})
+    return data
+
+
+def inputs_formats(gid: int, rows_at: dict, cells: dict | None = None) -> list[dict]:
+    """The four gray goal columns' formats on each row: the number formats, and the mark's color, which
+    moves with the mark. Never a yellow cell."""
+    reqs = []
+    for key, r in sorted((rows_at or {}).items(), key=lambda kv: kv[1] if isinstance(kv[1], int) else 0):
+        if key not in GOAL_KEYS or not isinstance(r, int) or r < 0:
+            continue
+        vals = kpisheet.goal_cell_values(cells, key)
+        for i, f in enumerate(kpisheet.goal_cell_formats(key, vals[3])):
+            reqs.append({"repeatCell": {"range": _area(gid, r, r + 1, 2 + i, 3 + i), "cell": {"userEnteredFormat": f},
+                                        "fields": "userEnteredFormat"}})
+    return reqs
+
+
+def _batch(tok: str, sid: str, reqs: list) -> dict:
+    return _g("POST", "%s/%s:batchUpdate" % (SHEETS, sid), body={"requests": reqs}, token=tok) if reqs else {}
+
+
+def order_moves(titles: list, ids: dict, order: list) -> list[dict]:
+    """The moves that put the tabs in `order`, as Sheets reads a move ("before the move" indexes): each
+    tab in turn taken to its place, front to back. A tab the order does not name (a person's own) keeps
+    its turn behind the tracker's tabs."""
+    sim = list(titles)
+    reqs = []
+    for pos, title in enumerate([t for t in order if t in ids]):
+        at = sim.index(title)
+        if at != pos:
+            reqs.append({"updateSheetProperties": {"properties": {"sheetId": int(ids[title]), "index": pos},
+                                                   "fields": "index"}})
+            sim.insert(pos, sim.pop(at))
+    return reqs
+
+
+def _order_tabs(tok: str, sid: str, order: list) -> int:
+    """Puts the tabs in the tracker's order, read back from Google after this run's adds and renames, so
+    a tab dragged by hand or added in the wrong place goes back. Returns the moves made."""
+    info = _g("GET", "%s/%s?fields=sheets.properties(sheetId,title,index)" % (SHEETS, sid), token=tok)
+    cur = sorted(((s.get("properties") or {}) for s in info.get("sheets") or []), key=lambda p: int(p.get("index") or 0))
+    reqs = order_moves([p.get("title") for p in cur], {p.get("title"): p.get("sheetId") for p in cur}, order)
+    _batch(tok, sid, reqs)
+    return len(reqs)
+
+
+def _goals_plan(tok: str, sid: str, props: dict, created: set, meta: dict, out: dict) -> tuple:
+    """What this run does with the owner's Goals tab: ("refresh", gid) writes its gray columns, ("rebuild",
+    gid, carry) lays it out again, ("new",) makes it, ("gone",) or ("skip",) leaves it. An install from
+    before the combined tab (Kendrick Eid and Ty, 2026-11-23: "Combine inputs and goals") renames its Inputs
+    tab to Goals here, once, carrying over what was typed there; the old Goals tab the tracker wrote held
+    the tracker's numbers only and goes."""
+    goals, legacy = kpisheet.INPUTS_TAB, kpisheet.LEGACY_INPUTS_TAB
+    if int(meta.get("inputs_version") or 1) >= kpisheet.COMBINED_VERSION:
+        if goals in props:
+            return ("refresh", int(props[goals]["sheetId"]))
+        if goals in created:
+            out["notes"].append("the Goals tab was deleted from the Google Sheet by hand, so it is not added back: the "
+                                "numbers in team/kpi.yaml are used")
+            return ("gone",)
+        return ("new",)
+    if legacy in props:
+        rng = quote("%s!A1:H300" % _q(legacy), safe="")
+        try:
+            got = _g("GET", "%s/%s/values/%s?valueRenderOption=FORMATTED_VALUE" % (SHEETS, sid, rng), token=tok)
+        except GoogleError as exc:
+            out["problems"].append("the Inputs tab could not be read to move it onto the Goals tab (Google answered %d), "
+                                   "so both stay as they are this run" % exc.status)
+            return ("skip",)
+        carry = kpisheet.carry_over(got.get("values") or [])
+        reqs = []
+        old = props.get(goals)
+        if old is not None and old.get("sheetId") != props[legacy].get("sheetId"):
+            reqs.append({"deleteSheet": {"sheetId": int(old["sheetId"])}})
+        reqs.append({"updateSheetProperties": {"properties": {"sheetId": int(props[legacy]["sheetId"]), "title": goals},
+                                               "fields": "title"}})
+        _batch(tok, sid, reqs)
+        p = props.pop(legacy)
+        props.pop(goals, None)
+        p["title"] = goals
+        props[goals] = p
+        created.discard(legacy)
+        created.add(goals)
+        out["notes"].append("the Inputs tab became the Goals tab, each goal beside its pace; %s" % (
+            "what was typed there was kept" if (carry["keys"] or carry["deals"]) else "nothing had been typed there yet"))
+        return ("rebuild", int(p["sheetId"]), carry)
+    if goals in props:
+        # the tracker's own old Goals tab and no Inputs tab: it held the tracker's numbers only
+        return ("rebuild", int(props[goals]["sheetId"]), {})
+    if legacy in created:
+        out["notes"].append("the Inputs tab was deleted from the Google Sheet by hand, so no Goals tab is added: the "
+                            "numbers in team/kpi.yaml are used")
+        return ("gone",)
+    return ("new",)
+
+
+def _write_tabs(tok: str, meta: dict, info: dict, tabs: list, plan: list, when: datetime, tz: str, out: dict,
+                how: str = "", goal_cells: dict | None = None, order: list | None = None) -> None:
     sid = meta["id"]
     props = {}
     for s in info.get("sheets") or []:
@@ -989,69 +1197,172 @@ def _write_tabs(tok: str, meta: dict, info: dict, tabs: list, plan: list, when: 
             props[p["title"]] = p
     created = set(meta.get("created") or [])
     good = dict(meta.get("good") or {})
+    was = dict(meta.get("rows") or {})
     local = when.astimezone(_zone(tz))
+    goals = kpisheet.INPUTS_TAB
+    order = list(order or [t["name"] for t in tabs])
+    if goals not in order:
+        at_how = next((i for i, n in enumerate(order) if n.lower() == (how or "").lower()), len(order))
+        order.insert(at_how, goals)                      # the Goals tab sits just before How it is counted
+    line = sheet_line(when, tz)
+    gplan = _goals_plan(tok, sid, props, created, meta, out)
     index_of = {title: int(p.get("index") or 0) for title, p in props.items()}
-    order = [t["name"] for t in tabs]
-    pre, write, stale, fmt_later = [], [], [], []
-    for t, (name, rows, width, extra_from) in zip(tabs, plan):
+
+    def place(name: str) -> int:
+        before = [n for n in order[:order.index(name)] if n in index_of]
+        idx = index_of[before[-1]] + 1 if before else 0
+        for k in index_of:
+            if index_of[k] >= idx:
+                index_of[k] += 1
+        index_of[name] = idx
+        return idx
+
+    pre, write, stale = [], [], []
+    for t, (name, rows, width, grid) in zip(tabs, plan):
         if name not in props and name in created:
             out["notes"].append("the %s tab was deleted from the Google Sheet by hand, so it is not added back" % name)
             continue
         if t["failed"]:
             at = good.get(name)
             if name in props and at:
-                # Its last good numbers stay; only the note cell says this run could not refresh them.
+                # Its last good numbers stay; only the Refreshed line says this run could not refresh them.
                 stale.append((name, "Not refreshed at %s: %s. These are the numbers from %s." % (
-                    clock(local), _reason(t), long_when(when_of({"refreshed": at}), tz))))
+                    clock(local), _reason(t), short_when(when_of({"refreshed": at}), tz))))
                 continue
             # Never filled (a new tab, or a sheet made this run): there are no numbers to keep.
-            rows, width, extra_from = [["Not refreshed yet"], ["Not filled yet: %s." % _reason(t)]], 1, 0
+            grid = kpisheet.render({"name": name, "note": "", "columns": [],
+                                    "rows": [["Not filled yet: %s." % _reason(t)]]}, "Not refreshed yet")
+            rows, width = grid.values, grid.width
         if name not in props:
-            before = [n for n in order[:order.index(name)] if n in index_of]
-            idx = index_of[before[-1]] + 1 if before else 0
-            for k in index_of:
-                if index_of[k] >= idx:
-                    index_of[k] += 1
-            index_of[name] = idx
-            pre.append({"addSheet": {"properties": {"title": name, "index": idx, "gridProperties": _grid(rows, width)}}})
+            pre.append({"addSheet": {"properties": {"title": name, "index": place(name),
+                                                    "gridProperties": _grid(rows, width)}}})
             created.add(name)
         else:
             g = props[name].get("gridProperties") or {}
             have_r, have_c = int(g.get("rowCount") or 0), int(g.get("columnCount") or 0)
             if have_r < len(rows) or have_c < width:
+                # room for this run's rows now; the layout cuts the grid back to them once the merges are gone
                 pre.append({"updateSheetProperties": {"properties": {"sheetId": props[name]["sheetId"], "gridProperties": {
-                    "rowCount": max(have_r, len(rows) + 100), "columnCount": max(have_c, width)}},
+                    "rowCount": max(have_r, len(rows) + SPARE_ROWS), "columnCount": max(have_c, width + 1)}},
                     "fields": "gridProperties.rowCount,gridProperties.columnCount"}})
-        write.append((name, rows, width, extra_from, name in props, t["failed"]))
+        write.append((name, grid, name in props, t["failed"]))
+    # The owner's Goals tab: made once, laid out again only for a new layout version, never cleared of what a
+    # person typed; every run writes its gray columns.
+    new_goals = None
+    plain, cat = _plain_and_typed()
+    if gplan[0] in ("new", "rebuild"):
+        new_goals = kpisheet.inputs_grid(kpisheet.default_words(plain) if plain is not None else {},
+                                         kpisheet.in_use(cat, plain) if plain is not None else {},
+                                         cells=goal_cells, carry=gplan[2] if gplan[0] == "rebuild" else None, line=line)
+        if gplan[0] == "new":
+            pre.append({"addSheet": {"properties": {"title": goals, "index": place(goals),
+                                                    "gridProperties": _grid(new_goals.values, new_goals.width)}}})
+            created.add(goals)
+        else:
+            g = props[goals].get("gridProperties") or {}
+            need_r, need_c = len(new_goals.values) + SPARE_ROWS, new_goals.width + 1
+            if int(g.get("rowCount") or 0) < need_r or int(g.get("columnCount") or 0) < need_c:
+                pre.append({"updateSheetProperties": {"properties": {"sheetId": props[goals]["sheetId"], "gridProperties": {
+                    "rowCount": max(int(g.get("rowCount") or 0), need_r),
+                    "columnCount": max(int(g.get("columnCount") or 0), need_c)}},
+                    "fields": "gridProperties.rowCount,gridProperties.columnCount"}})
     meta["created"] = sorted(created)
     if pre:
-        r = _g("POST", "%s/%s:batchUpdate" % (SHEETS, sid), body={"requests": pre}, token=tok)
+        r = _batch(tok, sid, pre)
         for rep in r.get("replies") or []:
             p = (rep or {}).get("addSheet", {}).get("properties")
             if p:
                 props[p["title"]] = p
-    clear = [_q(name) for name, _r, _w, _x, existed, _f in write if existed]
+    clear = [_q(name) for name, _g_, existed, _f in write if existed]
+    if gplan[0] == "rebuild":
+        clear.append(_q(goals))
     if clear:
         _g("POST", "%s/%s/values:batchClear" % (SHEETS, sid), body={"ranges": clear}, token=tok)
-    data = [{"range": "%s!A1" % _q(name), "values": rows} for name, rows, _w, _x, _e, _f in write]
+    data = [{"range": "%s!A1" % _q(name), "values": grid.values} for name, grid, _e, _f in write]
     data += [{"range": "%s!A2" % _q(name), "values": [[note]]} for name, note in stale]
+    if new_goals is not None:
+        data.append({"range": "%s!A1" % _q(goals), "values": new_goals.values})
+    elif gplan[0] == "refresh":
+        from . import kpi
+        data += inputs_cells(kpi.typed().get("rows") or {}, goal_cells, line)
     if data:
         _g("POST", "%s/%s/values:batchUpdate" % (SHEETS, sid), body={"valueInputOption": "RAW", "data": data}, token=tok)
-    for name, rows, width, extra_from, _e, failed in write:
+    rows_now = dict(was)
+    for name, grid, _e, failed in write:
         if not failed:
             good[name] = when.isoformat()
-        if name in props:
-            fmt_later += _fmt(int(props[name]["sheetId"]), rows, width, extra_from)
+        if name not in props:
+            continue
+        gid = int(props[name]["sheetId"])
+        layout, runs = grid_requests(gid, grid, rows_before=int(was.get(name) or 0))
+        try:
+            _batch(tok, sid, layout)
+            rows_now[name] = len(grid.values)
+        except GoogleError as exc:
+            out["problems"].append("the %s tab's layout could not be applied: Google answered %d (%s)" % (
+                name, exc.status, (exc.message or exc.reason)[:80]))
+            continue
+        try:
+            _batch(tok, sid, runs)
+        except GoogleError as exc:
+            out["notes"].append("the %s tab's gray figure notes could not be set: Google answered %d" % (name, exc.status))
     for name, _note in stale:
         gid = int(props[name]["sheetId"])
-        fmt_later.append({"repeatCell": {"range": {"sheetId": gid, "startRowIndex": 1, "endRowIndex": 2, "startColumnIndex": 0,
-                                                   "endColumnIndex": 1},
-                                         "cell": {"userEnteredFormat": {"textFormat": {"bold": True, "fontSize": 10,
-                                                                                      "foregroundColor": CAVEAT}}},
-                                         "fields": "userEnteredFormat.textFormat"}})
+        _txt, f = kpisheet.stale_note(_note)
+        _batch(tok, sid, [{"repeatCell": {"range": _area(gid, 1, 2, 0, 1), "cell": {"userEnteredFormat": f},
+                                          "fields": "userEnteredFormat"}}])
+    if new_goals is not None and goals in props:
+        gid = int(props[goals]["sheetId"])
+        layout, _runs = grid_requests(gid, new_goals, reset=gplan[0] == "rebuild", trim=False)
+        if gplan[0] == "rebuild":
+            layout.insert(0, {"setDataValidation": {"range": {"sheetId": gid}}})   # the old layout's lists go
+        try:
+            _batch(tok, sid, layout)
+            meta["inputs_version"] = kpisheet.INPUTS_VERSION
+            if gplan[0] == "new":
+                out["notes"].append("the Goals tab was made: type the owner's numbers in its yellow cells")
+        except GoogleError as exc:
+            out["problems"].append("the Goals tab's layout could not be applied: Google answered %d" % exc.status)
+    elif gplan[0] == "refresh":
+        from . import kpi
+        gid = int(props[goals]["sheetId"])
+        reqs = inputs_formats(gid, kpi.typed().get("rows") or {}, goal_cells)
+        reqs.append({"updateSheetProperties": {"properties": {"sheetId": gid, "gridProperties": {"hideGridlines": True}},
+                                               "fields": "gridProperties.hideGridlines"}})
+        widen = int(meta.get("inputs_version") or 1) < kpisheet.INPUTS_VERSION
+        if widen:
+            # a later layout version of the same tab: its column widths only, never a value or a typed cell
+            reqs += [{"updateDimensionProperties": {"range": {"sheetId": gid, "dimension": "COLUMNS", "startIndex": ci,
+                                                              "endIndex": ci + 1},
+                                                    "properties": {"pixelSize": px}, "fields": "pixelSize"}}
+                     for ci, px in enumerate(kpisheet.INPUTS_WIDTHS)]
+        try:
+            _batch(tok, sid, reqs)
+            if widen:
+                meta["inputs_version"] = kpisheet.INPUTS_VERSION
+                out["notes"].append("the Goals tab's columns were set to layout version %d" % kpisheet.INPUTS_VERSION)
+        except GoogleError as exc:
+            out["notes"].append("the Goals tab's marks could not be colored: Google answered %d" % exc.status)
+    try:
+        moved = _order_tabs(tok, sid, order)
+        if moved:
+            out["notes"].append("%d tab(s) put back in the tracker's order" % moved)
+    except GoogleError as exc:
+        out["notes"].append("the tabs could not be put in order: Google answered %d" % exc.status)
+    # Google's own empty first tab, in a sheet a person made for the tracker: removed once, only when it is
+    # empty. A Sheet1 holding anything at all is the owner's and stays.
+    blank = props.get("Sheet1")
+    if blank is not None and "Sheet1" not in created and not meta.get("sheet1_checked") and len(props) > 1:
+        meta["sheet1_checked"] = True
+        try:
+            vals = _g("GET", "%s/%s/values/%s" % (SHEETS, sid, quote("%s!A1:Z50" % _q("Sheet1"), safe="")), token=tok)
+            if not any(str(c).strip() for row in vals.get("values") or [] for c in row):
+                _batch(tok, sid, [{"deleteSheet": {"sheetId": int(blank["sheetId"])}}])
+                out["notes"].append("the sheet's empty Sheet1 tab was removed")
+        except GoogleError:
+            pass
     meta["good"] = good
-    if fmt_later:
-        _g("POST", "%s/%s:batchUpdate" % (SHEETS, sid), body={"requests": fmt_later}, token=tok)
+    meta["rows"] = rows_now
 
 
 def _google_problem(exc: GoogleError, cred: dict) -> str:
@@ -1065,8 +1376,11 @@ def _google_problem(exc: GoogleError, cred: dict) -> str:
     return "the Google Sheet could not be updated: %s. It still shows its last good numbers; the tracker page is up to date" % why
 
 
-def write_sheet(tabs: list[dict], opts: dict, when: datetime, tz: str, how_extra: list[str] | None = None) -> dict:
-    """The optional Google Sheet. Without a credential it does nothing and says nothing."""
+def write_sheet(tabs: list[dict], opts: dict, when: datetime, tz: str, how_extra: list[str] | None = None,
+                goal_cells: dict | None = None) -> dict:
+    """The optional Google Sheet. Without a credential it does nothing and says nothing. The snapshot's
+    Goals tab is not written as a tab of its own: the owner's Goals tab (the one with the yellow cells)
+    takes its place, its gray columns filled from goal_cells."""
     out = {"url": None, "problems": [], "notes": []}
     cred, why = credential()
     if not cred:
@@ -1078,14 +1392,15 @@ def write_sheet(tabs: list[dict], opts: dict, when: datetime, tz: str, how_extra
     env_id = (os.environ.get("AGENTS_KPI_SHEET_ID") or "").strip()
     if env_id and meta.get("id") != env_id:
         meta = {"id": env_id, "created": [], "shared": [], "good": {}}
-    line = refreshed_line(when, tz)
+    line = sheet_line(when, tz)
     how = (opts.get("how_tab") or "").lower()
+    order = [t["name"] for t in tabs]
+    tabs = [t for t in tabs if t["name"] != kpisheet.INPUTS_TAB]
     plan = []
     for t in tabs:
         extra = how_extra if (how and t["name"].lower() == how and how_extra) else None
-        rows = _sheet_rows(line, t, extra)
-        width = max(len(r) for r in rows) or 1
-        plan.append((t["name"], rows, width, len(rows) - len(extra) if extra else 0))
+        grid = sheet_grid(t, line, opts, extra)
+        plan.append((t["name"], grid.values, grid.width, grid))
     try:
         tok = access_token(cred)
         info = _open_or_create(tok, meta, env_id, cred, opts, plan, tz, out)
@@ -1093,7 +1408,8 @@ def write_sheet(tabs: list[dict], opts: dict, when: datetime, tz: str, how_extra
             return out
         if share_list():
             _share(tok, meta, out)
-        _write_tabs(tok, meta, info, tabs, plan, when, tz, out)
+        _write_tabs(tok, meta, info, tabs, plan, when, tz, out, how=opts.get("how_tab") or "", goal_cells=goal_cells,
+                    order=order)
         out["url"] = meta.get("url") or "https://docs.google.com/spreadsheets/d/%s/edit" % meta["id"]
     except GoogleError as exc:
         out["problems"].append(_google_problem(exc, cred))
@@ -1104,6 +1420,74 @@ def write_sheet(tabs: list[dict], opts: dict, when: datetime, tz: str, how_extra
             except OSError as exc:
                 out["problems"].append("the Google Sheet's id could not be saved (%s)" % _short(exc))
     return out
+
+
+def _sheet_id() -> tuple[str, dict]:
+    """(the sheet's id, what sheet.json remembers of it): AGENTS_KPI_SHEET_ID first, then the one made."""
+    meta = _load(kpi_dir() / "sheet.json", {}) or {}
+    env_id = (os.environ.get("AGENTS_KPI_SHEET_ID") or "").strip()
+    sid = env_id or str(meta.get("id") or "")
+    return sid, (meta if meta.get("id") == sid else {})
+
+
+def read_inputs() -> dict:
+    """Read the Google Sheet's Goals tab (the old Inputs tab before the move) before the tracker counts anything, and keep what it holds where
+    kpi.load() lays it over team/kpi.yaml (kpi.typed_path()). Never raises. Returns {"status", "typed",
+    "problems", "notes"}. status: read; no credential; no sheet yet; not made yet (the first write makes
+    it); deleted (a person deleted it, so team/kpi.yaml's numbers are used); failed (the last read stays).
+    A typed cell the tracker cannot read is a note, never a problem: a typo is not an outage, and the tab's
+    own In use now column says what was used instead."""
+    from . import kpi
+    res = {"status": "", "typed": 0, "problems": [], "notes": []}
+    cred, why = credential()
+    if not cred:
+        res["status"] = "no credential"
+        if why:
+            res["problems"].append(why)
+        return res
+    sid, meta = _sheet_id()
+    if not sid:
+        res["status"] = "no sheet yet"
+        return res
+    # The owner's tab is Goals once the combined layout is in (layout version 3); before that it is the old
+    # Inputs tab, and the tracker's own Goals tab beside it holds nothing a person typed.
+    combined = int(meta.get("inputs_version") or 1) >= kpisheet.COMBINED_VERSION
+    name = kpisheet.INPUTS_TAB if combined else kpisheet.LEGACY_INPUTS_TAB
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    try:
+        tok = access_token(cred)
+        info = _g("GET", "%s/%s?fields=sheets.properties.title" % (SHEETS, sid), token=tok)
+        titles = {(s.get("properties") or {}).get("title") for s in info.get("sheets") or []}
+        if name not in titles:
+            if name in set(meta.get("created") or []):
+                _save(kpi.typed_path(), {"found_tab": False, "read_at": now, "sheet": sid})
+                res["status"] = "deleted"
+                res["notes"].append("the %s tab was deleted from the Google Sheet by hand, so the numbers in "
+                                    "team/kpi.yaml are used" % name)
+            else:
+                res["status"] = "not made yet"
+            return res
+        rng = quote("%s!A1:H300" % _q(name), safe="")
+        data = _g("GET", "%s/%s/values/%s?valueRenderOption=FORMATTED_VALUE" % (SHEETS, sid, rng), token=tok)
+    except GoogleError as exc:
+        last = str(kpi.typed().get("read_at") or "")
+        why = ("the Google sign-in has expired or was revoked" if "invalid_grant" in (exc.reason + exc.message)
+               else "Google answered %d" % exc.status if exc.status else "Google could not be reached")
+        res["status"] = "failed"
+        res["problems"].append("the Google Sheet's %s tab could not be read (%s), so %s" % (
+            name, why, ("the numbers it held at %s are used" % last) if last else "the numbers in team/kpi.yaml are used"))
+        return res
+    parsed = kpisheet.parse_inputs(data.get("values") or [])
+    parsed.update(read_at=now, sheet=sid, tab=name)
+    try:
+        _save(kpi.typed_path(), parsed)
+    except OSError as exc:
+        res["status"] = "failed"
+        res["problems"].append("what the %s tab holds could not be saved (%s)" % (name, _short(exc)))
+        return res
+    res.update(status="read", typed=int(parsed.get("typed") or 0))
+    res["notes"] += [str(p) for p in parsed.get("problems") or []]
+    return res
 
 
 # ====================================================================== 3. Slack
@@ -1292,9 +1676,10 @@ def publish(ctx, snapshot: dict, *, preview=None, sheet: bool = True, slack: boo
     if not out["page"]:
         out["notes"].append("AGENTS_PUBLIC_URL is not set, so the page has no link to give")
     if sheet:
+        # The sheet IS the tracker now: its How it is counted tab carries the run's notes, never the page's
+        # instructions for mirroring a tab into a sheet.
         try:
-            g = write_sheet(priv, opts, when, tz, [MIRROR_HEAD + ".", MIRROR_INTRO] + (site.get("mirror") or []) + notes_in
-                            if site.get("mirror") else notes_in)
+            g = write_sheet(priv, opts, when, tz, notes_in, goal_cells=snapshot.get("goal_cells"))
         except Exception as exc:  # noqa: BLE001
             log.exception("kpi google sheet failed")
             g = {"url": None, "problems": ["the Google Sheet could not be updated (%s)" % _short(exc)], "notes": []}
@@ -1303,7 +1688,8 @@ def publish(ctx, snapshot: dict, *, preview=None, sheet: bool = True, slack: boo
         out["notes"] += g.get("notes") or []
     if slack:
         try:
-            status, said = post_daily(snapshot, opts, out["page"], day, owner)
+            # Slack opens the Google Sheet when this run wrote it, and the page when it did not.
+            status, said = post_daily(snapshot, opts, out["sheet"] or out["page"], day, owner)
         except Exception as exc:  # noqa: BLE001
             log.exception("kpi slack post failed")
             status, said = "not sent", ["the KPI message could not be posted to Slack (%s)" % _short(exc)]

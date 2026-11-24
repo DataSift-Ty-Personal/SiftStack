@@ -292,6 +292,10 @@ check(got["12"]["owner_source"] == "siftmap cache" and got["12"]["mailable"], "a
 check(got["13"]["owner_source"] == "" and not got["13"]["mailable"] and got["13"]["pull_candidate"],
       "no owner yet: not mailable, a pull candidate")
 check(not got["14"]["pull_candidate"], "a lot bought in the last 2 years is not pulled")
+_top = v.top_lots([dict(got["12"], offer_low=30000, offer_high=39000), got["11"]], n=1)
+check(_top == [{"tier": got["12"]["tier"], "address": None, "city": None, "acres": None,
+                "segment": got["12"]["segment"], "offer_low": 30000, "offer_high": 39000}],
+      "the export's top lots carry the offer band priced in export: %s" % _top)
 check([s for s in ("11", "12", "13", "14") if got[s]["to_pull"]] == ["12", "13"],
       "the pull list: mailable lots that are not records, and lots whose owner is not visible yet")
 

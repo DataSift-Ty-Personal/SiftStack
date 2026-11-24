@@ -326,7 +326,8 @@ def _shipped_checks(check) -> None:
     many = [(sid, x) for sid, st in pol.stages.items() for x in (st.get("lanes") or []) if str(x) not in lanes.ORDER]
     check(not named and not many, "no stage in the playbook names a removed lane: %s" % ((named + many) or "ok"))
     old = [sid for sid in pol.stages if sid.startswith(("hottest_", "strong_", "bulk_")) or sid == "caller_book"]
-    check(old and all(pol.stage(sid).mode == "off" for sid in old), "every Hottest, Strong and Bulk stage is switched off")
+    # Retired 2026-11-13 and removed with their archived presets on 2026-11-23 (Ty: "just delete the archives").
+    check(not old, "no Hottest, Strong or Bulk stage is left in the playbook: %s" % (old or "none"))
     top, ag = pol.stage("top1000_refresh"), pol.stage("agency_export")
     # Both went live on 2026-11-19 (Ty: switch on what is left); the agency file still waits for a releaser.
     check((top.kind, top.owner, top.mode, top.get("lane")) == ("top1000", "analysis", "live", "top1000")

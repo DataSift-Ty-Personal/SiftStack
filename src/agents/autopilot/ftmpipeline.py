@@ -95,6 +95,9 @@ DEFAULTS = {
     "researched_tags": ["Deep Prospected", "Heir Identified", "Heirs Resolved"],
     "dm_fields": ["Decision Maker"],     # a custom field research fills when it names who signs
     "off_board_tags": ["Wrong House"],   # research found the house is not the one to market
+    # A record on its own board (curative.py, the Curative Title board) is never placed here: one family
+    # worked by two boards would get two rounds of calls and this board's texts.
+    "skip_tags": ["Curative"],
     "text_days": [1, 2, 3],              # the days whose full attempt includes a text (the opening texts)
     # auto: only while text_stage would act on this box, by the rule sweep.run applies to it (live in the
     # playbook, and config.stage_live with its own spend class and id: a live box, or a free box that
@@ -141,7 +144,8 @@ def options(st) -> dict:
         if v is not None:
             o[k] = v
     o["column_ids"] = {str(k): str(v) for k, v in dict(o.get("column_ids") or {}).items() if v}
-    for k in ("obituary_presets", "research_first", "researched_tags", "dm_fields", "off_board_tags", "call_alone_lanes"):
+    for k in ("obituary_presets", "research_first", "researched_tags", "dm_fields", "off_board_tags", "call_alone_lanes",
+              "skip_tags"):
         o[k] = [str(x) for x in _list(o[k]) if str(x).strip()]
     o["text_days"] = [x for x in _list(o["text_days"]) if isinstance(x, int) and not isinstance(x, bool)]
     return o
@@ -360,6 +364,8 @@ def record_state(ctx: Ctx, rec: dict, o: dict, custom: dict | None = None) -> tu
     ow = lanes.owner_lane((rec.get("owner") or {}).get("uuid") or "")
     if ow and ow.get("lane") == "lead" and (ow.get("records") or {}).get(rec.get("uuid") or "") != "lead":
         return "lead", "the owner is a lead on another record"
+    if marks_of(rec) & _low(o.get("skip_tags") or []):
+        return "gone", "a curative title record: the Curative Title board has it"
     v = gate.check(rec, "assign", cfg=cfg, lanes_cfg=lanes_cfg, custom=custom)
     codes = {c: d for c, d in v.reasons}
     for c in GONE_CODES:

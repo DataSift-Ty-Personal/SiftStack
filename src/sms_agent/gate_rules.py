@@ -97,7 +97,7 @@ LEAD_STATUS_VALUES = ["new_lead", "No Contact New Lead", "Cold Lead", "Warm Lead
                       "follow_up", "lead", "underwrite", "under_contract", "push_deal", "transactions", "refer_lead"]
 LEAD_STATUSES = {s.lower() for s in LEAD_STATUS_VALUES}
 DEFAULT_MARKERS = {
-    "heirs": {"tags": ["Heir Identified"]},
+    "heirs": {"tags": ["Heir Identified", "Curative"]},     # Curative: the brain's curative title board (2026-11-23)
     "hot_auction": {"tags": ["Auction Soon"]},
     "ftm": {"tags": ["FTM"]},
     "obituary": {"tags": ["Obituary"], "lists": ["Obituary"]},

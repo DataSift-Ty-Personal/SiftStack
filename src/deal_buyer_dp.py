@@ -370,10 +370,11 @@ def phase_trace(a, out: Path) -> None:
             st = {"csv": buf.getvalue(), "bulkSkipId": entry["bulkSkipId"],
                   "entities": entry.get("entities"), "paid": False}
             _save(out / "smartskip_state.json", st)
+        paid_now = False
         if not st.get("paid"):
             if not ss.pay(sess, st["bulkSkipId"]):
                 raise SystemExit("SmartSkip payment did not go through; finish it in the app and re-run")
-            st["paid"] = True
+            st["paid"], paid_now = True, True
             _save(out / "smartskip_state.json", st)
         t0 = time.time()
         while True:
@@ -397,7 +398,10 @@ def phase_trace(a, out: Path) -> None:
             hits += 1 if p.get("has_results") else 0
             traced[row["_name"]] = {"rank": row["_rank"], "via": "smartskip", "phones": got,
                                     "deceased_flag": p.get("deceased")}
-        ledger(out, "smartskip", hits * SMARTSKIP_PER_HIT, "%d hits of %d" % (hits, len(ss_rows)))
+        # A re-run downloads the same paid order again; the ledger records the money once (a second line read as a
+        # second $2.55 charge on 3014 Sampleville, 2026-11-23).
+        if paid_now:
+            ledger(out, "smartskip", hits * SMARTSKIP_PER_HIT, "%d hits of %d" % (hits, len(ss_rows)))
 
     _save(out / "traced.json", traced)
     for k, v in traced.items():
@@ -494,12 +498,18 @@ def phase_verify(a, out: Path) -> None:
 
 def _phone_rows(dossier: list, traced: dict, cache: dict) -> list:
     rows = []
+    # Each buyer's rows come from ITS OWN pairs. The check is cached by (name, number), so one person running two
+    # companies was checked once, under whichever came first, and the other company showed no number at all
+    # (2026-11-23: one principal ran two of the buyer LLCs, and 9 registry numbers vanished).
+    mine: dict = {}
+    for rank, name, n in _pairs(dossier, traced):
+        mine.setdefault(rank, []).append("%s|%s" % (name, n))
     for d in dossier:
         src = {p["number"]: p for p in d["phones"]}
         dms = _dms(d)
         per_num, foil_hit = {}, set()
-        for v in cache.values():
-            if v.get("rank") != d["rank"] or v.get("error"):
+        for v in (cache.get(k) for k in mine.get(d["rank"], [])):
+            if not v or v.get("error"):
                 continue
             n = v["number"]
             if (v.get("name") or "").startswith("FOIL:"):

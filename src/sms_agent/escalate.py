@@ -144,7 +144,11 @@ def hot_lead(
         body = land_card.split("\n", 1)
         blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": (
             f"*{body[0]}*\n" + (body[1] if len(body) > 1 else ""))[:2990]}})
-    return _post(text, blocks, program=program)
+    posted = _post(text, blocks, program=program)
+    # The same hand raise waits at the top of every caller's dialer page (when the dialer is connected).
+    from . import dialer_hook
+    dialer_hook.push_handraise(phone, record_uuid, inbound, program)
+    return posted
 
 
 def draft_for_approval(
