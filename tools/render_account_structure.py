@@ -441,8 +441,10 @@ def render(bp_path: Path) -> str:
     w("")
     w("## Step 3: the folders, in order")
     w("")
-    for i, f in enumerate(folders, 1):
-        w("%d. %s" % (i, f["title"]))
+    w("Create them with exactly these names: the number at the front is what puts them in this order.")
+    w("")
+    for f in folders:
+        w("- %s" % f["title"])
     w("")
     w("## Step 4: the presets, folder by folder")
     w("")

@@ -60,27 +60,29 @@ By hand, work through the steps below in order: every later step names things th
 
 ## Step 3: the folders, in order
 
-1. 01. FORECLOSURE - TEXT
-2. 02. FORECLOSURE - CALL
-3. 03. FORECLOSURE - MAIL
-4. 04. ESTATES - TEXT
-5. 05. ESTATES - CALL
-6. 06. ESTATES - MAIL
-7. 07. CURATIVE TITLE
-8. 08. TOP 1000 - TEXT
-9. 09. TOP 1000 - CALL
-10. 10. TOP 1000 - MAIL
-11. 11. AGENCY
-12. 12. DEEP PROSPECTING (ALL TIERS)
-13. 13. REACTIVATION
-14. 14. CLEAN UP
-15. 15. Lead Management
-16. 16. Acquisitions
-17. 17. Transactions
-18. 18. My Tasks
-19. 19. QC
-20. 20. CALLER QUEUES
-21. 21. Dispo Sequential Marketing
+Create them with exactly these names: the number at the front is what puts them in this order.
+
+- 01. FORECLOSURE - TEXT
+- 02. FORECLOSURE - CALL
+- 03. FORECLOSURE - MAIL
+- 04. ESTATES - TEXT
+- 05. ESTATES - CALL
+- 06. ESTATES - MAIL
+- 07. CURATIVE TITLE
+- 08. TOP 1000 - TEXT
+- 09. TOP 1000 - CALL
+- 10. TOP 1000 - MAIL
+- 11. AGENCY
+- 12. DEEP PROSPECTING (ALL TIERS)
+- 13. REACTIVATION
+- 14. CLEAN UP
+- 15. Lead Management
+- 16. Acquisitions
+- 17. Transactions
+- 18. My Tasks
+- 19. QC
+- 20. CALLER QUEUES
+- 21. Dispo Sequential Marketing
 
 ## Step 4: the presets, folder by folder
 
