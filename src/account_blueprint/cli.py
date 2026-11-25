@@ -1,16 +1,15 @@
 """Command line for the account blueprint.
 
-    --phase export     read the source account live -> output/blueprints/<label>_<date>.json
+    --phase export     read an account live -> output/blueprints/<label>_<date>.json
     --phase validate   schema, refs, leak scan on a blueprint file
-    --phase plan       dry apply: what would be created, every gap and TODO
+    --phase plan       dry apply: what would be created, every gap, the by-hand checklist
     --phase apply      the real thing (still DRY unless --commit)
     --phase verify     read-only parity check + record-count probes
 
-Target credential, first match wins:
-    --jwt <token> | REISIFT_TARGET_JWT
-    --email + --password            (mints via POST /api/token/)
-    --impersonate                   (staff JWT from REISIFT_STAFF_JWT or the Deal Room store)
-    a pasted token for --target in the Deal Room store (internal convenience)
+The key is your DataSift Open API key, from REISIFT_API_KEY (or the variable
+--key-env names). For export it is the key of the account being read. For plan,
+apply and verify it is the key of the TARGET account: the gate reads the key's
+own user and refuses any key that is not --target's.
 """
 from __future__ import annotations
 
@@ -21,7 +20,7 @@ import time
 
 from . import FAMILIES
 from .blueprint import dump, load, validate
-from .client import Client, decode_claims
+from .client import Client
 
 
 def _out_dir() -> str:
@@ -34,29 +33,17 @@ def _slug(email: str) -> str:
 
 
 def target_client(a) -> Client:
-    jwt = (a.jwt or os.environ.get("REISIFT_TARGET_JWT", "")).strip()
-    if a.jwt_file:
-        with open(a.jwt_file, encoding="utf-8") as f:
-            jwt = f.read().strip()
-    if jwt:
-        return Client.from_jwt(jwt)
-    if a.email and a.password:
-        return Client.from_password(a.email, a.password)
-    if a.impersonate:
-        from .staff_creds import staff_client
-        staff = staff_client()
-        if staff is None:
-            raise SystemExit("--impersonate needs a valid staff JWT (REISIFT_STAFF_JWT or the store)")
-        return Client.impersonate(staff, a.target)
-    try:
-        from .staff_creds import stored_target_jwt
-        tok = stored_target_jwt(a.target)
-    except Exception:
-        tok = ""
-    if tok:
-        print("[cli] using the pasted token for %s from the Deal Room store" % a.target)
-        return Client.from_jwt(tok)
-    raise SystemExit("no target credential: pass --jwt, --email/--password, or --impersonate")
+    # The staff module answers only to its own hidden flags and store; with none of them it
+    # returns None and the key below is the credential.
+    from . import staff_creds
+    c = staff_creds.staff_target_client(a) or staff_creds.stored_target_client(a.target)
+    if c is not None:
+        return c
+    key = os.environ.get(a.key_env, "").strip()
+    if not key:
+        raise SystemExit("no key: set %s to the target account's DataSift Open API key "
+                         "(an account admin creates it in DataSift)" % a.key_env)
+    return Client.from_api_key(key)
 
 
 def main(argv=None) -> int:
@@ -65,15 +52,11 @@ def main(argv=None) -> int:
     ap.add_argument("--phase", required=True, choices=["export", "validate", "plan", "apply", "verify"])
     ap.add_argument("--blueprint", help="blueprint JSON (validate/plan/apply/verify)")
     ap.add_argument("--label", default="account", help="export: label for the file name and source")
-    ap.add_argument("--source-account", default=None, help="export: Deal Room store account name")
-    ap.add_argument("--api-key", default=None, help="export: Open API key (else REISIFT_API_KEY / store)")
+    ap.add_argument("--key-env", default="REISIFT_API_KEY",
+                    help="the environment variable holding the Open API key (default REISIFT_API_KEY)")
+    ap.add_argument("--api-key", default=None, help="export: the Open API key itself (prefer --key-env)")
     ap.add_argument("--no-counts", action="store_true", help="export: skip per-preset source counts")
     ap.add_argument("--target", help="target account email (apply/plan/verify)")
-    ap.add_argument("--jwt", default=None)
-    ap.add_argument("--jwt-file", default=None)
-    ap.add_argument("--email", default=None)
-    ap.add_argument("--password", default=None)
-    ap.add_argument("--impersonate", action="store_true")
     ap.add_argument("--commit", action="store_true", help="apply: write (DRY by default)")
     ap.add_argument("--only", default="", help="comma list of families to create")
     ap.add_argument("--skip", default="", help="comma list of families to leave alone")
@@ -89,30 +72,31 @@ def main(argv=None) -> int:
                     help="keep auto-add ON for SiftMap presets (spends the target's allowance)")
     ap.add_argument("--probe-only", action="store_true",
                     help="create one object per unverified route (task-group, task-preset, "
-                         "sequence-folder, custom-field group, board, column), read it back, stop")
-    ap.add_argument("--allow-staff-target", action="store_true")
+                         "custom-field group, SiftMap preset), read it back, stop")
     ap.add_argument("--allow-same-account", default="", metavar="REASON")
     ap.add_argument("--strict-counts", action="store_true")
     ap.add_argument("--no-count-probe", action="store_true")
     ap.add_argument("--state", default=None)
     ap.add_argument("--report", default=None)
+    from . import staff_creds
+    staff_creds.add_staff_arguments(ap)
     a = ap.parse_args(argv)
 
     if a.phase == "export":
         from .export import Exporter
-        from .staff_creds import api_key_client, staff_client
-        if a.api_key:
-            client, acct = Client.from_api_key(a.api_key), {}
+        key = (a.api_key or os.environ.get(a.key_env, "")).strip()
+        got = None if key else staff_creds.staff_export_client(a)
+        if key:
+            client, acct = Client.from_api_key(key), {}
+        elif got:
+            client, acct = got
         else:
-            client, acct = api_key_client(a.source_account or "datasift-apikey")
-        staff = None
-        try:
-            staff = staff_client()
-        except Exception:
-            staff = None
+            raise SystemExit("no key: set %s to the DataSift Open API key of the account to export"
+                             % a.key_env)
+        fallback = staff_creds.export_fallback()
         print("export: source %s via %s%s" % (acct.get("email") or "?", client.kind,
-                                             " (staff fallback available)" if staff else ""))
-        ex = Exporter(client, staff=staff, with_counts=not a.no_counts, label=a.label,
+                                             " (staff fallback available)" if fallback else ""))
+        ex = Exporter(client, staff=fallback, with_counts=not a.no_counts, label=a.label,
                       email=acct.get("email") or "", account_hint=acct.get("account_id") or "")
         bp = ex.run()
         errors, warnings = validate(bp)

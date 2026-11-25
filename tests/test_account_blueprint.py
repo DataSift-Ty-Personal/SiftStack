@@ -25,7 +25,9 @@ from account_blueprint import apply as A  # noqa: E402
 from account_blueprint import blueprint as B  # noqa: E402
 from account_blueprint import client as C  # noqa: E402
 from account_blueprint import export as E  # noqa: E402
+from account_blueprint import staff_creds as S  # noqa: E402
 from account_blueprint import translate as T  # noqa: E402
+from account_blueprint import report as R  # noqa: E402
 from account_blueprint.report import Log  # noqa: E402
 
 SRC_ACCT = "5ca1ab1e-0000-4000-8000-00000000a001"
@@ -429,10 +431,9 @@ def test_gate_refuses_wrong_email():
     assert c.writes() == []
 
 
-def test_gate_refuses_same_account_and_staff_and_api_key_and_short_token():
+def test_gate_refuses_same_account_and_staff_and_short_token():
     for claims, kind in ((good_claims(account=SRC_ACCT), "jwt"),
                          (good_claims(feature_flags=["staff"]), "jwt"),
-                         (good_claims(), "api_key"),
                          (good_claims(exp=int(time.time()) + 600), "jwt"),
                          (good_claims(impersonated=True), "jwt")):
         c = Stub(target_script(), kind=kind, claims=claims)
@@ -459,6 +460,148 @@ def test_gate_allows_same_account_only_with_reason():
     c = Stub(target_script(), claims=good_claims(account=SRC_ACCT, feature_flags=["staff"]))
     code = run(min_blueprint(), c, allow_same_account="restore test", allow_staff_target=True)
     assert code == 0 and c.writes() == [], "dry run makes no writes"
+
+
+# ---- the Open API key: the community path
+
+def key_user(**over):
+    me = {"email": "target@x.com", "account": TGT_ACCT, "uuid": "user-self-uuid",
+          "feature_flags": [], "addons": []}
+    me.update(over)
+    return me
+
+
+def key_stub(script, **over):
+    s = dict(script)
+    s[("GET", "/api/internal/user/")] = key_user(**over)
+    return Stub(s, kind="api_key")
+
+
+def test_key_gate_reads_the_keys_own_user_and_plans_without_writes():
+    c = key_stub(target_script())
+    code = run(min_blueprint(), c)
+    assert code == 0 and c.writes() == [], c.writes()
+    assert ("GET", "/api/internal/user/") in [(m, p) for m, p, _, _ in c.calls], "the key's own user decides"
+    ident = A.verify_target(c, min_blueprint(), "target@x.com", opts())
+    assert ident["kind"] == "api_key" and ident["account"] == TGT_ACCT and ident["user_id"] == "user-self-uuid"
+
+
+def test_key_gate_refuses_wrong_user_source_account_staff_and_live_mismatch():
+    cases = [key_stub(target_script(), email="someone@example.com"),
+             key_stub(target_script(), account=SRC_ACCT),
+             key_stub(target_script(), account="not-a-uuid"),
+             key_stub(target_script(), feature_flags=["staff"])]
+    s = target_script()
+    s[("GET", "/api/internal/sequence/?limit=5")] = rows({"uuid": "q", "account_uuid": SRC_ACCT})
+    cases.append(key_stub(s))
+    for c in cases:
+        try:
+            run(min_blueprint(), c, commit=True)
+            assert False, c.script.get(("GET", "/api/internal/user/"))
+        except SystemExit as e:
+            assert e.code == 3
+        assert c.writes() == []
+
+
+def test_key_commit_creates_published_families_and_checklists_the_rest():
+    created = []
+    s = commit_script(created)
+    bp = min_blueprint()
+    bp["boards"].append({"title": "Deep Prospecting", "columns": ["Research", "Signer Found"]})
+    bp["boards"][0]["columns"].append("Send to Acquisitions")
+    c = key_stub(s)
+    import tempfile
+    rp = os.path.join(tempfile.mkdtemp(), "apply")
+    code = A.run_apply(c, bp, "target@x.com", opts(commit=True, report_path=rp))
+    assert code == 0, code
+    kinds = [k for k, _ in created]
+    assert kinds == ["list", "tag", "task_group", "task_preset", "folder", "preset", "siftmap"], kinds
+    posted = {p for m, p, _, _ in c.calls if m == "POST"}
+    for never in ("/api/internal/status/", "/api/internal/sequence-folder/", "/api/internal/sequence/",
+                  "/api/internal/siftline/board/", "/api/internal/siftline/board/tb1/column/",
+                  "/api/internal/upload/usage/"):
+        assert never not in posted, never
+    r = json.load(open(rp + ".json", encoding="utf-8"))
+    todo = {(e["family"], e["object"]): e for e in r["log"] if e["action"] == "manual_todo"}
+    assert todo[("statuses", "Hot Lead")]["steps"] == [
+        "In the DataSift app, add a custom lead status titled Hot Lead with the color #ff0000."]
+    assert todo[("boards", "Deep Prospecting")]["steps"] == [
+        "In SiftLine, add a board titled Deep Prospecting.",
+        "On board Deep Prospecting, add the column Research (position 1).",
+        "On board Deep Prospecting, add the column Signer Found (position 2)."]
+    assert todo[("boards", "Lead Management")]["steps"] == [
+        "On board Lead Management, add the column Send to Acquisitions (position 2)."]
+    assert ("sequences", "folder Lead Management") in todo
+    steps = todo[("sequences", "Sold Tag")]["steps"]
+    assert steps[1] == 'Drag the trigger card "Property Tags Added" onto the trigger area.'
+    assert steps[2] == "Add the condition: the record has all of the tags: Priority 1."
+    assert steps[4] == "Drag the action card: Change Property Status to sold."
+    md = open(rp + ".md", encoding="utf-8").read()
+    assert "    - Drag the trigger card \"Property Tags Added\" onto the trigger area." in md
+    assert "credential: api_key" in md
+
+
+def test_key_verify_reports_by_hand_families_as_gaps_without_writes():
+    c = key_stub(target_script())
+    bp = min_blueprint()
+    bp["boards"].append({"title": "Deep Prospecting", "columns": ["Research"]})
+    assert run(bp, c, verify_only=True) == 0 and c.writes() == []
+
+
+def test_sequence_steps_name_every_card_in_order():
+    q = {"title": "Send back to LM", "folder": "Acquisitions", "is_active": True, "trigger": "card.moved",
+         "conditions": [{"condition": "from_to", "payload": {
+             "field": "column", "meta": {"boards": [B.ref("board", "Acquisitions"), B.ref("board", "Acquisitions")]},
+             "updated_to": B.ref("column", "Send Back to Lead Management", board="Acquisitions")}}],
+         "actions": [{"action": "move-siftline-card", "payload": {"values": {
+                         "to": {"board": B.ref("board", "Lead Management"),
+                                "column": B.ref("column", "Needs Review", board="Lead Management")},
+                         "from": {"board": B.ref("board", "Acquisitions")}}}},
+                     {"action": "create-task-by-preset", "payload": {
+                         "task_preset": B.ref("task_preset", "Call New Lead", group="Lead Management")}},
+                     {"action": "send-sms", "$manual": True, "kept": {"message": "hi"}}]}
+    steps = R.sequence_steps(q)
+    assert steps[0] == "Open Sequences and click Create Sequence. Title: Send back to LM. Folder: Acquisitions."
+    assert steps[1] == 'Drag the trigger card "SiftLine Card Moved" onto the trigger area.'
+    assert steps[2] == "Add the condition: the card's column changes to Send Back to Lead Management (board Acquisitions)."
+    assert steps[4] == "Drag the action card: Move Card to board Lead Management, column Needs Review (from board Acquisitions)."
+    assert steps[5].endswith("Create New Task from the task preset Call New Lead (task group Lead Management).")
+    assert "Send SMS, with your own integration" in steps[6]
+    assert steps[-1].startswith("Turn it off"), "a sequence that lost a send action starts inactive"
+
+
+def test_cli_runs_on_the_key_and_hides_staff_flags():
+    import argparse
+    import contextlib
+    import io
+    from account_blueprint import cli
+    os.environ["BP_TEST_KEY"] = "test-key-value"
+    try:
+        ns = argparse.Namespace(target="target@x.com", key_env="BP_TEST_KEY", jwt=None, jwt_file=None,
+                                email=None, password=None, impersonate=False)
+        saved = os.environ.pop("REISIFT_TARGET_JWT", None)
+        old_store = S.STORE
+        S.STORE = os.path.join(os.path.dirname(__file__), "no-such-store.json")
+        try:
+            c = cli.target_client(ns)
+        finally:
+            S.STORE = old_store
+            if saved is not None:
+                os.environ["REISIFT_TARGET_JWT"] = saved
+        assert c.kind == "api_key" and c._auth_header() == "Api-Key test-key-value"
+        assert c.min_interval >= 0.75, "a key client stays near 80 requests a minute"
+    finally:
+        os.environ.pop("BP_TEST_KEY", None)
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        try:
+            cli.main(["--help"])
+        except SystemExit:
+            pass
+    text = out.getvalue()
+    assert "--key-env" in text
+    for hidden in ("--jwt", "--password", "--email", "--impersonate", "--allow-staff-target", "--source-account"):
+        assert hidden not in text, hidden
 
 
 def test_empty_user_index_refuses():
@@ -836,7 +979,7 @@ def test_verify_phase_reports_missing_as_gaps_without_writes():
 
 def test_client_retry_hint_and_get_all_shapes():
     assert C._RETRY_HINT.search("Request was throttled. Expected available in 42 seconds.").group(1) == "42"
-    assert C.decode_claims(jwt(email="a@b.c"))["email"] == "a@b.c"
+    assert S.decode_claims(jwt(email="a@b.c"))["email"] == "a@b.c"
     st = Stub({("GET", "/x"): [{"uuid": "1"}]})
     assert st.get_all("/x") == [{"uuid": "1"}], "flat array listing"
 

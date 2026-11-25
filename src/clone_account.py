@@ -1,23 +1,27 @@
-"""Clone the prod-account DataSift account structure into any DataSift account.
+"""Clone the reference DataSift account structure into any DataSift account.
 
-    python src/clone_account.py --phase export                                        # prod-account -> output/blueprints/account_<date>.json
+    python src/clone_account.py --phase export --label myaccount                       # your account -> output/blueprints/
     python src/clone_account.py --phase validate --blueprint output/blueprints/account_2026-11-23.json
-    python src/clone_account.py --phase plan  --blueprint <bp> --target you@x.com --jwt <paste>          # dry diff + TODO list
-    python src/clone_account.py --phase apply --blueprint <bp> --target you@x.com --email you@x.com --password ... --commit
-    python src/clone_account.py --phase apply --blueprint <bp> --target client@x.com --impersonate --commit   # staff, non-staff client
+    python src/clone_account.py --phase plan  --blueprint <bp> --target you@x.com            # dry diff + checklist
+    python src/clone_account.py --phase apply --blueprint <bp> --target you@x.com --commit
     python src/clone_account.py --phase apply ... --probe-only --commit               # one create + read-back per unverified route, stop
-    python src/clone_account.py --phase apply ... --only statuses,lists,tags --commit
-    python src/clone_account.py --phase verify --blueprint <bp> --target you@x.com --jwt <paste>          # read-only parity + count probes
+    python src/clone_account.py --phase apply ... --only lists,tags --commit
+    python src/clone_account.py --phase verify --blueprint <bp> --target you@x.com           # read-only parity + count probes
 
-Two steps, one portable file. `export` reads the source account live (Open
-API key, staff-JWT fallback per family) into a title-keyed, uuid-free
-blueprint. `apply` takes that file plus the TARGET's own credential, creates
-every family in dependency order (statuses, lists, tags, custom fields, task
-presets, presets, sequences, SiftMap presets), reads each object back and
-compares, and writes a report naming every translation, drop, gap and
-configure-by-hand item. DRY by default; --commit writes. The apply side is
-stdlib-only and imports nothing from the Deal Room checkout, so a community
-member can run it on their own account.
+Every phase runs on a DataSift Open API key, from REISIFT_API_KEY (or the
+variable --key-env names): for export the key of the account being read, for
+plan, apply and verify the key of the TARGET account.
+
+Two steps, one portable file. `export` reads an account live into a
+title-keyed, uuid-free blueprint. `apply` takes that file plus the target's
+key, creates every family DataSift publishes a create route for, in
+dependency order (lists, tags, custom fields, task presets, presets, SiftMap
+presets), reads each object back and compares, and writes a report naming
+every translation, drop and gap, plus a click-through checklist for what the
+API cannot create (custom statuses, boards and their columns, sequences). DRY
+by default; --commit writes. The apply side is stdlib-only and imports nothing
+from the Deal Room checkout, so a community member can run it on their own
+account.
 """
 import os
 import sys

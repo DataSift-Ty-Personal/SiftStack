@@ -9,31 +9,34 @@ This skill both **guides** and **helps execute** sequence creation in DataSift. 
 
 Sequences are automations in Sift that trigger actions when specific events occur. They ensure no lead slips through the cracks by automatically creating tasks, changing statuses, moving cards, and sending notifications.
 
-## Execution Mode Detection
+## How Sequences Get Built
 
-Before starting, detect the execution environment:
+Sequences are not in DataSift's published API, so this skill never builds one by script. Every sequence is built in the app's Sequence Builder, with Claude walking the user through each click (Creating a Sequence, Steps 1 to 7 below).
 
-**Check 1:** Does `scripts/manage_sequences.py` exist in this skill's directory?
-**Check 2:** Is Playwright available? Run: `python -c "from playwright.sync_api import sync_playwright; print('OK')"`
-**Check 3:** Are credentials set? Check for `DATASIFT_EMAIL` and `DATASIFT_PASSWORD` in `.env` or environment.
+### With your Open API key (optional)
 
-### Automated Mode (Claude Code CLI — all 3 checks pass)
-
-Run sequence management directly:
+If `REISIFT_API_KEY` (your DataSift Open API key) is set, the bundled script reads what the account already has, so the walkthrough skips what exists and names anything a sequence needs that is missing. It only reads: nothing in the account changes. An account admin creates the key in DataSift (developers.datasift.ai explains it).
 
 ```bash
-# List all existing sequences
+# Every sequence folder and sequence, with its trigger and whether it is on
 python scripts/manage_sequences.py --list
 
-# Create the Sold Property Cleanup sequence
-python scripts/manage_sequences.py --create-sold-sequence
+# Do the tags, statuses, lists, boards and folders a template needs exist yet?
+python scripts/manage_sequences.py --check --tags "Sold" --statuses "Sold" --lists "Foreclosure,Probate,Tax Sale" --folders "Transactions"
+
+# The Sold Property Cleanup checklist (template 13): says if it already exists, else the clicks
+python scripts/manage_sequences.py --sold-sequence
+python scripts/manage_sequences.py --sold-sequence --offline   # the checklist alone, no key
+
+# Check the script's rules on invented data, no network
+python scripts/manage_sequences.py --selftest
 ```
 
-The script handles login, navigation to /sequences, React DnD drag-and-drop (which requires slow mouse-based dragging, not Playwright's native drag), and sequence configuration. After running, proceed to the template design section below for additional sequences.
+Run `--list` first, then build only what is missing. A tag, status or list a sequence uses has to exist before the Sequence Builder can pick it, so run `--check` for a template's names before walking through it.
 
-### Manual Mode (Co-Work or no Playwright — any check fails)
+### Without the key
 
-Follow the step-by-step UI walkthrough instructions below. Claude will guide you through each drag-and-drop operation in the DataSift sequence builder.
+Follow the step-by-step UI walkthrough below. Claude guides each drag-and-drop in the Sequence Builder, and asks the user to look in the app for what already exists.
 
 ## Quick Reference
 
@@ -163,7 +166,7 @@ Drag action cards from the sidebar onto the actions area.
 **Important UI patterns**:
 - The **first action** uses the initial drop zone on the canvas
 - For the **2nd action and beyond**, you must click the **"Add new Action +"** button before dragging
-- **React DnD behavior**: Action cards have `draggable="false"` set in the DOM. Standard browser drag will not work. DataSift uses a slow mouse drag pattern internally -- click and hold the card, then drag slowly to the drop zone
+- **Drag slowly**: click and hold the card, then drag it slowly to the drop zone. A quick flick does not register.
 
 Available actions:
 

@@ -5,13 +5,14 @@
   "raw_base": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main",
   "install_target": "~/.claude/skills",
   "counts": {
-    "total": 30,
-    "current": 28,
-    "skills": 27,
+    "total": 36,
+    "current": 34,
+    "skills": 33,
     "plugins": 3
   },
   "categories": [
     "CRM",
+    "Chains",
     "Coaching & Performance",
     "Deal Analysis",
     "Market Intelligence",
@@ -25,8 +26,8 @@
   },
   "tier_counts": {
     "none": 14,
-    "account": 9,
-    "api": 5
+    "account": 14,
+    "api": 6
   },
   "skills": [
     {
@@ -34,7 +35,7 @@
       "kind": "skill",
       "category": "CRM",
       "version": null,
-      "description": "Build a DataSift account in the same structure as the DataSift reference account, over the API, with a read-back on every object: preset folders and presets, lead statuses, lists, tags, custom fields, task presets, sequences, and SiftMap auto-add presets. Ships the current reference blueprint. Also exports any account you hold an Open API key for into the same portable format. Trigger for: set up my DataSift account like the challenge account, clone the preset system, install the sequential marketing presets, copy the sequences into a new account, or export my account structure.",
+      "description": "Build a DataSift account in the same structure as the DataSift reference account, on your own Open API key, with a read-back on every object it creates: preset folders and presets, lists, tags, custom fields, task presets and SiftMap auto-add presets. What DataSift's published API cannot create (custom lead statuses, boards and their columns, sequences) comes out as a click-through checklist in the report. Ships the current reference blueprint. Also exports your own account into the same portable format. Trigger for: set up my DataSift account like the challenge account, clone the preset system, install the sequential marketing presets, copy the sequences into a new account, or export my account structure.",
       "status": "current",
       "source_dir": "skills/account-blueprint",
       "files": [
@@ -54,20 +55,18 @@
         "scripts/clone_account.py"
       ],
       "file_count": 14,
-      "bytes": 471695,
+      "bytes": 490466,
       "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/account-blueprint.skill",
-      "sha256": "cde6304b6600be1bdefddff98a009c6d1519f3558b45da8a8194543747208338",
+      "sha256": "d4b9f90074a0bcf74f76b5d593cec9a89bcd8ba848266525ea85e666dc131246",
       "requires": {
         "tier": "account",
-        "accounts": [
-          "DataSift"
-        ],
         "env": [
-          "REISIFT_TARGET_JWT"
+          "REISIFT_API_KEY"
         ],
         "cost": "Free. Creates structure only; SiftMap auto-add is left OFF so no records are pulled",
         "fallback": "no-api-playbook#presets-by-hand",
-        "note": "Apply needs your own DataSift JWT (or email + password). Export of your own account needs your Open API key."
+        "note": "Runs on your DataSift Open API key, for export and apply. Custom statuses, boards, board columns and sequences have no published create route, so the report lists them as a click-through checklist.",
+        "accounts": []
       }
     },
     {
@@ -95,13 +94,12 @@
         "skills/sift-operations/references/niche-sequential-presets.md",
         "skills/sift-operations/references/sequence-ideation.md",
         "skills/sift-operations/references/sequences-core.md",
-        "skills/sift-operations/references/troubleshooting.md",
-        "skills/sift-operations/scripts/datasift_core.py"
+        "skills/sift-operations/references/troubleshooting.md"
       ],
-      "file_count": 18,
-      "bytes": 115090,
+      "file_count": 17,
+      "bytes": 99301,
       "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/sift-operations.plugin",
-      "sha256": "c5b427294e6b4c5fdadfc480c38160d754cc37a92e35d573da2012a4cc60ff97",
+      "sha256": "891cb235a473f3f6a732e2af3bce0e5da85b82ed28a6d805f368779af07b3d1e",
       "requires": {
         "tier": "none",
         "fallback": null,
@@ -130,20 +128,178 @@
         "scripts/manage_sequences.py"
       ],
       "file_count": 9,
-      "bytes": 107992,
+      "bytes": 96443,
       "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/sift-sequences.skill",
-      "sha256": "fa5df619c5a911a4ade196e8fbe5dcbb769d9cf9021210920861dddcbe497a2c",
+      "sha256": "8fa525f469123b560b12716ccf523f067b431db036050643cc365a6d8e96ccfb",
+      "requires": {
+        "tier": "account",
+        "cost": "Included with DataSift",
+        "fallback": "no-api-playbook#sequences-by-hand",
+        "note": "A click-through guide for the Sequence Builder in the app: sequences are not in DataSift's published API. REISIFT_API_KEY is optional and only lets the script read which sequences, tags, lists and statuses already exist.",
+        "env": [],
+        "accounts": []
+      }
+    },
+    {
+      "name": "account-setup-chain",
+      "kind": "skill",
+      "category": "Chains",
+      "version": null,
+      "description": "Sets up a DataSift account the way every other SiftStack chain expects, once, on the Open API key alone. Runs the SiftStack doctor, applies the account blueprint (lists, tags, custom fields, task presets, preset folders and presets, each read back after it is written), gives every list you market its text, call and mail lanes, walks you through the statuses, boards, columns and sequences the API cannot build, and ends with a readiness check on one test record. Dry run first. Costs nothing and contacts no one. Use when someone says \"set up my DataSift account\", \"set my account up like the bootcamp account\", \"install the presets and sequences\", \"get my account ready for SiftStack\", \"clone the account structure\", \"build my lanes\", \"is my account ready\", or right after they create their Open API key.",
+      "status": "current",
+      "source_dir": "skills/account-setup-chain",
+      "files": [
+        "SKILL.md"
+      ],
+      "file_count": 1,
+      "bytes": 23581,
+      "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/account-setup-chain.skill",
+      "sha256": "1ad9717a0837f443b7be379397ec0210547a1312497ba1bddad6eb98b0ae779b",
       "requires": {
         "tier": "account",
         "env": [
-          "DATASIFT_EMAIL",
-          "DATASIFT_PASSWORD"
+          "REISIFT_API_KEY"
         ],
-        "accounts": [
-          "DataSift"
+        "cost": "Free",
+        "fallback": null,
+        "note": "Runs the doctor, the account blueprint and the lane presets on your DataSift Open API key. Sequences, custom statuses, boards and board columns are a click-through in the app.",
+        "accounts": []
+      }
+    },
+    {
+      "name": "best-lists-chain",
+      "kind": "skill",
+      "category": "Chains",
+      "version": null,
+      "description": "Finds the lists that produce deals in a county right now and works them inside a budget, on the DataSift Open API key. Reads Market Finder by ZIP and neighborhood, writes a buy box, ranks the county's lists by live Doors per Deal, builds a ranked pool of owners (AI scores where the account has the county's AI add-on, the Doors per Deal ladder where it does not), pulls it after DataSift's own quote, adds skip trace and dial tiers, puts it in text, call and mail lanes, then sends it to Smarter Contact, a calling agency file, cold email or mail, with a weekly check. Use when someone says \"pull the best lists\", \"what lists should I market in my county\", \"find my best lists\", \"build my top 1,000\", \"pull an agency list\", \"run doors per deal\", \"set up my marketing for my county\", \"what should I pull this month\", or \"send my list to Smarter Contact\".",
+      "status": "current",
+      "source_dir": "skills/best-lists-chain",
+      "files": [
+        "SKILL.md"
+      ],
+      "file_count": 1,
+      "bytes": 28247,
+      "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/best-lists-chain.skill",
+      "sha256": "b9f56a0783c5d16664af6d980735ec6aff20ea9af7c94798fe8bbc6deb1021c2",
+      "requires": {
+        "tier": "account",
+        "env": [
+          "REISIFT_API_KEY"
         ],
-        "cost": "Included with DataSift",
-        "fallback": "no-api-playbook#sequences-by-hand"
+        "cost": "Free to rank and quote. A pull uses record allowance, quoted first; phone scoring about $0.015 a number, optional",
+        "fallback": null,
+        "note": "AI pools need the county's AI add-on; without it the ranking uses the Doors per Deal ladder. Sending goes through your own texting, calling agency, cold email or mail tool.",
+        "accounts": []
+      }
+    },
+    {
+      "name": "deal-desk-dispo-chain",
+      "kind": "skill",
+      "category": "Chains",
+      "version": null,
+      "description": "Take one hot lead to a signed contract and an assigned buyer. Comps inside a drawn boundary (SiftMap deeds on your DataSift Open API key, or the Zillow API), one rehab number from the walkthrough at the house's own layout, a one-tab wholesale offer (70% of ARV minus repairs and your fee), contractor bids that replace the placeholders, cash and creative offers on every active listing as a second source, then the buyers who buy houses like this one with a price guess each, their decision makers and checked numbers, a deal blast a person releases, and a buyer book for the next deal. Paid steps are quoted first, and nothing texts anyone without a person's go. Use when someone says \"what should I offer on this lead\", \"run comps and rehab on this house\", \"we walked it, now what\", \"get contractor bids\", \"make offers on the listings in my county\", \"it's under contract, find me buyers\", \"blast this deal to my buyers\", or \"set up my deal desk\".",
+      "status": "current",
+      "source_dir": "skills/deal-desk-dispo-chain",
+      "files": [
+        "SKILL.md",
+        "references/deal-files.md"
+      ],
+      "file_count": 2,
+      "bytes": 39902,
+      "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/deal-desk-dispo-chain.skill",
+      "sha256": "401bbf555e7f0e718270e6b126ee9716222042c39cfeb50f3ae8ee44f7966803",
+      "requires": {
+        "tier": "account",
+        "env": [
+          "REISIFT_API_KEY"
+        ],
+        "cost": "Free on the key. Zillow comps through OPENWEBNINJA_API_KEY are optional (100 free lookups a month)",
+        "fallback": null,
+        "note": "Without a Zillow key, comps are done by hand with real-estate-comping. The deal blast is a file you load into your own texting tool.",
+        "accounts": []
+      }
+    },
+    {
+      "name": "estates-heirs-chain",
+      "kind": "skill",
+      "category": "Chains",
+      "version": null,
+      "description": "Estates and heirs, end to end: for every deceased owner (probate notices, the Obituary and Probate lists, skip trace deceased flags) find the house, confirm whose death it is, research the family tree and who must sign, get a number that provably belongs to each signer, rank the stuck titles worth curing and run the Curative Title board, put the decision maker on the record, and work the estate with calls and letters. Runs on your DataSift Open API key with SmartSkip, Trestle and research in Claude Code. Dry run, then a quote, then one record read back, then the rest; nothing reaches a family without a person's go. Use when someone says \"work my probate list\", \"find the heirs\", \"who signs on this estate\", \"deep prospect this deceased owner\", \"set up curative title\", \"rank my obituary list\", or \"the owner died, now what\".",
+      "status": "current",
+      "source_dir": "skills/estates-heirs-chain",
+      "files": [
+        "SKILL.md",
+        "references/estate-files.md"
+      ],
+      "file_count": 2,
+      "bytes": 34079,
+      "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/estates-heirs-chain.skill",
+      "sha256": "955aab9e402838847dbc500aad9ee782eba9212d98c683fae7982658a5ce042c",
+      "requires": {
+        "tier": "api",
+        "env": [
+          "REISIFT_API_KEY",
+          "SMARTSKIP_EMAIL",
+          "SMARTSKIP_PASSWORD",
+          "TRESTLE_API_KEY"
+        ],
+        "cost": "About $0.24 a record (SmartSkip plus Trestle)",
+        "fallback": "no-api-playbook#heir-research-by-hand",
+        "note": "The family research runs in your Claude Code session. Knox and Blount have extra sources.",
+        "accounts": []
+      }
+    },
+    {
+      "name": "first-to-market-chain",
+      "kind": "skill",
+      "category": "Chains",
+      "version": null,
+      "description": "First to market, end to end, on your DataSift Open API key. Maps where your county keeps each distress record (foreclosure, probate, tax sale and tax delinquent notices, evictions, divorces, code violations, condemnations, liens), brings each source in by the path that fits it (Tennessee's notice pull, courthouse photos, scanned PDFs, county exports), cleans and screens the rows, uploads them one list per record type, traces and tiers every number, sends deceased owners to the estates chain, and works the rest in text, call and mail lanes. Dry run, then a quote, then one record read back, then the rest; nothing reaches a homeowner without a person's go. Use when someone says \"set up first to market for my county\", \"pull the courthouse data\", \"import these courthouse photos\", \"upload my foreclosure notices to DataSift\", \"skip trace my foreclosure list\", or \"work my first-to-market leads\".",
+      "status": "current",
+      "source_dir": "skills/first-to-market-chain",
+      "files": [
+        "SKILL.md",
+        "references/upload-layout.md"
+      ],
+      "file_count": 2,
+      "bytes": 37448,
+      "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/first-to-market-chain.skill",
+      "sha256": "70b3b01d082d416b2b52352e385f65b92df420f015047557ee16faa2dd01e01a",
+      "requires": {
+        "tier": "account",
+        "env": [
+          "REISIFT_API_KEY"
+        ],
+        "cost": "Free to bring records in and upload. Phone scoring about $0.015 a number and re-skips about $0.02 a record, both optional",
+        "fallback": null,
+        "note": "ANTHROPIC_API_KEY reads courthouse photos and PDFs; TRESTLE_API_KEY and TRACERFY_API_KEY are optional. The Tennessee notice pull and the Knox liens and condemnations are automated; elsewhere records come in by photo, PDF or CSV.",
+        "accounts": []
+      }
+    },
+    {
+      "name": "team-performance-chain",
+      "kind": "skill",
+      "category": "Chains",
+      "version": null,
+      "description": "Know what the team did, coach it, hire, and write the work down. Pulls dials, conversations, correct numbers, leads, appointments and pace against your goals from your DataSift account on the Open API key, grades real calls with the cold call, lead manager and closer coaches (one note per caller, read by the owner first), takes a hire from the role and its one number to a scored applicant sheet, turns screen recordings into SOPs with agent-runnable twins, and posts one daily scoreboard. Use when someone says \"how did the team do this week\", \"pull my KPIs\", \"grade my callers\", \"coach these calls\", \"I need to hire a cold caller\", \"process these applicants\", \"turn this recording into an SOP\", or \"set up a daily scoreboard\".",
+      "status": "current",
+      "source_dir": "skills/team-performance-chain",
+      "files": [
+        "SKILL.md"
+      ],
+      "file_count": 1,
+      "bytes": 21072,
+      "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/team-performance-chain.skill",
+      "sha256": "0c47af5935957d1c828090cc684cb375931b9ddd247ba0cd96255e25d9ac5572",
+      "requires": {
+        "tier": "account",
+        "env": [
+          "REISIFT_API_KEY"
+        ],
+        "cost": "Free on the key. Call transcription about $0.002 an audio minute",
+        "fallback": null,
+        "note": "The call coaches need SmrtPhone recordings and an OPENROUTER_API_KEY.",
+        "accounts": []
       }
     },
     {
@@ -231,20 +387,18 @@
         "scripts/pull_kpis.py"
       ],
       "file_count": 3,
-      "bytes": 34442,
+      "bytes": 53456,
       "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/kpi-engine.skill",
-      "sha256": "79358414f29533c1094c5c7b98f5d1e0e864b11dc508bfa7a740905c21e54464",
+      "sha256": "21660e29e474ef4ddd2ef655336e014d08d58cd4d165ab8b4a092c42ff1cbb96",
       "requires": {
         "tier": "account",
         "env": [
-          "REISIFT_TOKEN"
-        ],
-        "accounts": [
-          "DataSift"
+          "REISIFT_API_KEY"
         ],
         "cost": "Included with DataSift",
         "fallback": "no-api-playbook#kpis-by-hand",
-        "note": "Mints its own token from your DataSift login. No internal API access needed."
+        "note": "Runs on your DataSift Open API key. Reads the account activity log with GET requests only, so it never changes anything in your account.",
+        "accounts": []
       }
     },
     {
@@ -472,9 +626,9 @@
         "scripts/siftmap_standalone.py"
       ],
       "file_count": 9,
-      "bytes": 306578,
+      "bytes": 306562,
       "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/mls-offer-engine.skill",
-      "sha256": "78dc0acb021103debb027f43cb3f2b5d852f846a5f27d9f7cf5cfa1bf8dbd47b",
+      "sha256": "572f3c7491841457c88820d01e0715435bc44d110af7b66260b6b593ec9bc2ea",
       "requires": {
         "tier": "account",
         "env": [
@@ -585,9 +739,9 @@
         "scripts/analyze_buyers.py"
       ],
       "file_count": 4,
-      "bytes": 6735428,
+      "bytes": 6736417,
       "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/buyer-prospector.skill",
-      "sha256": "6e4ee3be3be595f6b2a78cd947413936c0f6906efbfe2bbb1f8459598ebf4108",
+      "sha256": "e0a9c21d5498f26dce794e7d9d6530fbd4872d2029d15fb67da43e121b17911d",
       "requires": {
         "tier": "none",
         "fallback": null,
@@ -644,21 +798,18 @@
         "scripts/generate_market_excel.py"
       ],
       "file_count": 7,
-      "bytes": 12095045,
+      "bytes": 12082231,
       "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/sift-market-research.skill",
-      "sha256": "fa33ec18ebc641fecd3dbafe2c0823ca063e989de3168f6836c5ad89cff6722a",
+      "sha256": "19820d1607f76a7942de4f4405e51c2ef39518df566e479b55812eb45ddf4fba",
       "requires": {
         "tier": "account",
         "env": [
-          "DATASIFT_EMAIL",
-          "DATASIFT_PASSWORD"
-        ],
-        "accounts": [
-          "DataSift"
+          "REISIFT_API_KEY"
         ],
         "cost": "Included with DataSift",
         "fallback": "no-api-playbook#market-research",
-        "note": "Browser automation of Market Finder. Your login, not an API key."
+        "note": "Reads Market Finder through DataSift's published API on your Open API key, GET requests only. Without the key, Claude walks you through Market Finder in the app by hand.",
+        "accounts": []
       }
     },
     {
@@ -816,9 +967,9 @@
         "scripts/validate_phones.py"
       ],
       "file_count": 7,
-      "bytes": 82511,
+      "bytes": 78223,
       "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/phone-validator.skill",
-      "sha256": "c2c38d38317f14cef310f6465e8c49f82beb37a657272f352508edcbe819eb2c",
+      "sha256": "c8a051f014404c60c62f15d60475a51016587371632b57e0184eec3ea7a377d9",
       "requires": {
         "tier": "api",
         "env": [
@@ -826,6 +977,7 @@
         ],
         "cost": "About $0.015 per number",
         "fallback": "no-api-playbook#phone-scoring-without-trestle",
+        "note": "REISIFT_API_KEY is optional: with your DataSift Open API key the tags are written onto your owners through the API. Without it, upload the CSV in the app.",
         "accounts": []
       }
     },
@@ -881,24 +1033,23 @@
         "references/bulk-sequential-map.md",
         "references/filter-configurations.md",
         "references/niche-sequential-map.md",
+        "references/preset-plan-example.json",
         "scripts/datasift_core.py",
         "scripts/manage_presets.py"
       ],
-      "file_count": 6,
-      "bytes": 65292,
+      "file_count": 7,
+      "bytes": 76774,
       "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/sequential-presets.skill",
-      "sha256": "7907c114b3bff2d4db9b663130f9e9e3805c42ba46b8017165255c2e55fc135d",
+      "sha256": "4be963e66f7620b497e774a26e51bb899ec3abf24c5d63c67cf91a2d37fc0c94",
       "requires": {
         "tier": "account",
         "env": [
-          "DATASIFT_EMAIL",
-          "DATASIFT_PASSWORD"
-        ],
-        "accounts": [
-          "DataSift"
+          "REISIFT_API_KEY"
         ],
         "cost": "Included with DataSift",
-        "fallback": "no-api-playbook#presets-by-hand"
+        "fallback": "no-api-playbook#presets-by-hand",
+        "note": "Builds presets and preset folders through DataSift's API on your Open API key. Dry until --commit, and every write is read back.",
+        "accounts": []
       }
     },
     {
@@ -1001,9 +1152,9 @@
         "skills/setup/SKILL.md"
       ],
       "file_count": 6,
-      "bytes": 28263,
+      "bytes": 31798,
       "download": "https://raw.githubusercontent.com/DataSift-Ty-Personal/SiftStack/main/dist/siftstack-core.plugin",
-      "sha256": "05f3c73f841ce3f601bf726f24f14f780ca7d9f142af233c8b98e61f2b1b4ca1",
+      "sha256": "040dafde1b6f7013f5be349812fd2eff4153c707b74ca37cf017c6d078945d7e",
       "requires": {
         "tier": "none",
         "fallback": null,

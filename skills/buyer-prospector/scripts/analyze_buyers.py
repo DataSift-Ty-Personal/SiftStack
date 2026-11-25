@@ -152,9 +152,27 @@ def filter_by_county(df, county_name, state_abbrev):
     return result
 
 
+def fix_swapped_city_state(df):
+    """Older copies of nationwide_buyers.csv labeled the city column BuyerState and the state
+    column BuyerCity. When the BuyerCity values are mostly two-letter codes and the BuyerState
+    values are not, swap them back so mailing addresses and formation states come out right."""
+    if 'BuyerCity' not in df.columns or 'BuyerState' not in df.columns or df.empty:
+        return df
+    sample = df.head(2000)
+
+    def two_letter_share(col):
+        vals = sample[col].fillna('').astype(str).str.strip()
+        return (vals.str.len() == 2).mean()
+
+    if two_letter_share('BuyerCity') > 0.9 and two_letter_share('BuyerState') < 0.1:
+        df = df.rename(columns={'BuyerCity': 'BuyerState', 'BuyerState': 'BuyerCity'})
+        print("  Note: this copy of the CSV had city and state swapped; fixed in memory.")
+    return df
+
+
 def analyze_buyers(df):
     """Run entity categorization and add research columns."""
-    df = df.copy()
+    df = fix_swapped_city_state(df.copy())
     df['EntityType'] = df['BuyerFullName'].apply(categorize_entity)
 
     research_needed = ['LLC', 'TRUST', 'CORPORATION', 'ESTATE', 'LIMITED PARTNERSHIP', 'OTHER ENTITY']

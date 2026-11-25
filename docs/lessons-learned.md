@@ -11,6 +11,20 @@ broke.
 
 <!-- new lessons go here -->
 
+## 2026-11-24: Seven public skills asked for a DataSift login
+
+- **What happened:** The KPI engine asked users to copy a token out of their browser; the account blueprint applied with a pasted token or an email and password; the sequential presets, Sift sequences and Sift market research skills drove the DataSift app through a browser login; the phone validator's upload mode and the Sift operations guide did the same.
+- **Why:** Each was built for the team's own accounts, where a staff login was at hand, and published as it was. DataSift's own terms restrict tools built on copied browser tokens, and a user should only ever need their Open API key.
+- **The fix:** All seven run on the Open API key (`REISIFT_API_KEY`). The KPI engine reads the account activity log; Market Finder, presets and the phone tiers use the published routes; the account blueprint creates lists, tags, custom fields, task presets, preset folders and presets on the key and lists custom statuses, boards, board columns and sequences as a click-through in the app. Staff tools that still use a login are marked `staff-only`. A new check in `tools/check_docs.py` fails on login wording in any public skill, plugin or setup doc; it found and cleared 129 spots.
+- **Found by:** Ty, while planning the AI Operator Bootcamp, fixed by hand.
+
+## 2026-11-24: The buyer list shipped with city and state swapped
+
+- **What happened:** In all 84,048 rows of the buyer prospector's bundled `nationwide_buyers.csv`, the column labeled `BuyerState` held the city and `BuyerCity` held the state. The script copied them as labeled into the mailing columns, so a list uploaded for skip trace carried every buyer's mailing city and state reversed, and the research guide sent people to the wrong state's business registry.
+- **Why:** The two headers were written in the wrong order when the file was exported, and nothing checked what the columns held. Another tool in the repo had already worked around it by looking at the values, so the bug was known in one place and still shipped in another.
+- **The fix:** The headers are corrected, and `analyze_buyers.py` now checks the values and repairs an older copy of the file a user may already have. The skill also says that `BuyerPurchases6MSum` is a regional total repeated on each county row, so it ranks buyers but never adds up across counties.
+- **Found by:** a chain writer reading the skill while stacking it into the Deal Desk & Dispo chain, fixed by hand.
+
 ## 2026-11-24: Workflows listed as live that only ran on one machine
 
 - **What happened:** After the curative gap, every workflow on the org chart was checked against a fresh install. Several read fine and could not run anywhere but the team's own workstation: the calling agency pools read DataSift's internal property index through a staff-only tool; the schema setup and the dispo buyer phases loaded a client from one desktop folder; the Tracerfy and Enformion re-skips picked their records from a file only that machine made and pointed at a scoring step that drove a browser; the phone validator's `--full-report` imported a report file that never shipped; and the Dream 100 pack looked for its logo on one desktop.

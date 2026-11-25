@@ -6,7 +6,7 @@
 
 SiftStack is a free, open-source kit for running a real estate investing business on [DataSift.ai](https://datasift.ai) with Claude. It comes in three layers. Install only as far as you need:
 
-1. **Skills for Claude.** 28 current packages that each teach Claude one job: comp a house, price a rehab, find the heirs behind a probate, score phone numbers, grade cold calls. Two commands and no server.
+1. **Skills for Claude.** 34 current packages that each teach Claude one job: comp a house, price a rehab, find the heirs behind a probate, score phone numbers, grade cold calls. Two commands and no server.
 2. **The AI team.** One small always-on app on Fly.io. Four AI employees work in your Slack, take requests, and pick up work your DataSift account sends them. One command sets it up.
 3. **Two more always-on apps.** A texting agent that reads and sorts replies to your seller texts, and a first-to-market runner that pulls new foreclosure and probate notices every morning and loads them into DataSift.
 
@@ -23,7 +23,7 @@ Most people only need the first layer.
 /plugin install siftstack-all@siftstack
 ```
 
-That installs all 28 current packages. Then turn on updates once: run `/plugin`, open **Marketplaces**, select **siftstack**, choose **Enable auto-update**. Claude Code leaves auto-update off for any marketplace that is not Anthropic's, which is why this step exists. From then on every improvement reaches you on its own.
+That installs all 34 current packages. Then turn on updates once: run `/plugin`, open **Marketplaces**, select **siftstack**, choose **Enable auto-update**. Claude Code leaves auto-update off for any marketplace that is not Anthropic's, which is why this step exists. From then on every improvement reaches you on its own.
 
 Want one division instead of everything? Install a bundle: `siftstack-deal-analysis`, `siftstack-market-intel`, `siftstack-crm`, `siftstack-coaching` or `siftstack-operations`. Or one skill by name: `/plugin install rehab-estimator@siftstack`.
 
@@ -53,13 +53,13 @@ Chat and Projects take the packaged file. Download the `.skill` you want from [`
 
 ### What a skill needs from you
 
-**14 work on install, out of 28 current packages.** No key, no login, no card.
+**14 work on install, out of 34 current packages.** No key, no login, no card.
 
 | Tier | Count | What it means |
 |---|---|---|
 | No credentials | 14 | Works on install |
-| A login you already have | 9 | DataSift, SmrtPhone, Google. Your own login or your own DataSift Open API key |
-| A metered API key | 5 | Faster and deeper, and every one has a free route |
+| An account you already have | 14 | Your own DataSift Open API key, or your own SmrtPhone or Google sign-in |
+| A metered API key | 6 | Faster and deeper, and every one has a free route |
 
 From a terminal, `... | python3 - --doctor` (the installer line above) prints the same readout. It sends no requests and never prints a credential. Every paid step has a no-API route in the [no-API playbook](docs/setup/no-api-playbook.md), and a missing key skips that step and says so rather than failing.
 
@@ -179,7 +179,7 @@ Set `SMS_AGENT_LOCALITY` in `fly.toml` to your county first. The full guide is [
 
 ### The first-to-market runner (`fly.ftm.toml`)
 
-A scheduled job that pulls new foreclosure and probate notices from tnpublicnotice.com (Tennessee's statewide notice site) every morning, enriches them and uploads them to DataSift. It needs a paid Smart Search subscription with your own saved searches, a 2Captcha key, your DataSift login for the uploader, and a proxy the site will serve: it refuses datacenter IPs, so set `APIFY_TOKEN` with your own `APIFY_PROXY_GROUPS`, or `SIFTSTACK_PROXY_URL`. Another state needs its own scraper target.
+A scheduled job that pulls new foreclosure and probate notices from tnpublicnotice.com (Tennessee's statewide notice site) every morning, enriches them and uploads them to DataSift. It needs a paid Smart Search subscription with your own saved searches, a 2Captcha key, your DataSift Open API key (`REISIFT_API_KEY`) for the uploader, and a proxy the site will serve: it refuses datacenter IPs, so set `APIFY_TOKEN` with your own `APIFY_PROXY_GROUPS`, or `SIFTSTACK_PROXY_URL`. Another state needs its own scraper target.
 
 ```bash
 playwright install chromium                      # the site needs a real browser

@@ -417,7 +417,7 @@ workflows:
     triggers: [schedule:Mon 08:00 America/New_York, slack]
     inputs:
       week: "Which week: last (Monday to Sunday before this one, the default), this (Monday to today), or any day inside the week wanted, written YYYY-MM-DD"
-    manual: Ask Quinn in Slack. On a workstation the kpi-engine skill pulls the same numbers with a pasted token.
+    manual: Ask Quinn in Slack. On a workstation the kpi-engine skill pulls the same numbers with your DataSift Open API key.
     sources: [agents.workflows.kpi_report]
   qa_batch:
     owner: ops

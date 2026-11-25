@@ -1,418 +1,111 @@
-"""DataSift.ai shared automation primitives — login, cookies, UI helpers.
+"""DataSift Open API client for the phone-validator skill.
 
-Self-contained module for use in both the SiftStack pipeline and
-distributed .skill packages. Only requires playwright + python-dotenv.
+Every request carries your DataSift Open API key in the header
+"Authorization: Api-Key <key>". An account admin creates the key in DataSift
+(developers.datasift.ai explains it), and it never expires.
 
-When used inside SiftStack (src/), it loads credentials from config.py.
-When used standalone in a skill ZIP, it loads from .env or environment vars.
+The key is read from the REISIFT_API_KEY environment variable, or from a .env
+file holding REISIFT_API_KEY=<your key> in the folder you run from or next to
+this script.
+
+DataSift allows 120 requests a minute per account, shared by every tool on it,
+so the client paces itself at about 80 and waits when DataSift asks it to
+(HTTP 429). A create (POST) is never repeated after a dropped connection,
+because it may have landed: the caller looks for it by title instead.
+Standard library only.
 """
-
-__version__ = "1.0.0"
+from __future__ import annotations
 
 import json
-import logging
 import os
-from contextlib import asynccontextmanager
+import re
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from pathlib import Path
 
-logger = logging.getLogger(__name__)
-
-# ── URLs ──────────────────────────────────────────────────────────────
-DATASIFT_LOGIN_URL = "https://app.reisift.io/login"
-DATASIFT_DASHBOARD_URL = "https://app.reisift.io/dashboard/general"
-DATASIFT_RECORDS_URL = "https://app.reisift.io/records/properties"
-DATASIFT_SIFTMAP_URL = "https://app.reisift.io/siftmap"
-DATASIFT_MARKET_FINDER_URL = "https://app.reisift.io/market-finder"
-
-# ── Browser Defaults ──────────────────────────────────────────────────
-DEFAULT_VIEWPORT = {"width": 1440, "height": 900}
-DEFAULT_USER_AGENT = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-)
+API = "https://apiv2.reisift.io"
+GAP_SECONDS = 0.75          # about 80 requests a minute
 
 
-# ── Capability Detection ─────────────────────────────────────────────
+class ApiError(RuntimeError):
+    """DataSift answered with an error (code > 0), or the connection dropped (code 0)."""
 
-def has_playwright() -> bool:
-    """Check if Playwright is available in this environment."""
-    try:
-        import playwright  # noqa: F401
-        return True
-    except ImportError:
-        return False
+    def __init__(self, code: int, method: str, path: str, body: str = ""):
+        super().__init__(f"HTTP {code} on {method} {path}: {body[:300]}")
+        self.code, self.method, self.path, self.body = code, method, path, body
 
 
-def detect_context() -> str:
-    """Detect execution context: 'claude_code', 'co_work', or 'standalone'."""
-    if os.getenv("CLAUDE_CODE"):
-        return "claude_code"
-    if not has_playwright():
-        return "co_work"
-    return "standalone"
+def api_key() -> str:
+    """The Open API key from REISIFT_API_KEY, else from a .env file. Raises SystemExit when absent."""
+    key = os.environ.get("REISIFT_API_KEY", "").strip()
+    if key:
+        return key
+    for f in (Path.cwd() / ".env", Path(__file__).resolve().parent / ".env"):
+        if not f.is_file():
+            continue
+        for line in f.read_text(encoding="utf-8", errors="replace").splitlines():
+            k, _, v = line.partition("=")
+            if k.strip() == "REISIFT_API_KEY" and v.strip():
+                return v.strip().strip('"').strip("'")
+    raise SystemExit("No API key. Set REISIFT_API_KEY to your DataSift Open API key. "
+                     "An account admin creates it in DataSift (developers.datasift.ai explains it).")
 
 
-# ── Credentials ───────────────────────────────────────────────────────
+class DataSiftApi:
+    """Requests on the Open API key, paced, with DataSift's own wait hint honored."""
 
-def get_credentials() -> tuple[str, str]:
-    """Get DataSift email and password from environment or .env file.
+    def __init__(self, key: str | None = None, gap: float = GAP_SECONDS):
+        self.key = key or api_key()
+        self.gap = gap
+        self.calls = 0
+        self._last = 0.0
 
-    Returns (email, password). Raises ValueError if not found.
-    """
-    # Try loading from .env (works both in SiftStack and standalone)
-    try:
-        from dotenv import load_dotenv
-        load_dotenv()
-    except ImportError:
-        pass  # dotenv not required if env vars are set directly
-
-    email = os.getenv("DATASIFT_EMAIL", "")
-    password = os.getenv("DATASIFT_PASSWORD", "")
-
-    if not email or not password:
-        raise ValueError(
-            "DATASIFT_EMAIL and DATASIFT_PASSWORD must be set in .env or environment"
-        )
-    return email, password
-
-
-# ── Cookie / State Persistence ────────────────────────────────────────
-
-def save_state(path: Path, data) -> None:
-    """Write JSON state to disk with .bak backup."""
-    if path.exists():
-        try:
-            bak = path.with_suffix(path.suffix + ".bak")
-            bak.write_bytes(path.read_bytes())
-        except OSError:
-            pass
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
-    tmp.replace(path)
-
-
-def load_state(path: Path):
-    """Load JSON state from disk, falling back to .bak if corrupt."""
-    for candidate in [path, path.with_suffix(path.suffix + ".bak")]:
-        if candidate.exists():
+    def call(self, method: str, path: str, body=None, tries: int = 6):
+        data = json.dumps(body).encode() if body is not None else None
+        for attempt in range(tries):
+            wait = self.gap - (time.monotonic() - self._last)
+            if wait > 0:
+                time.sleep(wait)
+            self._last = time.monotonic()
+            self.calls += 1
+            headers = {"Authorization": f"Api-Key {self.key}", "Accept": "application/json"}
+            if data is not None:
+                headers["Content-Type"] = "application/json"
+            req = urllib.request.Request(API + path, data=data, method=method, headers=headers)
             try:
-                return json.loads(candidate.read_text(encoding="utf-8"))
-            except (json.JSONDecodeError, OSError) as e:
-                logger.warning("Failed to read %s: %s", candidate, e)
-    return {}
+                with urllib.request.urlopen(req, timeout=60) as resp:
+                    raw = resp.read()
+                    return json.loads(raw) if raw else {}
+            except urllib.error.HTTPError as e:
+                text = (e.read() or b"").decode("utf-8", "replace")
+                if e.code == 401:
+                    raise SystemExit("The API key was refused (HTTP 401). Check REISIFT_API_KEY: it must "
+                                     "be your DataSift Open API key.") from None
+                if e.code == 429 and attempt < tries - 1:
+                    m = re.search(r"available in (\d+)", text, re.I)
+                    hint = e.headers.get("Retry-After") if e.headers else None
+                    secs = int(m.group(1)) + 1 if m else (int(hint) if hint and hint.isdigit() else 2 ** attempt)
+                    time.sleep(min(secs, 90))
+                    continue
+                # A gateway error on a create may still have landed, so only a read or a PATCH retries.
+                if e.code in (502, 503, 504) and method in ("GET", "PATCH") and attempt < 2:
+                    time.sleep(5 * (attempt + 1))
+                    continue
+                raise ApiError(e.code, method, path, text) from None
+            except (urllib.error.URLError, TimeoutError) as e:
+                if method in ("GET", "PATCH") and attempt < 2:
+                    time.sleep(5 * (attempt + 1))
+                    continue
+                raise ApiError(0, method, path, str(e)) from None
+        raise ApiError(0, method, path, f"gave up after {tries} tries")
 
+    def get(self, path: str, params: dict | None = None):
+        return self.call("GET", path + ("?" + urllib.parse.urlencode(params) if params else ""))
 
-# ── Cookie Management ─────────────────────────────────────────────────
+    def post(self, path: str, body: dict):
+        return self.call("POST", path, body)
 
-COOKIES_FILE = Path("datasift_cookies.json")
-
-
-async def save_cookies(page) -> None:
-    """Save browser cookies for session reuse."""
-    cookies = await page.context.cookies()
-    save_state(COOKIES_FILE, cookies)
-    logger.debug("Saved %d DataSift cookies", len(cookies))
-
-
-async def load_cookies(context) -> bool:
-    """Load saved cookies into browser context. Returns True if loaded."""
-    cookies = load_state(COOKIES_FILE)
-    if not cookies:
-        return False
-    try:
-        await context.add_cookies(cookies)
-        logger.debug("Loaded %d DataSift cookies", len(cookies))
-        return True
-    except Exception as e:
-        logger.debug("Failed to load cookies: %s", e)
-        return False
-
-
-# ── Authentication ────────────────────────────────────────────────────
-
-async def login(page, email: str = None, password: str = None) -> bool:
-    """Log in to DataSift.ai (app.reisift.io). Returns True on success.
-
-    Tries saved cookies first, falls back to fresh login.
-    If email/password not provided, loads from environment.
-    """
-    from playwright.async_api import TimeoutError as PwTimeout
-
-    if not email or not password:
-        email, password = get_credentials()
-
-    # Try cookies first
-    has_cookies = await load_cookies(page.context)
-    if has_cookies:
-        await page.goto(DATASIFT_RECORDS_URL, wait_until="domcontentloaded")
-        await page.wait_for_timeout(5000)
-        current_url = page.url
-        if "/login" not in current_url and ("/dashboard" in current_url or "/records" in current_url):
-            logger.info("DataSift session restored from cookies")
-            return True
-        logger.info("DataSift cookies expired (url=%s), doing fresh login", current_url)
-
-    # Fresh login
-    await page.goto(DATASIFT_LOGIN_URL, wait_until="domcontentloaded")
-
-    # Fill credentials
-    await page.get_by_role("textbox", name="Email").fill(email)
-    await page.get_by_role("textbox", name="Password").fill(password)
-
-    # Hidden checkboxes — click labels, not inputs
-    remember_label = page.locator('label:has-text("Remember me")')
-    if await remember_label.count() > 0:
-        await remember_label.first.click()
-
-    terms_label = page.locator('label:has-text("I\'ve read and agree")')
-    if await terms_label.count() > 0:
-        await terms_label.first.click()
-
-    # Click Sign In
-    await page.get_by_role("button", name="Sign In").click()
-
-    # Wait for navigation away from login page
-    try:
-        await page.wait_for_url("**/dashboard/general**", timeout=15000)
-    except PwTimeout:
-        if "/login" in page.url:
-            logger.error("DataSift login failed — still on login page")
-            return False
-
-    await save_cookies(page)
-    logger.info("DataSift login successful")
-    return True
-
-
-# ── UI Primitives ─────────────────────────────────────────────────────
-
-async def screenshot(page, name: str) -> None:
-    """Take a debug screenshot (saved to working directory)."""
-    try:
-        await page.screenshot(path=f"datasift_{name}.png")
-        logger.debug("Screenshot: datasift_%s.png", name)
-    except Exception as e:
-        logger.debug("Screenshot failed (%s): %s", name, e)
-
-
-async def dismiss_popups(page) -> None:
-    """Dismiss notification popups and remove Beamer NPS overlay.
-
-    The Beamer NPS survey iframe (#npsIframeContainer) blocks ALL pointer
-    events globally — it MUST be removed before any click interactions.
-    """
-    try:
-        # Try clicking dismiss text elements first
-        for text in ["NO, THANKS", "No, thanks", "No Thanks", "NO THANKS", "Not Now", "Dismiss"]:
-            el = page.get_by_text(text, exact=True)
-            if await el.count() > 0:
-                await el.first.click(force=True)
-                await page.wait_for_timeout(1000)
-                logger.debug("Dismissed popup via '%s'", text)
-                return
-
-        # JavaScript fallback: remove popup elements from DOM
-        removed = await page.evaluate("""() => {
-            let removed = 0;
-            // Remove Beamer NPS survey iframe (blocks pointer events globally)
-            const nps = document.getElementById('npsIframeContainer');
-            if (nps) { nps.remove(); removed++; }
-            // Also remove by class
-            document.querySelectorAll('[class*="nps-iframe"], [class*="beamer"]').forEach(
-                el => { el.remove(); removed++; }
-            );
-            // Look for the notification popup overlay
-            const els = document.querySelectorAll(
-                '[class*="notification"], [class*="Notification"], '
-                + '[class*="popup"], [class*="Popup"]'
-            );
-            for (const el of els) {
-                if (el.textContent && el.textContent.includes('notifications')) {
-                    el.remove();
-                    removed++;
-                }
-            }
-            // Also try removing any fixed/absolute overlays
-            const overlays = document.querySelectorAll(
-                '[style*="position: fixed"], [style*="position:fixed"]'
-            );
-            for (const o of overlays) {
-                if (o.textContent && o.textContent.includes('notifications')) {
-                    o.remove();
-                    removed++;
-                }
-            }
-            return removed;
-        }""")
-        if removed:
-            logger.debug("Removed %d popup elements via JS", removed)
-            await page.wait_for_timeout(500)
-    except Exception as e:
-        logger.debug("Popup dismissal failed: %s", e)
-
-
-async def scroll_into_view(page, element) -> None:
-    """Scroll an element into view using JS (Playwright scroll fails on DataSift panels).
-
-    DataSift filter panels are scrollable <div>s, NOT the viewport.
-    Playwright's scroll_into_view_if_needed() does nothing for these.
-    """
-    await page.evaluate(
-        "el => el.scrollIntoView({behavior: 'instant', block: 'center'})",
-        element,
-    )
-    await page.wait_for_timeout(300)
-
-
-async def click_styled_dropdown(page, container_selector: str, option_text: str) -> bool:
-    """Click a styled-components dropdown and select an option by text.
-
-    DataSift has NO native <select> elements — all dropdowns are
-    [class*="Selectstyles__Select"] containers with custom option elements.
-
-    Args:
-        page: Playwright page
-        container_selector: CSS selector for the dropdown container
-        option_text: Text of the option to select
-
-    Returns:
-        True if option was selected, False otherwise
-    """
-    try:
-        # Click the dropdown to open it
-        dropdown = page.locator(container_selector).first
-        await dropdown.click()
-        await page.wait_for_timeout(500)
-
-        # Find and click the option
-        option = page.locator(f'[class*="SelectOption"]:has-text("{option_text}")').first
-        await option.wait_for(state="visible", timeout=5000)
-        await option.click()
-        await page.wait_for_timeout(500)
-        return True
-    except Exception as e:
-        logger.warning("Failed to select '%s' from dropdown: %s", option_text, e)
-        return False
-
-
-async def wait_for_spa(page, ms: int = 5000) -> None:
-    """Wait for DataSift SPA to settle after navigation.
-
-    Use wait_until='domcontentloaded' (NOT 'networkidle') because
-    the SPA keeps WebSocket connections open permanently.
-    """
-    await page.wait_for_timeout(ms)
-
-
-async def extract_table_data(page, table_selector: str = "table") -> list[list[str]]:
-    """Extract all rows from a table or table-like element via JS.
-
-    Handles both standard <table> elements and styled-components tables.
-    Returns a list of rows, where each row is a list of cell text values.
-    """
-    data = await page.evaluate(f"""() => {{
-        const rows = [];
-        const table = document.querySelector('{table_selector}') ||
-                      document.querySelector('[class*="Table"]') ||
-                      document.querySelector('[role="table"]');
-        if (!table) return rows;
-
-        // Try standard table rows first
-        let trs = table.querySelectorAll('tr');
-        if (trs.length > 0) {{
-            for (const tr of trs) {{
-                const cells = tr.querySelectorAll('td, th');
-                const row = Array.from(cells).map(c => c.innerText.trim());
-                if (row.length > 0) rows.push(row);
-            }}
-            return rows;
-        }}
-
-        // Fallback: div-based table (styled-components)
-        const divRows = table.querySelectorAll('[class*="Row"], [class*="row"]');
-        for (const dr of divRows) {{
-            const cells = dr.querySelectorAll('[class*="Cell"], [class*="cell"], div > span');
-            const row = Array.from(cells).map(c => c.innerText.trim());
-            if (row.length > 0) rows.push(row);
-        }}
-        return rows;
-    }}""")
-    return data
-
-
-async def scroll_and_extract_all(page, table_selector: str = "table",
-                                  scroll_container: str = None,
-                                  max_scrolls: int = 50) -> list[list[str]]:
-    """Scroll through a lazy-loaded table and extract all rows.
-
-    Handles DataSift's infinite scroll / lazy loading by scrolling the
-    container, waiting for new rows, and re-extracting until stable.
-
-    Args:
-        page: Playwright page
-        table_selector: CSS selector for the table element
-        scroll_container: CSS selector for the scrollable container (if different from table)
-        max_scrolls: Maximum number of scroll attempts
-
-    Returns:
-        All unique rows from the table
-    """
-    all_rows = []
-    seen_keys = set()
-    prev_count = 0
-
-    for i in range(max_scrolls):
-        data = await extract_table_data(page, table_selector)
-
-        for row in data:
-            key = "|".join(row)
-            if key not in seen_keys:
-                seen_keys.add(key)
-                all_rows.append(row)
-
-        if len(all_rows) == prev_count and i > 0:
-            logger.debug("No new rows after scroll %d (total: %d)", i, len(all_rows))
-            break
-
-        prev_count = len(all_rows)
-
-        # Scroll the container down
-        container = scroll_container or table_selector
-        await page.evaluate(f"""() => {{
-            const el = document.querySelector('{container}') ||
-                       document.querySelector('[class*="Table"]') ||
-                       document.querySelector('[role="table"]');
-            if (el) el.scrollTop = el.scrollHeight;
-        }}""")
-        await page.wait_for_timeout(1500)
-
-    logger.info("Extracted %d total rows from table", len(all_rows))
-    return all_rows
-
-
-# ── Browser Lifecycle ─────────────────────────────────────────────────
-
-@asynccontextmanager
-async def create_browser(headless: bool = False, viewport: dict = None):
-    """Create a Playwright browser context. Yields (browser, context, page).
-
-    Usage:
-        async with create_browser(headless=False) as (browser, context, page):
-            await login(page)
-            # ... do work ...
-    """
-    from playwright.async_api import async_playwright
-
-    vp = viewport or DEFAULT_VIEWPORT
-
-    async with async_playwright() as pw:
-        browser = await pw.chromium.launch(headless=headless)
-        context = await browser.new_context(
-            viewport=vp,
-            user_agent=DEFAULT_USER_AGENT,
-        )
-        page = await context.new_page()
-        try:
-            yield browser, context, page
-        finally:
-            await browser.close()
+    def patch(self, path: str, body: dict):
+        return self.call("PATCH", path, body)

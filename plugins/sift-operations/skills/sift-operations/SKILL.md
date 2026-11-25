@@ -24,16 +24,16 @@ Complete operational knowledge base for REI Sift (DataSift.ai). Covers sequences
 
 ## Execution Mode Detection
 
-This is a routing/reference skill that directs to other skills for implementation. When Playwright automation is available (Claude Code CLI with `DATASIFT_EMAIL`/`DATASIFT_PASSWORD` set), the following companion skills provide automated execution:
+This is a routing/reference skill that directs to other skills for implementation. With the user's DataSift Open API key set as `REISIFT_API_KEY`, the following companion skills run their steps through DataSift's API:
 
-| Task | Companion Skill | Automation Script |
-|------|----------------|-------------------|
-| Filter preset management | `sequential-presets.skill` | `sequential-presets/scripts/manage_presets.py` |
-| Sequence creation | `sift-sequences.skill` | `sift-sequences/scripts/manage_sequences.py` |
-| Phone tag upload | `phone-validator.skill` | `phone-validator/scripts/upload_phone_tags.py` |
-| Market research | `sift-market-research.skill` | `sift-market-research/scripts/extract_market_finder.py` |
+| Task | Companion Skill | Script |
+|------|----------------|--------|
+| Filter preset management | `sequential-presets.skill` | `sequential-presets/scripts/manage_presets.py` (dry until `--commit`, every write read back) |
+| Sequence checklist | `sift-sequences.skill` | `sift-sequences/scripts/manage_sequences.py` (read only: sequences are built by hand in the Sequence Builder) |
+| Phone tag upload | `phone-validator.skill` | `phone-validator/scripts/upload_phone_tags.py` (dry until `--commit`) |
+| Market research | `sift-market-research.skill` | `sift-market-research/scripts/extract_market_finder.py` (read only) |
 
-Those scripts live in the companion skill, not in this plugin. Each one uses `scripts/datasift_core.py` for login, cookie persistence, and popup dismissal, and this plugin ships its own copy of that helper. Credentials are loaded from `.env` or environment variables, never hardcoded.
+Those scripts live in the companion skill, not in this plugin, and each carries its own small API client. An account admin creates the Open API key in DataSift (developers.datasift.ai explains it); it never expires and is read from `.env` or the environment, never hardcoded. Without a key, every one of these tasks is a walkthrough in the app.
 
 ## How to Use This Skill
 
@@ -227,7 +227,7 @@ Included by default: Lead Management, Acquisitions, and Transactions boards with
 
 ## DataSift UI Automation Notes
 
-These patterns matter when automating Sift via Playwright or discussing UI behavior with users:
+These patterns matter when walking a user through the app or discussing UI behavior with them:
 
 - **No native HTML controls**: All dropdowns are styled-components (`[class*="Selectstyles__Select"]` containers), not native `<select>` elements
 - **Beamer NPS survey**: The `#npsIframeContainer` iframe can block all pointer events globally -- must be dismissed/removed before interacting with the UI

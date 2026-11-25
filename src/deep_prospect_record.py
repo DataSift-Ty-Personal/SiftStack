@@ -1,7 +1,7 @@
 """Deep prospecting v5 on one CRM record (build 1.0.58, 2026-10-27).
 
 dream100_dp.py runs the v5 chain over the top of the Dream 100 ranking. This runs the same chain
-on any single prod-account record found by address, and adds the step an heir case needs: every person
+on any single DataSift record found by address, and adds the step an heir case needs: every person
 the research names as a decision maker is bulk-traced through SmartSkip as a SUBJECT of their
 own, at the address SmartSkip returned for them, so each heir comes back with their own numbers
 rather than whatever rode along on the owner's relative list.
@@ -582,7 +582,7 @@ def writeback_plan(d: dict) -> dict:
 
 def pack_md(d: dict) -> str:
     """dream100_dp's pack without the Dream 100 claims: no rank, no deal size, no D4D score."""
-    ctx = (d["x"]["row"].get("context") or "prod-account record").rstrip(".")
+    ctx = (d["x"]["row"].get("context") or "DataSift record").rstrip(".")
     txt = re.sub(r"Dream 100 rank \d+ of 100\. ", ctx + ". ", _PACK_MD(d))
     txt = txt.replace("D4D visual distress None of 100. ", "")
     return "\n".join(ln for ln in txt.split("\n") if not ln.startswith("| Deal size (discount room) |"))
@@ -704,7 +704,7 @@ def main(argv=None) -> int:
     if args.phase == "records" or not row:
         prior = row or {}
         row = resolve(args.address)
-        row["context"] = args.context or prior.get("context") or "prod-account record"
+        row["context"] = args.context or prior.get("context") or "DataSift record"
         row["subject_address"] = prior.get("subject_address") or "mailing"
     if args.subject_address:
         row["subject_address"] = args.subject_address

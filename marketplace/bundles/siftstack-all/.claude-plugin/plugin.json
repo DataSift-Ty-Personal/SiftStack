@@ -6,6 +6,8 @@
   },
   "dependencies": [
     "account-blueprint",
+    "account-setup-chain",
+    "best-lists-chain",
     "buyer-prospector",
     "caller-reputation-monitor",
     "candidate-intake",
@@ -14,9 +16,12 @@
     "comp-package",
     "contractor-call-sheet",
     "deal-analyzer",
+    "deal-desk-dispo-chain",
     "deep-prospecting-v5",
     "dispo-deal-blast",
+    "estates-heirs-chain",
     "first-market-county-data",
+    "first-to-market-chain",
     "kpi-engine",
     "lead-manager-coach",
     "mls-offer-engine",
@@ -31,6 +36,7 @@
     "sift-sequences",
     "siftstack-core",
     "team-hiring",
+    "team-performance-chain",
     "text-touch-builder",
     "vendor-directory-builder"
   ]

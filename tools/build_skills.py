@@ -96,33 +96,81 @@ REQUIRES = {
                                      note="Community mining needs your logged-in browser for private groups. The Excel engine is pure openpyxl."),
     "contractor-call-sheet": dict(tier="none", fallback=None,
                                   note="Drafts outreach for a human to send. Never sends anything itself."),
-    "account-blueprint": dict(tier="account", accounts=["DataSift"],
-                              env=["REISIFT_TARGET_JWT"],
+    "account-blueprint": dict(tier="account", env=["REISIFT_API_KEY"],
                               cost="Free. Creates structure only; SiftMap auto-add is left OFF so no records are pulled",
                               fallback="no-api-playbook#presets-by-hand",
-                              note="Apply needs your own DataSift JWT (or email + password). "
-                                   "Export of your own account needs your Open API key."),
+                              note="Runs on your DataSift Open API key, for export and apply. Custom statuses, "
+                                   "boards, board columns and sequences have no published create route, so the "
+                                   "report lists them as a click-through checklist."),
     "siftstack-core": dict(tier="none", fallback=None,
                            note="The doctor and the setup walkthrough. Every bundle depends on it, so whatever "
                                 "someone installs, they can ask what works right now and what needs a key."),
     "dispo-deal-blast": dict(tier="none", fallback=None,
                              note="The method, the guards and the copy rules. The bundled cohort calculator is stdlib only. Wiring it to your own CRM and SMS provider is your call, and every send stays behind a human release."),
 
+    # --- the chains: ordered workflows that stack the skills above ------------
+    "account-setup-chain": dict(tier="account", env=["REISIFT_API_KEY"],
+                                cost="Free",
+                                fallback=None,
+                                note="Runs the doctor, the account blueprint and the lane presets on your DataSift "
+                                     "Open API key. Sequences, custom statuses, boards and board columns are a "
+                                     "click-through in the app."),
+    "first-to-market-chain": dict(tier="account", env=["REISIFT_API_KEY"],
+                                  cost="Free to bring records in and upload. Phone scoring about $0.015 a number "
+                                       "and re-skips about $0.02 a record, both optional",
+                                  fallback=None,
+                                  note="ANTHROPIC_API_KEY reads courthouse photos and PDFs; TRESTLE_API_KEY and "
+                                       "TRACERFY_API_KEY are optional. The Tennessee notice pull and the Knox liens "
+                                       "and condemnations are automated; elsewhere records come in by photo, PDF "
+                                       "or CSV."),
+    "estates-heirs-chain": dict(tier="api", env=["REISIFT_API_KEY", "SMARTSKIP_EMAIL", "SMARTSKIP_PASSWORD",
+                                                 "TRESTLE_API_KEY"],
+                                cost="About $0.24 a record (SmartSkip plus Trestle)",
+                                fallback="no-api-playbook#heir-research-by-hand",
+                                note="The family research runs in your Claude Code session. Knox and Blount "
+                                     "have extra sources."),
+    "best-lists-chain": dict(tier="account", env=["REISIFT_API_KEY"],
+                             cost="Free to rank and quote. A pull uses record allowance, quoted first; phone "
+                                  "scoring about $0.015 a number, optional",
+                             fallback=None,
+                             note="AI pools need the county's AI add-on; without it the ranking uses the Doors "
+                                  "per Deal ladder. Sending goes through your own texting, calling agency, cold "
+                                  "email or mail tool."),
+    "deal-desk-dispo-chain": dict(tier="account", env=["REISIFT_API_KEY"],
+                                  cost="Free on the key. Zillow comps through OPENWEBNINJA_API_KEY are optional "
+                                       "(100 free lookups a month)",
+                                  fallback=None,
+                                  note="Without a Zillow key, comps are done by hand with real-estate-comping. "
+                                       "The deal blast is a file you load into your own texting tool."),
+    "team-performance-chain": dict(tier="account", env=["REISIFT_API_KEY"],
+                                   cost="Free on the key. Call transcription about $0.002 an audio minute",
+                                   fallback=None,
+                                   note="The call coaches need SmrtPhone recordings and an OPENROUTER_API_KEY."),
+
     # --- tier account: your own login for something you already pay for ----
-    "sift-market-research": dict(tier="account", env=["DATASIFT_EMAIL", "DATASIFT_PASSWORD"],
-                                 accounts=["DataSift"], cost="Included with DataSift",
+    "sift-market-research": dict(tier="account", env=["REISIFT_API_KEY"],
+                                 cost="Included with DataSift",
                                  fallback="no-api-playbook#market-research",
-                                 note="Browser automation of Market Finder. Your login, not an API key."),
-    "sequential-presets": dict(tier="account", env=["DATASIFT_EMAIL", "DATASIFT_PASSWORD"],
-                               accounts=["DataSift"], cost="Included with DataSift",
-                               fallback="no-api-playbook#presets-by-hand"),
-    "sift-sequences": dict(tier="account", env=["DATASIFT_EMAIL", "DATASIFT_PASSWORD"],
-                           accounts=["DataSift"], cost="Included with DataSift",
-                           fallback="no-api-playbook#sequences-by-hand"),
-    "kpi-engine": dict(tier="account", env=["REISIFT_TOKEN"], accounts=["DataSift"],
+                                 note="Reads Market Finder through DataSift's published API on your Open API key, "
+                                      "GET requests only. Without the key, Claude walks you through Market "
+                                      "Finder in the app by hand."),
+    "sequential-presets": dict(tier="account", env=["REISIFT_API_KEY"],
+                               cost="Included with DataSift",
+                               fallback="no-api-playbook#presets-by-hand",
+                               note="Builds presets and preset folders through DataSift's API on your Open API "
+                                    "key. Dry until --commit, and every write is read back."),
+    # Nothing to set: sequences are not in DataSift's published API, so this is a click-through
+    # guide for the Sequence Builder. The key only lets its script read what already exists.
+    "sift-sequences": dict(tier="account", cost="Included with DataSift",
+                           fallback="no-api-playbook#sequences-by-hand",
+                           note="A click-through guide for the Sequence Builder in the app: sequences are not "
+                                "in DataSift's published API. REISIFT_API_KEY is optional and only lets the "
+                                "script read which sequences, tags, lists and statuses already exist."),
+    "kpi-engine": dict(tier="account", env=["REISIFT_API_KEY"],
                        cost="Included with DataSift",
                        fallback="no-api-playbook#kpis-by-hand",
-                       note="Mints its own token from your DataSift login. No internal API access needed."),
+                       note="Runs on your DataSift Open API key. Reads the account activity log with GET "
+                            "requests only, so it never changes anything in your account."),
     "cold-call-coach": dict(tier="account", accounts=["SmrtPhone", "OpenRouter or Anthropic"],
                             cost="About $0.002 per audio minute to transcribe",
                             fallback="no-api-playbook#coaching-without-a-dialer-api"),
@@ -148,7 +196,9 @@ REQUIRES = {
                          note="Without the key, real-estate-comping does the same job by browser."),
     "phone-validator": dict(tier="api", env=["TRESTLE_API_KEY"],
                             cost="About $0.015 per number",
-                            fallback="no-api-playbook#phone-scoring-without-trestle"),
+                            fallback="no-api-playbook#phone-scoring-without-trestle",
+                            note="REISIFT_API_KEY is optional: with your DataSift Open API key the tags are "
+                                 "written onto your owners through the API. Without it, upload the CSV in the app."),
     "deep-prospecting-v5": dict(tier="api",
                                 env=["SMARTSKIP_EMAIL", "SMARTSKIP_PASSWORD", "TRESTLE_API_KEY"],
                                 cost="About $0.24 per record end to end",
@@ -200,6 +250,12 @@ CATEGORY = {
     "mls-offer-engine": "Deal Analysis",
     "dispo-deal-blast": "Operations",
     "siftstack-core": "Setup",
+    "account-setup-chain": "Chains",
+    "first-to-market-chain": "Chains",
+    "estates-heirs-chain": "Chains",
+    "best-lists-chain": "Chains",
+    "deal-desk-dispo-chain": "Chains",
+    "team-performance-chain": "Chains",
 }
 
 
@@ -541,6 +597,7 @@ BUNDLE_SLUG = {
     "CRM": "siftstack-crm",
     "Coaching & Performance": "siftstack-coaching",
     "Operations": "siftstack-operations",
+    "Chains": "siftstack-chains",
 }
 ALL_BUNDLE = "siftstack-all"
 OWNER = {"name": "DataSift", "url": "https://datasift.ai"}

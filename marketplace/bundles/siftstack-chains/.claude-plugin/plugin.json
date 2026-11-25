@@ -1,0 +1,16 @@
+{
+  "name": "siftstack-chains",
+  "description": "Every SiftStack Chains skill in one install.",
+  "author": {
+    "name": "DataSift"
+  },
+  "dependencies": [
+    "account-setup-chain",
+    "best-lists-chain",
+    "deal-desk-dispo-chain",
+    "estates-heirs-chain",
+    "first-to-market-chain",
+    "siftstack-core",
+    "team-performance-chain"
+  ]
+}

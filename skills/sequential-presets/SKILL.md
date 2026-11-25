@@ -12,29 +12,36 @@ This skill makes you a world-class preset consultant AND implementor. You guide 
 Before starting, detect the execution environment:
 
 **Check 1:** Does `scripts/manage_presets.py` exist in this skill's directory?
-**Check 2:** Is Playwright available? Run: `python -c "from playwright.sync_api import sync_playwright; print('OK')"`
-**Check 3:** Are credentials set? Check for `DATASIFT_EMAIL` and `DATASIFT_PASSWORD` in `.env` or environment.
+**Check 2:** Is `REISIFT_API_KEY` set in the environment or in a `.env` file? It is your DataSift Open API key. An account admin creates it in DataSift (developers.datasift.ai explains it), and it never expires.
 
-### Automated Mode (Claude Code CLI — all 3 checks pass)
+### Automated Mode (both checks pass)
 
-Run preset management directly:
+The script works on filter presets and preset folders through DataSift's API on your Open API key. Standard library only. Every write is dry until `--commit`, and with `--commit` each write is read back and must equal what was sent.
 
 ```bash
-# Discover all existing presets
+# Discover all existing presets (read only)
 python scripts/manage_presets.py --discover
 
-# Add Sold exclusion to all 21 presets
+# Add the Sold exclusion to the two sequential folders: dry first, then for real
 python scripts/manage_presets.py --add-sold-exclusion
+python scripts/manage_presets.py --add-sold-exclusion --commit
 
-# Full workflow: discover + update all
-python scripts/manage_presets.py --all
+# Build the approved plan (Step 4): dry first, then for real
+python scripts/manage_presets.py --create preset_plan.json --count
+python scripts/manage_presets.py --create preset_plan.json --commit
+
+# Put a Sold exclusion run back, from its change log
+python scripts/manage_presets.py --undo output/preset_changes_<stamp>.jsonl --commit
+
+# Check the script's rules on an invented account, no network
+python scripts/manage_presets.py --selftest
 ```
 
-The script handles login, filter panel navigation, preset discovery, and Sold exclusion updates automatically using Playwright browser automation. After running, proceed to the consultative design section below.
+`--folder "<title>"` narrows any command to named folders (repeatable); `--all-folders` widens the Sold exclusion to every folder. Each `--commit` run writes a change log under `./output` with what each write replaced. DataSift allows 120 requests a minute per account, shared by every tool on it, and the script paces itself at about 80. After running `--discover`, proceed to the consultative design section below.
 
-### Manual Mode (Co-Work or no Playwright — any check fails)
+### Manual Mode (no key, or a session that cannot run scripts)
 
-Follow the step-by-step UI walkthrough instructions below. Claude will guide you through each click in the DataSift interface.
+Follow the step-by-step UI walkthrough instructions below. Claude will guide you through each click in the DataSift app.
 
 ## Core Concepts
 
@@ -132,7 +139,30 @@ Present the preset plan for review. Be concise:
 
 ### Step 4: Implementation
 
-Once approved, walk the user through building each preset in DataSift. You can either guide them step-by-step or, if you have browser automation access, build the presets directly.
+Once approved, build the presets. With the key (Automated Mode), write the approved plan as `preset_plan.json` and run `--create` dry, show the user the output, then run it again with `--commit`. Without the key, guide the user through the app step by step (the UI steps below).
+
+#### Writing the plan (Automated Mode)
+
+One JSON file: folders by title, each with its presets in order. Write tags and lists by their TITLE and statuses the way DataSift shows them; the script turns titles into the account's own ids and statuses into their stored spelling, and refuses the whole plan (nothing sent) if a tag, list or status does not exist, or if a preset title already exists with a different filter (a preset title is unique in an account). `must_not` goes INSIDE `must`. Every preset gets the Sold exclusion unless it reads Sold on purpose. `references/preset-plan-example.json` shows the shape.
+
+| Filter block in the app | Key in the plan | Example |
+|---|---|---|
+| Any Tags (OR) | `any_tags` | `["Courthouse Data"]` |
+| All Tags (AND) | `all_tags` | `["FTM", "Auction Soon"]` |
+| Lists (any / all) | `any_lists` / `all_lists` | `["Probate"]` |
+| Property Status (include) | `any_property_status` | `["Hot Lead", "Warm Lead"]` |
+| Property Status (do not include) | `must_not.any_property_status` | `["Not Interested", "Sold"]` |
+| Tags or lists (do not include) | `must_not.any_tags` / `must_not.any_lists` | `["Do Not Market"]` |
+| Phone Statuses | `any_phone_status` | `["CORRECT", "UNKNOWN", "NO_ANSWER"]` |
+| Numbers Yes / No | `phone` | `1` or `0` |
+| Skiptraced Yes / No | `skiptraced` | `1` or `0` |
+| Call Attempts (min, max) | `predictivecall_attempts` | `[0, 0]` |
+| SMS Attempts (min, max) | `sms_attempts` | `[1, 1]` |
+| Direct Mail Attempts (min, max) | `directmail_attempts` | `[0, 0]` |
+| Last mailed (relative window) | `last_direct_mailed` | `["36-months", "month"]` |
+| Do not mail | `do_not_mail_ever` | `false` |
+
+A relative window's second word is a point in time (today, week, month, quarter, year) and the first counts back from it: `["36-months", "month"]` reads 37 months ago to 1 month ago. Show the user the dry run's output before running `--commit`.
 
 #### DataSift UI Implementation Steps
 
@@ -158,9 +188,8 @@ All preset names follow the pattern `^\d{2}\.` (two-digit number, period, space,
 
 #### Key UI Patterns
 
-- The filter panel is a scrollable `<div>`, not the browser viewport -- standard scroll methods may not work
-- Styled-Components dropdowns (not native `<select>`) are used for all filter controls
-- Multiple Select dropdowns exist per panel -- target the correct one by context
+- The filter panel scrolls on its own, separately from the page: scroll inside the panel to reach Filter Presets at the bottom
+- Multiple dropdowns sit in one panel: pick the one under the filter block you are editing
 - After modifying a preset, always use "Save" (overwrites) not "Save New" (creates duplicate)
 
 ## 12 Niche Preset Names (from source code)
@@ -210,7 +239,7 @@ Build niche presets first (they handle your highest-value first-to-market data),
 ### Step-by-Step UI Walkthrough
 
 1. **Open the filter panel** — Click "Filter Records" on the records page
-2. **Scroll to the bottom** of the filter panel (it's a scrollable `<div>`, not the main viewport — use JS `scrollIntoView` if automating)
+2. **Scroll to the bottom** of the filter panel (the panel scrolls on its own, separately from the page)
 3. **Expand "Filter Presets"** section — click the arrow/chevron to reveal preset folders
 4. **Expand the target folder** — "00 Niche Sequential Marketing" or "01. Bulk Sequential Marketing" (folder names may have case variations — use case-insensitive matching)
 5. **Click "+ New Preset"** or click an existing preset to modify

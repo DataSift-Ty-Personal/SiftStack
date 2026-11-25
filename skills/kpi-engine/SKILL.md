@@ -5,14 +5,14 @@ description: Pull and grade your cold-calling and lead-generation KPIs straight 
 
 # KPI Engine - universal DataSift KPI reporting
 
-Pulls your real calling activity from DataSift's per-record activity log (every call, text, and disposition event, caller-attributed and timestamped) and turns it into a graded KPI report: per caller, per day, and account-wide, with funnel pacing toward deals.
+Pulls your real calling activity from DataSift's account activity log (every call, text, and disposition event, caller-attributed and timestamped) on your own DataSift Open API key, and turns it into a graded KPI report: per caller, per day, and account-wide, with funnel pacing toward deals.
 
-Why the activity log: DataSift's dashboard widgets are not exposed to scripts and cannot cleanly isolate "what happened on the phones this week." The per-record log is the one date-accurate, caller-attributed source.
+Why the activity log: DataSift's dashboard widgets are not exposed to scripts and cannot cleanly isolate "what happened on the phones this week." The activity log is the one date-accurate, caller-attributed source.
 
 ## Quick start
 
-1. Log into app.reisift.io. Open DevTools (F12) -> Network tab -> click any request to `apiv2.reisift.io` -> copy the `authorization: Bearer <token>` value (the long JWT, without the word Bearer).
-2. Save it: set env var `REISIFT_TOKEN`, or paste it into a file named `reisift_token.txt` next to the script. Tokens last about 48 hours; repeat when it expires.
+1. Get your DataSift Open API key. An account admin creates it in DataSift (developers.datasift.ai explains it). It never expires.
+2. Give it to the script: set the environment variable `REISIFT_API_KEY`, or put the line `REISIFT_API_KEY=<your key>` in a `.env` file in the folder you run from (or next to the script).
 3. Run:
 
 ```bash
@@ -24,7 +24,7 @@ python scripts/pull_kpis.py --days 7 --detail        # + record-level CSV (one r
 python scripts/pull_kpis.py --days 7 --slack <webhook-url>   # post digest to Slack
 ```
 
-No dependencies for markdown/CSV output (pure standard library). Excel output needs `pip install openpyxl`. Expect roughly 2-5 minutes per week of data (it reads each worked record's log).
+No dependencies for markdown/CSV output (pure standard library). Excel output needs `pip install openpyxl`. It reads the account log 100 events a request, so a busy week takes a minute or two. `--detail` adds a few record reads (50 owners a request) to put an address on each row. Every request is a GET: nothing in your account changes. DataSift allows 120 requests a minute per account, shared by every tool on it, and the script paces itself at about 80. `python scripts/pull_kpis.py --selftest` checks the counting rules with no network.
 
 ## What you get
 
@@ -43,7 +43,8 @@ No dependencies for markdown/CSV output (pure standard library). Excel output ne
 The numbers in `references/kpi-catalog.md` and the script's defaults (150-dial floor, 2-3 leads/caller/day, 25% appointment take, 1 contract per 15-20 leads, 32:1 -> 9:1 dials per correct) are working baselines from a live operation and the DataSift 5-Day Deal Flow Challenge. Treat them as min-max starting points and tune them to your market in a `benchmarks.json` next to the script (the script prints its full config with `--show-benchmarks`).
 
 Tips for clean numbers:
-- Add your admin/owner logins to `excluded_callers` in `benchmarks.json` so testing and admin activity does not pollute caller tables.
+- Add the emails of your admin and owner users to `excluded_callers` in `benchmarks.json` so testing and admin activity does not pollute caller tables.
+- A dialer such as Kixie often names the caller only on the answered call, not on the dial. The script places an unnamed dial by its call, then by the one caller seen on that line that day, then by the one caller who worked that day. Whatever is left shows as Unattributed and still counts in the account totals.
 - Appointments count from completed tasks with appointment/appt/meeting in the title - make logging those part of your lead-handoff routine or the appointment column stays empty.
 - Statuses are matched by exact name. If your account uses custom status names, add them to `lead_statuses`.
 

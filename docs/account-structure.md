@@ -32,14 +32,17 @@ Every record sits in one flow, and each flow has its own text, call and mail fol
 
 ## Build it in your own account
 
-The fastest way is the `account-blueprint` skill, which creates all of it from the blueprint in one run and reads every object back:
+The fastest way is the `account-blueprint` skill. On your DataSift Open API key it creates the lists, tags, custom fields, task presets, preset folders, presets and SiftMap presets from the blueprint and reads every object back. DataSift's published API has no route for custom statuses, boards, board columns or sequences, so its report lists those as a click-through checklist, in build order:
 
 ```bash
 cd skills/account-blueprint/scripts
-python clone_account.py --phase plan  --blueprint ../blueprints/account_2026-11-23.json --target you@example.com --jwt '<paste>'
-python clone_account.py --phase apply --blueprint ../blueprints/account_2026-11-23.json --target you@example.com --jwt '<paste>' --commit
-python clone_account.py --phase verify --blueprint ../blueprints/account_2026-11-23.json --target you@example.com --jwt '<paste>'
+export REISIFT_API_KEY=...   # your account's Open API key; an account admin creates it in DataSift
+python clone_account.py --phase plan  --blueprint ../blueprints/account_2026-11-23.json --target you@example.com
+python clone_account.py --phase apply --blueprint ../blueprints/account_2026-11-23.json --target you@example.com --commit
+python clone_account.py --phase verify --blueprint ../blueprints/account_2026-11-23.json --target you@example.com
 ```
+
+`--target` is the email of the user the key belongs to. After the checklist is built in the app, run apply again: it creates whatever was waiting on those boards, columns and statuses.
 
 By hand, work through the steps below in order: every later step names things the earlier ones create.
 

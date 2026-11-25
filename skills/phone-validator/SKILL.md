@@ -14,26 +14,31 @@ CSVs with phone tags for prioritized dialing.
 Before starting, detect the execution environment for the DataSift upload step:
 
 **Check 1:** Does `scripts/upload_phone_tags.py` exist in this skill's directory?
-**Check 2:** Is Playwright available? Run: `python -c "from playwright.sync_api import sync_playwright; print('OK')"`
-**Check 3:** Are credentials set? Check for `DATASIFT_EMAIL` and `DATASIFT_PASSWORD` in `.env` or environment.
+**Check 2:** Is `REISIFT_API_KEY` set in the environment or in a `.env` file? It is your DataSift Open API key. An account admin creates it in DataSift (developers.datasift.ai explains it), and it never expires.
 
-### Automated Upload Mode (Claude Code CLI — all 3 checks pass)
+### Automated Upload Mode (both checks pass)
 
-After running `scripts/validate_phones.py` to generate the phone tags CSV, upload directly:
+After running `scripts/validate_phones.py` to generate the phone tags CSV, write the tags onto the owners in DataSift through the API, naming the DataSift list the numbers came from:
 
 ```bash
-# Upload validated phone tags to DataSift
-python scripts/upload_phone_tags.py --csv phone_tags_for_datasift.csv
+# Dry run: how many phones would change, nothing sent
+python scripts/upload_phone_tags.py --csv phone_tags_for_datasift.csv --list "Probate"
 
-# Headless mode (no visible browser)
-python scripts/upload_phone_tags.py --csv phone_tags_for_datasift.csv --headless
+# Write them, then read a sample of owners back
+python scripts/upload_phone_tags.py --csv phone_tags_for_datasift.csv --list "Probate" --commit
+
+# Or named records instead of a list
+python scripts/upload_phone_tags.py --csv phone_tags_for_datasift.csv --uuids <uuid>,<uuid> --commit
+
+# Check the script's rules on invented records, no network
+python scripts/upload_phone_tags.py --selftest
 ```
 
-The script handles login, navigating to Upload File -> Update Data -> "Tag phones by phone number", file upload, column mapping, and completion automatically.
+For every record on the list the script reads the owner's phones; every phone whose number is in the CSV gets that tag as its one tier (any other tier comes off, every other tag stays), written once per owner and read back. Standard library only. DataSift allows 120 requests a minute per account, shared by every tool on it, and the script stays near 80: about one request per record on the list.
 
-### Manual Upload Mode (Co-Work or no Playwright — any check fails)
+### Manual Upload Mode (no key)
 
-After generating the phone tags CSV, follow the manual DataSift upload instructions in the "Upload to DataSift" section below.
+After generating the phone tags CSV, upload it in the DataSift app: see the "DataSift Upload Workflow" section below.
 
 ## What This Skill Does
 
@@ -197,9 +202,9 @@ miscategorized — the detailed `validation_results.csv` output surfaces this wi
 
 ## DataSift Upload Workflow
 
-After the script generates `phone_tags_for_datasift.csv`:
+After the script generates `phone_tags_for_datasift.csv` (by hand in the app; with the key, `scripts/upload_phone_tags.py` does this through the API):
 
-1. Log into your DataSift/REISift account
+1. Open the DataSift app
 2. Go to **Upload** → select **Update Data**
 3. Choose **"Tag phones by phone number"**
 4. Upload the CSV file
@@ -516,7 +521,8 @@ are logged to `errors.csv`. A single failure never stops the batch.
 
 **Numbers already tagged in Sift**: Uploading new tags via "Update Data" ADDS to existing
 tags — it does not replace them. If you need to remove old tags first, you'd do a
-separate "Remove phone tags by phone number" upload.
+separate "Remove phone tags by phone number" upload. `scripts/upload_phone_tags.py` on the
+key replaces the tier instead: a re-scored phone ends with exactly one tier.
 
 **Large lists**: Trestle rate-limits at 10 req/s. The script defaults to 10 concurrent
 requests with 100ms delay between batches. For lists over 10,000 numbers, consider

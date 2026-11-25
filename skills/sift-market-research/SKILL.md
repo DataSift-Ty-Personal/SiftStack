@@ -34,23 +34,20 @@ Automate market research using Sift's Market Finder combined with public data so
 - Markdown-only outputs with no accompanying spreadsheet
 - Unformatted data dumps
 
-## Credentials
+## Your DataSift Open API key
 
-Use your DataSift account credentials (email and password from app.reisift.io). Never hardcode credentials in skill files, prompts, or shared documents.
-
-**Login URL:** `https://app.reisift.io/`
+The automated pull runs on your DataSift Open API key, set as `REISIFT_API_KEY` (an environment variable, or a line `REISIFT_API_KEY=<your key>` in a `.env` file in the folder you run from). An account admin creates the key in DataSift (developers.datasift.ai explains it), and it never expires. Never paste the key into skill files, prompts, or shared documents.
 
 ## Execution Mode Detection
 
 Before starting, detect the execution environment to determine whether automation is available:
 
 **Check 1:** Does `scripts/extract_market_finder.py` exist in this skill's directory?
-**Check 2:** Is Playwright available? Run: `python -c "from playwright.sync_api import sync_playwright; print('OK')"`
-**Check 3:** Are credentials set? Check for `DATASIFT_EMAIL` and `DATASIFT_PASSWORD` in `.env` or environment variables.
+**Check 2:** Is `REISIFT_API_KEY` set in the environment or in a `.env` file?
 
-### Automated Mode (Claude Code CLI — all 3 checks pass)
+### Automated Mode (both checks pass)
 
-Run the extraction script directly:
+Run the extraction script directly. It reads Market Finder through DataSift's published API: every ZIP code and every neighborhood, about 8 requests a county, GET requests only, so it never changes anything in your account. Standard library only.
 
 ```bash
 # Single county
@@ -59,11 +56,11 @@ python scripts/extract_market_finder.py --state "Tennessee" --county "Knox"
 # Multiple counties
 python scripts/extract_market_finder.py --state "Tennessee" --county "Knox,Blount"
 
-# Headless mode (no visible browser)
-python scripts/extract_market_finder.py --state "Tennessee" --county "Knox" --headless
+# Check the pull's own rules first (invented data, no network)
+python scripts/extract_market_finder.py --selftest
 ```
 
-The script handles login, Market Finder navigation, data extraction (ZIP codes + neighborhoods + summary panel), and outputs a JSON file. Then generate the Excel report:
+The script finds the county, reads every page of the ZIP code and neighborhood tables plus the summary panel, and checks its own answer: every ZIP row must belong to the county and every page the server reports must be read. A pull that fails a check writes nothing and says why. Otherwise it writes a JSON file. Then generate the Excel report:
 
 ```bash
 python scripts/generate_market_excel.py --input output/market_finder_Tennessee_Knox_*.json --fred-dom 71
@@ -71,15 +68,15 @@ python scripts/generate_market_excel.py --input output/market_finder_Tennessee_K
 
 After automated extraction, skip directly to the Excel generation and analysis steps (Step 7). The JSON output contains all data that Steps 2-6 would produce manually.
 
-### Manual Mode (Co-Work or no Playwright — any check fails)
+### Manual Mode (no key, or a session that cannot run scripts)
 
-Follow Steps 2-6 below manually. Claude will guide you through the DataSift UI step by step. You can still use `scripts/generate_market_excel.py` for Excel generation if you format your extracted data as JSON.
+Follow Steps 2-6 below in the DataSift app. Claude will guide you through Market Finder step by step. You can still use `scripts/generate_market_excel.py` for Excel generation if you format your extracted data as JSON.
 
 ## Workflow Overview
 
 1. Determine analysis type (Quick Research vs. Comprehensive Analysis)
 2. Get FRED baseline for Days on Market
-3. Login to Sift and extract Market Map data
+3. Pull the Market Map data (the API script, or Market Finder in the app by hand)
 4. For Comprehensive Analysis: gather public data and blend with Market Map data
 5. Generate output (spreadsheet or full market report)
 
@@ -103,14 +100,11 @@ Before analyzing markets, get the national Days on Market baseline from FRED.
 - Markets at or near the baseline are average
 - Markets 50%+ above the baseline are slow-moving
 
-## Step 2: Login to Sift
+## Step 2: Open DataSift
 
-1. Navigate to `https://app.reisift.io/`
-2. Enter your DataSift email and password
-3. Check the "I agree to the Terms of Use" checkbox
-4. Click "Sign In" button
-5. Dismiss any notification popups that appear
-6. Wait for dashboard to load
+1. Open the DataSift app in your browser (`https://app.reisift.io/`)
+2. Dismiss any notification popups that appear
+3. Wait for the dashboard to load
 
 ## Step 3: Navigate to Market Finder
 

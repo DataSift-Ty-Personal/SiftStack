@@ -6,8 +6,8 @@ several of them are what the paid path was built from in the first place.
 
 Three techniques carry all of it:
 
-1. **Browser automation.** Playwright drives a site the way you would. This is
-   how the DataSift skills work already: no API access, just your own login.
+1. **Browser automation.** Playwright drives a public site the way you would.
+   Best for county portals and other sites that have no API.
 2. **Claude in Chrome.** The extension reads and acts on pages you are signed
    in to. Best where a site actively blocks automation.
 3. **By hand, with Claude doing the reading.** You paste or screenshot, Claude
@@ -47,11 +47,12 @@ month. 100 lookups a month are free, and a single property is several lookups.
 
 ---
 
-## Market research without a DataSift login
+## Market research without the DataSift API
 <a id="market-research"></a>
 
-`sift-market-research` drives Market Finder in a browser, so it already needs
-no API. If you have no DataSift account at all:
+`sift-market-research` reads Market Finder through DataSift's API on your Open
+API key. Without the key, Claude walks you through Market Finder in the app by
+hand. If you have no DataSift account at all:
 
 - Census QuickFacts and the ACS give you population, income, ownership rate and
   vacancy for any county or ZIP, free.
@@ -69,8 +70,8 @@ The weights are the method. The data source is interchangeable.
 ## Presets by hand
 <a id="presets-by-hand"></a>
 
-`sequential-presets` clicks through the DataSift filter UI for you. Without the
-automation, ask Claude for the preset definition and build it yourself:
+`sequential-presets` builds the presets through DataSift's API on your Open API
+key. Without the key, ask Claude for the preset definition and build it yourself:
 
 > Give me the filter definition for the "00. Needs Skipped" niche sequential
 > preset: every filter block, the exact values, and the order.
@@ -86,9 +87,10 @@ Same for the Sold exclusion: it is one filter block added to each preset.
 ## Sequences by hand
 <a id="sequences-by-hand"></a>
 
-`sift-sequences` builds sequences through the UI with drag and drop, which is
-the fiddliest automation in the library and the most likely to need a retry.
-Doing it by hand is often faster.
+`sift-sequences` is a by-hand guide already: sequences are not in DataSift's
+published API, so every one is built in the Sequence Builder with Claude
+reading out the clicks. With your Open API key its script only reads what the
+account already holds, so you skip what exists.
 
 Ask for the definition, then build it:
 
@@ -103,8 +105,8 @@ design, not the clicking.
 ## KPIs by hand
 <a id="kpis-by-hand"></a>
 
-`kpi-engine` mints a token from your own DataSift login, so it is not really an
-API-access question. If you would rather not automate at all:
+`kpi-engine` reads your account's activity log on your DataSift Open API key,
+with GET requests only. If you would rather not run a script at all:
 
 Export the activity log from DataSift for the period, then hand Claude the CSV:
 

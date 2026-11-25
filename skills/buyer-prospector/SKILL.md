@@ -67,7 +67,7 @@ A multi-tab Excel workbook (`<County>_<State>_Buyer_Analysis.xlsx`) with these c
 | Column | Description |
 |--------|-------------|
 | ResearchPriority | High (entity needs research) or Low (individual, skip trace directly) |
-| BuyerPurchases6MSum | Number of purchases in last 6 months — the activity indicator |
+| BuyerPurchases6MSum | Purchases in the last 6 months across the buyer's whole region (the same total repeats on each county row), so rank buyers by it but never add it up across counties |
 | County Name / County State | Where this buyer has been purchasing |
 | BuyerFullName | Entity or individual name |
 | EntityType | LLC, TRUST, CORPORATION, ESTATE, INDIVIDUAL, etc. |

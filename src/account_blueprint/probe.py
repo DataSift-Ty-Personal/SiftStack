@@ -25,6 +25,9 @@ UNVERIFIED = {
     "custom_field_group": "/api/internal/custom-fields/group/",
     "siftline_board": "/api/internal/siftline/board/",
     "siftline_column": "/api/internal/siftline/board/{b}/column/",
+    # Published, but never yet exercised on a live account: the first SiftMap preset is read
+    # back before the rest are sent.
+    "siftmap": "/filters/",
 }
 
 

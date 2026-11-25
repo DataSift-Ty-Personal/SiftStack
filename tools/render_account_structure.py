@@ -402,15 +402,21 @@ def render(bp_path: Path) -> str:
     w("")
     w("## Build it in your own account")
     w("")
-    w("The fastest way is the `account-blueprint` skill, which creates all of it from the blueprint in one run "
-      "and reads every object back:")
+    w("The fastest way is the `account-blueprint` skill. On your DataSift Open API key it creates the lists, "
+      "tags, custom fields, task presets, preset folders, presets and SiftMap presets from the blueprint and "
+      "reads every object back. DataSift's published API has no route for custom statuses, boards, board "
+      "columns or sequences, so its report lists those as a click-through checklist, in build order:")
     w("")
     w("```bash")
     w("cd skills/account-blueprint/scripts")
-    w("python clone_account.py --phase plan  --blueprint ../blueprints/%s --target you@example.com --jwt '<paste>'" % bp_path.name)
-    w("python clone_account.py --phase apply --blueprint ../blueprints/%s --target you@example.com --jwt '<paste>' --commit" % bp_path.name)
-    w("python clone_account.py --phase verify --blueprint ../blueprints/%s --target you@example.com --jwt '<paste>'" % bp_path.name)
+    w("export REISIFT_API_KEY=...   # your account's Open API key; an account admin creates it in DataSift")
+    w("python clone_account.py --phase plan  --blueprint ../blueprints/%s --target you@example.com" % bp_path.name)
+    w("python clone_account.py --phase apply --blueprint ../blueprints/%s --target you@example.com --commit" % bp_path.name)
+    w("python clone_account.py --phase verify --blueprint ../blueprints/%s --target you@example.com" % bp_path.name)
     w("```")
+    w("")
+    w("`--target` is the email of the user the key belongs to. After the checklist is built in the app, run "
+      "apply again: it creates whatever was waiting on those boards, columns and statuses.")
     w("")
     w("By hand, work through the steps below in order: every later step names things the earlier ones create.")
     w("")

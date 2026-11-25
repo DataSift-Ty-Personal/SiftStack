@@ -3,7 +3,7 @@
 Install the library, find out what you can already run, then add credentials
 only for the things you actually want.
 
-14 work on install, out of 28 current packages. You do not need an API key,
+14 work on install, out of 34 current packages. You do not need an API key,
 a developer account, or a credit card to get value out of this on day one.
 
 ## 1. Install
@@ -80,26 +80,29 @@ There are three tiers, and most people should stop after tier 1 for a while.
 | `dispo-deal-blast` | The method and guards for texting a deal to a vetted buyer list |
 | `siftstack-core` | The doctor and the guided setup |
 
-### Tier 2: a login you already have
+### Tier 2: an account you already have
 
-No API keys. These drive a browser, or mint their own token from your own
-account credentials.
+No metered keys. The DataSift skills run on your own DataSift Open API key;
+the coaching skills use your dialer session and a transcription model.
 
 | Skill | Needs | Set |
 |---|---|---|
-| `sift-market-research` | DataSift login | `DATASIFT_EMAIL`, `DATASIFT_PASSWORD` |
-| `sequential-presets` | DataSift login | `DATASIFT_EMAIL`, `DATASIFT_PASSWORD` |
-| `sift-sequences` | DataSift login | `DATASIFT_EMAIL`, `DATASIFT_PASSWORD` |
-| `kpi-engine` | DataSift login | `REISIFT_TOKEN`, or it mints one from your login |
+| `sift-market-research` | DataSift Open API key | `REISIFT_API_KEY` |
+| `sequential-presets` | DataSift Open API key | `REISIFT_API_KEY` |
+| `sift-sequences` | Nothing (a click-through guide for the Sequence Builder) | `REISIFT_API_KEY` optional, to read what already exists |
+| `kpi-engine` | DataSift Open API key | `REISIFT_API_KEY` |
+| `account-blueprint` | DataSift Open API key | `REISIFT_API_KEY` |
 | `cold-call-coach` | SmrtPhone session, a transcription model | Browser session, `OPENROUTER_API_KEY` |
 | `lead-manager-coach` | same | same |
 | `closer-coach` | same | same |
 | `candidate-intake` | Google account, Claude in Chrome | Nothing to set, it runs in the browser |
 | `mls-offer-engine` | DataSift Open API key | `REISIFT_API_KEY` (`OPENWEBNINJA_API_KEY` optional, for the Zillow check) |
 
-The three DataSift skills use Playwright to drive the web app the same way you
-would by hand. That is deliberate: it means you need no API access at all, and
-it works on any DataSift plan.
+The DataSift skills work through DataSift's API on your Open API key. An
+account admin creates the key in DataSift (developers.datasift.ai explains it),
+and it never expires. Whatever the published API cannot do (building
+sequences, adding custom statuses, boards and board columns) comes out as a
+click-through in the app, written step by step.
 
 ### Tier 3: a metered API key
 

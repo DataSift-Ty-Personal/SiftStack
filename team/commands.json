@@ -1,7 +1,7 @@
 {
  "about": "GENERATED from src/*.py by python src/agents/commands.py --write. Do not edit by hand.",
  "counts": {
-  "browser": 23,
+  "browser": 24,
   "package": 1,
   "paid": 15,
   "retired": 17,
@@ -882,17 +882,18 @@
      "kind": "value"
     },
     {
+     "default": "REISIFT_API_KEY",
      "flags": [
-      "--source-account"
+      "--key-env"
      ],
-     "help": "export: Deal Room store account name",
+     "help": "the environment variable holding the Open API key (default REISIFT_API_KEY)",
      "kind": "value"
     },
     {
      "flags": [
       "--api-key"
      ],
-     "help": "export: Open API key (else REISIFT_API_KEY / store)",
+     "help": "export: the Open API key itself (prefer --key-env)",
      "kind": "value"
     },
     {
@@ -908,36 +909,6 @@
      ],
      "help": "target account email (apply/plan/verify)",
      "kind": "value"
-    },
-    {
-     "flags": [
-      "--jwt"
-     ],
-     "kind": "value"
-    },
-    {
-     "flags": [
-      "--jwt-file"
-     ],
-     "kind": "value"
-    },
-    {
-     "flags": [
-      "--email"
-     ],
-     "kind": "value"
-    },
-    {
-     "flags": [
-      "--password"
-     ],
-     "kind": "value"
-    },
-    {
-     "flags": [
-      "--impersonate"
-     ],
-     "kind": "switch"
     },
     {
      "flags": [
@@ -1020,13 +991,7 @@
      "flags": [
       "--probe-only"
      ],
-     "help": "create one object per unverified route (task-group, task-preset, sequence-folder, custom-field group, board, column), read it back, stop",
-     "kind": "switch"
-    },
-    {
-     "flags": [
-      "--allow-staff-target"
-     ],
+     "help": "create one object per unverified route (task-group, task-preset, custom-field group, SiftMap preset), read it back, stop",
      "kind": "switch"
     },
     {
@@ -1064,7 +1029,7 @@
    "cli": "argparse",
    "cli_via": "account_blueprint.cli",
    "complete": true,
-   "summary": "Clone the prod-account DataSift account structure into any DataSift account.",
+   "summary": "Clone the reference DataSift account structure into any DataSift account.",
    "why": "runs inside account_setup (Atlas)",
    "workflows": [
     "account_setup"
@@ -4220,6 +4185,73 @@
     "--once"
    ],
    "writes": "commit"
+  },
+  "import_to_upload": {
+   "args": [],
+   "browser": [
+    "playwright"
+   ],
+   "class": "browser",
+   "cli": "argparse",
+   "complete": true,
+   "paid_deeper": [
+    "Enformion",
+    "Firecrawl",
+    "OpenRouter",
+    "Serper",
+    "Tracerfy"
+   ],
+   "subcommand_required": true,
+   "subcommands": {
+    "convert": {
+     "args": [
+      {
+       "flags": [
+        "src"
+       ],
+       "help": "the import CSV (from photo-import, pdf-import or the enrichment)",
+       "kind": "positional"
+      },
+      {
+       "flags": [
+        "--out"
+       ],
+       "help": "file name for the upload CSV (default datasift_upload_<time>.csv)",
+       "kind": "value"
+      },
+      {
+       "flags": [
+        "--out-dir"
+       ],
+       "help": "folder for the upload CSV (default the output folder)",
+       "kind": "value"
+      }
+     ]
+    },
+    "readback": {
+     "args": [
+      {
+       "flags": [
+        "--street"
+       ],
+       "help": "the street line as DataSift stores it",
+       "kind": "value",
+       "required": true
+      },
+      {
+       "flags": [
+        "--zip"
+       ],
+       "help": "the five-digit ZIP",
+       "kind": "value",
+       "required": true
+      }
+     ]
+    }
+   },
+   "summary": "Turn an import CSV into the DataSift upload layout, and read one uploaded record back.",
+   "why": "drives a browser (playwright), and the brain has none",
+   "writes": ""
   },
   "knox_appointments": {
    "args": [

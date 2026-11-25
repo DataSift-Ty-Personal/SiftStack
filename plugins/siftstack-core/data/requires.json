@@ -44,8 +44,19 @@
       "text-touch-builder",
       "vendor-directory-builder"
     ],
+    "siftstack-chains": [
+      "account-setup-chain",
+      "best-lists-chain",
+      "deal-desk-dispo-chain",
+      "estates-heirs-chain",
+      "first-to-market-chain",
+      "siftstack-core",
+      "team-performance-chain"
+    ],
     "siftstack-all": [
       "account-blueprint",
+      "account-setup-chain",
+      "best-lists-chain",
       "buyer-prospector",
       "caller-reputation-monitor",
       "candidate-intake",
@@ -54,9 +65,12 @@
       "comp-package",
       "contractor-call-sheet",
       "deal-analyzer",
+      "deal-desk-dispo-chain",
       "deep-prospecting-v5",
       "dispo-deal-blast",
+      "estates-heirs-chain",
       "first-market-county-data",
+      "first-to-market-chain",
       "kpi-engine",
       "lead-manager-coach",
       "mls-offer-engine",
@@ -71,6 +85,7 @@
       "sift-sequences",
       "siftstack-core",
       "team-hiring",
+      "team-performance-chain",
       "text-touch-builder",
       "vendor-directory-builder"
     ]
@@ -81,15 +96,13 @@
       "category": "CRM",
       "requires": {
         "tier": "account",
-        "accounts": [
-          "DataSift"
-        ],
         "env": [
-          "REISIFT_TARGET_JWT"
+          "REISIFT_API_KEY"
         ],
         "cost": "Free. Creates structure only; SiftMap auto-add is left OFF so no records are pulled",
         "fallback": "no-api-playbook#presets-by-hand",
-        "note": "Apply needs your own DataSift JWT (or email + password). Export of your own account needs your Open API key."
+        "note": "Runs on your DataSift Open API key, for export and apply. Custom statuses, boards, board columns and sequences have no published create route, so the report lists them as a click-through checklist.",
+        "accounts": []
       }
     },
     {
@@ -108,15 +121,98 @@
       "category": "CRM",
       "requires": {
         "tier": "account",
-        "env": [
-          "DATASIFT_EMAIL",
-          "DATASIFT_PASSWORD"
-        ],
-        "accounts": [
-          "DataSift"
-        ],
         "cost": "Included with DataSift",
-        "fallback": "no-api-playbook#sequences-by-hand"
+        "fallback": "no-api-playbook#sequences-by-hand",
+        "note": "A click-through guide for the Sequence Builder in the app: sequences are not in DataSift's published API. REISIFT_API_KEY is optional and only lets the script read which sequences, tags, lists and statuses already exist.",
+        "env": [],
+        "accounts": []
+      }
+    },
+    {
+      "name": "account-setup-chain",
+      "category": "Chains",
+      "requires": {
+        "tier": "account",
+        "env": [
+          "REISIFT_API_KEY"
+        ],
+        "cost": "Free",
+        "fallback": null,
+        "note": "Runs the doctor, the account blueprint and the lane presets on your DataSift Open API key. Sequences, custom statuses, boards and board columns are a click-through in the app.",
+        "accounts": []
+      }
+    },
+    {
+      "name": "best-lists-chain",
+      "category": "Chains",
+      "requires": {
+        "tier": "account",
+        "env": [
+          "REISIFT_API_KEY"
+        ],
+        "cost": "Free to rank and quote. A pull uses record allowance, quoted first; phone scoring about $0.015 a number, optional",
+        "fallback": null,
+        "note": "AI pools need the county's AI add-on; without it the ranking uses the Doors per Deal ladder. Sending goes through your own texting, calling agency, cold email or mail tool.",
+        "accounts": []
+      }
+    },
+    {
+      "name": "deal-desk-dispo-chain",
+      "category": "Chains",
+      "requires": {
+        "tier": "account",
+        "env": [
+          "REISIFT_API_KEY"
+        ],
+        "cost": "Free on the key. Zillow comps through OPENWEBNINJA_API_KEY are optional (100 free lookups a month)",
+        "fallback": null,
+        "note": "Without a Zillow key, comps are done by hand with real-estate-comping. The deal blast is a file you load into your own texting tool.",
+        "accounts": []
+      }
+    },
+    {
+      "name": "estates-heirs-chain",
+      "category": "Chains",
+      "requires": {
+        "tier": "api",
+        "env": [
+          "REISIFT_API_KEY",
+          "SMARTSKIP_EMAIL",
+          "SMARTSKIP_PASSWORD",
+          "TRESTLE_API_KEY"
+        ],
+        "cost": "About $0.24 a record (SmartSkip plus Trestle)",
+        "fallback": "no-api-playbook#heir-research-by-hand",
+        "note": "The family research runs in your Claude Code session. Knox and Blount have extra sources.",
+        "accounts": []
+      }
+    },
+    {
+      "name": "first-to-market-chain",
+      "category": "Chains",
+      "requires": {
+        "tier": "account",
+        "env": [
+          "REISIFT_API_KEY"
+        ],
+        "cost": "Free to bring records in and upload. Phone scoring about $0.015 a number and re-skips about $0.02 a record, both optional",
+        "fallback": null,
+        "note": "ANTHROPIC_API_KEY reads courthouse photos and PDFs; TRESTLE_API_KEY and TRACERFY_API_KEY are optional. The Tennessee notice pull and the Knox liens and condemnations are automated; elsewhere records come in by photo, PDF or CSV.",
+        "accounts": []
+      }
+    },
+    {
+      "name": "team-performance-chain",
+      "category": "Chains",
+      "requires": {
+        "tier": "account",
+        "env": [
+          "REISIFT_API_KEY"
+        ],
+        "cost": "Free on the key. Call transcription about $0.002 an audio minute",
+        "fallback": null,
+        "note": "The call coaches need SmrtPhone recordings and an OPENROUTER_API_KEY.",
+        "accounts": []
       }
     },
     {
@@ -153,14 +249,12 @@
       "requires": {
         "tier": "account",
         "env": [
-          "REISIFT_TOKEN"
-        ],
-        "accounts": [
-          "DataSift"
+          "REISIFT_API_KEY"
         ],
         "cost": "Included with DataSift",
         "fallback": "no-api-playbook#kpis-by-hand",
-        "note": "Mints its own token from your DataSift login. No internal API access needed."
+        "note": "Runs on your DataSift Open API key. Reads the account activity log with GET requests only, so it never changes anything in your account.",
+        "accounts": []
       }
     },
     {
@@ -301,15 +395,12 @@
       "requires": {
         "tier": "account",
         "env": [
-          "DATASIFT_EMAIL",
-          "DATASIFT_PASSWORD"
-        ],
-        "accounts": [
-          "DataSift"
+          "REISIFT_API_KEY"
         ],
         "cost": "Included with DataSift",
         "fallback": "no-api-playbook#market-research",
-        "note": "Browser automation of Market Finder. Your login, not an API key."
+        "note": "Reads Market Finder through DataSift's published API on your Open API key, GET requests only. Without the key, Claude walks you through Market Finder in the app by hand.",
+        "accounts": []
       }
     },
     {
@@ -377,6 +468,7 @@
         ],
         "cost": "About $0.015 per number",
         "fallback": "no-api-playbook#phone-scoring-without-trestle",
+        "note": "REISIFT_API_KEY is optional: with your DataSift Open API key the tags are written onto your owners through the API. Without it, upload the CSV in the app.",
         "accounts": []
       }
     },
@@ -400,14 +492,12 @@
       "requires": {
         "tier": "account",
         "env": [
-          "DATASIFT_EMAIL",
-          "DATASIFT_PASSWORD"
-        ],
-        "accounts": [
-          "DataSift"
+          "REISIFT_API_KEY"
         ],
         "cost": "Included with DataSift",
-        "fallback": "no-api-playbook#presets-by-hand"
+        "fallback": "no-api-playbook#presets-by-hand",
+        "note": "Builds presets and preset folders through DataSift's API on your Open API key. Dry until --commit, and every write is read back.",
+        "accounts": []
       }
     },
     {

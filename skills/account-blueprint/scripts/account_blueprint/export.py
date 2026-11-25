@@ -1,10 +1,10 @@
 """Read a live DataSift account into a blueprint.
 
 Reads every family through one client (the source account's Open API key,
-which reaches all of them: verified 2026-09-10 against prod-account) and falls back
-per family to a staff JWT if a route ever refuses the key. Never reads from
-a cache: the old mirror's cache file is what hid an empty user index for a
-month.
+which reaches all of them: verified 2026-09-10 against prod-account). Staff runs may
+pass a fallback client that a family is retried with if a route ever refuses
+the key; a community export never has one. Never reads from a cache: the old
+mirror's cache file is what hid an empty user index for a month.
 """
 from __future__ import annotations
 
@@ -73,9 +73,9 @@ class Exporter:
             self.bp["source"]["auth_by_family"][name] = self.c.kind
         except ApiError as e:
             if e.code in (401, 403) and self.staff is not None:
-                print("  %s: %s under %s, retrying with staff JWT" % (name, e.code, self.c.kind))
+                print("  %s: %s under %s, retrying with the staff fallback" % (name, e.code, self.c.kind))
                 fn(self.staff)
-                self.bp["source"]["auth_by_family"][name] = "staff_jwt"
+                self.bp["source"]["auth_by_family"][name] = "staff_fallback"
             else:
                 raise
         print("  exported %-16s %s" % (name, self._count(name)))

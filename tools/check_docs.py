@@ -221,7 +221,7 @@ def check_counts(doc: dict) -> list[str]:
         (r"\b(\d+) current packages\b", cur, "current packages"),
         (r"\b(\d+) work on install\b", tiers["none"], "tier none"),
         (r"\| No credentials \| (\d+) \|", tiers["none"], "tier none"),
-        (r"\| A login you already have \| (\d+) \|", tiers["account"], "tier account"),
+        (r"\| An account you already have \| (\d+) \|", tiers["account"], "tier account"),
         (r"\| A metered API key \| (\d+) \|", tiers["api"], "tier api"),
     ]
     words = re.compile(r"\b(" + "|".join(_WORD_NUMBERS) + r")\b[\w -]{0,20}?\b(skills|packages)\b", re.I)
@@ -238,8 +238,105 @@ def check_counts(doc: dict) -> list[str]:
     return out
 
 
+# Users reach DataSift with their Open API key only (REISIFT_API_KEY, "Authorization:
+# Api-Key <key>"). Nothing a user reads may tell them to use a DataSift login: no
+# password, no token copied out of the browser, no JWT (Ty, 2026-11-24). A file whose
+# module docstring (or, for any other file, its first lines) says `staff-only` is staff
+# tooling shipped beside the community path and is exempt. Generated copies are not
+# scanned; their sources are (the REQUIRES table for the manifest and core's data).
+LOGIN_ROOTS = ("skills", "plugins", "docs/setup", "docs/api")
+LOGIN_FILES = (".env.skills.example",)
+LOGIN_GENERATED = {"skills/manifest.json", "plugins/siftstack-core/data/requires.json",
+                   "plugins/siftstack-core/data/env.skills.example"}
+LOGIN_EXT = {".md", ".py", ".json", ".txt", ".yaml", ".yml", ".js", ".sh", ".example", ".toml", ".cfg", ".ini"}
+STAFF_ONLY = re.compile(r"staff[- ]only", re.I)
+LOGIN_ALWAYS = [
+    (re.compile(r"\b(DATASIFT_EMAIL|DATASIFT_PASSWORD|REISIFT_TOKEN|REISIFT_TARGET_JWT)\b"),
+     "a DataSift login variable"),
+    (re.compile(r"\bjwt\b", re.I), "a JWT"),
+    (re.compile(r"(?<![\w-])--(jwt|jwt-file|email|password)\b"), "a login flag"),
+    (re.compile(r"/api/token/"), "the route that trades a password for a token"),
+    (re.compile(r"\blogin token\b", re.I), "a login token"),
+    (re.compile(r"\b(datasift|reisift)\s+(logins?|passwords?)\b", re.I), "a DataSift login"),
+]
+# Words that are fine about other services (SmartSkip has a password, a county portal is read
+# with DevTools) and wrong about DataSift: flagged only with DataSift in the line or the two
+# lines either side of it.
+LOGIN_NEAR_DATASIFT = [
+    (re.compile(r"\bdev\s?tools\b", re.I), "DevTools"),
+    (re.compile(r"\bcopy as curl\b", re.I), "Copy as cURL"),
+    (re.compile(r"\bbearer\b", re.I), "a Bearer token"),
+    (re.compile(r"\bpassword\b", re.I), "a password"),
+]
+DATASIFT_WORD = re.compile(r"datasift|reisift|apiv2\.", re.I)
+
+
+def _staff_only(path: Path, text: str) -> bool:
+    if path.suffix == ".py":
+        import ast
+        try:
+            doc = ast.get_docstring(ast.parse(text)) or ""
+        except SyntaxError:
+            doc = ""
+        return bool(STAFF_ONLY.search(doc))
+    return bool(STAFF_ONLY.search("\n".join(text.splitlines()[:15])))
+
+
+def login_hits(text: str) -> list[tuple[int, str, str]]:
+    """(line number, what it names, the line) for every DataSift login mention in `text`."""
+    lines = text.splitlines()
+    out = []
+    for i, line in enumerate(lines):
+        for pat, what in LOGIN_ALWAYS:
+            if pat.search(line):
+                out.append((i + 1, what, line.strip()))
+                break
+        else:
+            near = "\n".join(lines[max(0, i - 2): i + 3])
+            for pat, what in LOGIN_NEAR_DATASIFT:
+                if pat.search(line) and DATASIFT_WORD.search(near):
+                    out.append((i + 1, what, line.strip()))
+                    break
+    return out
+
+
+def check_login_wording(root: Path = ROOT, requires: dict | None = None) -> list[str]:
+    """Every DataSift login mention in what a user installs or reads, as problems."""
+    paths = []
+    for base in LOGIN_ROOTS:
+        top = root / base
+        if top.is_dir():
+            paths += [p for p in sorted(top.rglob("*")) if p.is_file() and p.suffix in LOGIN_EXT
+                      and "__pycache__" not in p.parts]
+    paths += [root / f for f in LOGIN_FILES if (root / f).is_file()]
+    out = []
+    for p in paths:
+        rel = p.relative_to(root).as_posix()
+        if rel in LOGIN_GENERATED or p.stat().st_size > 4_000_000:
+            continue
+        text = p.read_text(encoding="utf-8", errors="replace")
+        if _staff_only(p, text):
+            continue
+        for n, what, line in login_hits(text):
+            out.append("%s:%d names %s, but users reach DataSift with their Open API key only: %s"
+                       % (rel, n, what, line[:140]))
+    if requires is None:
+        sys.path.insert(0, str(root / "tools"))
+        try:
+            from build_skills import REQUIRES as requires  # noqa: N811
+        except ImportError:
+            requires = {}
+    for name, req in sorted((requires or {}).items()):
+        said = " ".join(str(v) for k, v in req.items() if k in ("note", "cost", "env", "accounts"))
+        for _, what, _line in login_hits(said):
+            out.append("tools/build_skills.py REQUIRES[%r] names %s; it reaches the manifest and the "
+                       "doctor, so it must speak of the Open API key only" % (name, what))
+    return out
+
+
 def main() -> int:
     problems: list[str] = []
+    problems.extend(check_login_wording())
     doc = json.loads(MANIFEST.read_text(encoding="utf-8"))
 
     plat_problems, plat_warnings = check_platform_limits()

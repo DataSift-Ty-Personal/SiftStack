@@ -1,13 +1,14 @@
 """Stdlib HTTP client for apiv2.reisift.io and map.reisift.io.
 
-Auth kinds:
-  jwt           a pasted access token (Bearer), no refresh
-  api_key       an Open API key ("Api-Key <key>"), no expiry; export only,
-                because it carries no claims to gate a write on
-  password      minted from email + password via POST /api/token/, re-minted
-                every 30 minutes and once on a 401 (datasift_api_upload.Api)
-  impersonated  POST /api/internal/impersonate/{email}/ from a staff token,
-                held in memory only (reisift_session._mint)
+A community install reaches DataSift with its Open API key ("Api-Key <key>",
+no expiry): Client.from_api_key(). The key comes from REISIFT_API_KEY, or from
+the environment variable --key-env names. DataSift allows 120 requests a
+minute per account, shared by every tool on it, so a key client paces itself
+at about 80.
+
+Client itself takes any Authorization header value and a `kind`, and has two
+hooks (renew, claims) that a subclass may fill. This package's key path never
+uses them.
 
 Every non-2xx RAISES ApiError after the retry policy is exhausted. A listing
 never comes back as {} on an error: the exists-check that reads "nothing
@@ -16,7 +17,6 @@ sequences, none of which have a unique-title constraint.
 """
 from __future__ import annotations
 
-import base64
 import json
 import re
 import time
@@ -35,7 +35,7 @@ HEADERS_STD = {
 }
 
 _RETRY_HINT = re.compile(r"available in (\d+)\s*second", re.I)
-_REMINT_AFTER_S = 1800
+KEY_INTERVAL_S = 0.75        # about 80 requests a minute, inside the account's 120
 
 
 class ApiError(RuntimeError):
@@ -54,91 +54,36 @@ class NetworkError(RuntimeError):
     """Transport failed and we do not know whether the server committed."""
 
 
-def decode_claims(jwt: str) -> dict:
-    body = jwt.split(".")[1]
-    body += "=" * (-len(body) % 4)
-    return json.loads(base64.urlsafe_b64decode(body))
-
-
 class Client:
-    def __init__(self, auth_value: str, kind: str, *, email: str = "",
-                 password: str = "", staff: "Client | None" = None,
-                 min_interval: float = 0.35, sleep=time.sleep):
+    # A subclass that can refresh its own header sets these two. The key never needs to.
+    renew_after_s = 0
+    can_renew = False
+
+    def __init__(self, auth_header: str, kind: str, *, min_interval: float = 0.35, sleep=time.sleep):
         self.kind = kind
-        self._auth = auth_value
-        self.email, self._password, self._staff = email, password, staff
+        self._header = auth_header
         self.min_interval = min_interval
         self._sleep = sleep
         self._last = 0.0
-        self._minted = time.time()
+        self._renewed = time.time()
         self.n_calls = 0
 
     # ------------------------------------------------------------ constructors
     @classmethod
-    def from_jwt(cls, jwt: str) -> "Client":
-        return cls(jwt.strip(), "jwt")
-
-    @classmethod
     def from_api_key(cls, key: str) -> "Client":
-        return cls(key.strip(), "api_key")
+        return cls("Api-Key " + key.strip(), "api_key", min_interval=KEY_INTERVAL_S)
 
-    @classmethod
-    def from_password(cls, email: str, password: str) -> "Client":
-        c = cls("", "password", email=email, password=password)
-        c._remint()
-        return c
-
-    @classmethod
-    def impersonate(cls, staff: "Client", email: str) -> "Client":
-        c = cls("", "impersonated", email=email, staff=staff)
-        c._remint()
-        return c
-
-    # ------------------------------------------------------------------ tokens
-    @property
-    def token(self) -> str:
-        return self._auth
-
+    # ------------------------------------------------------------------ hooks
     def claims(self) -> dict:
-        if self.kind == "api_key" or not self._auth:
-            return {}
-        try:
-            return decode_claims(self._auth)
-        except Exception:
-            return {}
+        """What the credential says about itself. An Open API key says nothing, so the
+        target gate reads the key's own user from the server instead (apply.verify_target)."""
+        return {}
+
+    def renew(self) -> None:
+        """Refresh the Authorization header. Nothing to do for an Open API key."""
 
     def _auth_header(self) -> str:
-        return ("Api-Key " if self.kind == "api_key" else "Bearer ") + self._auth
-
-    def _remint(self) -> None:
-        if self.kind == "password":
-            body = json.dumps({"email": self.email, "password": self._password}).encode()
-            req = urllib.request.Request(API + "/api/token/", data=body, method="POST",
-                                         headers={"content-type": "application/json"})
-            try:
-                with urllib.request.urlopen(req, timeout=45) as r:
-                    self._auth = json.loads(r.read())["access"]
-            except urllib.error.HTTPError as e:
-                raise ApiError(e.code, "POST", "/api/token/",
-                               e.read().decode(errors="replace"))
-        elif self.kind == "impersonated":
-            path = "/api/internal/impersonate/%s/" % self.email
-            req = urllib.request.Request(
-                API + path, method="POST", data=b"",
-                headers=dict(HEADERS_STD, **{
-                    "authorization": self._staff._auth_header(),
-                    "content-type": "application/x-www-form-urlencoded",
-                    "content-length": "0"}))
-            try:
-                with urllib.request.urlopen(req, timeout=30) as r:
-                    payload = json.loads(r.read())
-            except urllib.error.HTTPError as e:
-                raise ApiError(e.code, "POST", path, e.read().decode(errors="replace"))
-            tok = payload.get("access")
-            if not tok:
-                raise ApiError(0, "POST", path, "no access token in %s" % list(payload))
-            self._auth = tok
-        self._minted = time.time()
+        return self._header
 
     # ------------------------------------------------------------------- calls
     def _throttle(self) -> None:
@@ -148,9 +93,10 @@ class Client:
         self._last = time.time()
 
     def call(self, path: str, method: str = "GET", body=None, *, base: str = API,
-             method_override: str | None = None, timeout: int = 90, _reminted=False):
-        if self.kind in ("password",) and time.time() - self._minted > _REMINT_AFTER_S:
-            self._remint()
+             method_override: str | None = None, timeout: int = 90, _renewed=False):
+        if self.renew_after_s and time.time() - self._renewed > self.renew_after_s:
+            self.renew()
+            self._renewed = time.time()
         data = json.dumps(body).encode() if body is not None else None
         url = path if path.startswith("http") else base + path
         for attempt in range(6):
@@ -177,11 +123,15 @@ class Client:
                 if e.code in (500, 502, 503, 504) and attempt < 3:
                     self._sleep(2 ** attempt)
                     continue
-                if e.code == 401 and not _reminted and self.kind in ("password", "impersonated"):
-                    self._remint()
+                if e.code == 401 and not _renewed and self.can_renew:
+                    self.renew()
+                    self._renewed = time.time()
                     return self.call(path, method, body, base=base,
                                      method_override=method_override,
-                                     timeout=timeout, _reminted=True)
+                                     timeout=timeout, _renewed=True)
+                if e.code == 401 and self.kind == "api_key":
+                    raise ApiError(401, method, path, "the Open API key was refused: check that it is "
+                                   "the target account's key (%s)" % txt[:120])
                 raise ApiError(e.code, method, path, txt)
             except (urllib.error.URLError, ConnectionError, TimeoutError, OSError) as e:
                 # A retried POST can double-create anything without a unique
@@ -221,10 +171,8 @@ class Client:
         return out
 
     def search_count(self, must: dict) -> int:
-        """Record count for a preset-style `must`. The ONLY caller of
-        /api/internal/property/ in this package, and it hard-codes the
-        override header because a bare POST there CREATES a record."""
-        r = self.call("/api/internal/property/", "POST",
-                      {"limit": 1, "offset": 0, "query": {"must": must}},
-                      method_override="GET")
+        """Record count for a preset-style `must`. A GET with the query in the URL, so a
+        count can never create a record (a bare POST to /api/internal/property/ would)."""
+        q = urllib.parse.urlencode({"query": json.dumps({"must": must}), "limit": 1})
+        r = self.call("/api/internal/property/?" + q)
         return int(r.get("count") or 0) if isinstance(r, dict) else 0

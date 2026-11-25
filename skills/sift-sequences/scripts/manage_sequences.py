@@ -1,362 +1,271 @@
-"""Create and manage DataSift sequences via Playwright automation.
+"""Read what your DataSift account has for sequences, and print click-through checklists.
 
-Handles the sequence builder's React DnD behavior (drag triggers,
-conditions, and actions) which requires slow mouse-based dragging
-instead of Playwright's native drag_to().
+Sequences are not in DataSift's published API, so this skill never builds one by script. Claude
+walks you through the Sequence Builder in the app (SKILL.md, "Creating a Sequence", Steps 1 to 7).
+This script only reads, on your Open API key, so the walkthrough skips what already exists and names
+anything a sequence needs that the account is missing (a tag, a status, a list, a board, a folder).
 
-Usage:
-    python manage_sequences.py --create-sold-sequence
-    python manage_sequences.py --list
-    python manage_sequences.py --create-custom --title "My Sequence" --folder "Lead Management"
+    python manage_sequences.py --list                      # every sequence folder and sequence
+    python manage_sequences.py --sold-sequence             # the Sold Property Cleanup checklist
+    python manage_sequences.py --sold-sequence --offline   # the same checklist, no key needed
+    python manage_sequences.py --check --tags "Sold" --statuses "Sold" \
+        --lists "Foreclosure,Probate" --boards "Acquisitions" --folders "Transactions"
+    python manage_sequences.py --selftest                  # the rules on invented data, no network
 
-Requires: playwright, python-dotenv
-          DATASIFT_EMAIL and DATASIFT_PASSWORD in .env or environment
+Your key: REISIFT_API_KEY, your DataSift Open API key (see datasift_core.py). Every request is a
+GET, so nothing in your account changes.
 """
+from __future__ import annotations
 
 import argparse
-import asyncio
-import json
-import logging
+import re
 import sys
-from datetime import datetime
 from pathlib import Path
 
-try:
-    from datasift_core import (
-        create_browser, login, dismiss_popups, screenshot, wait_for_spa,
-    )
-except ImportError:
-    sys.path.insert(0, str(Path(__file__).resolve().parent))
-    from datasift_core import (
-        create_browser, login, dismiss_popups, screenshot, wait_for_spa,
-    )
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from datasift_core import API, ApiError, DataSiftApi  # noqa: E402
 
-logger = logging.getLogger(__name__)
+SEQ_FOLDERS = "/api/internal/sequence-folder/?limit=999"
+SEQUENCES = "/api/internal/sequence/?limit=999"
+TAGS = "/api/internal/tag/?offset=0&limit=10000&ordering=title"
+LISTS = "/api/internal/list/?offset=0&limit=10000"
+STATUSES = "/api/internal/status/?limit=999"
+BOARDS = "/api/internal/siftline/board/?offset=0&limit=999"
 
-SEQUENCES_URL = "https://app.reisift.io/sequences"
+# The trigger cards in the Sequence Builder, by the event each one stores.
+TRIGGERS = {
+    "property.status.updated": "Property Status Change",
+    "property.assigned": "Property Assignee Change",
+    "property.tags.added": "Property Tags Added",
+    "property.tags.removed": "Property Tags Removed",
+    "property.lists.added": "Property Lists Added",
+    "property.lists.removed": "Property Lists Removed",
+    "task.created": "Task Created",
+    "task.completed": "Task Completed",
+    "card.created": "SiftLine Card Created",
+    "card.moved": "SiftLine Card Moved",
+}
 
-
-async def _mouse_drag(page, source_el, target_el) -> bool:
-    """Drag source element to target using slow mouse movements.
-
-    DataSift's sequence builder uses React DnD which has draggable="false"
-    on cards. Playwright's native drag doesn't work. Must use slow mouse
-    drag: mouse.move() -> mouse.down() -> 20 incremental steps -> mouse.up()
-    """
-    try:
-        src_box = await source_el.bounding_box()
-        tgt_box = await target_el.bounding_box()
-
-        if not src_box or not tgt_box:
-            logger.warning("Cannot get bounding boxes for drag")
-            return False
-
-        src_x = src_box["x"] + src_box["width"] / 2
-        src_y = src_box["y"] + src_box["height"] / 2
-        tgt_x = tgt_box["x"] + tgt_box["width"] / 2
-        tgt_y = tgt_box["y"] + tgt_box["height"] / 2
-
-        await page.mouse.move(src_x, src_y)
-        await page.wait_for_timeout(500)
-        await page.mouse.down()
-        await page.wait_for_timeout(500)
-
-        # Move in 20 incremental steps
-        steps = 20
-        for i in range(1, steps + 1):
-            x = src_x + (tgt_x - src_x) * i / steps
-            y = src_y + (tgt_y - src_y) * i / steps
-            await page.mouse.move(x, y)
-            await page.wait_for_timeout(50)
-
-        await page.wait_for_timeout(500)
-        await page.mouse.up()
-        await page.wait_for_timeout(1000)
-
-        logger.info("Drag completed: (%d,%d) -> (%d,%d)", src_x, src_y, tgt_x, tgt_y)
-        return True
-    except Exception as e:
-        logger.error("Mouse drag failed: %s", e)
-        return False
+# Template 13 in SKILL.md, as a checklist.
+SOLD_SEQUENCE = {
+    "title": "Sold Property Cleanup",
+    "folder": "Transactions",
+    "trigger": "Property Tags Added",
+    "condition": 'Property Tags: has the tag "Sold"',
+    "actions": ["Change Property Status to Sold",
+                "Remove Property Lists: Foreclosure, Probate, Tax Sale",
+                "Clear Property Tasks",
+                "Clear the assignee"],
+    "needs": {"tags": ["Sold"], "statuses": ["Sold"], "lists": ["Foreclosure", "Probate", "Tax Sale"],
+              "folders": ["Transactions"]},
+    "note": "Removing lists is permanent for that record: a record tagged Sold by mistake loses them.",
+}
 
 
-async def _navigate_to_sequences(page) -> bool:
-    """Navigate to the Sequences page."""
-    await page.goto(SEQUENCES_URL, wait_until="domcontentloaded")
-    await wait_for_spa(page, 5000)
-    await dismiss_popups(page)
-    return True
+def rows_of(r) -> list:
+    if isinstance(r, list):
+        return r
+    return (r.get("results") or r.get("data") or []) if isinstance(r, dict) else []
 
 
-async def list_sequences(page) -> list[dict]:
-    """List all existing sequences."""
-    await _navigate_to_sequences(page)
-    await screenshot(page, "sequences_list")
+def get_all(api, path: str) -> list:
+    """Every row of a listing, following its `next` link if the server pages it."""
+    out, seen = [], set()
+    while path and path not in seen:
+        seen.add(path)
+        r = api.get(path)
+        out.extend(rows_of(r))
+        nxt = r.get("next") if isinstance(r, dict) else None
+        path = nxt[len(API):] if isinstance(nxt, str) and nxt.startswith(API) else None
+    return out
 
-    sequences = await page.evaluate("""() => {
-        const seqs = [];
-        const items = document.querySelectorAll(
-            '[class*="SequenceItem"], [class*="sequence-item"], '
-            + 'tr, [role="row"]'
-        );
-        for (const item of items) {
-            const text = item.innerText.trim();
-            if (text && text.length > 2 && text.length < 200) {
-                const lines = text.split('\\n').filter(l => l.trim());
-                if (lines.length > 0) {
-                    seqs.push({
-                        name: lines[0].trim(),
-                        details: lines.slice(1).join(' | ').trim(),
-                    });
-                }
-            }
+
+def fold(s) -> str:
+    return re.sub(r"[\s._]+", " ", str(s or "")).strip().casefold()
+
+
+def folder_title(row: dict) -> str:
+    f = row.get("folder")
+    return (f.get("title") if isinstance(f, dict) else f) or "(no folder)"
+
+
+def list_sequences(api, out=print) -> dict:
+    folders = [f.get("title") for f in get_all(api, SEQ_FOLDERS)]
+    seqs = get_all(api, SEQUENCES)
+    by_folder = {}
+    for s in seqs:
+        by_folder.setdefault(folder_title(s), []).append(s)
+    out(f"{len(seqs)} sequences in {len(folders)} folders")
+    for name in folders + sorted(set(by_folder) - set(folders)):
+        rows = sorted(by_folder.get(name, []), key=lambda s: fold(s.get("title")))
+        out(f"\n{name}  ({len(rows)})")
+        for s in rows:
+            trig = TRIGGERS.get(str(s.get("trigger") or ""), str(s.get("trigger") or "no trigger"))
+            runs = s.get("runs")
+            extra = f", {runs} runs" if isinstance(runs, int) else ""
+            out(f"  [{'on ' if s.get('is_active') else 'off'}] {s.get('title')}  "
+                f"(trigger: {trig}, {len(s.get('actions') or [])} actions{extra})")
+    return {"folders": folders, "sequences": [s.get("title") for s in seqs]}
+
+
+def check_names(api, wanted: dict) -> dict:
+    """{family: {"present": [...], "missing": [...]}} for tags, statuses, lists, boards and sequence folders."""
+    sources = {"tags": TAGS, "statuses": STATUSES, "lists": LISTS, "boards": BOARDS, "folders": SEQ_FOLDERS}
+    result = {}
+    for family, names in wanted.items():
+        names = [n for n in names if n.strip()]
+        if not names:
+            continue
+        have = {fold(r.get("title")) for r in get_all(api, sources[family])}
+        result[family] = {"present": [n for n in names if fold(n) in have],
+                          "missing": [n for n in names if fold(n) not in have]}
+    return result
+
+
+def sold_checklist(api=None, out=print) -> dict:
+    t = SOLD_SEQUENCE
+    state = {"exists": None, "active": None, "needs": {}}
+    if api is not None:
+        found = [s for s in get_all(api, SEQUENCES) if fold(s.get("title")) == fold(t["title"])]
+        state["exists"] = bool(found)
+        state["active"] = any(s.get("is_active") for s in found)
+        state["needs"] = check_names(api, t["needs"])
+        if found:
+            out(f"Already in the account: {t['title']} in {folder_title(found[0])}, "
+                f"{'on' if state['active'] else 'off'}. Nothing to build.")
+            return state
+        out(f"{t['title']} is not in the account yet.")
+        missing = [(fam, n) for fam, r in state["needs"].items() for n in r["missing"]]
+        for fam, n in missing:
+            out(f"  Create first: the {fam.rstrip('s')} {n!r} (it does not exist in this account)")
+    out(f"\nBuild it in the Sequence Builder:")
+    steps = [f"Open Sequences in the left sidebar and click Create Sequence.",
+             f"Title: {t['title']}. Folder: {t['folder']}.",
+             f"Drag the trigger card \"{t['trigger']}\" onto the trigger area.",
+             f"Add one condition: {t['condition']}.",
+             "Click \"Set the Following Actions\"."]
+    for i, action in enumerate(t["actions"]):
+        step = f"drag the action card for: {action}."
+        steps.append(step[0].upper() + step[1:] if i == 0 else "Click \"Add new Action +\", then " + step)
+    steps.append("Click \"Save Sequence\". If DataSift says the title is taken, add \" V2\" to the title.")
+    for n, s in enumerate(steps, 1):
+        out(f"  {n}. {s}")
+    out(f"\nNote: {t['note']}")
+    state["steps"] = steps
+    return state
+
+
+# ---- selftest: invented account, no network ----
+class FakeApi:
+    def __init__(self, with_sold=False):
+        self.calls = []
+        self.data = {
+            SEQ_FOLDERS: [{"uuid": "sf1", "title": "Transactions"}, {"uuid": "sf2", "title": "Lead Management"}],
+            SEQUENCES: [{"uuid": "s1", "title": "Call New Lead", "is_active": True, "trigger": "property.status.updated",
+                         "folder": {"uuid": "sf2", "title": "Lead Management"}, "actions": [{}, {}], "runs": 12}],
+            TAGS: [{"title": "Hot Lead"}],
+            STATUSES: [{"title": "sold"}, {"title": "new_lead"}],
+            LISTS: [{"title": "Foreclosure"}, {"title": "Probate"}],
+            BOARDS: [{"title": "Acquisitions"}],
         }
-        return seqs;
-    }""")
+        if with_sold:
+            self.data[SEQUENCES].append({"uuid": "s2", "title": "Sold Property Cleanup", "is_active": False,
+                                         "trigger": "property.tags.added",
+                                         "folder": {"uuid": "sf1", "title": "Transactions"}, "actions": [{}]})
 
-    logger.info("Found %d sequences", len(sequences))
-    return sequences
-
-
-async def create_sold_sequence(page) -> bool:
-    """Create the 'Sold Property Cleanup' sequence.
-
-    Trigger: Property Tags Added
-    Condition: Tag = "Sold"
-    Actions:
-      1. Change Status to Sold
-      2. Remove from all Lists
-      3. Clear all Tasks
-      4. Clear Assignee
-
-    This is the standard cleanup sequence that fires when
-    a property is tagged as Sold via SiftMap.
-    """
-    await _navigate_to_sequences(page)
-
-    # Click Create button
-    create_btn = page.locator('button:has-text("Create"), a:has-text("Create")')
-    if await create_btn.count() == 0:
-        logger.error("Create button not found")
-        await screenshot(page, "sequence_no_create_btn")
-        return False
-
-    await create_btn.first.click()
-    await page.wait_for_timeout(2000)
-    await dismiss_popups(page)
-
-    # Set title
-    title_input = page.locator(
-        'input[placeholder*="title" i], '
-        'input[placeholder*="name" i], '
-        'input[name*="title" i]'
-    )
-    if await title_input.count() > 0:
-        await title_input.first.fill("Sold Property Cleanup")
-        await page.wait_for_timeout(500)
-        logger.info("Set title: Sold Property Cleanup")
-
-    # Set folder to Transactions
-    folder_dropdown = page.locator(
-        'select:has(option:has-text("Select a folder")), '
-        '[class*="select" i]:has-text("Select a folder")'
-    )
-    if await folder_dropdown.count() == 0:
-        folder_dropdown = page.get_by_text("Select a folder", exact=False)
-
-    if await folder_dropdown.count() > 0:
-        await folder_dropdown.first.click()
-        await page.wait_for_timeout(1000)
-
-        transactions = page.get_by_text("Transactions", exact=True)
-        if await transactions.count() > 0:
-            await transactions.first.click()
-            await page.wait_for_timeout(500)
-            logger.info("Selected folder: Transactions")
-        else:
-            try:
-                await page.select_option('select', label="Transactions")
-                logger.info("Selected folder via select_option")
-            except Exception:
-                logger.warning("Could not select Transactions folder")
-
-    await screenshot(page, "sequence_title_folder")
-
-    # ── Drag "Property Tags Added" trigger ──
-    logger.info("Looking for 'Property Tags Added' trigger card...")
-
-    trigger_card = page.locator('text="Property Tags Added"').first
-    drop_zone = page.locator('text=/[Dd]rag and drop/').first
-
-    if await trigger_card.count() > 0 and await drop_zone.count() > 0:
-        await _mouse_drag(page, trigger_card, drop_zone)
-        await dismiss_popups(page)
-        await screenshot(page, "sequence_trigger_placed")
-    else:
-        logger.error("Trigger card or drop zone not found")
-        await screenshot(page, "sequence_trigger_failed")
-        return False
-
-    # ── Add condition: Tag = "Sold" ──
-    # Navigate to conditions
-    conditions_tab = page.locator(
-        'text="Conditions", button:has-text("Conditions"), a:has-text("Conditions")'
-    )
-    if await conditions_tab.count() > 0:
-        await conditions_tab.first.click()
-        await page.wait_for_timeout(2000)
-        await dismiss_popups(page)
-
-    # Look for condition card to drag (e.g., "Tag" or "Property Tag")
-    condition_card = page.locator('text=/^Tag$|Property Tag/').first
-    condition_drop = page.locator('text=/[Dd]rag and drop/').first
-
-    if await condition_card.count() > 0 and await condition_drop.count() > 0:
-        await _mouse_drag(page, condition_card, condition_drop)
-        await page.wait_for_timeout(1000)
-
-    # Configure condition: select "Sold" tag
-    sold_input = page.locator('input[placeholder*="tag" i], input[placeholder*="search" i]')
-    if await sold_input.count() > 0:
-        await sold_input.first.fill("Sold")
-        await page.wait_for_timeout(500)
-        sold_option = page.get_by_text("Sold", exact=True)
-        if await sold_option.count() > 0:
-            await sold_option.first.click()
-            await page.wait_for_timeout(500)
-
-    await dismiss_popups(page)
-    await screenshot(page, "sequence_condition_sold")
-
-    # ── Navigate to Actions tab ──
-    actions_nav = page.locator(
-        'text="Set the Following Actions", '
-        'button:has-text("Actions"), '
-        'a:has-text("Actions")'
-    )
-    if await actions_nav.count() > 0:
-        await actions_nav.first.click()
-        await page.wait_for_timeout(2000)
-    else:
-        # Try direct URL navigation
-        current_url = page.url
-        if "/sequences/" in current_url:
-            actions_url = current_url.rstrip("/") + "/actions"
-            await page.goto(actions_url, wait_until="domcontentloaded")
-            await page.wait_for_timeout(2000)
-
-    await dismiss_popups(page)
-    await screenshot(page, "sequence_actions_tab")
-
-    # ── Drag action cards ──
-    # Actions: Change Status, Remove Lists, Clear Tasks, Clear Assignee
-    action_texts = [
-        "Change Status",
-        "Remove from Lists",
-        "Clear Tasks",
-        "Clear Assignee",
-    ]
-
-    for idx, action_text in enumerate(action_texts):
-        action_card = page.get_by_text(action_text, exact=False).first
-        action_drop = page.locator('text=/[Dd]rag and drop/').first
-
-        if idx > 0:
-            # Need "Add new Action +" for 2nd+ actions
-            add_action = page.locator('text=/Add new Action|Add Action/i')
-            if await add_action.count() > 0:
-                await add_action.first.click()
-                await page.wait_for_timeout(1000)
-
-        if await action_card.count() > 0 and await action_drop.count() > 0:
-            await _mouse_drag(page, action_card, action_drop)
-            await page.wait_for_timeout(1000)
-            await dismiss_popups(page)
-            logger.info("Placed action: %s", action_text)
-        else:
-            logger.warning("Action card '%s' or drop zone not found", action_text)
-
-    # Configure "Change Status" to "Sold"
-    # Look for the status dropdown in the action configuration
-    status_dropdown = page.locator('[class*="Select"]:has-text("Select")').last
-    if await status_dropdown.count() > 0:
-        await status_dropdown.click()
-        await page.wait_for_timeout(500)
-        sold_status = page.get_by_text("Sold", exact=True)
-        if await sold_status.count() > 0:
-            await sold_status.first.click()
-            await page.wait_for_timeout(500)
-
-    await screenshot(page, "sequence_actions_configured")
-
-    # ── Save ──
-    save_btn = page.locator('button:has-text("Save Sequence"), button:has-text("Save")')
-    if await save_btn.count() > 0:
-        await save_btn.first.click()
-        await page.wait_for_timeout(3000)
-
-        # Check for duplicate name error
-        error_toast = page.locator('text=/different sequence title/i')
-        if await error_toast.count() > 0:
-            logger.warning("Duplicate name detected, retrying with V2 suffix")
-            # Clear and re-enter title
-            if await title_input.count() > 0:
-                await title_input.first.fill("Sold Property Cleanup V2")
-                await page.wait_for_timeout(500)
-                await save_btn.first.click()
-                await page.wait_for_timeout(3000)
-
-        await dismiss_popups(page)
-        await screenshot(page, "sequence_saved")
-        logger.info("Sequence created successfully")
-        return True
-
-    logger.error("Save button not found")
-    return False
+    def get(self, path, params=None):
+        self.calls.append(path)
+        rows = self.data[path]
+        # The first page of the sequence listing points at a second one, as a paged listing would.
+        if path == SEQUENCES and len(rows) > 1:
+            return {"count": len(rows), "results": rows[:1], "next": API + SEQUENCES + "&offset=1"}
+        if path == SEQUENCES + "&offset=1":
+            return {"count": 2, "results": self.data[SEQUENCES][1:], "next": None}
+        return {"count": len(rows), "results": rows, "next": None}
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Manage DataSift sequences")
-    parser.add_argument("--list", action="store_true", help="List all sequences")
-    parser.add_argument("--create-sold-sequence", action="store_true",
-                        help="Create the Sold Property Cleanup sequence")
-    parser.add_argument("--headless", action="store_true")
-    parser.add_argument("-v", "--verbose", action="store_true")
+class _Paged(FakeApi):
+    def __init__(self, *a, **k):
+        super().__init__(*a, **k)
+        self.data[SEQUENCES + "&offset=1"] = []
 
-    args = parser.parse_args()
 
-    logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.INFO,
-        format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
-    )
+def selftest() -> int:
+    results = []
 
-    if args.list:
-        async def _list():
-            async with create_browser(headless=args.headless) as (browser, context, page):
-                if not await login(page):
-                    print("Login failed")
-                    return
-                seqs = await list_sequences(page)
-                for s in seqs:
-                    print(f"  {s['name']}")
-                    if s.get("details"):
-                        print(f"    {s['details']}")
+    def check(label, got, want):
+        results.append((label, got == want, got, want))
 
-        asyncio.run(_list())
+    quiet = lambda *_: None  # noqa: E731
+    lines = []
+    listed = list_sequences(FakeApi(), out=lines.append)
+    check("list names every sequence", listed["sequences"], ["Call New Lead"])
+    check("list shows the trigger by its card name",
+          any("Property Status Change" in l for l in lines), True)
+    fresh = sold_checklist(FakeApi(), out=quiet)
+    check("a missing sequence gets the full checklist", (fresh["exists"], len(fresh["steps"])), (False, 10))
+    check("a missing tag is named before building", fresh["needs"]["tags"]["missing"], ["Sold"])
+    check("a status matches however it is spelled", fresh["needs"]["statuses"]["present"], ["Sold"])
+    check("a missing list is named", fresh["needs"]["lists"]["missing"], ["Tax Sale"])
+    built = sold_checklist(_Paged(with_sold=True), out=quiet)
+    check("a paged listing is read to the end, and an existing sequence is not rebuilt",
+          (built["exists"], built["active"], "steps" in built), (True, False, False))
+    offline = sold_checklist(None, out=quiet)
+    check("the checklist works with no key", len(offline["steps"]), 10)
+    bad = 0
+    for label, ok, got, want in results:
+        bad += 0 if ok else 1
+        print(f"{'ok  ' if ok else 'FAIL'} {label}" + ("" if ok else f": {got!r} (want {want!r})"))
+    print(f"{len(results) - bad} of {len(results)} passed")
+    return 1 if bad else 0
 
-    elif args.create_sold_sequence:
-        async def _create():
-            async with create_browser(headless=args.headless) as (browser, context, page):
-                if not await login(page):
-                    print("Login failed")
-                    return
-                ok = await create_sold_sequence(page)
-                print("Sold Property Cleanup sequence created" if ok else "Failed to create sequence")
 
-        asyncio.run(_create())
-    else:
-        parser.print_help()
+def _names(s: str) -> list:
+    return [x.strip() for x in (s or "").split(",") if x.strip()]
+
+
+def main(argv=None) -> int:
+    ap = argparse.ArgumentParser(description="Read your DataSift sequences and print click-through checklists "
+                                             "(read only, on your Open API key)")
+    ap.add_argument("--list", action="store_true", help="every sequence folder and sequence")
+    ap.add_argument("--sold-sequence", action="store_true", help="the Sold Property Cleanup checklist")
+    ap.add_argument("--check", action="store_true", help="which of the named things exist in the account")
+    ap.add_argument("--tags", default="")
+    ap.add_argument("--statuses", default="")
+    ap.add_argument("--lists", default="")
+    ap.add_argument("--boards", default="")
+    ap.add_argument("--folders", default="", help="sequence folders")
+    ap.add_argument("--offline", action="store_true", help="print the checklist without reading the account")
+    ap.add_argument("--selftest", action="store_true", help="check the rules on invented data, no network")
+    args = ap.parse_args(argv)
+
+    if args.selftest:
+        return selftest()
+    if not (args.list or args.sold_sequence or args.check):
+        ap.print_help()
+        return 0
+    if args.offline:
+        if args.sold_sequence:
+            sold_checklist(None)
+        return 0
+    api = DataSiftApi()
+    try:
+        if args.list:
+            list_sequences(api)
+        if args.check:
+            res = check_names(api, {"tags": _names(args.tags), "statuses": _names(args.statuses),
+                                    "lists": _names(args.lists), "boards": _names(args.boards),
+                                    "folders": _names(args.folders)})
+            for fam, r in res.items():
+                print(f"{fam}: present {r['present'] or '-'}; missing {r['missing'] or '-'}")
+        if args.sold_sequence:
+            sold_checklist(api)
+    except ApiError as exc:
+        print(f"DataSift refused a request: {exc}")
+        return 1
+    print(f"({api.calls} requests, all reads)")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

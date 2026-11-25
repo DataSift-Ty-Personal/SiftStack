@@ -1,41 +1,35 @@
 # DataSift (REISift)
 
-The CRM everything lands in. It has **two API surfaces with different powers**,
-and picking the wrong one is the single most common blocker here.
+The CRM everything lands in. DataSift publishes its API at
+[developers.datasift.ai](https://developers.datasift.ai), and every skill here
+reaches it the same way: your Open API key.
 
 - **Domain:** `app.reisift.io`. API at `apiv2.reisift.io`. Not `app.datasift.ai`
 - **Used by:** `kpi-engine`, `sequential-presets`, `sift-sequences`,
-  `sift-market-research`, the upload stack
+  `sift-market-research`, `account-blueprint`, `mls-offer-engine`,
+  `phone-validator`, the upload stack
 
-## Which credential can do what
+## The credential: your Open API key
 
-| | Open API key | User JWT |
-|---|---|---|
-| Read properties, lists, tags | yes | yes |
-| Write properties, upsert | yes | yes |
-| **Custom fields** | **no, they do not exist in its 93 routes** | yes |
-| Activity log for KPIs | limited | yes |
-| Expiry | never | about 48 hours |
+Send `Authorization: Api-Key <key>` on every request, with the key read from
+`REISIFT_API_KEY`. An account admin creates the key in DataSift; it never
+expires and carries the permissions of the user it belongs to. It is the only
+DataSift credential this library uses.
 
-**If you need custom fields, you need the minted JWT.** The Open API key
-returns 401 on every custom-field write, and the routes are not merely
-forbidden, they are absent from its surface entirely. That distinction matters
-because a 404 reads like a wrong URL rather than a permissions problem.
+| | On the Open API key |
+|---|---|
+| Read records, lists, tags, statuses, presets | yes |
+| The account activity log (calls, texts, statuses) | yes: `GET /api/internal/property/logs/`, filtered by `any_event_type` |
+| Create and update records, tags, lists, owner phones | yes |
+| Custom fields: values, fields, groups, options | yes |
+| Task presets, preset folders and presets, SiftMap presets | yes |
+| Sequences, custom statuses, boards and board columns | no published route: built in the app |
+| Who the key belongs to | `GET /api/internal/user/` (the key's own user) |
 
-### Mint the JWT, never paste one
-
-```
-POST /api/token/
-  {"email": "...", "password": "..."}
-  -> {"access": "...", "refresh": "..."}
-```
-
-Mint from credentials at start of run and **re-mint every 30 minutes**. A long
-upload that pastes a token dies partway through when it expires, usually after
-it has already written half the records.
-
-This is also why `kpi-engine` needs no special access: it mints from your own
-login like any other user.
+**Limits, per account and shared by every key-based tool on it:** 120 requests
+a minute and 5,000 an hour; stay near 80 a minute. A 429 says "available in N
+seconds" or sends `Retry-After`: wait that long. Bulk jobs want 20 or more
+records each.
 
 ## Upload contract, and four traps that fail quietly
 
@@ -123,15 +117,16 @@ write by checking a count.
 ## Presets, sequences and SiftMap presets DO have an API
 
 Earlier versions of this page said they did not. They live under `/api/internal/`
-(`filter-preset-folder`, `filter-preset`, `sequence`, `sequence-folder`, `task-group`,
-`custom-fields`, `siftline/board`) and `map.reisift.io/filters/`, and they answer to your
-Open API key for reads and your user JWT for writes. The `account-blueprint` skill
-(`python src/clone_account.py`) exports a whole account to a title-keyed JSON and applies
-it to another account with read-back verification on every object. Contracts that bite:
-the folder preset listing defaults to 10 rows (always `?limit=999`), preset titles are
-unique per account, `POST /api/internal/status/` requires `color`, a saved preset's
-relative date windows are rejected by the records search, and `/api/internal/account/user/`
-returns a flat array rather than `{results}`.
+(`filter-preset-folder`, `filter-preset`, `task-group`, `custom-fields`) and
+`map.reisift.io/filters/`, and they answer to your Open API key. Sequences, custom
+statuses, boards and board columns have no published create route, so those are built in
+the app. The `account-blueprint` skill (`python src/clone_account.py`) exports a whole
+account to a title-keyed JSON and applies it to another account with read-back
+verification on every object it creates, plus a click-through checklist for the rest.
+Contracts that bite: the folder preset listing defaults to 10 rows (always `?limit=999`),
+preset titles are unique per account, a saved preset's relative date windows are rejected
+by the records search, and `/api/internal/account/user/` returns a flat array rather than
+`{results}`.
 
 If you would rather not automate, [build them by
 hand](../setup/no-api-playbook.md#presets-by-hand): the skills carry all 21

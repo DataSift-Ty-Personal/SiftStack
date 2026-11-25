@@ -11,7 +11,21 @@
     {
       "name": "siftstack-all",
       "source": "./marketplace/bundles/siftstack-all",
-      "description": "The whole SiftStack REI skill library in one install. Installs 28 plugins.",
+      "description": "The whole SiftStack REI skill library in one install. Installs 34 plugins.",
+      "category": "Bundles",
+      "keywords": [
+        "bundle",
+        "datasift",
+        "real-estate"
+      ],
+      "author": {
+        "name": "DataSift"
+      }
+    },
+    {
+      "name": "siftstack-chains",
+      "source": "./marketplace/bundles/siftstack-chains",
+      "description": "Every SiftStack Chains skill in one install. Installs 7 plugins.",
       "category": "Bundles",
       "keywords": [
         "bundle",
@@ -95,7 +109,7 @@
     {
       "name": "account-blueprint",
       "source": "./skills/account-blueprint",
-      "description": "Build a DataSift account in the same structure as the DataSift reference account, over the API, with a read-back on every object: preset folders and presets, lead statuses, lists, tags, custom fields, task presets, se...",
+      "description": "Build a DataSift account in the same structure as the DataSift reference account, on your own Open API key, with a read-back on every object it creates: preset folders and presets, lists, tags, custom fields, task pre...",
       "category": "CRM",
       "keywords": [
         "datasift",
@@ -129,6 +143,114 @@
       "source": "./skills/sift-sequences",
       "description": "Complete guide for creating, managing, and ideating Sift sequences (automations).",
       "category": "CRM",
+      "keywords": [
+        "datasift",
+        "real-estate",
+        "tier-account"
+      ],
+      "author": {
+        "name": "DataSift"
+      },
+      "strict": false,
+      "skills": [
+        "./"
+      ]
+    },
+    {
+      "name": "account-setup-chain",
+      "source": "./skills/account-setup-chain",
+      "description": "Sets up a DataSift account the way every other SiftStack chain expects, once, on the Open API key alone.",
+      "category": "Chains",
+      "keywords": [
+        "datasift",
+        "real-estate",
+        "tier-account"
+      ],
+      "author": {
+        "name": "DataSift"
+      },
+      "strict": false,
+      "skills": [
+        "./"
+      ]
+    },
+    {
+      "name": "best-lists-chain",
+      "source": "./skills/best-lists-chain",
+      "description": "Finds the lists that produce deals in a county right now and works them inside a budget, on the DataSift Open API key.",
+      "category": "Chains",
+      "keywords": [
+        "datasift",
+        "real-estate",
+        "tier-account"
+      ],
+      "author": {
+        "name": "DataSift"
+      },
+      "strict": false,
+      "skills": [
+        "./"
+      ]
+    },
+    {
+      "name": "deal-desk-dispo-chain",
+      "source": "./skills/deal-desk-dispo-chain",
+      "description": "Take one hot lead to a signed contract and an assigned buyer.",
+      "category": "Chains",
+      "keywords": [
+        "datasift",
+        "real-estate",
+        "tier-account"
+      ],
+      "author": {
+        "name": "DataSift"
+      },
+      "strict": false,
+      "skills": [
+        "./"
+      ]
+    },
+    {
+      "name": "estates-heirs-chain",
+      "source": "./skills/estates-heirs-chain",
+      "description": "Estates and heirs, end to end: for every deceased owner (probate notices, the Obituary and Probate lists, skip trace deceased flags) find the house, confirm whose death it is, research the family tree and who must sig...",
+      "category": "Chains",
+      "keywords": [
+        "datasift",
+        "real-estate",
+        "tier-api"
+      ],
+      "author": {
+        "name": "DataSift"
+      },
+      "strict": false,
+      "skills": [
+        "./"
+      ]
+    },
+    {
+      "name": "first-to-market-chain",
+      "source": "./skills/first-to-market-chain",
+      "description": "First to market, end to end, on your DataSift Open API key.",
+      "category": "Chains",
+      "keywords": [
+        "datasift",
+        "real-estate",
+        "tier-account"
+      ],
+      "author": {
+        "name": "DataSift"
+      },
+      "strict": false,
+      "skills": [
+        "./"
+      ]
+    },
+    {
+      "name": "team-performance-chain",
+      "source": "./skills/team-performance-chain",
+      "description": "Know what the team did, coach it, hire, and write the work down.",
+      "category": "Chains",
       "keywords": [
         "datasift",
         "real-estate",

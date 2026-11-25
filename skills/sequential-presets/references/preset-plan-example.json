@@ -1,0 +1,42 @@
+{
+  "folders": [
+    {
+      "title": "00 Niche Sequential Marketing",
+      "presets": [
+        {
+          "title": "00. Needs Skip Traced",
+          "must": {"any_tags": ["Courthouse Data"], "skiptraced": 0}
+        },
+        {
+          "title": "01. Ready to Text",
+          "must": {
+            "any_tags": ["Courthouse Data"],
+            "phone": 1,
+            "sms_attempts": [0, 0],
+            "must_not": {"any_tags": ["Do Not Market"], "any_property_status": ["Not Interested"]}
+          }
+        },
+        {
+          "title": "02. Needs Called Day 1",
+          "must": {
+            "any_tags": ["Courthouse Data"],
+            "phone": 1,
+            "sms_attempts": [1, 99],
+            "predictivecall_attempts": [0, 0],
+            "must_not": {"any_tags": ["Do Not Market"], "any_property_status": ["Not Interested"]}
+          }
+        },
+        {
+          "title": "05. Needs Mailed",
+          "must": {
+            "any_tags": ["Courthouse Data"],
+            "predictivecall_attempts": [3, 99],
+            "directmail_attempts": [0, 0],
+            "do_not_mail_ever": false,
+            "must_not": {"any_tags": ["Do Not Market"]}
+          }
+        }
+      ]
+    }
+  ]
+}

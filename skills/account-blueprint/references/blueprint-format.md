@@ -43,8 +43,9 @@ for instance). The apply step treats it as a gap and never copies the value.
 ## Families
 
 - `statuses[]`: `title, color, is_active, order, system`. System statuses
-  (`system: true`) exist in every account and are never created; only custom
-  ones are, and `color` is required by the API.
+  (`system: true`) exist in every account and are never created. A missing
+  custom status is a checklist step on the Open API key (title and color),
+  since no published route creates one.
 - `lists[]`: `title`.
 - `tags[]`: `title, why[]`. Only tags referenced by presets, sequences or
   SiftMap presets, plus a small anchor allowlist. Cohort and import-batch
@@ -55,12 +56,15 @@ for instance). The apply step treats it as a gap and never copies the value.
 - `task_groups[]`: `title`. `task_presets[]`: `group, title, notes,
   round_robin, expires_in, all_day, due_time, assigned_to_user, assigned_to_users,
   assigned_to_role, order, skip_weekends`.
-- `boards[]`: `title, columns[]`. Boards are resolved, never created.
+- `boards[]`: `title, columns[]`. On the Open API key, a missing board or
+  column is a checklist step in the report (no published route creates them).
 - `users[]`: `first_name, role, is_active`. First name is the join key for
   assignee references. No last names, no emails.
 - `sequence_folders[]`: `title`. `sequences[]`: `title, folder, is_active,
   trigger, conditions[], actions[], manual[]`. Actions that sent SMS or email in
   the source are replaced by `{"action": "send-sms", "$manual": true, "kept": {...}}`.
+  Sequences are not in DataSift's published API, so on the Open API key each
+  missing folder and sequence becomes Sequence Builder steps in the report.
 - `preset_folders[]`: `title, type, numbered, presets[{title, quick_filter,
   filters, source_count, source_count_approx}]`. `filters.must` is the saved
   filter with references in place of uuids; `filters.account` is never present.

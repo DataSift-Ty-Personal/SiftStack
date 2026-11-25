@@ -1,7 +1,7 @@
 """Self-contained SiftMap client, so the county pull can run in the cloud.
 
 The Deal Room `clients/siftmap_api.py` is the fuller client, but it imports
-`reisift_auth` (multi-account JWT store, impersonation, Slack alerting) and
+`reisift_auth` (a staff credential store, impersonation, Slack alerting) and
 `throttle`, none of which exist on a Fly machine. That single import is why
 `ftm_runner`'s `county` stage skipped on every scheduled run. This mirrors what
 `sms_agent/crm_standalone.py` did for the reisift CRM: same endpoints, no repo
@@ -12,7 +12,7 @@ Routes:
     GET  /properties/detail/{dataflik_id}/  documented, Api-Key
     POST /properties/search-autocomplete/   NOT documented, no auth (verified 2026-08-19)
 
-The Open API key works on all of them, so there is no 48 hour JWT to babysit.
+The Open API key works on all of them, and it never expires.
 
     python src/siftmap_standalone.py "158 Example State Rd, Knoxville, TN"
 

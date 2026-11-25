@@ -6,9 +6,9 @@ The complete KPI vocabulary for a cold-calling REI operation on DataSift. Benchm
 
 | KPI | Formula / source event | Baseline |
 |---|---|---|
-| Dials | count of `owner.call.made` events (1 dial = 1 phone number) | floor 150/caller/day, target 200; bulk dialing 250-350 |
+| Dials | outbound calls, one per call however many log rows describe it (`owner.call.made`, then its answer or miss) | floor 150/caller/day, target 200; bulk dialing 250-350 |
 | Full attempt | every number on the record + voicemail + text | definition |
-| Records touched | distinct records dialed | - |
+| Owners touched | distinct owners dialed (a call goes to the owner, so an owner with several houses counts once) | - |
 | Dial hours | first-to-last-call window | 4-6 hrs/day on dialer |
 | Weekly team dials | sum Mon-Fri | 5,500+ |
 
@@ -65,7 +65,10 @@ Property-status events (deduped per record): lead statuses (below), not_interest
 
 ## Data source notes
 
-- The DataSift per-record activity log is the only date-accurate, caller-attributed source of calling KPIs (dashboard widgets are not script-accessible).
-- Callers self-identify on call events; disposition events carry their author. No static roster needed.
+- The DataSift account activity log, read on your Open API key, is the only date-accurate, caller-attributed source of calling KPIs (dashboard widgets are not script-accessible). One pass reads every call, text, phone status, record status and completed task in the period.
+- A dial row often names nobody: Kixie names the caller only on the answer. The script places each dial by its own call first, then by the one caller seen on that line that day, then by the one caller who worked that day. Anything left is shown as Unattributed and still counts in the account totals.
+- Kixie logs an outbound no-answer as `owner.call.missed`, and an incoming call as `owner.call.received` while it rings and then `owner.call.missed` if nobody picks up. The row's direction and call id decide which it is.
+- A phone status written by the dialer goes to the caller of the latest call to that number the same day. A record status or task a person set carries their name; one set by a sequence is Unattributed.
+- A lead is a record entering a lead status from outside one, counted once. New Lead then Hot Lead is one lead, not two.
 - Log timestamps are UTC; bucket days in your local timezone.
-- Exclude admin/owner logins from caller tables so testing activity does not pollute the numbers.
+- Exclude admin and owner users from caller tables so testing activity does not pollute the numbers.

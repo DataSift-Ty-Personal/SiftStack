@@ -23,7 +23,7 @@ from .blueprint import UUID_RE, is_ref
 from .client import MAP, ApiError
 from .export import count_shape
 from .probe import create
-from .report import Log, atomic_json, render_markdown, stamp
+from .report import Log, atomic_json, board_steps, render_markdown, sequence_steps, stamp, status_steps
 from .translate import Registry, refs_to_uuids, sequence_to_uuids, subset_equal
 
 
@@ -54,6 +54,10 @@ class Options:
 class Ctx:
     def __init__(self, client, bp, opts: Options, target: str):
         self.client, self.bp, self.opts, self.target = client, bp, opts, target
+        # On the Open API key, the families DataSift does not publish a create route for (custom
+        # statuses, boards, board columns, sequence folders, sequences) are never POSTed: each
+        # missing one is a step in the report's by-hand checklist.
+        self.on_key = getattr(client, "kind", "") == "api_key"
         self.log = Log()
         self.ident: dict = {}
         self.reg: Registry | None = None
@@ -105,55 +109,53 @@ class Refused(SystemExit):
         super().__init__(3)
 
 
-def verify_target(client, bp: dict, target_email: str, opts: Options) -> dict:
-    """Hard gate: Refused (exit 3) on any doubt. No caller can swallow it."""
-    if client.kind == "api_key":
-        raise Refused("an Api-Key carries no claims to gate a write on; "
-                         "apply needs the target's JWT - REFUSING")
-    claims = client.claims()
-    email = (claims.get("email") or "").strip().lower()
-    if email != target_email.strip().lower():
-        raise Refused("token email is %r, expected %r - REFUSING to write"
-                         % (email, target_email))
-    account = str(claims.get("account") or "").lower()
-    if not account:
-        raise Refused("token has no account claim - REFUSING")
-    src = str((bp.get("source") or {}).get("account_uuid") or "").lower()
-    if account == src and not opts.allow_same_account:
-        raise Refused("target account == blueprint source account %s. "
-                         "A different email is not a different account; cloning an account onto "
-                         "itself re-creates everything deleted since the export - REFUSING"
-                         % src[:8])
-    left = int(claims.get("exp", 0)) - time.time()
-    if left < opts.min_token_left_s:
-        raise Refused("token has %.0f min left (< %d); paste a fresh one - REFUSING"
-                         % (left / 60, opts.min_token_left_s // 60))
-    flags = claims.get("feature_flags") or []
-    if "staff" in flags and not opts.allow_staff_target:
-        raise Refused("target token carries the staff flag (an internal account); "
-                         "pass --allow-staff-target if that is intended - REFUSING")
-    if client.kind == "impersonated":
-        if not claims.get("impersonated"):
-            raise Refused("impersonated token lacks the impersonated flag - REFUSING")
-        staff_acct = str(client._staff.claims().get("account") or "").lower()
-        if account == staff_acct:
-            raise Refused("impersonated token still carries the staff account - REFUSING")
-    elif claims.get("impersonated"):
-        raise Refused("a pasted token carries the impersonated flag (stale state) - REFUSING")
-    # Live read proves the server accepts the token for THIS account.
+def live_account_check(client, account: str, src: str, opts: Options) -> None:
+    """A live read proves the server answers this credential from THIS account."""
     rows = client.call("/api/internal/sequence/?limit=5")
     rows = rows.get("results", rows) if isinstance(rows, dict) else rows
     for r in rows or []:
         acct = str(r.get("account_uuid") or "").lower()
         if acct and acct != account:
-            raise Refused("live sequence read returned account %s, token says %s - REFUSING"
-                             % (acct[:8], account[:8]))
+            raise Refused("live sequence read returned account %s, the credential says %s - REFUSING"
+                          % (acct[:8], account[:8]))
         if acct and acct == src and not opts.allow_same_account:
             raise Refused("live data belongs to the blueprint's source account - REFUSING")
-    return {"email": claims.get("email"), "account": account, "user_id": claims.get("user_id"),
-            "impersonated": bool(claims.get("impersonated")), "kind": client.kind,
-            "exp_iso": time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(int(claims["exp"]))),
-            "feature_flags": flags, "addons": claims.get("addons") or []}
+
+
+def verify_target(client, bp: dict, target_email: str, opts: Options) -> dict:
+    """Hard gate: Refused (exit 3) on any doubt. No caller can swallow it.
+
+    An Open API key carries nothing about itself, so the gate asks the server who the
+    key belongs to (GET /api/internal/user/, the key's own user): that user's email must
+    be --target, its account must not be the blueprint's source account, and a live
+    read must come back from that same account."""
+    if client.kind != "api_key":
+        from .staff_creds import verify_staff_target    # staff-only credentials
+        return verify_staff_target(client, bp, target_email, opts, Refused, live_account_check)
+    me = client.call("/api/internal/user/")
+    me = (me[0] if me else {}) if isinstance(me, list) else (me or {})
+    if not isinstance(me, dict):
+        me = {}
+    email = str(me.get("email") or "").strip().lower()
+    if email != target_email.strip().lower():
+        raise Refused("this Open API key belongs to %r, expected %r - REFUSING to write"
+                      % (email or "nobody the server would name", target_email))
+    acct = me.get("account")
+    account = str((acct.get("uuid") if isinstance(acct, dict) else acct) or "").lower()
+    if not UUID_RE.match(account):
+        raise Refused("the key's user names no account - REFUSING")
+    src = str((bp.get("source") or {}).get("account_uuid") or "").lower()
+    if account == src and not opts.allow_same_account:
+        raise Refused("target account == blueprint source account %s. "
+                      "A different email is not a different account; cloning an account onto "
+                      "itself re-creates everything deleted since the export - REFUSING" % src[:8])
+    flags = me.get("feature_flags") or []
+    if "staff" in flags and not opts.allow_staff_target:
+        raise Refused("this key belongs to an internal DataSift account - REFUSING")
+    live_account_check(client, account, src, opts)
+    return {"email": me.get("email"), "account": account, "user_id": me.get("uuid") or "",
+            "impersonated": False, "kind": client.kind, "valid_until": "no expiry (Open API key)",
+            "feature_flags": flags, "addons": me.get("addons") or []}
 
 
 # ------------------------------------------------------------ families
@@ -187,6 +189,13 @@ def apply_statuses(ctx: Ctx) -> None:
             continue
         if not ctx.selected_family("statuses"):
             log.add("statuses", "gap", t, "missing and family not selected")
+            continue
+        if ctx.on_key:
+            if ctx.opts.verify_only:
+                log.add("statuses", "gap", t, "missing in target")
+            else:
+                log.add("statuses", "manual_todo", t, "add this custom status by hand (no published "
+                        "route creates one)", steps=status_steps(s))
             continue
         body = {"title": t, "color": s.get("color"), "is_active": bool(s.get("is_active", True))}
 
@@ -455,6 +464,9 @@ def apply_boards(ctx: Ctx) -> None:
             if b["title"] not in reg.boards:
                 log.add("boards", "gap", b["title"], "family not selected")
         return
+    if ctx.on_key:
+        _boards_by_hand(ctx)
+        return
     for b in bp["boards"]:
         bt = b["title"]
         if bt in reg.boards:
@@ -496,6 +508,30 @@ def apply_boards(ctx: Ctx) -> None:
             elif got:
                 log.add("boards", "verified", "%s/%s" % (bt, col))
                 ctx.remember("boards", "%s/%s" % (bt, col), "created", got.get("uuid"))
+
+
+def _boards_by_hand(ctx: Ctx) -> None:
+    """On the key: a missing board, or a missing column on a board, is checklist steps."""
+    reg, log = ctx.reg, ctx.log
+    for b in ctx.bp["boards"]:
+        bt, cols = b["title"], list(b.get("columns", []))
+        have_board = bt in reg.boards
+        missing = [(i, c) for i, c in enumerate(cols, 1) if not (have_board and reg.column_uuid(bt, c))]
+        if have_board:
+            log.add("boards", "exists", bt)
+            for _, col in [(i, c) for i, c in enumerate(cols, 1) if (i, c) not in missing]:
+                if (bt, col) not in reg.columns:
+                    log.add("boards", "translated", "%s/%s" % (bt, col),
+                            "column exists under a case/whitespace variant; using it")
+        if not missing and have_board:
+            continue
+        if ctx.opts.verify_only:
+            log.add("boards", "gap", bt if not have_board else "%s (%d columns)" % (bt, len(missing)),
+                    "missing in target")
+            continue
+        what = "this board and its columns" if not have_board else "%d column(s) on this board" % len(missing)
+        log.add("boards", "manual_todo", bt, "add %s by hand (no published route creates them)" % what,
+                steps=board_steps(bt, missing, create_board=not have_board))
 
 
 def _move_preset(ctx: Ctx, title: str, uuid: str, old_folder: str, dst: dict, new_folder: str) -> None:
@@ -631,6 +667,9 @@ def apply_sequences(ctx: Ctx) -> None:
     if not ctx.selected_family("sequences") and not ctx.opts.verify_only:
         log.add("sequences", "gap", "sequences", "family not selected")
         return
+    if ctx.on_key:
+        _sequences_by_hand(ctx)
+        return
     for f in bp["sequence_folders"]:
         t = f["title"]
         if t in reg.sequence_folders:
@@ -673,6 +712,32 @@ def apply_sequences(ctx: Ctx) -> None:
                 log.add("sequences", "mismatch", t, "stored definition differs from sent (see report json)",
                         sent=check, got={k: got.get(k) for k in check})
                 ctx.failed = True
+
+
+def _sequences_by_hand(ctx: Ctx) -> None:
+    """On the key: sequences are not in DataSift's published API, so every missing folder and
+    sequence is a click-through in the Sequence Builder, written from the blueprint's own titles.
+    Build them after the boards, columns, tags and task presets they name exist."""
+    reg, log, c = ctx.reg, ctx.log, ctx.client
+    for f in ctx.bp["sequence_folders"]:
+        t = f["title"]
+        if t in reg.sequence_folders:
+            log.add("sequences", "exists", "folder " + t)
+        elif ctx.opts.verify_only:
+            log.add("sequences", "gap", "folder " + t, "missing in target")
+        else:
+            log.add("sequences", "manual_todo", "folder " + t, "add this sequence folder by hand",
+                    steps=["In Sequences, add a folder titled %s." % t])
+    have = {q["title"] for q in c.get_all("/api/internal/sequence/?limit=999")}
+    for q in ctx.bp["sequences"]:
+        t = q["title"]
+        if t in have:
+            log.add("sequences", "exists", t)
+        elif ctx.opts.verify_only:
+            log.add("sequences", "gap", t, "missing in target")
+        else:
+            log.add("sequences", "manual_todo", t, "build this sequence by hand in the Sequence Builder",
+                    steps=sequence_steps(q))
 
 
 def apply_siftmap(ctx: Ctx) -> None:
@@ -731,8 +796,10 @@ def count_probes(ctx: Ctx) -> list[dict]:
         return []
     c, reg = ctx.client, ctx.reg
     try:
-        u = c.call("/api/internal/upload/usage/", "POST", {})
-        used = int((u or {}).get("upload_usage") or 0)
+        # How many records the account holds (both record tabs), so a preset that matches
+        # nothing on an empty account reads as expected rather than suspicious.
+        u = c.call("/api/internal/property/?limit=1")
+        used = int((u or {}).get("count") or 0) if isinstance(u, dict) else -1
     except ApiError:
         used = -1
     tag_empty: dict[str, bool] = {}
@@ -791,8 +858,8 @@ def run_apply(client, bp: dict, target: str, opts: Options) -> int:
     mode = "VERIFY" if opts.verify_only else ("COMMIT" if opts.commit else "DRY RUN")
     print("=== %s: blueprint %s -> %s ===" % (mode, os.path.basename(opts.blueprint_path or "?"), target))
     ctx.ident = verify_target(client, bp, target, opts)
-    print("target verified: %s account %s (%s, token to %s)" % (
-        ctx.ident["email"], ctx.ident["account"][:8], ctx.ident["kind"], ctx.ident["exp_iso"]))
+    print("target verified: %s account %s (%s, valid until %s)" % (
+        ctx.ident["email"], ctx.ident["account"][:8], ctx.ident["kind"], ctx.ident["valid_until"]))
     if opts.state_path and os.path.exists(opts.state_path):
         try:
             with open(opts.state_path, encoding="utf-8") as f:
@@ -852,7 +919,7 @@ def run_apply(client, bp: dict, target: str, opts: Options) -> int:
               "source": "%s (%s)" % ((bp.get("source") or {}).get("email"),
                                      str((bp.get("source") or {}).get("account_uuid"))[:8]),
               "target": "%s (%s)" % (ctx.ident["email"], ctx.ident["account"][:8]),
-              "token": ctx.ident["kind"], "folders": opts.folders,
+              "credential": ctx.ident["kind"], "folders": opts.folders,
               "strip_neighborhoods": opts.strip_neighborhoods, "siftmap_auto_add": opts.siftmap_auto_add,
               "allow_same_account": opts.allow_same_account or "no", "at": stamp()}
     print("\n=== summary ===")
@@ -871,6 +938,9 @@ def run_apply(client, bp: dict, target: str, opts: Options) -> int:
             print("    - [%s] %s: %s" % (e["family"], e["object"], e["detail"][:160]))
         if len(todos) > 40:
             print("    ... %d more in the report" % (len(todos) - 40))
+        if any(e.get("steps") for e in todos):
+            print("  the report spells out every click for these, in build order; run apply again "
+                  "after building them and it creates what was waiting on them")
     print(verdict)
     if opts.report_path:
         atomic_json({"header": header, "summary": summary, "counts": counts, "log": ctx.log.entries,
